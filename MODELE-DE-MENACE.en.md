@@ -659,7 +659,13 @@ safeguards:
   which nothing tells apart from its real children: a Vanguard that still has a child when its exec is read, or whose
   children cannot be read (`/proc/<pid>/task/*/children`), is a carrier, which the watcher judges itself along with
   everything it starts, and the same goes if its birth was not seen or an entry may have been forgotten since (full
-  table, lost events). With no child, the watcher sets aside that Vanguard and what it starts afterwards, dated from
+  table, lost events). When the watcher starts, every Vanguard already running that has a child, in its table or
+  according to the kernel (including a child hidden from the reading of /proc, with no readable command line or
+  program), is a carrier too. After lost events or a sweep of the table, every Vanguard still passing the mark is
+  checked again: another start time (number reused after a lost exit) or another image makes it a carrier. Children
+  are read as soon as the program is held, before it is read and recognised; a Vanguard that starts a command before
+  that reading, or one of whose threads ends at every reading, stays a carrier: an accepted race, at worst alerts
+  too many. With no child, the watcher sets aside that Vanguard and what it starts afterwards, dated from
   its last exec. The check-up and the hunt only set aside the descendants of the process running them, and only if
   it had no child at the start of its `main`. At worst, one alert too many about what such a Vanguard starts. Accepted
   limit: a program of the account that traces the process (PTRACE_TRACEME before the exec, or an ancestor attaching

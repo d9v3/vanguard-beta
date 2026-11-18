@@ -86,8 +86,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   gardent le bon fichier ; ce chemin manquant ou refusé, il s'arrête et dit de rouvrir la fenêtre, sans repli. Il se
   reconnaît par le fichier ou les octets, jamais par le nom `/memfd:vanguard` ni par un chemin seul : un autre
   programme lancé d'un memfd à ce nom ou refait à son chemin reste montré et traitable, ce qu'un programme avait lancé
-  avant de devenir Vanguard reste jugé (un Vanguard qui a encore un enfant au moment de l'exec ne passe rien de ce
-  qu'il lance : cet enfant peut lui donner des frères ou ses orphelins), une inondation de copies de même taille ne
+  avant de devenir Vanguard reste jugé (un Vanguard qui a encore un enfant au moment de l'exec, ou déjà en marche avec
+  un enfant quand le veilleur démarre, voit tout ce qu'il lance jugé : cet enfant peut lui donner des frères ou ses
+  orphelins ; une racine partie dont le numéro est repris après des événements perdus non plus), une inondation de copies de même taille ne
   fait plus oublier un Vanguard déjà reconnu, et deux `vanguard` de la fenêtre ne se dénoncent plus l'un l'autre. pkexec y
   exécute le chemin vérifié, seulement s'il est à root et protégé ; sinon il n'est pas proposé. Sous Windows, le
   fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui est lancé (limites dites au modèle de

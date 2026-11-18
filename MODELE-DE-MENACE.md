@@ -696,7 +696,13 @@ gardes :
   un Vanguard qui a encore un enfant quand son exec est lu, ou dont les enfants ne se lisent pas
   (`/proc/<pid>/task/*/children`), est un porteur, que le veilleur juge lui-même avec tout ce qu'il lance, et il en
   va de même si sa naissance n'a pas été vue ou qu'une fiche a pu être oubliée depuis (table pleine, événements
-  perdus). Sans enfant, le veilleur écarte ce Vanguard et ce qu'il lance ensuite, daté depuis son dernier exec. Le
+  perdus). Au démarrage du veilleur, chaque Vanguard déjà en marche qui a un enfant, dans sa table ou chez le noyau
+  (un enfant caché à la lecture de /proc compris, sans ligne de commande ni programme lisible), est aussi un porteur.
+  Après des événements perdus ou un balayage de la table, chaque Vanguard qui passe encore la marque est revu : un
+  autre départ (numéro repris après une fin perdue) ou une autre image en font un porteur. Les enfants sont lus
+  aussitôt le programme tenu, avant sa lecture et sa reconnaissance ; un Vanguard qui lance une commande avant cette
+  lecture, ou dont un fil finit à chaque lecture, reste un porteur : course acceptée, au pire des alertes de trop.
+  Sans enfant, le veilleur écarte ce Vanguard et ce qu'il lance ensuite, daté depuis son dernier exec. Le
   bilan et la chasse n'écartent les descendants que du processus qui les fait, et seulement s'il n'avait aucun enfant
   au début de son `main`. Au pire, une alerte de trop sur ce qu'un tel Vanguard lance. Limite acceptée : un programme
   du compte qui trace le processus (PTRACE_TRACEME avant l'exec, ou un ancêtre qui s'y attache ensuite) peut faire
