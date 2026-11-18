@@ -70,12 +70,14 @@ example, finds it, to rebuild it if needed.
   once when its page opens. A long read and the network scans (devices, network audit, hidden cameras, NAT) never start
   by themselves: they wait for the "Run" button.
 - **Window: it only runs the `vanguard` that opened it.** It ran the same path again for hours without looking at its
-  content again: a `vanguard` replaced by this account made it show its answers and received its actions. `vanguard`
-  now gives it the SHA-256 fingerprint of its own program; for each command, the window reads the file again, copies
-  it into a sealed in-memory file, compares its fingerprint and runs only that copy, never the path. Replaced since the
-  window opened (by an update too): nothing is run, the reason is given, and reopening the window is enough. On
-  Windows, the file is held and its fingerprint compared, but the path is still what is started (limits stated in the
-  threat model).
+  content again: a `vanguard` replaced by this account made it show its answers and received its actions. `vanguard` now
+  gives it the SHA-256 fingerprint of its own program; for each command, the window reads the file again, copies it into
+  a sealed in-memory file, compares its fingerprint and runs only that copy, never the path. Replaced since the window
+  opened (by an update too): nothing is run, the reason is given, and reopening the window is enough; after a successful
+  update, it says so at once. On Linux, the `vanguard` started from that copy receives, in its environment only, the
+  checked path (`VANGUARD_ORIGINE`): it only trusts it in that strictly recognised image and towards a file with its
+  exact bytes, and its update, its key and its task keep the right file. On Windows, the file is held and its
+  fingerprint compared, but the path is still what is started (limits stated in the threat model).
 
 ## November 15, 2026: version 0.96.0
 

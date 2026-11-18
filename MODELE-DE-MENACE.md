@@ -678,13 +678,21 @@ gardes :
   (/etc/ld.so.preload, LD_PRELOAD inconnu ; AppInit_DLLs sous Windows : la raison est dite), ou quand elle ne dit pas
   « ouverte » dans les 20 secondes. `vanguard --menu` force le menu. Sous Linux, elle ne reçoit qu'une liste fermée de
   variables (l'écran, la langue, les dossiers XDG, la session, le proxy, les réglages de Vanguard) et un PATH fixe :
-  ni LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, ni GTK_MODULES, LIBGL_*, ni VANGUARD_ORIGINE. Le `vanguard` qu'elle
-  relance est celui qui l'a ouverte (VANGUARD_ORIGINE n'est crue que dans la copie temporaire de la clé) : `vanguard`
-  lui donne l'empreinte SHA-256 de son propre programme (`--empreinte-vanguard`, lue sous Linux sur l'image qui
-  tourne), et à chaque commande la fenêtre relit le fichier, le copie dans un fichier en mémoire scellé, compare
-  l'empreinte de cette copie et ne lance qu'elle, jamais le chemin. Remplacé depuis l'ouverture, même par ce compte
-  ou par une mise à jour : il n'est pas lancé, la raison est dite et la fenêtre demande d'être rouverte. Ouverte
-  seule, sans `vanguard`, la fenêtre prend l'empreinte de son voisin à l'ouverture (confiance au premier usage).
+  ni LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, ni GTK_MODULES, LIBGL_*, ni VANGUARD_ORIGINE. Le `vanguard` qu'elle relance
+  est celui qui l'a ouverte : `vanguard` lui donne l'empreinte SHA-256 de son propre programme (`--empreinte-vanguard`,
+  lue sous Linux sur l'image qui tourne), et à chaque commande la fenêtre relit le fichier, le copie dans un fichier en
+  mémoire scellé, compare l'empreinte de cette copie et ne lance qu'elle, jamais le chemin. Lancé de cette copie,
+  `vanguard` n'a plus de fichier : la fenêtre lui donne, dans son seul environnement (jamais dans le sien),
+  VANGUARD_ORIGINE égale au chemin qu'elle a vérifié, pour que sa mise à jour, sa clé et sa tâche se rapportent au bon
+  fichier. `vanguard` ne la croit que dans sa copie temporaire de la clé ou dans cette image reconnue strictement (nom
+  exact `/memfd:vanguard`, fichier sans lien, sceaux d'écriture, de taille et des sceaux posés), et seulement si le
+  fichier désigné a exactement les octets du programme qui tourne ; sinon elle est ignorée et l'écart dit. Un programme
+  du compte qui lancerait lui-même une telle image n'y gagne rien : désigner un fichier aux mêmes octets revient à
+  lancer ce fichier, comme une fausse copie de la clé posée par ce compte (reste déjà accepté). Remplacé depuis
+  l'ouverture, même par ce compte ou par une mise à jour : il n'est pas lancé, la raison est dite et la fenêtre demande
+  d'être rouverte ; après une mise à jour réussie, elle dit tout de suite de la rouvrir, sans croire la nouvelle
+  empreinte. Ouverte seule, sans `vanguard`, la fenêtre prend l'empreinte de son voisin à l'ouverture (confiance au
+  premier usage).
 - **Ses bibliothèques.** Sous Windows, comme `vanguard.exe`, elle ne charge ses DLL que de System32 : celles qu'elle
   importe (DependentLoadFlags), et celles qu'une bibliothèque ouvre par leur nom après le démarrage
   (SetDefaultDllDirectories, première ligne du programme ; opengl32.dll par exemple). Une DLL posée à côté d'elle,

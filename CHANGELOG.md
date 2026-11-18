@@ -79,9 +79,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   sans revoir le contenu : un `vanguard` remplacé par ce compte lui faisait afficher ses réponses et recevait ses
   gestes. `vanguard` lui donne maintenant l'empreinte SHA-256 de son propre programme ; à chaque commande, la fenêtre
   relit le fichier, le copie dans un fichier en mémoire scellé, compare son empreinte et ne lance que cette copie,
-  jamais le chemin. Remplacé depuis l'ouverture (une mise à jour aussi) : rien n'est lancé, la raison est dite, et
-  il suffit de rouvrir la fenêtre. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le
-  chemin qui est lancé (limites dites au modèle de menace).
+  jamais le chemin. Remplacé depuis l'ouverture (une mise à jour aussi) : rien n'est lancé, la raison est dite, et il
+  suffit de rouvrir la fenêtre ; après une mise à jour réussie, elle le dit tout de suite. Sous Linux, le `vanguard`
+  lancé de cette copie reçoit, dans son seul environnement, le chemin vérifié (`VANGUARD_ORIGINE`) : il ne le croit que
+  dans cette image reconnue strictement et vers un fichier à ses octets exacts, et sa mise à jour, sa clé et sa tâche
+  gardent le bon fichier. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui
+  est lancé (limites dites au modèle de menace).
 
 ## 15 novembre 2026 : version 0.96.0
 

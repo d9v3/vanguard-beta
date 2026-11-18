@@ -644,11 +644,19 @@ safeguards:
   kernel set to `vm.memfd_noexec=2`, an SELinux or AppArmor policy refusing it: never a fallback to the path), or
   when it does not say "open" within 20 seconds. `vanguard --menu` forces
   the menu. The `vanguard` it runs is the one that opened it: `vanguard` gives it the SHA-256 fingerprint of its own
-  program (`--empreinte-vanguard`, read on Linux from the running image), and for each command the window reads the
-  file again, copies it into a sealed in-memory file, compares that copy's fingerprint and runs only the copy, never
-  the path. Replaced since the window opened, even by this account or by an update: it is not run, the reason is
-  given and the window asks to be reopened. Opened alone, without `vanguard`, the window takes its neighbour's
-  fingerprint when it opens (trust on first use).
+  program (`--empreinte-vanguard`, read on Linux from the running image), and for each command the window reads the file
+  again, copies it into a sealed in-memory file, compares that copy's fingerprint and runs only the copy, never the
+  path. Started from that copy, `vanguard` no longer has a file: the window gives it, in its environment only (never in
+  its own), VANGUARD_ORIGINE set to the path it checked, so that its update, its key and its task refer to the right
+  file. `vanguard` only trusts it in its temporary copy on the key or in that strictly recognised image (exact name
+  `/memfd:vanguard`, unlinked file, write, size and seal seals set), and only if the designated file has exactly the
+  bytes of the running program; otherwise it is ignored and the mismatch stated. A program of the account that started
+  such an image itself gains nothing: designating a file with the same bytes amounts to running that file, like a fake
+  key copy placed by this account (a remaining risk already accepted). Replaced since the window opened, even by this
+  account or by an update: it is not run, the reason is given and the window asks to be reopened; after a successful
+  update, it says at once to reopen it, without trusting the new fingerprint. Opened alone, without `vanguard`, the
+  window takes its neighbour's fingerprint when it opens (trust on
+  first use).
 - **Its libraries.** On Windows, like `vanguard.exe`, it loads its DLLs from System32 only: those it imports
   (DependentLoadFlags), and those a library opens by name after startup (SetDefaultDllDirectories, first line of the
   program; opengl32.dll for example). A DLL placed next to it, on the key or in Downloads, is never loaded. On Linux,
