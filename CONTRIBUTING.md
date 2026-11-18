@@ -104,7 +104,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/nettoyer/` | nettoyage : éléments par système, place mesurée avant et après |
 | `src/logiciels/` | logiciels à installer : catalogue vérifié (`catalogue.rs`), état et installation par système |
 | `src/protection/fuites.rs`, `src/donnees.rs` | mots de passe fuités, sauvegarde des données |
-| `src/protection/cle.rs` | protection de la clé USB sous Linux : partition remontée en lecture seule hors de l'ordinateur du propriétaire |
+| `src/protection/cle.rs`, `src/protection/cle/soi.rs` | protection de la clé USB sous Linux : partition remontée en lecture seule hors de l'ordinateur du propriétaire ; « ce processus est-il ce Vanguard ? » par son fichier ou ses octets, jamais par un nom ni un chemin seul (`soi.rs`) |
 | `src/guide/` | guide des commandes : un fichier par système (`arch.rs`, `omarchy.rs`, `fedora.rs`, `debian.rs` : programmes et marches à suivre de chaque distribution ; `linux.rs` : programmes communs à toutes, et openSUSE ; `windows.rs`, `tous.rs`), menus et recherche (`mod.rs`), commandes lancées ici (`lancement.rs`), exemples de tldr-pages téléchargés chaque semaine et copiés sur la clé au déploiement (`tldr.rs`, `tldr/cle.rs`) |
 | `src/apprentissage.rs` | ce que Vanguard apprend ici : alertes déclarées normales (appris.json), habitudes |
 | `src/reseau/listes_noires.rs` | adresse Internet de la maison dans les listes noires (DNSBL), après accord |
