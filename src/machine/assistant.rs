@@ -214,21 +214,37 @@ fn chemin_sur(chemin: &std::path::Path) -> bool {
     true
 }
 
-/// L'image qui tourne est-elle à l'abri d'un remplacement par chemin (`chemin_sur`) ?
-fn image_sure() -> bool {
-    std::env::current_exe().is_ok_and(|c| chemin_sur(&c))
+/// Le fichier que pkexec exécutera, s'il est à l'abri d'un remplacement par chemin (`sur` : `chemin_sur`), sinon
+/// `None` (pkexec n'est pas essayé). Hors de la fenêtre, l'image qui tourne (`courant`). Lancé par la fenêtre
+/// (`fenetre`), ce processus tourne d'un memfd que pkexec ne peut pas exécuter par chemin : son origine vérifiée
+/// (`origine`, `cle::exe_d_origine` : le fichier aux mêmes octets d'où la fenêtre l'a tiré), jugée de même ; sans
+/// elle, jamais de repli (relecture adverse du lot L2(b), constat C).
+fn pour_pkexec(
+    fenetre: bool,
+    origine: impl FnOnce() -> Option<std::path::PathBuf>,
+    courant: impl FnOnce() -> Option<std::path::PathBuf>,
+    sur: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let chemin = if fenetre { origine() } else { courant() }?;
+    sur(&chemin).then_some(chemin)
 }
 
-/// Le programme à relancer : l'image qui tourne, ou son chemin pour pkexec.
+/// Le programme à relancer : l'image qui tourne, ou pour pkexec un chemin à l'abri (`pour_pkexec`).
 ///
 /// pkexec reçoit le chemin réel (É-7 du lot U3) : pkexec 126 (Debian 13) vérifie le chemin reçu par access(), avec
 /// l'identité de la personne, et pendant le dialogue ce processus n'est plus « dumpable » (`Inaccessible`) : son
 /// `/proc/<pid>/exe` n'est alors ouvert qu'à root, d'où « Error accessing `/proc/<pid>/exe`: Permission denied ». Rien
 /// n'est relâché pour autant : pkexec exécutait déjà ce chemin réel (realpath), et il n'est pris que s'il passe
-/// `image_sure` ; rendre ce processus « dumpable » pendant l'élévation rouvrirait ses tubes au compte.
+/// `chemin_sur` (`pour_pkexec`) ; rendre ce processus « dumpable » pendant l'élévation rouvrirait ses tubes au compte.
 fn programme(m: Methode) -> Option<std::ffi::OsString> {
     if m == Methode::Pkexec {
-        std::env::current_exe().ok().map(std::path::PathBuf::into_os_string)
+        pour_pkexec(
+            crate::protection::cle::lance_par_la_fenetre(),
+            crate::protection::cle::exe_d_origine,
+            || std::env::current_exe().ok(),
+            chemin_sur,
+        )
+        .map(std::path::PathBuf::into_os_string)
     } else {
         Some(format!("/proc/{}/exe", std::process::id()).into())
     }
@@ -402,14 +418,11 @@ fn ranger<D>(groupes: &[Vec<D>], reponses: &[String]) -> Option<Vec<Vec<Resultat
 }
 
 fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
+    // pkexec exécute le chemin réel du programme : par chemin, seulement un programme que le compte ne peut pas
+    // remplacer (`programme` rend `None` sinon).
     let (Some(chemin), Some(programme)) = (outil(m.nom()), programme(m)) else {
         return Issue::Indisponible;
     };
-    // pkexec exécute le chemin réel du programme : par chemin, seulement un programme que le compte ne peut pas
-    // remplacer.
-    if m == Methode::Pkexec && !image_sure() {
-        return Issue::Indisponible;
-    }
     let terminal = terminal();
     trp!(
         "    {GRIS}Droits d'administrateur demandés par {} : Vanguard fera lui-même les gestes montrés, et rien d'autre.{RESET}",
@@ -2325,12 +2338,48 @@ mod tests {
     /// désigne l'image qui tourne même remplacée.
     #[test]
     fn pkexec_recoit_le_chemin_reel() {
-        let image = std::env::current_exe().map(std::path::PathBuf::into_os_string).ok();
+        let image = std::env::current_exe().ok();
         assert!(image.is_some());
-        assert_eq!(programme(Methode::Pkexec), image);
+        let tout_sur = |_: &std::path::Path| true;
+        assert_eq!(pour_pkexec(false, || None, || image.clone(), tout_sur), image);
+        // Le programme d'essai est dans un dossier du compte : pas pour pkexec.
+        assert_eq!(programme(Methode::Pkexec), None);
         let par_proc = Some(std::ffi::OsString::from(format!("/proc/{}/exe", std::process::id())));
         assert_eq!(programme(Methode::Run0), par_proc);
         assert_eq!(programme(Methode::Sudo), par_proc);
+    }
+
+    /// Lancé par la fenêtre (constat C) : pkexec exécute l'origine vérifiée, seulement si `chemin_sur` la juge à
+    /// l'abri ; dans un dossier du compte, ou sans origine, jamais (et jamais de repli sur l'image qui tourne).
+    #[test]
+    fn pkexec_depuis_la_fenetre_prend_l_origine_sure() {
+        use std::path::PathBuf;
+        let racine = PathBuf::from("/usr/bin/env");
+        assert!(chemin_sur(&racine), "/usr/bin/env doit être à root");
+        let du_compte = crate::essais::temporaire().join("vanguard-origine-essai");
+        std::fs::write(&du_compte, b"x").unwrap();
+        // Origine dans un dossier à root : prise.
+        assert_eq!(
+            pour_pkexec(true, || Some(racine.clone()), || None, chemin_sur),
+            Some(racine.clone())
+        );
+        // Origine dans un dossier du compte : refusée.
+        assert_eq!(
+            pour_pkexec(true, || Some(du_compte.clone()), || Some(racine.clone()), chemin_sur),
+            None
+        );
+        // Sans origine vérifiée : refus, même si l'image qui tourne passerait.
+        assert_eq!(pour_pkexec(true, || None, || Some(racine.clone()), chemin_sur), None);
+        // Hors de la fenêtre : l'image qui tourne, jugée de même ; l'origine n'est pas consultée.
+        assert_eq!(
+            pour_pkexec(false, || Some(du_compte.clone()), || Some(racine.clone()), chemin_sur),
+            Some(racine)
+        );
+        assert_eq!(
+            pour_pkexec(false, || None, || Some(du_compte.clone()), chemin_sur),
+            None
+        );
+        let _ = std::fs::remove_file(&du_compte);
     }
 
     /// La ligne de commande de l'élévation : l'image qui tourne, la sous-commande et rien d'autre (aucun shell).
