@@ -242,11 +242,13 @@ controler() { # code-des-essais code-de-l-outil
   : >"$faux/appels"
   SORTIE=$(CARGO_TARGET_DIR=$faux bash -c "bash() { echo \"essais \$*\" >>'$faux/appels'; return $1; }
 python3() { echo \"outil \$*\" >>'$faux/appels'; return $2; }
+git() { if [[ \$1 == status ]]; then echo \"statut \$*\" >>'$faux/appels'; cat '$faux/statut'; else command git \"\$@\"; fi; }
 $fonction
 vocabulaire_binaire" 2>&1)
   CODE=$?
 }
 outil_lance() { grep -q '^outil .*vocabulaire-binaire.py .*--a-cote reversinglabs.yara .*vocabulaire.txt -- .*/vanguard .*/vanguard.exe$' "$faux/appels"; }
+: >"$faux/statut"
 rm -f "$faux/.compilation"
 controler 0 0
 [[ -n $fonction && $CODE == 0 ]] && grep -q 'pas compilés de ce commit' <<<"$SORTIE" &&
@@ -255,7 +257,10 @@ controler 0 0
   outil_lance && controler 0 1 && [[ $CODE == 1 ]] && controler 77 0 && [[ $CODE == 77 ]] && ! outil_lance &&
   controler 1 0 && [[ $CODE == 1 ]] && repere "$ici" oui autre && controler 0 0 && [[ $CODE == 1 ]] && ! outil_lance &&
   grep -q 'vanguard.exe n.est plus celui' <<<"$SORTIE" &&
-  ok "vocabulaire de la porte : essais à chaque passe, programmes de ce commit contrôlés, un absent ou un autre programme échoue" ||
+  repere "$ici" oui "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" && echo ' M src/main.rs' >"$faux/statut" &&
+  controler 0 0 && [[ $CODE == 0 ]] && ! outil_lance && grep -q 'pas compilés de cet arbre' <<<"$SORTIE" &&
+  grep -q '^statut status --porcelain -- src build.rs .*Cargo.toml' "$faux/appels" &&
+  ok "vocabulaire de la porte : essais à chaque passe, programmes de ce commit et de cet arbre contrôlés, un absent ou un autre programme échoue" ||
   ko "vocabulaire de la porte (code $CODE) : $(tail -n 2 <<<"$SORTIE") $(cat "$faux/appels")"
 rm -rf "$faux"
 grep -q '^  etape vocabulaire-binaire vocabulaire_binaire &$' outils/verifier.sh &&

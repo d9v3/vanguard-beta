@@ -1072,7 +1072,8 @@ fn un_element_dit_mort_n_est_pas_lu() {
     let lus = un("#[allow(dead_code)]\nfn a() { TR(\"mort\", \"dead\"); }\n\
                   #[cfg_attr(windows, expect(dead_code, reason = \"x\"))]\nfn b() { TR(\"linux\", \"linux\"); }\n\
                   #[allow(unused)]\nfn c() { TR(\"vivant\", \"alive\"); }\n");
-    assert_eq!(lus, attendus(&["vivant", "alive"]));
+    // Sous `cfg_attr(windows, …)`, l'attribut n'existe pas dans le programme Linux : `b` est lu (R11-EXCLUSIONS-1).
+    assert_eq!(lus, attendus(&["linux", "vivant", "alive"]));
     refuse(
         &[(
             "src/main.rs",
@@ -1083,45 +1084,77 @@ fn un_element_dit_mort_n_est_pas_lu() {
 }
 
 #[test]
-fn textes_morts_retire_seulement_ses_fonctions() {
-    // Une ligne de TEXTES_MORTS : la fonction nommée, dans son fichier (et `Type::nom` dans un `impl`), seulement.
-    let sortantes = "fn service() { TR(\"courriel\", \"email\"); }\nfn autre() { TR(\"garde\", \"kept\"); }\n";
-    let chiffrement = "impl Display for Refus { fn fmt(&self) { TR(\"incorrecte\", \"wrong\"); } }\n\
-                       impl Display for Autre { fn fmt(&self) { TR(\"lu\", \"read\"); } }\nfn service() { TR(\"ici\", \"here\"); }\n";
-    let racine = "mod protection { mod sortantes; }\nmod chiffrement;\nmod copier;\nmod verifier_cle;\nmod parametres { mod partage; }\n";
-    let lus = lecture(&[
-        ("src/main.rs", racine),
-        ("src/protection/sortantes.rs", sortantes),
-        ("src/chiffrement.rs", chiffrement),
-        ("src/copier.rs", "fn empreinte_relue() {}\n"),
-        ("src/verifier_cle.rs", "fn annoncer() {}\n"),
-        ("src/parametres/partage.rs", "fn au_menu() {}\n"),
-    ])
-    .unwrap_or_else(|Illisible(e)| panic!("{e}"));
-    assert_eq!(lus, attendus(&["garde", "kept", "lu", "read", "ici", "here"]));
-    // Une ligne qui ne trouve plus sa fonction dans un fichier lu arrête la compilation.
+fn textes_morts_retire_seulement_ses_textes() {
+    // R11-EXCLUSIONS-2 : une ligne de TEXTES_MORTS retire ses textes exacts, dans sa fonction (et `Type::nom` dans un
+    // `impl`) seulement ; un autre texte de la même fonction reste, le même texte dans une autre fonction aussi.
+    let racine = "mod protection { mod sortantes; }\nmod chiffrement;\nmod copier;\nmod verifier_cle;\nmod parametres { mod \
+                  partage; }\n";
+    let mut fichiers = vec![("src/main.rs".to_string(), racine.to_string())];
+    let mut attendu = vec![
+        "vivant".to_string(),
+        "garde".to_string(),
+        "kept".to_string(),
+        "ailleurs".to_string(),
+    ];
+    for (fichier, nom, textes, _) in TEXTES_MORTS {
+        let premier = textes.first().unwrap_or_else(|| panic!("{nom} sans texte"));
+        attendu.extend(premier.split_whitespace().map(str::to_string));
+        let appels = textes
+            .iter()
+            .map(|t| format!("TR({t:?}, \"vivant\");"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let corps = format!("{{ {appels} TR(\"garde\", \"kept\"); }}");
+        let source = match nom.split_once("::") {
+            Some((type_, f)) => format!(
+                "impl Display for {type_} {{ fn {f}(&self) {corps} }}\n\
+                 impl Display for Autre {{ fn {f}(&self) {{ TR({premier:?}, \"ailleurs\"); }} }}\n"
+            ),
+            None => format!("fn {nom}() {corps}\nfn autre() {{ TR({premier:?}, \"ailleurs\"); }}\n"),
+        };
+        fichiers.push(((*fichier).to_string(), source));
+    }
+    let lus: Vec<(&str, &str)> = fichiers.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
+    let attendu: Vec<&str> = attendu.iter().map(String::as_str).collect();
+    assert_eq!(mots(&lus), attendus(&attendu));
+    // Un texte nommé qui n'est plus écrit dans sa fonction (changé, ou déplacé) arrête la compilation.
+    let annoncer = "mod verifier_cle;\n";
+    for texte in [
+        "fn annoncer() { TR(\"FAT32 : fichiers de 2 Go.\", \"FAT32: 1 GB files.\"); }\n",
+        "fn annoncer() {}\nfn autre() { TR(\"FAT32 : fichiers de 1 Go.\", \"FAT32: 1 GB files.\"); }\n",
+    ] {
+        refuse(
+            &[("src/main.rs", annoncer), ("src/verifier_cle.rs", texte)],
+            "TEXTES_MORTS nomme « FAT32 : fichiers de 1 Go. » dans « annoncer »",
+        );
+    }
     refuse(
         &[
             ("src/main.rs", "mod protection { mod sortantes; }\n"),
             (
                 "src/protection/sortantes.rs",
-                "fn services() { TR(\"courriel\", \"email\"); }\n",
+                "fn services() { TR(\"heure (NTP)\", \"time (NTP)\"); }\n",
             ),
         ],
-        "TEXTES_MORTS nomme « service »",
+        "TEXTES_MORTS nomme",
     );
 }
 
 #[test]
 fn chaque_fichier_de_textes_morts_existe() {
-    // Un fichier renommé : sa ligne ne retirerait plus rien sans que la lecture le voie (elle ne le lit plus).
+    // Un fichier renommé : sa ligne ne retirerait plus rien sans que la lecture le voie (elle ne le lit plus). Dans un
+    // fichier lu, chaque texte nommé doit être écrit dans sa fonction : build.rs le juge sur le vrai programme.
     let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (fichier, nom, cause) in TEXTES_MORTS {
+    for (fichier, nom, textes, cause) in TEXTES_MORTS {
         assert!(
             racine.join(fichier).is_file(),
             "TEXTES_MORTS : {fichier} ({nom}) absent"
         );
         assert!(!cause.is_empty(), "TEXTES_MORTS : {fichier} ({nom}) sans cause");
+        assert!(
+            !textes.is_empty() && textes.iter().all(|t| !t.trim().is_empty()),
+            "TEXTES_MORTS : {fichier} ({nom}) sans texte"
+        );
     }
 }
 
@@ -1253,4 +1286,77 @@ fn r10_sources_2_un_chemin_du_programme_ne_mene_pas_a_un_autre_paquet() {
     ] {
         refuse(&fichiers, "n'est admis que si");
     }
+}
+
+#[test]
+fn r11_r10_1_et_2_le_module_ui_est_seul_et_vraiment_au_premier_niveau() {
+    let langue = "#[macro_export]\nmacro_rules! tr { ($fr:literal, $en:literal $(,)?) => { $fr }; }\n";
+    let appel = "fn a() -> &'static str { crate::ui::tr!(\"motsecret\", \"secretword\") }\n";
+    let sain = format!("mod langue;\nmod ui;\n{appel}");
+    // Le montage sain reste admis, avec la documentation et les avertissements de src/ui.rs (le vrai en a).
+    for ui in [
+        "pub use crate::tr;\n",
+        "//! doc\n#![cfg_attr(target_os = \"linux\", warn(clippy::all))]\n#![allow(unused)]\npub use crate::tr;\n",
+    ] {
+        assert_eq!(
+            mots(&[("src/main.rs", &sain), ("src/langue.rs", langue), ("src/ui.rs", ui)]),
+            attendus(&["motsecret", "secretword"])
+        );
+    }
+    // R11-R10-1 : `mod ui;` relu dans le corps d'une macro (que rustc ne voit peut-être pas comme un élément), et un
+    // autre élément nommé `ui` à la racine, quel qu'il soit.
+    for main in [
+        format!("mod langue;\nuse ::autre as ui;\n#[cfg(target_os = \"haiku\")]\nformat! {{ mod ui; }}\n{appel}"),
+        format!("mod langue;\nformat! {{ mod ui; }}\n{appel}"),
+        format!("mod langue;\nmod ui;\nuse ::autre as ui;\n{appel}"),
+        format!("mod langue;\nmod ui;\nuse autre::{{self as ui}};\n{appel}"),
+        format!("mod langue;\nmod ui;\nmacro_rules! ui {{ () => {{}}; }}\n{appel}"),
+        format!("mod langue;\nmod ui;\nfn ui() {{}}\n{appel}"),
+        format!("mod langue;\nmod ui;\nformat! {{ use ::autre as ui; }}\n{appel}"),
+    ] {
+        refuse(
+            &[
+                ("src/main.rs", &main),
+                ("src/langue.rs", langue),
+                ("src/ui.rs", "pub use crate::tr;\n"),
+            ],
+            "n'est admis que si",
+        );
+    }
+    // R11-R10-2 : un attribut interne de src/ui.rs (un `cfg` qui retire tout le module, ou n'importe quel autre).
+    for ui in [
+        "#![cfg(target_os = \"haiku\")]\npub use crate::tr;\n",
+        "#![cfg(r#true)]\npub use crate::tr;\n",
+        "#![cfg_attr(unix, cfg(r#true))]\npub use crate::tr;\n",
+        "#![cfg_attr(unix, allow(unused), cfg(r#true))]\npub use crate::tr;\n",
+        "#![no_implicit_prelude]\npub use crate::tr;\n",
+    ] {
+        refuse(
+            &[("src/main.rs", &sain), ("src/langue.rs", langue), ("src/ui.rs", ui)],
+            "n'est admis que si",
+        );
+    }
+}
+
+#[test]
+fn r11_exclusions_1_mort_seulement_si_la_condition_est_vraie_sous_linux() {
+    // Un `cfg_attr(c, allow(dead_code))` ne dit l'élément mort que si `c` est sûrement vraie pour le programme Linux ;
+    // une condition fausse ou inconnue le laisse au vocabulaire (V1 exige alors chaque mot dans un programme).
+    let lus = un(
+        "#[cfg_attr(windows, allow(dead_code))]\nfn a() { TR(\"fenetres\", \"windows\"); }\n\
+                  #[cfg_attr(not(windows), allow(dead_code))]\nfn b() { TR(\"mort\", \"dead\"); }\n\
+                  #[cfg_attr(unix, allow(dead_code))]\nfn c() { TR(\"unixmort\", \"unixdead\"); }\n\
+                  #[cfg_attr(target_os = \"linux\", allow(dead_code))]\nfn d() { TR(\"linuxmort\", \"linuxdead\"); }\n\
+                  #[cfg_attr(target_os = \"macos\", allow(dead_code))]\nfn e() { TR(\"pomme\", \"apple\"); }\n\
+                  #[cfg_attr(target_family = \"windows\", allow(dead_code))]\nfn f() { TR(\"famille\", \"family\"); }\n\
+                  #[cfg_attr(unix, cfg_attr(windows, allow(dead_code)))]\nfn g() { TR(\"imbrique\", \"nested\"); }\n\
+                  #[cfg_attr(r#true, allow(dead_code))]\nfn h() { TR(\"inconnu\", \"unknown\"); }\n\
+                  #[cfg_attr(any(unix, windows), allow(dead_code))]\nfn i() { TR(\"unoudeux\", \"either\"); }\n",
+    );
+    assert_eq!(
+        lus,
+        attendus(&[
+            "fenetres", "windows", "pomme", "apple", "famille", "family", "imbrique", "nested", "inconnu", "unknown"
+        ])
+    );
 }

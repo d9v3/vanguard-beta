@@ -835,18 +835,24 @@ to start (code 2) until it has been tried on a real Windows.
   `rust-toolchain`), no symbolic link tracked by git (even under `target/`), and
   no untracked link outside `target/` and `.git/` (`target` may be a link to another disk); outside the root of a git
   repository, tracked links are "not verified", a failure. A macro with arms of
-  another form is no longer a limit: any unknown macro around a text stops the build, whatever its arms. Guaranteed
-  by the cross-check (`outils/vocabulaire-binaire.py`): every word of the vocabulary must be found, byte for byte, in
-  one of the published programs (Linux or Windows, built as a release, with LTO); a single missing word stops
-  `outils/compiler-version.sh` before it sets its marker, so nothing is published, and names the word and its file
+  another form is no longer a limit: any unknown macro around a text stops the build, whatever its arms. Checked,
+  without being guaranteed, by the cross-check (`outils/vocabulaire-binaire.py`): every word of the vocabulary must
+  be found, byte for byte, in one of the published programs (Linux or Windows, built as a release, with LTO);
+  a single missing word stops `outils/compiler-version.sh` before it sets its marker, so nothing is published, and names the word and its file
   (`outils/verifier.sh` redoes it on the programs of the verified commit, step "vocabulaire-binaire"). A trick the
   reading did not see (another package's macro taken through a glob import, `cfg!(test)` in an expression, any form
   still unknown) yields a word rustc did not keep: it is missing from the programs and publishing stops. Code that
   is compiled but never run is removed from the reading at the source, never from the check: a feature absent from
-  the build, a branch a `cfg!` rules out, an item marked `dead_code`, and a short named list of functions
-  (`TEXTES_MORTS`, one cause per line). What remains: a trick's word that is also found elsewhere in the programs
-  passes (the check judges bytes, not an origin); only the published programs are checked, not a development build;
-  the Windows program has no gate and only counts in the union; cargo configuration outside the repository and a
+  the build, a branch a `cfg!` rules out, an item marked `dead_code` (through a `cfg_attr`, only when its condition
+  is surely true on Linux), and a short list of exact texts, each in its named function (`TEXTES_MORTS`, one cause
+  per function; a text no longer there stops the build). What remains: a trick's word that is also found elsewhere
+  in the programs passes (the check judges bytes, not an origin: lists of brands and keywords, paths, machine code).
+  Measured on the release programs, for words absent from the vocabulary: every 2-letter word is found, 49.5% of
+  random 3-letter strings, 7.2% of 4-letter ones, 8.9% of the words of an English dictionary (cracklib-small)
+  and 3.9% of a French one (fr_CA). The check therefore catches a trick whose word is long or rare, not a short
+  or common word. Requiring a word boundary was measured then set aside: 51 real pieces of the vocabulary
+  ("BLOCAGE", "TRUST", web addresses) are only found glued to other letters, and publishing would stop. Also remaining:
+  only the published programs are checked, not a development build; the Windows program has no gate and only counts in the union; cargo configuration outside the repository and a
   macro of an ordinary dependency that would read the disk remain unverified.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The

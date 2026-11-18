@@ -887,7 +887,10 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 #   hors de src/ ; la lecture ne touche ni au disque ni à l'environnement ;
 # - Cargo.toml (lu par cargo metadata, pas par motif) : exactement ces cibles (le programme, l'essai
 #   tests/programme.rs, build.rs) et ces paquets de compilation (winresource, syn, proc-macro2) du registre
-#   crates.io, sans chemin, git, renommage ni plateforme ; leur version reste libre (Dependabot) ;
+#   crates.io, sans chemin, git, renommage ni plateforme ; leur version reste libre (Dependabot) ; et chaque
+#   dépendance, de toute section (cibles et essais compris), du registre, sans renommage ni nom de la bibliothèque
+#   standard (std, core, alloc, proc_macro, test) : la porte MCP admet `alloc::format!` ou `serde_json::json!` à leur
+#   nom, une clé `alloc = { package = "autre" }` en ferait un autre paquet (11e passe, R11-R10-3) ;
 # - Cargo.lock : chaque paquet autre que vanguard vient du registre crates.io, et seules les clés connues y sont ;
 # - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier) ;
 # - aucun fichier hérité que les outils préfèrent au fichier jugé (4e re-contrôle) : .cargo/config (cargo le lit à la
@@ -902,7 +905,7 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 # voit ni include_str!(concat!(…)) ni une macro renommée), une macro procédurale d'un paquet ordinaire qui lirait le
 # disque, et la configuration de cargo hors du dépôt (~/.cargo). Sans cargo ou sans jq : « non vérifié », un échec.
 EMPREINTES_COMPILATION='f35d6cdc58877cd63d2319e807d99dc321062bec88c8d0cd021ba454055aacb9 build.rs
-ddafd91b1a411e89612412c28105136c648bce5b6181268c7e1630016bfcc89c src/porte_mcp/sources.rs
+6df0b42f9629b6e8193570259e67e43d234cc8ee2b74b4b718196f18e40bc905 src/porte_mcp/sources.rs
 a132b1fdb1a4e6ce3f3e4de078e3c048a0b8f7f040081fd8fac351e0185eb651 .cargo/config.toml'
 REGISTRE='registry+https://github.com/rust-lang/crates.io-index'
 garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si tout est permis
@@ -929,7 +932,12 @@ garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si
          else " Cargo.toml : cibles hors de la liste : \($c | tojson)" end),
         (if $b == (["proc-macro2", "syn", "winresource"] | map({name: ., source: $r, rename: null,
                     target: null, registry: null, path: null})) then empty
-         else " Cargo.toml : paquets de compilation hors de la liste : \($b | tojson)" end)
+         else " Cargo.toml : paquets de compilation hors de la liste : \($b | tojson)" end),
+        (.dependencies[]
+          | select(.rename != null or .source != $r or .path != null or .registry != null
+                   or ((.name | gsub("-"; "_")) | IN("std", "core", "alloc", "proc_macro", "test")))
+          | " Cargo.toml : dépendance renommée, hors du registre ou au nom de la bibliothèque standard : "
+            + ({name, rename, kind, target, source, path} | tojson))
       end' <<<"$meta" || echo " Cargo.toml non vérifié (jq en échec)"
   fi
   awk -v r="$REGISTRE" '
@@ -1007,6 +1015,18 @@ garde_copie && mkdir -p "$G/voisin/src" && : >"$G/voisin/src/lib.rs" &&
   garde_voit "paquets de compilation hors de la liste" "un paquet local de compilation dans Cargo.toml"
 garde_copie && sed -i 's/^\[build-dependencies\]$/[build-dependencies]\nsyn2 = { package = "syn", version = "3" }/' \
   "$G/Cargo.toml" && garde_voit "paquets de compilation hors de la liste" "un paquet de compilation renommé"
+# 11e passe (R11-R10-3) : une dépendance du programme, de toute section, renommée vers un nom que la porte MCP admet
+# (`alloc::format!` serait un autre paquet), prise sous ce nom, ou hors du registre.
+garde_copie && sed -i 's/^\[dependencies\]$/[dependencies]\nalloc = { package = "serde", version = "1" }/' \
+  "$G/Cargo.toml" && garde_voit "dépendance renommée" "une dépendance renommée en alloc"
+garde_copie && sed -i 's/^\[target."cfg(unix)".dependencies\]$/&\njson = { package = "serde_json", version = "1" }/' \
+  "$G/Cargo.toml" && garde_voit "\"rename\":\"json\"" "une dépendance renommée sous une cible"
+garde_copie && sed -i 's/^\[dev-dependencies\]$/&\ncore = "1"/' "$G/Cargo.toml" &&
+  garde_voit "\"name\":\"core\"" "une dépendance d'essai au nom de la bibliothèque standard"
+garde_copie && mkdir -p "$G/voisin/src" && : >"$G/voisin/src/lib.rs" &&
+  printf '[package]\nname = "serde_json"\nversion = "1.0.154"\nedition = "2024"\n' >"$G/voisin/Cargo.toml" &&
+  sed -i 's/^serde_json = .*/serde_json = { path = "voisin" }/' "$G/Cargo.toml" &&
+  garde_voit "hors du registre" "serde_json pris dans un dossier local"
 garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\n' >>"$G/Cargo.lock" &&
   garde_voit "voisin ne vient pas du registre" "un paquet sans source dans Cargo.lock"
 garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\nsource = "git+https://exemple.invalid/v"\n' \

@@ -116,6 +116,16 @@ lancer --a-cote regles.yara --vocabulaire "$T/out2/vocabulaire.txt" --vocabulair
 attendre "--a-cote prend la donnée à côté du vocabulaire porté" 1 "« bloqué »"
 lancer --a-cote ../out1/regles.yara --vocabulaire "$T/out1/vocabulaire.txt" -- "$T/linux"
 attendre "--a-cote refuse un chemin" 2 "un nom de fichier"
+# Deux OUT_DIR au même vocabulaire (11e passe, R11-OUTIL-3) : celui dont la donnée est dans les programmes est gardé,
+# pas le premier donné ; aucun des deux, rien de conclu.
+mkdir -p "$T/out0"
+cp "$T/voc.txt" "$T/out0/vocabulaire.txt"
+printf 'rule r { strings: \x24a = "ancienne" }\n' >"$T/out0/regles.yara"
+lancer --a-cote regles.yara --vocabulaire "$T/out0/vocabulaire.txt" --vocabulaire "$T/out1/vocabulaire.txt" -- "$T/linux"
+attendre "--a-cote essaie chaque OUT_DIR au même vocabulaire" 1 "« bloqué »"
+programme "$T/linux2" "$T/voc.txt" "…alerte…pare-feu…bloqué…"
+lancer --a-cote regles.yara --vocabulaire "$T/out0/vocabulaire.txt" --vocabulaire "$T/out1/vocabulaire.txt" -- "$T/linux2"
+attendre "--a-cote sans aucun OUT_DIR dont la donnée est embarquée" 2 "donnée introuvable"
 
 echo "4. Rien de conclu"
 programme "$T/linux" - "…alerte…pare-feu…bloqué…"

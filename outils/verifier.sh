@@ -634,6 +634,16 @@ vocabulaire_binaire() {
     echo "programmes de publication pas compilés de ce commit (outils/compiler-version.sh, environ 8 min) : ses essais seulement, compiler-version.sh les contrôlera"
     return 0
   fi
+  # Le repère dit l'arbre propre à la compilation ; il doit l'être encore maintenant (11e passe, R11-OUTIL-2) : une
+  # source changée depuis donnerait un autre vocabulaire que celui des programmes. La liste des chemins est celle de
+  # compiler-version.sh, relue de là.
+  local ARBRE=()
+  eval "$(grep -m1 '^ARBRE=(' outils/compiler-version.sh)"
+  ((${#ARBRE[@]})) || { echo "liste ARBRE introuvable dans outils/compiler-version.sh : rien de conclu"; return 1; }
+  if [[ -n $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]]; then
+    echo "programmes de publication pas compilés de cet arbre (sources changées depuis la compilation de ce commit) : ses essais seulement, compiler-version.sh les contrôlera"
+    return 0
+  fi
   for sorte in linux-x86_64 windows-x86_64; do
     fichier=$cible/x86_64-unknown-linux-musl/release/vanguard
     [[ $sorte == linux-x86_64 ]] || fichier=$cible/x86_64-pc-windows-gnu/release/vanguard.exe

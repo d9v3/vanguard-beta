@@ -24,7 +24,8 @@ Plusieurs --vocabulaire : les candidats (un dossier de compilation garde parfois
 programmes portent est choisi par ses octets, jamais par sa date. --donnees : un fichier de données tel qu'il est
 embarqué (octets bruts), ou un fichier fabricants.rs de build.rs, dont la chaîne NOMS est relue. --a-cote : une
 donnée prise dans le dossier du vocabulaire choisi (l'OUT_DIR de la compilation de ces programmes, jamais un voisin
-plus ancien). --sources : le dossier
+plus ancien) ; si plusieurs candidats ont le vocabulaire porté, le premier dont toutes les données --a-cote sont dans
+les programmes est gardé. --sources : le dossier
 où chercher, pour chaque morceau absent, les fichiers qui l'écrivent (une aide au message, rien de plus).
 
 Code 0 : chaque morceau est dans un programme. 1 : des morceaux absents (chacun nommé, avec ses fichiers). 2 : rien
@@ -112,6 +113,23 @@ def retirer(parts: list[bytes], bloc: bytes) -> tuple[list[bytes], int]:
     return restes, n
 
 
+def sans_donnees(parts: dict[str, list[bytes]], chemins: list[str]) -> dict[str, list[bytes]]:
+    """Les parts des programmes sans les données embarquées qui ne sont pas des textes du programme, retirées partout ;
+    chacune doit se trouver dans au moins un programme, sinon l'option ne dirait pas ce qu'elle fait."""
+    for chemin in chemins:
+        bloc = donnee(chemin)
+        if not bloc:
+            raise Rien(f"{chemin} : donnée vide")
+        total, suite = 0, {}
+        for programme, liste_parts in parts.items():
+            suite[programme], n = retirer(liste_parts, bloc)
+            total += n
+        if total == 0:
+            raise Rien(f"{chemin} : donnée introuvable dans les programmes, pas celle qu'ils embarquent")
+        parts = suite
+    return parts
+
+
 def ecrivent(fichiers: dict[Path, str], morceau: str) -> list[str]:
     """Les fichiers .rs qui contiennent le morceau tel quel (aide au message)."""
     return [str(f) for f, texte in fichiers.items() if morceau in texte]
@@ -145,23 +163,23 @@ def controler(args: argparse.Namespace) -> int:
             "aucun des programmes ne porte un des vocabulaires donnés : ce n'est pas le vocabulaire de ces programmes, "
             "ou les programmes ne sont pas ceux de cette compilation"
         )
-    nom = next(c for c, v in candidats.items() if v == porte)
-    liste = morceaux(porte, nom)
-    # Les données embarquées qui ne sont pas des textes du programme : retirées partout ; chacune doit se trouver dans
-    # au moins un programme, sinon l'option ne dirait pas ce qu'elle fait.
     for a in args.a_cote:
         if Path(a).name != a or a in (".", ".."):
             raise Rien(f"--a-cote {a} : un nom de fichier, pas un chemin")
-    for chemin in args.donnees + [str(Path(nom).parent / a) for a in args.a_cote]:
-        bloc = donnee(chemin)
-        if not bloc:
-            raise Rien(f"{chemin} : donnée vide")
-        total = 0
-        for programme, liste_parts in parts.items():
-            parts[programme], n = retirer(liste_parts, bloc)
-            total += n
-        if total == 0:
-            raise Rien(f"{chemin} : donnée introuvable dans les programmes, pas celle qu'ils embarquent")
+    # Plusieurs OUT_DIR peuvent garder le même vocabulaire (une compilation pour Linux, une autre pour Windows, une
+    # plus ancienne) mais d'autres données à côté : chacun est essayé, et celui dont toutes les données sont dans les
+    # programmes est gardé, jamais le premier du glob (11e passe, R11-OUTIL-3).
+    noms = [c for c, v in candidats.items() if v == porte]
+    liste = morceaux(porte, noms[0])
+    refus = []
+    for nom in noms:
+        try:
+            parts = sans_donnees(parts, args.donnees + [str(Path(nom).parent / a) for a in args.a_cote])
+            break
+        except Rien as e:
+            refus.append(str(e))
+    else:
+        raise Rien(" ; ".join(dict.fromkeys(refus)))
     meule = JOINT.join(part for liste_parts in parts.values() for part in liste_parts)
     absents = [m for m in liste if m not in meule]
     if absents:
