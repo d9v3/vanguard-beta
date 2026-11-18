@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// faire lire.
 #[cfg(target_os = "linux")]
 const LECTURES_PAR_SECONDE: u32 = 4;
-/// Linux : les verdicts gardés au plus, et combien de temps (`Verdicts`).
+/// Linux : les verdicts gardés au plus, et combien de temps ils sont repris sans relire (`Verdicts`).
 #[cfg(target_os = "linux")]
 const VERDICTS_MAX: usize = 64;
 #[cfg(target_os = "linux")]
@@ -44,12 +44,20 @@ struct Image {
 #[cfg(target_os = "linux")]
 type Cle = (u64, u64, u64, i64, i64);
 
-/// Linux : les verdicts par octets déjà rendus (une minute au plus), et les lectures de la seconde en cours.
+/// Linux : les verdicts par octets déjà rendus (repris une minute au plus), et les lectures de la seconde en cours.
+///
+/// Des copies de même taille qu'un autre programme du compte fait passer pour Vanguard (nommées « vanguard », de la
+/// taille de son image) prennent chacune une lecture et laissent un verdict faux : elles ne doivent ni effacer un
+/// verdict vrai (le plus vieux faux part d'abord) ni empêcher de reconfirmer un Vanguard déjà reconnu dont le verdict
+/// a expiré (une lecture de plus par seconde lui est réservée). Un Vanguard jamais vu, lancé pendant une telle
+/// inondation, peut ne pas être reconnu : il est alors jugé comme un autre (relecture adverse du lot L2(b), 3e ronde,
+/// C).
 #[cfg(target_os = "linux")]
 #[derive(Debug, Default)]
 struct Verdicts {
     connus: std::collections::HashMap<Cle, (bool, std::time::Instant)>,
-    seconde: Option<(std::time::Instant, u32)>,
+    /// Le début de la seconde en cours, les lectures faites, et si la lecture réservée a été prise.
+    seconde: Option<(std::time::Instant, u32, bool)>,
     /// Les lectures faites, pour les essais.
     #[cfg(test)]
     lues: u32,
@@ -57,38 +65,53 @@ struct Verdicts {
 
 #[cfg(target_os = "linux")]
 impl Verdicts {
-    fn connu(&mut self, cle: Cle, maintenant: std::time::Instant) -> Option<bool> {
+    /// Le verdict de `cle`, s'il date de moins de `DUREE_D_UN_VERDICT`. Expiré, il reste gardé (`deja_vrai`).
+    fn connu(&self, cle: Cle, maintenant: std::time::Instant) -> Option<bool> {
         let (verdict, quand) = *self.connus.get(&cle)?;
-        if maintenant.saturating_duration_since(quand) < DUREE_D_UN_VERDICT {
-            Some(verdict)
-        } else {
-            self.connus.remove(&cle);
-            None
-        }
+        (maintenant.saturating_duration_since(quand) < DUREE_D_UN_VERDICT).then_some(verdict)
     }
 
+    /// `cle` a-t-elle déjà été reconnue comme Vanguard, même il y a plus d'une minute ?
+    fn deja_vrai(&self, cle: Cle) -> bool {
+        self.connus.get(&cle).is_some_and(|&(verdict, _)| verdict)
+    }
+
+    /// Garde le verdict ; plein, la table perd d'abord son plus vieux verdict faux, et un vrai seulement s'il n'y a
+    /// que des vrais.
     fn noter(&mut self, cle: Cle, verdict: bool, maintenant: std::time::Instant) {
-        if self.connus.len() >= VERDICTS_MAX {
-            self.connus.clear();
+        if !self.connus.contains_key(&cle) && self.connus.len() >= VERDICTS_MAX {
+            let a_perdre = self
+                .connus
+                .iter()
+                .min_by_key(|&(_, &(vrai, quand))| (vrai, quand))
+                .map(|(&c, _)| c);
+            if let Some(c) = a_perdre {
+                self.connus.remove(&c);
+            }
         }
         self.connus.insert(cle, (verdict, maintenant));
     }
 
-    /// Une lecture de plus est-elle permise dans la seconde de `maintenant` ? Comptée si oui.
-    fn lecture_permise(&mut self, maintenant: std::time::Instant) -> bool {
-        let (debut, faites) = match self.seconde {
-            Some((debut, faites))
+    /// Une lecture de plus est-elle permise dans la seconde de `maintenant` ? Comptée si oui. `reconfirmer` : pour
+    /// un fichier déjà reconnu vrai (`deja_vrai`), qui peut prendre, ses `LECTURES_PAR_SECONDE` épuisées, la lecture
+    /// réservée de la seconde.
+    fn lecture_permise(&mut self, maintenant: std::time::Instant, reconfirmer: bool) -> bool {
+        let (debut, faites, reservee) = match self.seconde {
+            Some((debut, faites, reservee))
                 if maintenant.saturating_duration_since(debut) < std::time::Duration::from_secs(1) =>
             {
-                (debut, faites)
+                (debut, faites, reservee)
             }
-            _ => (maintenant, 0),
+            _ => (maintenant, 0, false),
         };
-        if faites >= LECTURES_PAR_SECONDE {
-            self.seconde = Some((debut, faites));
+        if faites < LECTURES_PAR_SECONDE {
+            self.seconde = Some((debut, faites.saturating_add(1), reservee));
+        } else if reconfirmer && !reservee {
+            self.seconde = Some((debut, faites, true));
+        } else {
+            self.seconde = Some((debut, faites, reservee));
             return false;
         }
-        self.seconde = Some((debut, faites.saturating_add(1)));
         #[cfg(test)]
         {
             self.lues = self.lues.saturating_add(1);
@@ -270,7 +293,8 @@ impl Soi {
             if let Some(verdict) = verdicts.connu(cle, maintenant) {
                 return verdict;
             }
-            if !verdicts.lecture_permise(maintenant) {
+            let reconfirmer = verdicts.deja_vrai(cle);
+            if !verdicts.lecture_permise(maintenant, reconfirmer) {
                 return false;
             }
         }
@@ -591,7 +615,7 @@ mod tests {
         assert!(!soi.juger_image(&tenu(&ailleurs).unwrap()));
         assert_eq!(soi.verdicts().lues, 0);
         // Les lectures de la seconde épuisées : refusé, même aux bons octets.
-        soi.verdicts().seconde = Some((std::time::Instant::now(), LECTURES_PAR_SECONDE));
+        soi.verdicts().seconde = Some((std::time::Instant::now(), LECTURES_PAR_SECONDE, false));
         assert!(
             !soi.juger_image(&tenu(&chemin).unwrap()),
             "au-delà de la borne, reconnu"
@@ -606,10 +630,10 @@ mod tests {
         let mut v = Verdicts::default();
         let t0 = std::time::Instant::now();
         for _ in 0..LECTURES_PAR_SECONDE {
-            assert!(v.lecture_permise(t0));
+            assert!(v.lecture_permise(t0, false));
         }
-        assert!(!v.lecture_permise(t0 + std::time::Duration::from_millis(999)));
-        assert!(v.lecture_permise(t0 + std::time::Duration::from_secs(1)));
+        assert!(!v.lecture_permise(t0 + std::time::Duration::from_millis(999), false));
+        assert!(v.lecture_permise(t0 + std::time::Duration::from_secs(1), false));
         // Un verdict vieux d'une minute n'est plus repris.
         v.noter((1, 2, 3, 4, 5), true, t0);
         assert_eq!(
@@ -617,6 +641,50 @@ mod tests {
             Some(true)
         );
         assert_eq!(v.connu((1, 2, 3, 4, 5), t0 + DUREE_D_UN_VERDICT), None);
+    }
+
+    /// Relecture adverse du lot L2(b), 3e ronde, C : une inondation de copies de même taille (verdicts faux, une
+    /// lecture chacune) n'efface pas un verdict vrai, et un Vanguard déjà reconnu dont le verdict a expiré se
+    /// reconfirme par la lecture réservée, une par seconde, même quand les autres sont prises.
+    #[test]
+    fn une_inondation_ne_fait_pas_oublier_vanguard() {
+        let mut v = Verdicts::default();
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let vrai = (1, 1, 9, 0, 0);
+        v.noter(vrai, true, t0);
+        for i in 0..3 * u64::try_from(VERDICTS_MAX).unwrap() {
+            v.noter((2, i, 9, 0, 0), false, ms(i + 1));
+        }
+        assert!(v.connus.len() <= VERDICTS_MAX);
+        assert_eq!(v.connu(vrai, ms(1000)), Some(true), "le verdict vrai effacé");
+        // Les faux partent du plus vieux : le dernier noté reste.
+        let dernier = 3 * u64::try_from(VERDICTS_MAX).unwrap() - 1;
+        assert_eq!(v.connu((2, dernier, 9, 0, 0), ms(1000)), Some(false));
+        assert_eq!(v.connu((2, 0, 9, 0, 0), ms(1000)), None);
+        // Une minute plus tard : expiré, mais encore su vrai ; les lectures de la seconde prises par l'inondation.
+        let plus_tard = t0 + DUREE_D_UN_VERDICT + std::time::Duration::from_secs(1);
+        assert_eq!(v.connu(vrai, plus_tard), None);
+        assert!(v.deja_vrai(vrai) && !v.deja_vrai((2, dernier, 9, 0, 0)));
+        for _ in 0..LECTURES_PAR_SECONDE {
+            assert!(v.lecture_permise(plus_tard, false));
+        }
+        assert!(
+            !v.lecture_permise(plus_tard, false),
+            "une copie inconnue prend la lecture réservée"
+        );
+        assert!(v.lecture_permise(plus_tard, true), "Vanguard ne se reconfirme pas");
+        assert!(
+            !v.lecture_permise(plus_tard, true),
+            "deux lectures réservées dans la seconde"
+        );
+        // Toute la table vraie : le plus vieux vrai part, pour garder la borne.
+        let mut w = Verdicts::default();
+        for i in 0..=u64::try_from(VERDICTS_MAX).unwrap() {
+            w.noter((3, i, 9, 0, 0), true, ms(i));
+        }
+        assert_eq!(w.connus.len(), VERDICTS_MAX);
+        assert!(!w.deja_vrai((3, 0, 9, 0, 0)) && w.deja_vrai((3, 1, 9, 0, 0)));
     }
 
     /// Le parent de chaque processus, lu dans /proc.
