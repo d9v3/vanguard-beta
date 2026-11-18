@@ -691,14 +691,25 @@ gardes :
   chemin. Un programme du compte qui lancerait lui-même une telle image
   n'y gagne rien : désigner un fichier aux mêmes octets revient à lancer ce fichier, comme une fausse copie de la clé
   posée par ce compte (reste déjà accepté), et ce qu'il avait lancé avant de devenir Vanguard (même processus après un
-  exec) reste jugé : seul ce Vanguard est écarté, ce qu'il lance lui-même ensuite aussi pour le veilleur, jamais ses
-  enfants d'avant. Le nom `/memfd:vanguard` ne fait jamais reconnaître Vanguard, ni, sous Linux, un chemin seul : le
+  exec) reste jugé. Un tel enfant d'avant peut même lui donner des frères nés après l'exec (clone avec CLONE_PARENT)
+  ou lui confier ses orphelins (PR_SET_CHILD_SUBREAPER survit à l'exec), que rien ne distingue de ses vrais enfants :
+  un Vanguard qui a encore un enfant quand son exec est lu, ou dont les enfants ne se lisent pas
+  (`/proc/<pid>/task/*/children`), est un porteur, que le veilleur juge lui-même avec tout ce qu'il lance, et il en
+  va de même si sa naissance n'a pas été vue ou qu'une fiche a pu être oubliée depuis (table pleine, événements
+  perdus). Sans enfant, le veilleur écarte ce Vanguard et ce qu'il lance ensuite, daté depuis son dernier exec. Le
+  bilan et la chasse n'écartent les descendants que du processus qui les fait, et seulement s'il n'avait aucun enfant
+  au début de son `main`. Au pire, une alerte de trop sur ce qu'un tel Vanguard lance. Limite acceptée : un programme
+  du compte qui trace le processus (PTRACE_TRACEME avant l'exec, ou un ancêtre qui s'y attache ensuite) peut faire
+  tourner son propre code dans l'image authentique, qui reste reconnue ; ce compte peut déjà tout ce que ce code
+  ferait, comme avec la fausse copie de la clé. Le nom `/memfd:vanguard` ne fait jamais reconnaître Vanguard, ni, sous Linux, un chemin seul : le
   bilan, la chasse, le veilleur, le blocage et la quarantaine ne reconnaissent un autre processus comme Vanguard que
   par le même fichier (périphérique et inode) ou par les mêmes octets (empreinte BLAKE3) qu'un candidat : un processus
   qui tourne d'un des chemins de ce Vanguard (hors de cette image ; dans l'image, seulement l'origine vérifiée), ou
   l'image scellée de la fenêtre. Les octets ne sont lus que sous des bornes (même taille d'abord, verdict gardé tant
-  que le fichier ne change pas, quatre lectures par seconde au plus) ; au-delà, ou illisible (un processus d'un autre
-  compte), le processus n'est pas Vanguard et il est jugé. Sous Windows, le chemin du programme reconnaît encore
+  que le fichier ne change pas, quatre lectures par seconde au plus, et une de plus réservée pour reconfirmer un Vanguard
+  déjà reconnu ; plein, le cache perd ses verdicts faux avant les vrais) ; au-delà, ou illisible (un processus d'un
+  autre compte), le processus n'est pas Vanguard et il est jugé : un Vanguard jamais vu, lancé pendant une inondation
+  de copies de même taille, peut ainsi être jugé comme un autre. Sous Windows, le chemin du programme reconnaît encore
   Vanguard. Un programme quelconque lancé d'un memfd nommé « vanguard », ou refait au chemin de Vanguard, reste donc
   montré, jugé et traitable, et deux `vanguard` lancés par la fenêtre ne se dénoncent pas l'un l'autre comme
   « programme sans fichier » (LNX-PRS-004). L'élévation par pkexec, qui exécute un chemin,

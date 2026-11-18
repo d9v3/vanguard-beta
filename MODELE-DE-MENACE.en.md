@@ -654,14 +654,25 @@ safeguards:
   startup ("nothing is done, reopen the window"), with no fallback to another path. A program of the account that
   started such an image itself gains nothing: designating a file with the same bytes amounts to running that file,
   like a fake key copy placed by this account (a remaining risk already accepted), and what it had started before
-  becoming Vanguard (the same process after an exec) is still judged: only that Vanguard is set aside, and for the
-  watcher what it starts afterwards too, never its earlier children. The name `/memfd:vanguard` never makes Vanguard
+  becoming Vanguard (the same process after an exec) is still judged. Such an earlier child can even give it siblings
+  born after the exec (clone with CLONE_PARENT) or hand it its orphans (PR_SET_CHILD_SUBREAPER survives the exec),
+  which nothing tells apart from its real children: a Vanguard that still has a child when its exec is read, or whose
+  children cannot be read (`/proc/<pid>/task/*/children`), is a carrier, which the watcher judges itself along with
+  everything it starts, and the same goes if its birth was not seen or an entry may have been forgotten since (full
+  table, lost events). With no child, the watcher sets aside that Vanguard and what it starts afterwards, dated from
+  its last exec. The check-up and the hunt only set aside the descendants of the process running them, and only if
+  it had no child at the start of its `main`. At worst, one alert too many about what such a Vanguard starts. Accepted
+  limit: a program of the account that traces the process (PTRACE_TRACEME before the exec, or an ancestor attaching
+  later) can run its own code inside the authentic image, which is still recognised; this account can already do
+  whatever that code would, as with the fake key copy. The name `/memfd:vanguard` never makes Vanguard
   recognise itself, nor, on Linux, a path alone: the check-up, the hunt, the watcher, blocking and quarantine only
   recognise another process as Vanguard by the same file (device and inode) or the same bytes (BLAKE3 fingerprint) as
   a candidate: a process running from one of this Vanguard's paths (outside that image; inside it, only the checked
   origin), or the window's sealed image. The bytes are only read within limits (same size first, verdict kept while
-  the file does not change, at most four reads per second); beyond that, or unreadable (a process of another
-  account), the process is not Vanguard and it is judged. On Windows, the program's path still recognises Vanguard.
+  the file does not change, at most four reads per second, plus one reserved to reconfirm a Vanguard already
+  recognised; when full, the cache drops its false verdicts before the true ones); beyond that, or unreadable (a
+  process of another account), the process is not Vanguard and it is judged: a never-seen Vanguard started during a
+  flood of same-size copies may thus be judged like any other. On Windows, the program's path still recognises Vanguard.
   Any program started from a memfd named "vanguard", or rebuilt at Vanguard's path, is therefore still shown, judged
   and treatable, and two `vanguard` started by the window do not report each other as a "program without a file"
   (LNX-PRS-004). Elevation through pkexec, which runs a path,
