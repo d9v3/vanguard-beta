@@ -339,16 +339,19 @@ pub(crate) mod essais {
     use std::os::fd::AsRawFd;
     use std::path::Path;
 
-    /// Un programme qui attend, aux octets connus : `sleep` du système.
-    pub(crate) const ATTEND: &str = "/usr/bin/sleep";
+    /// Un programme qui attend, aux octets connus : le shell du système, qui lit son entrée (`ARGS_ATTEND`) tant que
+    /// l'essai la tient ouverte (`Stdio::piped`, fermée avec le `Child`). Pas `sleep` : les coreutils d'Ubuntu 26.04
+    /// (uutils) sont un programme à outils multiples qui choisit l'outil d'après son nom, et la façon de le lire
+    /// (`argv[0]`, chemin donné à execve, cible du lien, image) a changé plusieurs fois en 2026 ; sous l'image
+    /// « vanguard » que ces essais veulent, il s'arrêtait aussitôt. Un shell fait la même chose sous tout nom.
+    pub(crate) const ATTEND: &str = "/bin/sh";
 
-    /// Le nom du lien (`Lien`) par lequel `ATTEND` est lancé. Un `sleep` à programme unique (les coreutils d'Ubuntu
-    /// 26.04, uutils, des liens durs d'un seul programme de 11 Mo) choisit l'outil par le nom du fichier lancé (celui
-    /// `argv[0]`) et s'arrête aussitôt sous un autre (« coreutils: unknown program 'vanguard' ») :
-    /// copié en `…/vanguard`, ou lancé par `/proc/<pid>/fd/<n>` sous `argv[0]` « vanguard », il ne tournait pas, et les
-    /// essais qui le voulaient en marche échouaient sur la CI. Par un lien de ce nom, il tourne partout ; le noyau
-    /// suit le lien, donc l'image du processus (`/proc/<pid>/exe`), seule lue par la reconnaissance, ne change pas.
-    pub(crate) const NOM_DE_ATTEND: &str = "sleep";
+    /// Les arguments d'`ATTEND` : attendre une ligne sur l'entrée, sans enfant.
+    pub(crate) const ARGS_ATTEND: [&str; 2] = ["-c", "read x"];
+
+    /// Le nom du lien (`Lien`) par lequel `ATTEND` est lancé ; le noyau suit le lien, donc l'image du processus
+    /// (`/proc/<pid>/exe`), seule lue par la reconnaissance, ne change pas.
+    pub(crate) const NOM_DE_ATTEND: &str = "attend";
 
     /// Un lien symbolique nommé `NOM_DE_ATTEND` vers `cible`, dans un dossier neuf des essais, effacé avec lui.
     pub(crate) struct Lien {
@@ -390,8 +393,7 @@ pub(crate) mod essais {
     }
 
     /// `octets` (ceux d'`ATTEND`) lancés depuis un memfd scellé nommé `nom`, comme la fenêtre lance `vanguard`, par un
-    /// `Lien`, sous `argv[0]` « sleep » (le chemin du lien : uutils choisit l'outil d'après `argv[0]`, et seule l'image
-    /// du processus compte pour la reconnaissance) ; `None` si le noyau refuse (memfd non exécutable). Lancé mais arrêté : l'essai
+    /// `Lien` ; `None` si le noyau refuse (memfd non exécutable). Lancé mais arrêté : l'essai
     /// échoue (`arrete_trop_tot`), jamais sauté pour une autre raison que la sienne.
     pub(crate) fn depuis_un_memfd(nom: &str, octets: &[u8], args: &[&str]) -> Option<Lance> {
         let copie = crate::demarrage::memfd::scelle(nom, octets).ok()?;
@@ -402,7 +404,7 @@ pub(crate) mod essais {
         )))?;
         let fils = std::process::Command::new(&lien.chemin)
             .args(args)
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -462,7 +464,7 @@ pub(crate) mod essais {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::essais::{
-        ATTEND, Lance, Lien, arrete_trop_tot, attendre_l_image, depuis_un_memfd, empreinte,
+        ARGS_ATTEND, ATTEND, Lance, Lien, arrete_trop_tot, attendre_l_image, depuis_un_memfd, empreinte,
         soi_de_la_fenetre as dans_la_fenetre,
     };
     use super::*;
@@ -481,14 +483,14 @@ mod tests {
     }
 
     /// HAUTE (relecture adverse du lot L2(b), constat A) : dans l'image de la fenêtre, le nom « /memfd:vanguard » ne
-    /// reconnaît jamais Vanguard. Un programme quelconque (`sleep`) lancé d'un memfd scellé nommé « vanguard » n'est
+    /// reconnaît jamais Vanguard. Un programme quelconque (un shell) lancé d'un memfd scellé nommé « vanguard » n'est
     /// ni écarté du bilan ni intouchable ; aux mêmes octets que l'image qui tourne, c'est bien ce Vanguard : écarté.
     #[test]
     fn un_memfd_nomme_vanguard_n_est_pas_vanguard() {
         let Ok(octets) = std::fs::read(ATTEND) else {
-            return crate::essais::saute("sleep introuvable");
+            return crate::essais::saute("shell introuvable");
         };
-        let Some(fils) = depuis_un_memfd("vanguard", &octets, &["30"]) else {
+        let Some(fils) = depuis_un_memfd("vanguard", &octets, &ARGS_ATTEND) else {
             return crate::essais::saute("memfd non exécutable ici");
         };
         let pid = fils.0.id();
@@ -613,14 +615,14 @@ mod tests {
         let d = dossier("chemin");
         let chemin = d.join("vanguard");
         if std::fs::copy(ATTEND, &chemin).is_err() {
-            return crate::essais::saute("sleep introuvable");
+            return crate::essais::saute("shell introuvable");
         }
         let Some(lien) = Lien::vers(&chemin) else {
             return crate::essais::saute("dossier des essais refusé");
         };
         let Ok(fils) = std::process::Command::new(&lien.chemin)
-            .arg("30")
-            .stdin(std::process::Stdio::null())
+            .args(ARGS_ATTEND)
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -781,13 +783,13 @@ mod tests {
 
     /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1) : un programme lance un enfant, puis se remplace (exec)
     /// par une image de Vanguard aux vrais octets. Le porteur est bien Vanguard, mais l'enfant né avant n'est pas de
-    /// lui : il reste dans le bilan. `sh -c 'sleep 37 & exec <memfd vanguard> 30'`, rejoué pour de vrai ; le memfd est
-    /// lancé par un `Lien`, sous lequel un `sleep` à programme unique tourne.
+    /// lui : il reste dans le bilan. `sh -c 'sleep 37 & exec <memfd vanguard> -c "read x"'`, rejoué pour de vrai ;
+    /// le memfd (un shell) est lancé par un `Lien`.
     #[test]
     fn un_porteur_ne_cache_pas_l_enfant_d_avant() {
         use std::os::fd::AsRawFd;
         let Ok(octets) = std::fs::read(ATTEND) else {
-            return crate::essais::saute("sleep introuvable");
+            return crate::essais::saute("shell introuvable");
         };
         let Ok(copie) = crate::demarrage::memfd::scelle("vanguard", &octets) else {
             return crate::essais::saute("memfd refusé ici");
@@ -798,9 +800,9 @@ mod tests {
         };
         let mut porteur = Lance(
             std::process::Command::new("/bin/sh")
-                .args(["-c", "sleep 37 & exec \"$0\" 30"])
+                .args(["-c", "sleep 37 & exec \"$0\" -c 'read x'"])
                 .arg(&lien.chemin)
-                .stdin(std::process::Stdio::null())
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()

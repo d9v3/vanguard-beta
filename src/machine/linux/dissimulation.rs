@@ -917,11 +917,11 @@ mod tests {
     /// fenêtre : il n'est plus dénoncé.
     #[test]
     fn un_autre_vanguard_de_la_fenetre_n_est_pas_denonce() {
-        use crate::protection::cle::soi::essais::{ATTEND, depuis_un_memfd, empreinte, soi_de_la_fenetre};
+        use crate::protection::cle::soi::essais::{ARGS_ATTEND, ATTEND, depuis_un_memfd, empreinte, soi_de_la_fenetre};
         let Ok(octets) = std::fs::read(ATTEND) else {
-            return crate::essais::saute("sleep introuvable");
+            return crate::essais::saute("shell introuvable");
         };
-        let Some(fils) = depuis_un_memfd("vanguard", &octets, &["30"]) else {
+        let Some(fils) = depuis_un_memfd("vanguard", &octets, &ARGS_ATTEND) else {
             return crate::essais::saute("memfd non exécutable ici");
         };
         let pid = fils.0.id();
