@@ -512,6 +512,11 @@ async fn main() {
     }
     #[cfg(target_os = "linux")]
     protection::cle::proteger_cle();
+    // Lancé par la fenêtre sans origine vérifiée : arrêt net, sans repli (voir protection::cle).
+    if protection::cle::origine_manquante_dans_la_fenetre() {
+        chiffrement::oublier_session();
+        std::process::exit(2);
+    }
     // Lancé depuis la clé : ce processus attend la copie qu'il lance et ne revient pas (voir protection::cle).
     #[cfg(windows)]
     protection::cle::se_detacher_de_la_cle();

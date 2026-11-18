@@ -76,7 +76,10 @@ pub fn exe_d_origine() -> Option<PathBuf> {
             let designee = designee.as_deref().map_or_else(PathBuf::new, PathBuf::from);
             (chemin_affichable(&designee), raison.to_string())
         });
-        (crue.map(|c| lisible(&c)).or_else(exe_courant), alerte)
+        // Dans l'image de la fenêtre, jamais de repli : son chemin (« /memfd:vanguard ») ne désigne aucun fichier, et
+        // une origine refusée arrête net la commande (`origine_manquante_dans_la_fenetre`).
+        let repli = if lance_par_la_fenetre() { None } else { exe_courant() };
+        (crue.map(|c| lisible(&c)).or(repli), alerte)
     });
     if let Some((designee, raison)) = alerte
         && !ALERTE_DITE.swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -119,6 +122,36 @@ fn dans_une_copie() -> bool {
         sans_marque_d_effacement(exe, effacee)
     };
     nom_exact_de_copie(&exe) && est_une_copie(&exe)
+}
+
+/// Ce processus est-il un `vanguard` lancé par la fenêtre (`image_de_la_fenetre` de `/proc/self/exe`) ? Décidé une
+/// fois. Toujours non hors de Linux.
+pub(crate) fn lance_par_la_fenetre() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static FENETRE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *FENETRE.get_or_init(|| image_de_la_fenetre(Path::new("/proc/self/exe")))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// Un `vanguard` lancé par la fenêtre sans origine vérifiée (`exe_d_origine` : variable absente, fichier parti ou
+/// changé depuis sa vérification par la fenêtre) : dit, et la commande doit s'arrêter là (`true`). La fenêtre refuse
+/// de lancer un programme qu'elle n'a pas vérifié, sans repli ; de même ici : sans fichier d'origine, la mise à jour,
+/// la tâche du veilleur, pkexec et la reconnaissance de soi n'auraient plus de programme à elles, et retomberaient
+/// sur un nom à chercher dans le PATH du compte. Lu au démarrage (`main`), après `proteger_cle`.
+pub fn origine_manquante_dans_la_fenetre() -> bool {
+    if !lance_par_la_fenetre() || exe_d_origine().is_some() {
+        return false;
+    }
+    tre!(
+        "Vanguard lancé par la fenêtre, mais le fichier d'où elle l'a lancé n'est plus celui qu'elle a vérifié (déplacé, effacé ou changé) : rien n'est fait. Rouvrez la fenêtre.",
+        "Vanguard started by the window, but the file it started it from is no longer the one it checked (moved, deleted or changed): nothing is done. Reopen the window."
+    );
+    true
 }
 
 /// Le nom que le noyau donne à l'image d'un `vanguard` lancé par la fenêtre : son memfd, nommé `vanguard`
