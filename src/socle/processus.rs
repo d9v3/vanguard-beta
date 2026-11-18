@@ -138,11 +138,18 @@ pub(crate) fn debut(pid: u32) -> Option<u64> {
 
 /// Les enfants vivants du processus `pid`, de tous ses fils d'exécution (`/proc/<pid>/task/*/children`). `None` :
 /// illisible (parti, un fil fini pendant la lecture, ou un noyau sans CONFIG_PROC_CHILDREN), à prendre comme « peut-être
-/// des enfants ».
+/// des enfants ». Un fil qui finit pendant la lecture rend la lecture entière à refaire (ses enfants passent à un
+/// autre fil, peut-être déjà lu) : refaite quelques fois, pour qu'un processus à fils courts (un vrai Vanguard) ne
+/// soit pas compté « peut-être des enfants » à chaque fois.
 #[cfg(target_os = "linux")]
 pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
-    enfants_dans(&Path::new("/proc").join(pid.to_string()))
+    let dossier = Path::new("/proc").join(pid.to_string());
+    (0..ENFANTS_ESSAIS).find_map(|_| enfants_dans(&dossier))
 }
+
+/// Les lectures de `enfants` au plus.
+#[cfg(target_os = "linux")]
+const ENFANTS_ESSAIS: usize = 4;
 
 /// `enfants`, pour le dossier `/proc/<pid>` donné (fabriqué pour un essai).
 #[cfg(target_os = "linux")]
