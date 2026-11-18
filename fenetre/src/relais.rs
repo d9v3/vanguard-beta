@@ -1199,7 +1199,7 @@ mod tests {
     /// (aperçu, application, annulation) noté dans « gestes », l'aperçu lu dans apercu.json ou annulation.json, la
     /// liste de « Ce que Vanguard a changé » dans changements.json ; toute autre commande attend « va-lecture ».
     const FAUX_VANGUARD: &str = r#"#!/bin/sh
-d=$(dirname "$0")
+d=.
 attendre() { i=0; while [ ! -e "$d/$1" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; }
 case "$1 $2" in
 "demarrage --json") cat "$d/liste.json" ;;
@@ -1409,7 +1409,7 @@ esac
         let script = d.join("vanguard");
         std::fs::write(
             &script,
-            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$(dirname \"$0\")/lances\"\necho '{}'\n",
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> ./lances\necho '{}'\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1454,7 +1454,7 @@ esac
         let script = d.join("vanguard");
         std::fs::write(
             &script,
-            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$(dirname \"$0\")/lances\"\necho '{}'\n",
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> ./lances\necho '{}'\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2279,11 +2279,7 @@ esac
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         let f = d.join("vanguard");
         // Le faux `vanguard` : un fichier écrit, un programme lancé, une sortie JSON.
-        std::fs::write(
-            &f,
-            "#!/bin/sh\necho ecrit > \"$(dirname \"$0\")/ecrit\" && /bin/sh -c 'echo \"{}\"'\n",
-        )
-        .unwrap();
+        std::fs::write(&f, "#!/bin/sh\necho ecrit > ./ecrit && /bin/sh -c 'echo \"{}\"'\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
         // Un HOME jetable : une fausse clé (valeur inventée), et un thème de curseurs, lui permis.
         let maison = d.join("maison");

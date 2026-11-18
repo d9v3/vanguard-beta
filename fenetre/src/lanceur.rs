@@ -32,11 +32,17 @@ const GRACE: Duration = Duration::from_millis(1500);
 /// Le pas de la surveillance de l'enfant.
 const PAS: Duration = Duration::from_millis(50);
 
-/// Le programme `vanguard` voisin de la fenêtre, et le compte à qui il doit être (celui de la fenêtre, ou root).
+/// Le plus gros `vanguard` lu (le programme publié fait une trentaine de Mio). Dans les essais seulement, 1 Gio : ils
+/// lancent comme `vanguard` leur propre programme d'essai, qui peut dépasser la borne du programme publié.
+const TAILLE_MAX: u64 = if cfg!(test) { 1 << 30 } else { 256 * 1024 * 1024 };
+
+/// Le programme `vanguard` voisin de la fenêtre, le compte à qui il doit être (celui de la fenêtre, ou root), et
+/// l'empreinte SHA-256 que ses octets doivent avoir pour être lancés.
 #[derive(Clone, Debug)]
 pub struct Programme {
     chemin: PathBuf,
     proprietaire: u32,
+    attendue: [u8; 32],
 }
 
 impl Programme {
@@ -44,51 +50,50 @@ impl Programme {
     /// dossier), sinon `vanguard` (`vanguard.exe` sous Windows) dans le dossier de la fenêtre. Jamais le PATH, jamais
     /// une variable d'environnement : une fenêtre lancée d'un dossier piégé ne doit pas lancer un autre programme.
     /// Désigné ou voisin, la même garde. `--vanguard` n'ouvre rien : qui peut passer des options à la fenêtre est déjà
-    /// ce compte.
+    /// ce compte. L'empreinte attendue : celle de `--empreinte-vanguard`, sinon celle du voisin lu à l'ouverture
+    /// (`epingler_voisin`).
     pub fn voisin() -> Result<Programme, String> {
-        let soi = std::env::current_exe().map_err(|e| e.to_string())?;
-        // Sous Linux, le compte de l'image qui tourne (`/proc/self/exe` : le fichier, ou la copie en mémoire, à ce
-        // compte) ; un chemin `/memfd:…` ne se relit pas.
-        #[cfg(unix)]
-        let proprietaire = {
-            use std::os::unix::fs::MetadataExt;
-            let image = if cfg!(target_os = "linux") {
-                Path::new("/proc/self/exe")
-            } else {
-                soi.as_path()
-            };
-            std::fs::metadata(image).map_err(|e| e.to_string())?.uid()
+        let (chemin, proprietaire) = chemin_et_proprietaire()?;
+        let attendue = match ATTENDUE.get() {
+            Some(Ok(e)) => *e,
+            Some(Err(e)) => return Err(e.clone()),
+            None => {
+                return Err(crate::tr!(
+                    "l'empreinte attendue de « vanguard » est inconnue : il n'est pas lancé",
+                    "the expected fingerprint of “vanguard” is unknown: it is not started"
+                )
+                .into());
+            }
         };
-        #[cfg(not(unix))]
-        let proprietaire = 0;
-        if let Some(chemin) = DESIGNE.get() {
-            return Programme::designe(chemin, proprietaire);
-        }
-        let dossier = soi
-            .parent()
-            .ok_or_else(|| crate::tr!("dossier introuvable", "folder not found").to_string())?;
-        Programme::dans(dossier, proprietaire)
+        let p = Programme {
+            chemin,
+            proprietaire,
+            attendue,
+        };
+        p.verifier()?;
+        Ok(p)
     }
 
-    /// Le `vanguard` désigné par `--vanguard`, gardé comme le voisin. `proprietaire` : comme pour `dans`.
-    pub(crate) fn designe(chemin: &Path, proprietaire: u32) -> Result<Programme, String> {
+    /// Le `vanguard` de `chemin`, gardé comme le voisin, qui ne sera lancé qu'avec l'empreinte `attendue`.
+    /// `proprietaire` : comme pour `dans`.
+    #[cfg(test)]
+    pub(crate) fn designe(chemin: &Path, proprietaire: u32, attendue: [u8; 32]) -> Result<Programme, String> {
         let p = Programme {
             chemin: chemin.to_path_buf(),
             proprietaire,
+            attendue,
         };
         p.verifier()?;
         Ok(p)
     }
 
+    /// Le `vanguard` du `dossier`, son empreinte prise maintenant, comme `epingler_voisin` à l'ouverture.
     /// `proprietaire` : le compte à qui est la fenêtre elle-même (Linux) ; `vanguard` doit être à lui ou à root.
+    #[cfg(test)]
     pub(crate) fn dans(dossier: &Path, proprietaire: u32) -> Result<Programme, String> {
-        let nom = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
-        let p = Programme {
-            chemin: dossier.join(nom),
-            proprietaire,
-        };
-        p.verifier()?;
-        Ok(p)
+        let chemin = dossier.join(NOM);
+        let attendue = empreinte_du_fichier(&chemin, proprietaire)?;
+        Programme::designe(&chemin, proprietaire, attendue)
     }
 
     /// Pour les captures de la fenêtre : un `vanguard` qui n'existe pas, que `verifier` refuse avant tout lancement.
@@ -97,40 +102,311 @@ impl Programme {
         Programme {
             chemin: PathBuf::from("/nonexistent/vanguard-des-captures/vanguard"),
             proprietaire: u32::MAX,
+            attendue: [0; 32],
         }
+    }
+
+    /// Le nom affiché dans les refus (`vanguard`, `vanguard.exe`, ou le nom désigné).
+    fn nom(&self) -> String {
+        self.chemin
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     /// La garde (`refus_chemin`), rejouée juste avant chaque lancement : la fenêtre reste ouverte des heures et relit
     /// les événements toutes les minutes, le fichier vérifié à l'ouverture a pu changer depuis.
     pub fn verifier(&self) -> Result<(), String> {
-        let nom = self
-            .chemin
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         match refus_chemin(&self.chemin, self.proprietaire) {
             None => Ok(()),
             Some(Refus::Absent) => Err(crate::trf!(
                 "« {} » est introuvable à côté de la fenêtre",
                 "“{}” was not found next to the window",
-                nom
+                self.nom()
             )),
-            Some(Refus::Raison(raison)) => Err(crate::trf!(
-                "« {} » à côté de la fenêtre n'est pas lancé : {}",
-                "“{}” next to the window is not started: {}",
-                nom,
-                raison
-            )),
+            Some(Refus::Raison(raison)) => Err(self.pas_lance(raison)),
         }
     }
+
+    /// « « vanguard » n'est pas lancé : <raison> ».
+    fn pas_lance(&self, raison: impl std::fmt::Display) -> String {
+        crate::trf!(
+            "« {} » à côté de la fenêtre n'est pas lancé : {}",
+            "“{}” next to the window is not started: {}",
+            self.nom(),
+            raison
+        )
+    }
+
+    /// Le contenu, juste avant chaque lancement et après `verifier` : le fichier ouvert (sans suivre de lien, jugé
+    /// sur ce qui est ouvert), lu entier, et son empreinte comparée à `attendue`. Sous Linux, l'empreinte est celle
+    /// de la copie scellée en mémoire, celle qui sera lancée ; sous Windows, celle du fichier tenu ouvert, lancé par
+    /// son chemin tant qu'il l'est (`Verifie`). Une autre empreinte : refusé, jamais le chemin à la place (L2 de la
+    /// relecture 0.96 : le même compte remplaçait son propre `vanguard`, la fenêtre affichait ses réponses et lui
+    /// confiait les gestes).
+    fn ouvrir(&self) -> Result<Verifie, String> {
+        let v = ouvrir_verifie(&self.chemin, self.proprietaire).map_err(|e| self.pas_lance(e))?;
+        if v.empreinte != self.attendue {
+            return Err(crate::trf!(
+                "« {} » n'est plus le programme qui a ouvert la fenêtre (son empreinte a changé : remplacé, peut-être \
+                 par une mise à jour) : il n'est pas lancé. Fermez la fenêtre et relancez Vanguard.",
+                "“{}” is no longer the program that opened the window (its fingerprint changed: replaced, perhaps by \
+                 an update): it is not started. Close the window and start Vanguard again.",
+                self.nom()
+            ));
+        }
+        Ok(v)
+    }
+}
+
+/// Le nom du `vanguard` voisin.
+const NOM: &str = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
+
+/// Le `vanguard` désigné (`--vanguard`) ou voisin, et le compte à qui il doit être.
+fn chemin_et_proprietaire() -> Result<(PathBuf, u32), String> {
+    let soi = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Sous Linux, le compte de l'image qui tourne (`/proc/self/exe` : le fichier, ou la copie en mémoire, à ce
+    // compte) ; un chemin `/memfd:…` ne se relit pas.
+    #[cfg(unix)]
+    let proprietaire = {
+        use std::os::unix::fs::MetadataExt;
+        let image = if cfg!(target_os = "linux") {
+            Path::new("/proc/self/exe")
+        } else {
+            soi.as_path()
+        };
+        std::fs::metadata(image).map_err(|e| e.to_string())?.uid()
+    };
+    #[cfg(not(unix))]
+    let proprietaire = 0;
+    if let Some(chemin) = DESIGNE.get() {
+        return Ok((chemin.clone(), proprietaire));
+    }
+    let dossier = soi
+        .parent()
+        .ok_or_else(|| crate::tr!("dossier introuvable", "folder not found").to_string())?;
+    Ok((dossier.join(NOM), proprietaire))
 }
 
 /// Le `vanguard` désigné par `--vanguard` (main.rs), lu avant le relais : le relais, né d'un `fork`, l'a aussi.
 static DESIGNE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Retient le `vanguard` désigné par `--vanguard`.
-pub fn designer(chemin: PathBuf) {
+/// L'empreinte que chaque `vanguard` lancé doit avoir, posée avant le relais (comme `DESIGNE`) : celle de
+/// `--empreinte-vanguard`, sinon celle du voisin lu à l'ouverture, ou pourquoi elle n'a pas pu l'être.
+static ATTENDUE: std::sync::OnceLock<Result<[u8; 32], String>> = std::sync::OnceLock::new();
+
+/// Retient le `vanguard` désigné par `--vanguard` et l'empreinte donnée par `--empreinte-vanguard` : `vanguard` qui
+/// ouvre la fenêtre dit qui il est, et la fenêtre ne relancera que lui.
+pub fn designer(chemin: PathBuf, empreinte: [u8; 32]) {
     let _ = DESIGNE.set(chemin);
+    let _ = ATTENDUE.set(Ok(empreinte));
+}
+
+/// La fenêtre ouverte sans `--vanguard` (lancée seule, à côté de `vanguard`) : l'empreinte du voisin, prise à
+/// l'ouverture (la confiance au premier lancement, la seule possible sans `vanguard` pour la donner), puis exigée à
+/// chaque lancement. Illisible ou refusé : aucun lancement, la raison dite.
+pub fn epingler_voisin() {
+    let lue = chemin_et_proprietaire().and_then(|(chemin, proprietaire)| {
+        let p = Programme {
+            chemin,
+            proprietaire,
+            attendue: [0; 32],
+        };
+        p.verifier()?;
+        ouvrir_verifie(&p.chemin, p.proprietaire)
+            .map(|v| v.empreinte)
+            .map_err(|e| p.pas_lance(e))
+    });
+    let _ = ATTENDUE.set(lue);
+}
+
+/// L'empreinte du `vanguard` de `chemin`, lu comme avant un lancement.
+#[cfg(test)]
+fn empreinte_du_fichier(chemin: &Path, proprietaire: u32) -> Result<[u8; 32], String> {
+    ouvrir_verifie(chemin, proprietaire).map(|v| v.empreinte)
+}
+
+/// Le `vanguard` lu, prêt à lancer s'il a l'empreinte attendue. Sous Linux, une copie de ses octets en mémoire
+/// (memfd), scellée : lancée d'elle, plus rien ne peut changer ce qui tourne entre la vérification et le lancement,
+/// ni ce compte, ni un autre, ni ce programme.
+#[cfg(target_os = "linux")]
+struct Verifie {
+    copie: std::fs::File,
+    empreinte: [u8; 32],
+    /// Un script (`#!`) : seulement dans les essais, où le faux `vanguard` en est un (voir `preparer`).
+    #[cfg(test)]
+    script: bool,
+}
+
+/// Windows : le fichier **tenu** ouvert avec le partage en lecture seule (ni écriture, ni effacement, ni renommage par
+/// personne tant que la poignée vit ; une écriture déjà ouverte fait échouer l'ouverture), chacun des dossiers de son
+/// chemin tenu aussi (ni renommés ni effacés), comme `vanguard` tient la fenêtre (src/demarrage/lancer_fenetre.rs).
+/// La poignée garantit les octets du fichier, pas le chemin jusqu'à lui : Windows lance par le chemin, qu'il relit. Ce
+/// qui change le sens d'un nom sans toucher aux dossiers (une lettre de lecteur redéfinie pour la session, `subst`)
+/// et la cible d'une jonction restent ouverts (MODELE-DE-MENACE.md, « La fenêtre »).
+#[cfg(windows)]
+struct Verifie {
+    _tenu: std::fs::File,
+    _dossiers: Vec<std::fs::File>,
+    empreinte: [u8; 32],
+}
+
+/// Les octets du fichier ouvert, `TAILLE_MAX` au plus (`m` : ce que dit la poignée).
+fn lire_fichier(f: &std::fs::File, m: &std::fs::Metadata) -> Result<Vec<u8>, String> {
+    let trop = || crate::tr!("fichier trop gros", "file too large").to_string();
+    if m.len() > TAILLE_MAX {
+        return Err(trop());
+    }
+    let mut octets = Vec::new();
+    f.take(TAILLE_MAX.saturating_add(1))
+        .read_to_end(&mut octets)
+        .map_err(|e| illisible(&e))?;
+    if u64::try_from(octets.len()).map_or(true, |n| n > TAILLE_MAX) {
+        return Err(trop());
+    }
+    Ok(octets)
+}
+
+/// « illisible : … » : la lecture de `vanguard` a échoué, avec ce qu'en dit le système.
+fn illisible(e: &std::io::Error) -> String {
+    crate::trf!("illisible : {}", "unreadable: {}", e)
+}
+
+/// Le `vanguard` de `chemin` : ouvert sans suivre de lien ni attendre (un tube nommé), jugé sur ce qui est ouvert
+/// (`refus` : fichier ordinaire, à ce compte ou à root, non modifiable par d'autres), lu entier, copié dans un memfd
+/// scellé, et l'empreinte calculée **sur cette copie scellée**, celle qui sera lancée. Sinon la raison.
+#[cfg(target_os = "linux")]
+fn ouvrir_verifie(chemin: &Path, proprietaire: u32) -> Result<Verifie, String> {
+    use sha2::Digest;
+    use std::os::unix::fs::{FileExt, OpenOptionsExt};
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(chemin)
+        .map_err(|e| illisible(&e))?;
+    let m = f.metadata().map_err(|e| illisible(&e))?;
+    if let Some(r) = refus(&m, proprietaire) {
+        return Err(r.into());
+    }
+    let octets = lire_fichier(&f, &m)?;
+    #[cfg(test)]
+    let script = octets.starts_with(b"#!");
+    let copie = crate::memfd::scelle("vanguard", &octets)
+        .map_err(|e| crate::trf!("copie scellée impossible : {}", "sealed copy impossible: {}", e))?;
+    drop(octets);
+    // L'empreinte de la copie scellée, relue du début : exactement ce que le noyau lancera.
+    let mut h = sha2::Sha256::new();
+    let mut tampon = vec![0u8; 1 << 16];
+    let mut position = 0u64;
+    loop {
+        let n = copie
+            .read_at(&mut tampon, position)
+            .map_err(|e| crate::trf!("copie illisible : {}", "copy unreadable: {}", e))?;
+        let Some(lus) = tampon.get(..n).filter(|l| !l.is_empty()) else {
+            break;
+        };
+        h.update(lus);
+        position = position.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+    Ok(Verifie {
+        copie,
+        empreinte: h.finalize().into(),
+        #[cfg(test)]
+        script,
+    })
+}
+
+/// Windows : le `vanguard` de `chemin`, ouvert tenu, sans suivre de lien (`FILE_FLAG_OPEN_REPARSE_POINT` : un lien
+/// ou une jonction est ouvert lui-même, puis refusé), fichier ordinaire, lu entier sur cette poignée. Les droits (ACL)
+/// du fichier et de ses dossiers ne sont pas lus (limite dite au modèle de menace).
+#[cfg(windows)]
+fn ouvrir_verifie(chemin: &Path, _proprietaire: u32) -> Result<Verifie, String> {
+    use sha2::Digest;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    // Les dossiers d'abord : le nom vérifié et le nom lancé mènent alors au même fichier.
+    let dossiers = dossiers_tenus(chemin)?;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(chemin)
+        .map_err(|e| illisible(&e))?;
+    let m = f.metadata().map_err(|e| illisible(&e))?;
+    if !m.file_type().is_file() {
+        return Err(crate::tr!("pas un fichier ordinaire", "not a regular file").into());
+    }
+    if m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(crate::tr!("un lien", "a link").into());
+    }
+    let octets = lire_fichier(&f, &m)?;
+    let empreinte = sha2::Sha256::digest(&octets).into();
+    Ok(Verifie {
+        _tenu: f,
+        _dossiers: dossiers,
+        empreinte,
+    })
+}
+
+/// Windows : chacun des dossiers de `chemin`, de la racine jusqu'au sien, ouvert tenu : sans partage d'effacement,
+/// personne ne le renomme ni ne l'efface tant que la poignée vit, et le nom suivant, dans un dossier tenu, mène
+/// toujours au même dossier. Un lien, une jonction ou un dossier monté (`FILE_FLAG_OPEN_REPARSE_POINT` : ouvert
+/// lui-même) est tenu en plus sans partage d'écriture : il ne peut plus être re-pointé ni défait. Ce qui n'est pas
+/// tenu : les dossiers de l'autre côté d'une jonction (sa cible), et le sens d'une lettre de lecteur. Un dossier qui
+/// ne s'ouvre pas : refusé. La copie de `dossiers_tenus` de src/demarrage/lancer_fenetre.rs.
+#[cfg(windows)]
+fn dossiers_tenus(chemin: &Path) -> Result<Vec<std::fs::File>, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    // Lister le dossier, pas seulement lire ses attributs : une poignée sans accès aux données ne compte pas dans le
+    // partage (Windows ne le vérifie ni ne l'enregistre), elle n'empêcherait rien.
+    const FILE_LIST_DIRECTORY: u32 = 0x1;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let illisible = |e: std::io::Error| {
+        crate::trf!(
+            "un dossier du chemin illisible : {}",
+            "an unreadable folder in the path: {}",
+            e
+        )
+    };
+    let ouvrir = |d: &Path, partage: u32| {
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+            .share_mode(partage)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(d)
+            .map_err(illisible)
+    };
+    let dossiers: Vec<&Path> = chemin
+        .ancestors()
+        .skip(1)
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    let mut tenus = Vec::new();
+    for d in dossiers.into_iter().rev() {
+        let f = ouvrir(d, FILE_SHARE_READ | FILE_SHARE_WRITE)?;
+        let attributs = f.metadata().map_err(illisible)?.file_attributes();
+        if attributs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(crate::tr!(
+                "un élément du chemin n'est pas un dossier",
+                "a path element is not a folder"
+            )
+            .into());
+        }
+        if attributs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            // Tenu par la première poignée pendant que la seconde s'ouvre : c'est le même lien.
+            tenus.push(ouvrir(d, FILE_SHARE_READ)?);
+        }
+        tenus.push(f);
+    }
+    Ok(tenus)
 }
 
 /// Pourquoi le `vanguard` voisin n'est pas lancé.
@@ -338,8 +614,27 @@ impl Tache {
     }
 }
 
-fn preparer(chemin: &Path, lancement: &Lancement, anglais: bool) -> Command {
-    let mut c = Command::new(chemin);
+/// La commande qui lance le `vanguard` vérifié (`v`). Sous Linux, sa copie scellée : `/proc/self/fd/<n>`, ce que fait
+/// `fexecve`, jamais le chemin ; le descripteur est fermé au lancement (`MFD_CLOEXEC`), `vanguard` ne l'hérite pas, et
+/// son nom affiché reste `vanguard`. Sous Windows, le chemin, tant que `v` tient le fichier et ses dossiers.
+fn preparer(programme: &Programme, v: &Verifie, lancement: &Lancement, anglais: bool) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut c = {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let mut c = Command::new(format!("/proc/self/fd/{}", v.copie.as_raw_fd()));
+        c.arg0("vanguard");
+        #[cfg(test)]
+        if v.script {
+            garder_pour_l_interprete(&mut c, v.copie.as_raw_fd());
+        }
+        c
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut c = {
+        let _ = v;
+        Command::new(&programme.chemin)
+    };
     c.args(lancement.arguments())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -351,7 +646,8 @@ fn preparer(chemin: &Path, lancement: &Lancement, anglais: bool) -> Command {
         // La progression sur la sortie des erreurs (`@etape 3/9 …`), lue strictement par `progression::lire` ; la
         // sortie, elle, reste le JSON seul.
         .env(crate::progression::VARIABLE, "1");
-    if let Some(d) = chemin.parent() {
+    // Le dossier du fichier vérifié, comme avant : `vanguard` lancé de sa copie n'en a pas.
+    if let Some(d) = programme.chemin.parent() {
         c.current_dir(d);
     }
     #[cfg(unix)]
@@ -367,6 +663,28 @@ fn preparer(chemin: &Path, lancement: &Lancement, anglais: bool) -> Command {
         c.creation_flags(0x0800_0000);
     }
     c
+}
+
+/// Essais seulement : le faux `vanguard` y est un script (`#!/bin/sh`), et l'interprète le rouvre par son chemin
+/// (`/proc/self/fd/<n>`), que `MFD_CLOEXEC` aurait fermé au lancement. Le descripteur reste donc ouvert pour l'enfant
+/// seul, dans l'enfant seul ; un vrai programme (ELF) garde le lancement du programme publié (essai
+/// `un_vrai_programme_est_lance_de_sa_copie`).
+#[cfg(all(test, target_os = "linux"))]
+// raison : FFI de libc, fcntl dans l'enfant entre fork et exec (pre_exec), que std ne permet pas autrement.
+#[allow(unsafe_code)]
+fn garder_pour_l_interprete(c: &mut Command, fd: i32) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: la fermeture n'appelle que fcntl(F_SETFD), sûre entre fork et exec (async-signal-safe) : ni
+    // allocation, ni verrou ; `fd` est un entier copié, ouvert dans l'enfant (hérité du parent qui le garde).
+    unsafe {
+        c.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
 }
 
 /// Lance `lancement`, la surveille jusqu'à sa fin et la rend ; ses lignes d'erreur passent par `rendre` en chemin
@@ -395,11 +713,15 @@ pub fn surveiller(
             Issue::Impossible(crate::tr!("pas sur ce système", "not on this system").into()),
         );
     }
-    // La garde rejouée juste avant le lancement (voir `Programme::verifier`).
-    if let Err(e) = programme.verifier() {
-        return fin(None, Vec::new(), Issue::Impossible(e));
-    }
-    let mut enfant = match preparer(&programme.chemin, lancement, anglais).spawn() {
+    // La garde rejouée juste avant le lancement (voir `Programme::verifier`), puis le contenu : seuls les octets dont
+    // l'empreinte est attendue sont lancés (`Programme::ouvrir`). `verifie` vit jusqu'après le lancement.
+    let verifie = match programme.verifier().and_then(|()| programme.ouvrir()) {
+        Ok(v) => v,
+        Err(e) => return fin(None, Vec::new(), Issue::Impossible(e)),
+    };
+    let lance = preparer(programme, &verifie, lancement, anglais).spawn();
+    drop(verifie);
+    let mut enfant = match lance {
         Ok(e) => e,
         Err(e) => {
             return fin(
@@ -754,14 +1076,14 @@ mod tests {
         let moi = std::fs::metadata(&f).unwrap().uid();
         let droits = |mode| std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
         droits(0o755);
-        assert!(Programme::designe(&f, moi).is_ok());
+        assert!(Programme::designe(&f, moi, [0; 32]).is_ok());
         droits(0o757);
-        assert!(Programme::designe(&f, moi).is_err(), "modifiable par d'autres");
+        assert!(Programme::designe(&f, moi, [0; 32]).is_err(), "modifiable par d'autres");
         droits(0o755);
-        assert!(Programme::designe(&d.join("absent"), moi).is_err());
+        assert!(Programme::designe(&d.join("absent"), moi, [0; 32]).is_err());
         std::os::unix::fs::symlink(&f, d.join("lien")).unwrap();
-        assert!(Programme::designe(&d.join("lien"), moi).is_err(), "un lien");
-        assert!(Programme::designe(&d, moi).is_err(), "un dossier");
+        assert!(Programme::designe(&d.join("lien"), moi, [0; 32]).is_err(), "un lien");
+        assert!(Programme::designe(&d, moi, [0; 32]).is_err(), "un dossier");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -867,6 +1189,102 @@ esac
                 })
                 .count()
         })
+    }
+
+    /// Un `vanguard` qui note qu'il a tourné (`lance`, dans son dossier) et répond un JSON vide.
+    #[cfg(unix)]
+    const TEMOIN: &str = "#!/bin/sh\necho \"$1\" >> lance\nprintf '{}'\n";
+
+    /// L2 (relecture 0.96) : l'empreinte attendue est prise à l'ouverture ; le fichier remplacé ensuite, en place ou
+    /// par un autre posé à son nom, n'est jamais lancé, la raison dite (l'empreinte a changé), et rien n'a tourné. Le
+    /// même contenu remis : de nouveau lancé (c'est le contenu qui compte, pas le fichier ni sa date).
+    #[cfg(unix)]
+    #[test]
+    fn un_vanguard_remplace_apres_l_ouverture_n_est_pas_lance() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("remplace");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard");
+        let poser = |chemin: &Path, texte: &str| {
+            std::fs::write(chemin, texte).unwrap();
+            std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        poser(&f, TEMOIN);
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
+        let rien: Reveil = Arc::new(|| {});
+        let lance = || std::fs::read_to_string(d.join("lance")).unwrap_or_default();
+
+        // L'empreinte égale : lancé.
+        let (_, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
+        assert_eq!(fin.issue, Issue::Terminee);
+        assert_eq!(lance(), "audit\n");
+
+        // Réécrit en place (même fichier, mêmes droits, autre contenu) : refusé, rien n'a tourné.
+        let faux = TEMOIN.replace(">> lance", ">> faux-lance");
+        poser(&f, &faux);
+        let (_, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
+        let Issue::Impossible(raison) = &fin.issue else {
+            panic!("lancé : {:?}", fin.issue);
+        };
+        assert!(
+            raison.contains("empreinte") || raison.contains("fingerprint"),
+            "{raison}"
+        );
+        assert_eq!(fin.sortie, b"");
+
+        // Un autre fichier posé à son nom (renommé par-dessus) : refusé aussi.
+        let autre = d.join("autre");
+        poser(&autre, &faux);
+        std::fs::rename(&autre, &f).unwrap();
+        let (_, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
+        assert!(matches!(fin.issue, Issue::Impossible(_)), "{:?}", fin.issue);
+        assert!(!d.join("faux-lance").exists(), "le faux vanguard a tourné");
+        assert_eq!(lance(), "audit\n", "lancé une seconde fois");
+
+        // Le contenu d'origine remis : lancé de nouveau.
+        poser(&autre, TEMOIN);
+        std::fs::rename(&autre, &f).unwrap();
+        let (_, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
+        assert_eq!(fin.issue, Issue::Terminee);
+        assert_eq!(lance(), "audit\naudit\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le lancement du programme publié, sans le maintien des essais (`garder_pour_l_interprete`) : un vrai programme
+    /// (ELF, ici le programme d'essai lui-même, posé comme `vanguard`) est lancé de sa copie scellée, le descripteur
+    /// fermé à son lancement. Ses arguments (`audit --json`) ne sont pas ceux d'un programme d'essai : il le dit et
+    /// sort en 101, la preuve qu'il a tourné.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_vrai_programme_est_lance_de_sa_copie() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("elf");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard");
+        std::fs::copy(std::env::current_exe().unwrap(), &f).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
+        let v = p.ouvrir().unwrap();
+        assert!(!v.script);
+        // La copie scellée : ni réécrite, ni raccourcie, ni allongée, et les sceaux ne se retirent plus.
+        {
+            use std::os::unix::fs::FileExt;
+            assert!(v.copie.write_at(b"x", 0).is_err(), "réécrite en place");
+            assert!(v.copie.set_len(0).is_err());
+            let tous = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+            assert_eq!(crate::memfd::sceaux(&v.copie).unwrap() & tous, tous);
+        }
+        drop(v);
+        let rien: Reveil = Arc::new(|| {});
+        let (lignes, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
+        assert_eq!(fin.issue, Issue::Terminee, "{lignes:?}");
+        assert_eq!(fin.code, Some(101), "{lignes:?}");
+        assert!(lignes.iter().any(|l| l.contains("json")), "{lignes:?}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Un seul essai pour les quatre cas : le script est écrit une fois avant tout lancement (sinon un autre essai
