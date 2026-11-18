@@ -650,9 +650,17 @@ safeguards:
   its own), VANGUARD_ORIGINE set to the path it checked, so that its update, its key and its task refer to the right
   file. `vanguard` only trusts it in its temporary copy on the key or in that strictly recognised image (exact name
   `/memfd:vanguard`, unlinked file, write, size and seal seals set), and only if the designated file has exactly the
-  bytes of the running program; otherwise it is ignored and the mismatch stated. A program of the account that started
-  such an image itself gains nothing: designating a file with the same bytes amounts to running that file, like a fake
-  key copy placed by this account (a remaining risk already accepted). Replaced since the window opened, even by this
+  bytes of the running program; otherwise it is ignored and the mismatch stated, and in that image `vanguard` stops at
+  startup ("nothing is done, reopen the window"), with no fallback to another path. A program of the account that
+  started such an image itself gains nothing: designating a file with the same bytes amounts to running that file, like
+  a fake key copy placed by this account (a remaining risk already accepted). The name `/memfd:vanguard` never makes
+  Vanguard recognise itself: the check-up, the hunt, the watcher, blocking and quarantine only recognise another
+  process as Vanguard by its path outside that image (inside it, only the checked origin), by the same file (device and
+  inode) or, for an image with that exact name and sealed, by the same bytes (BLAKE3 fingerprint); any program started
+  from a memfd named "vanguard" is therefore still shown, judged and treatable, and two `vanguard` started by the window
+  do not report each other as a "program without a file" (LNX-PRS-004). Elevation through pkexec, which runs a path,
+  takes the checked origin in that image, only if it is safe from replacement (file and folders owned by root, not
+  writable by group or others); with no checked origin, pkexec is not offered, never a fallback. Replaced since the window opened, even by this
   account or by an update: it is not run, the reason is given and the window asks to be reopened; after a successful
   update, it says at once to reopen it, without trusting the new fingerprint. Opened alone, without `vanguard`, the
   window takes its neighbour's fingerprint when it opens (trust on

@@ -686,9 +686,19 @@ gardes :
   VANGUARD_ORIGINE égale au chemin qu'elle a vérifié, pour que sa mise à jour, sa clé et sa tâche se rapportent au bon
   fichier. `vanguard` ne la croit que dans sa copie temporaire de la clé ou dans cette image reconnue strictement (nom
   exact `/memfd:vanguard`, fichier sans lien, sceaux d'écriture, de taille et des sceaux posés), et seulement si le
-  fichier désigné a exactement les octets du programme qui tourne ; sinon elle est ignorée et l'écart dit. Un programme
-  du compte qui lancerait lui-même une telle image n'y gagne rien : désigner un fichier aux mêmes octets revient à
-  lancer ce fichier, comme une fausse copie de la clé posée par ce compte (reste déjà accepté). Remplacé depuis
+  fichier désigné a exactement les octets du programme qui tourne ; sinon elle est ignorée et l'écart dit, et dans
+  cette image `vanguard` s'arrête au démarrage (« rien n'est fait, rouvrez la fenêtre »), sans repli vers un autre
+  chemin. Un programme du compte qui lancerait lui-même une telle image n'y gagne rien : désigner un fichier aux mêmes octets revient à
+  lancer ce fichier, comme une fausse copie de la clé posée par ce compte (reste déjà accepté). Le nom
+  `/memfd:vanguard` ne fait jamais reconnaître Vanguard : le bilan, la chasse, le veilleur, le blocage et la
+  quarantaine ne reconnaissent un autre processus comme Vanguard que par son chemin hors de cette image (dans
+  l'image, seulement l'origine vérifiée), par le même fichier (périphérique et inode) ou, pour une image à ce nom
+  exact et scellée, par les mêmes octets (empreinte BLAKE3) ; un programme quelconque lancé d'un memfd nommé
+  « vanguard » reste donc montré, jugé et traitable, et deux `vanguard` lancés par la fenêtre ne se dénoncent pas
+  l'un l'autre comme « programme sans fichier » (LNX-PRS-004). L'élévation par pkexec, qui exécute un chemin,
+  prend dans cette image l'origine vérifiée, seulement si elle est à l'abri d'un remplacement (fichier et dossiers à
+  root, que ni le groupe ni les autres ne peuvent modifier) ; sans origine vérifiée, pkexec n'est pas proposé, jamais
+  de repli. Remplacé depuis
   l'ouverture, même par ce compte ou par une mise à jour : il n'est pas lancé, la raison est dite et la fenêtre demande
   d'être rouverte ; après une mise à jour réussie, elle dit tout de suite de la rouvrir, sans croire la nouvelle
   empreinte. Ouverte seule, sans `vanguard`, la fenêtre prend l'empreinte de son voisin à l'ouverture (confiance au

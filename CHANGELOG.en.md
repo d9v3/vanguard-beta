@@ -76,8 +76,13 @@ example, finds it, to rebuild it if needed.
   opened (by an update too): nothing is run, the reason is given, and reopening the window is enough; after a successful
   update, it says so at once. On Linux, the `vanguard` started from that copy receives, in its environment only, the
   checked path (`VANGUARD_ORIGINE`): it only trusts it in that strictly recognised image and towards a file with its
-  exact bytes, and its update, its key and its task keep the right file. On Windows, the file is held and its
-  fingerprint compared, but the path is still what is started (limits stated in the threat model).
+  exact bytes, and its update, its key and its task keep the right file; with that path missing or refused, it stops
+  and says to reopen the window, with no fallback. It recognises itself by its file or its bytes, never by the name
+  `/memfd:vanguard`: another program started from a memfd with that name is still shown and treatable, and two
+  `vanguard` from the window no longer report each other. pkexec runs the checked path there, only if it is owned by
+  root and protected; otherwise it is not offered. On Windows, the file is held and its fingerprint compared, but the
+  path is still what is started (limits stated in the threat model). Opened alone, without `vanguard`, the window
+  trusts its neighbour on first use.
 
 ## November 15, 2026: version 0.96.0
 
