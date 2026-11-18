@@ -496,6 +496,19 @@ impl Table {
         }
     }
 
+    /// Ce que dit la file du connecteur. Une perte (ENOBUFS) : une fourche perdue, l'enfant vivant d'un futur porteur
+    /// peut manquer à la table ; une fin perdue, une racine partie dont le numéro est peut-être repris ; d'autres
+    /// seront jetés sans rien dire jusqu'à la file vue vide. Seul EAGAIN dit la file vide ; EINTR ou un message vide,
+    /// non.
+    fn suivre_la_file(&mut self, recu: &Recu, encore: &dyn Fn(u32, Option<u64>) -> bool) {
+        match recu {
+            Recu::Perdus => self.perdus(),
+            Recu::Vide => self.file_videe(),
+            Recu::Octets(_) | Recu::Interrompu | Recu::Erreur(_) => {}
+        }
+        self.revoir_les_racines(encore);
+    }
+
     /// Pendant des pertes, chaque événement peut suivre des événements jetés (une fin, une fourche, un numéro repris) :
     /// la table oublie avant de le porter, et les racines seront revues.
     fn oublier_si_pertes(&mut self) {
@@ -516,7 +529,9 @@ impl Table {
     /// Chaque racine qui passe encore la marque est revue : `encore(pid, debut)` dit si c'est toujours le même
     /// processus (même départ), toujours Vanguard ; sinon, un porteur. Rien à revoir sans oubli.
     fn revoir_les_racines(&mut self, encore: &dyn Fn(u32, Option<u64>) -> bool) {
-        if !std::mem::take(&mut self.a_revoir) {
+        // Pendant des pertes, rien ne passe la marque (`de_vanguard`) : la revue attend la file vue vide, une seule
+        // fois, au lieu d'être refaite à chaque événement d'une rafale (relecture adverse du lot L2(b), 6e ronde, T2).
+        if self.pertes || !std::mem::take(&mut self.a_revoir) {
             return;
         }
         let a_voir: Vec<(u32, Option<u64>)> = self
@@ -625,6 +640,12 @@ impl Table {
     /// ne lui passe pas la marque (relecture adverse du lot L2(b), 2e ronde, N1). Une fiche lue au départ, ou oubliée
     /// puis refaite, ne la reçoit pas non plus : jugée, au pire une alerte de trop.
     fn de_vanguard(&self, pid: u32) -> bool {
+        // Pendant des pertes, une racine partie peut avoir son numéro repris sans que rien ne soit lu, et elle n'est
+        // revue qu'à la file vue vide : rien ne passe la marque jusque-là. Au pire, des alertes de trop pendant une
+        // rafale.
+        if self.pertes {
+            return false;
+        }
         let mut vus = HashSet::new();
         let mut courant = Some(pid);
         // La plus ancienne entrée des maillons sous la racine (aucun encore : u64::MAX).
@@ -1184,24 +1205,15 @@ impl Veilleur {
         let soi = crate::protection::cle::soi::Soi::courant();
         let moi = std::process::id();
         let moi_porteur = crate::socle::processus::enfants_d_avant().is_none_or(|e| !e.is_empty());
-        let mut table = Table::default();
-        if let Some((liste, _)) = chasse::en_marche() {
-            for p in &liste {
-                // Le départ lu avant l'image : un numéro repris entre les deux garde le départ de l'autre, et la
-                // racine sera revue comme un porteur.
-                let debut = crate::socle::processus::debut(p.pid);
-                let racine = p.pid == moi || soi.est_moi(p.pid, p.chemin.as_deref());
-                table.inserer(p.pid, p.parent, &p.nom, racine, &vivant);
-                if racine {
-                    table.noter_debut(p.pid, debut);
-                }
-            }
-        }
-        table.porteurs_au_depart(moi, moi_porteur, &crate::socle::processus::enfants);
-        // Chaque racine revue une fois la table faite : un numéro repris entre la lecture de son départ et celle de
-        // son image garde l'ancien départ, et la revue en fait un porteur.
-        table.a_revoir = true;
-        table.revoir_les_racines(&toujours_vanguard);
+        let liste = chasse::en_marche().map(|(l, _)| l).unwrap_or_default();
+        let table = table_au_depart(
+            &liste,
+            moi,
+            moi_porteur,
+            &|p, chemin| soi.est_moi(p, chemin),
+            &crate::socle::processus::debut,
+            &crate::socle::processus::enfants,
+        );
         if arret_demande() {
             return Err(Refus::Arrete);
         }
@@ -1214,7 +1226,39 @@ impl Veilleur {
             lire: true,
         })
     }
+}
 
+/// La table à l'ouverture du veilleur, faite des programmes en marche (`liste`).
+fn table_au_depart(
+    liste: &[EnMarche],
+    moi: u32,
+    moi_porteur: bool,
+    est_moi: &dyn Fn(u32, Option<&str>) -> bool,
+    debut_de: &dyn Fn(u32) -> Option<u64>,
+    enfants_de: &dyn Fn(u32) -> Option<Vec<u32>>,
+) -> Table {
+    let mut table = Table::default();
+    for p in liste {
+        // Le départ lu avant l'image : un numéro repris entre les deux garde le départ de l'autre, et la racine sera
+        // revue comme un porteur.
+        let debut = debut_de(p.pid);
+        let racine = p.pid == moi || est_moi(p.pid, p.chemin.as_deref());
+        table.inserer(p.pid, p.parent, &p.nom, racine, &vivant);
+        if racine {
+            table.noter_debut(p.pid, debut);
+        }
+    }
+    table.porteurs_au_depart(moi, moi_porteur, enfants_de);
+    // Toujours en pertes au départ : une rafale a pu déborder la file avant le premier recv, et l'abonnement
+    // (`ouvrir_connecteur`) a pu consommer l'unique ENOBUFS ; le noyau jette alors en silence jusqu'à la file vue
+    // vide (relecture adverse du lot L2(b), 6e ronde, T1). Le premier EAGAIN lève les pertes, avec un oubli et la
+    // revue de chaque racine : un numéro repris entre la lecture de son départ et celle de son image garde
+    // l'ancien départ, et la revue en fait un porteur.
+    table.perdus();
+    table
+}
+
+impl Veilleur {
     /// La taille du tampon obtenue pour le connecteur.
     fn tampon(&self) -> usize {
         tampon_obtenu(&self.connecteur.0)
@@ -1242,23 +1286,15 @@ impl Veilleur {
 
     /// Un message du connecteur ; `false` : plus rien à lire.
     fn lire_un_evenement(&mut self, vus: &mut Vec<Vu>) -> Result<bool, i32> {
-        let n = match recevoir(&self.connecteur.0, &mut self.tampon) {
+        let recu = recevoir(&self.connecteur.0, &mut self.tampon);
+        self.table.suivre_la_file(&recu, &toujours_vanguard);
+        let n = match recu {
             Recu::Octets(n) => n,
             Recu::Perdus => {
-                // Une fourche perdue : l'enfant vivant d'un futur porteur peut manquer à la table. Une fin perdue :
-                // une racine partie, son numéro peut-être repris. D'autres seront jetés sans rien dire jusqu'à la
-                // file vue vide (`Table::perdus`).
-                self.table.perdus();
-                self.table.revoir_les_racines(&toujours_vanguard);
                 vus.push(Vu::Perdus(1));
                 return Ok(true);
             }
-            Recu::Vide => {
-                self.table.file_videe();
-                self.table.revoir_les_racines(&toujours_vanguard);
-                return Ok(false);
-            }
-            Recu::Interrompu => return Ok(false),
+            Recu::Vide | Recu::Interrompu => return Ok(false),
             Recu::Erreur(e) => return Err(e),
         };
         for e in lire_evenements_proc(self.tampon.get(..n).ok_or(libc::EOVERFLOW)?) {
@@ -5845,6 +5881,124 @@ mod tests {
         t.file_videe();
         t.fourche(50, 52, &tous);
         assert!(!t.de_vanguard(52));
+    }
+
+    /// La file vue vide fait un dernier oubli : un maillon né pendant les pertes a pu voir sa fin jetée et son numéro
+    /// repris avant la file vide.
+    #[test]
+    fn oubli_final_a_la_file_vide() {
+        let tous = |_: u32| true;
+        let encore = |_: u32, _: Option<u64>| true;
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.inserer(40, Some(1), "vanguard", true, &tous);
+        t.noter_debut(40, Some(400));
+        t.suivre_la_file(&Recu::Perdus, &encore);
+        t.fourche(40, 45, &tous);
+        t.suivre_la_file(&Recu::Vide, &encore);
+        t.fourche(45, 46, &tous);
+        assert!(!t.de_vanguard(46));
+        t.fourche(40, 47, &tous);
+        assert!(t.de_vanguard(47));
+    }
+
+    /// Seul EAGAIN (la file vide) lève les pertes ; EINTR ou un message vide, non. Pendant les pertes, rien ne passe
+    /// la marque.
+    #[test]
+    fn seule_la_file_vide_leve_les_pertes() {
+        let tous = |_: u32| true;
+        let encore = |_: u32, _: Option<u64>| true;
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.inserer(40, Some(1), "vanguard", true, &tous);
+        t.noter_debut(40, Some(400));
+        t.suivre_la_file(&Recu::Perdus, &encore);
+        t.suivre_la_file(&Recu::Interrompu, &encore);
+        t.suivre_la_file(&Recu::Octets(16), &encore);
+        t.fourche(40, 41, &tous);
+        assert!(!t.de_vanguard(41));
+        t.suivre_la_file(&Recu::Vide, &encore);
+        t.fourche(40, 42, &tous);
+        assert!(t.de_vanguard(42));
+    }
+
+    /// Pendant les pertes, aucune revue des racines : une seule, à la file vue vide.
+    #[test]
+    fn pas_de_revue_pendant_les_pertes() {
+        let tous = |_: u32| true;
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.inserer(40, Some(1), "vanguard", true, &tous);
+        t.noter_debut(40, Some(400));
+        let revues = std::cell::Cell::new(0);
+        let compte = |_: u32, _: Option<u64>| {
+            revues.set(revues.get() + 1);
+            true
+        };
+        t.suivre_la_file(&Recu::Perdus, &compte);
+        for enfant in 41..60 {
+            t.fourche(40, enfant, &tous);
+            t.revoir_les_racines(&compte);
+        }
+        assert_eq!(revues.get(), 0);
+        t.suivre_la_file(&Recu::Vide, &compte);
+        assert_eq!(revues.get(), 1);
+    }
+
+    /// recevoir : EAGAIN est la file vide, un message de 0 octet ne l'est pas (sur une paire de prises locales : le
+    /// même recv que pour le connecteur, sans les droits qu'il demande).
+    #[test]
+    fn recevoir_distingue_vide_et_interrompu() {
+        let mut fd = [0i32; 2];
+        // SAFETY: socketpair écrit deux descripteurs dans le tableau, à nous ; chacun est ensuite tenu par une Prise,
+        // qui le ferme une fois.
+        let r = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fd.as_mut_ptr()) };
+        if r != 0 {
+            return crate::essais::saute("socketpair refusé ici");
+        }
+        let (lit, ecrit) = (Prise(fd[0]), Prise(fd[1]));
+        let ecrire = |octets: &[u8]| {
+            // SAFETY: les octets sont à nous, vivants pendant l'appel, passés avec leur taille exacte.
+            let n = unsafe { libc::send(ecrit.0, octets.as_ptr().cast(), octets.len(), 0) };
+            usize::try_from(n).ok() == Some(octets.len())
+        };
+        let mut tampon = [0u8; 64];
+        assert!(matches!(recevoir(&lit, &mut tampon), Recu::Vide));
+        assert!(ecrire(&[]));
+        assert!(matches!(recevoir(&lit, &mut tampon), Recu::Interrompu));
+        assert!(ecrire(b"abc"));
+        assert!(matches!(recevoir(&lit, &mut tampon), Recu::Octets(3)));
+        assert!(matches!(recevoir(&lit, &mut tampon), Recu::Vide));
+    }
+
+    /// Le veilleur part toujours en pertes : l'abonnement a pu consommer l'unique ENOBUFS d'une rafale d'avant le
+    /// premier recv. Rien ne passe la marque avant la file vue vide ; ensuite, une racine revue la passe.
+    #[test]
+    fn ouverture_en_pertes() {
+        let liste = [
+            EnMarche {
+                parent: None,
+                ..en_marche(1, "systemd", None)
+            },
+            EnMarche {
+                parent: Some(1),
+                chemin: Some("/opt/vanguard".into()),
+                ..en_marche(30, "vanguard", None)
+            },
+        ];
+        let mut t = table_au_depart(
+            &liste,
+            4_000_000,
+            false,
+            &|p, _| p == 30,
+            &|p| Some(u64::from(p) * 10),
+            &|_| Some(Vec::new()),
+        );
+        t.fourche(30, 31, &|_| true);
+        assert!(!t.de_vanguard(31));
+        t.suivre_la_file(&Recu::Vide, &|p, d| d == Some(u64::from(p) * 10));
+        t.fourche(30, 32, &|_| true);
+        assert!(t.de_vanguard(32));
     }
 
     /// Un maillon marqué né avant un oubli (une perte unique, un balayage) ne passe plus la marque : sa fin a pu être
