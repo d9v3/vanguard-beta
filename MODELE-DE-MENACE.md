@@ -831,8 +831,9 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   l'extrait d'avant, qui va alors jusqu'à lui ; après un extrait refermé, un « (PID n) » n'ouvre un nouveau programme
   que derrière l'écart exact du veilleur (« ; « nom » ») : sinon il était cité, et l'extrait est retenu en entier,
   avant comme après lui ; les parenthèses du nom entre guillemets du programme suivant (« (sd-pam) », « b(1) ») ne
-  comptent pas dans l'extrait d'avant, et le veilleur écrit ce nom sans aucun guillemet à lui (chacun devient « ' »),
-  pour que son début se retrouve à coup sûr (« b) "c » ne ferme plus l'extrait d'avant) ; une autre parenthèse ne sort
+  comptent pas dans l'extrait d'avant, et le veilleur écrit ce nom sans aucun guillemet à lui (chacun devient « ' »)
+  ni aucune parenthèse (« ( » devient « [ », « ) » devient « ] »), pour que son début se retrouve à coup sûr
+  (« b) "c » ne ferme plus l'extrait d'avant, « z (PID 5) ( » n'écrit plus un faux programme) ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -846,8 +847,10 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   une ligne de commande. Les champs à forme fixe (règle, version, date, nombres, empreinte) sortent avec les
   lettres et chiffres que leur forme admet, sans être relus : une date impossible, une règle inventée ou un nombre qui
   écrit une adresse IPv4 en entier y passent. C'est un canal pour qui écrit déjà le journal ou un examen non scellé, pas
-  une fuite d'une donnée de la personne. Un module chargé hors de `src/` (le modèle des couleurs partagé avec la
-  fenêtre) n'est pas lu : il n'a aucun message, et un mot de moins ne fait que masquer davantage. La lecture suit
+  une fuite d'une donnée de la personne. Le seul module du programme chargé hors de `src/` (le modèle des couleurs
+  partagé avec la fenêtre, nommé dans une liste) n'est pas lu au build : il n'a aucun message, un mot de moins ne fait
+  que masquer davantage, et un essai le passe aux mêmes règles que `src/` ; tout autre module du programme hors de
+  `src/` arrête la compilation. La lecture suit
   `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier ;
   `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. Elle arrête la compilation sur
   une forme qu'elle ne sait pas juger : `cfg_select!` ou `cfg_match!`, un `path` posé par `cfg_attr` sur un module, un
@@ -856,8 +859,11 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   d'un autre paquet, une macro maison qui choisirait par `cfg`, quelle que soit la forme de ses bras), comme un nom de
   la liste blanche donné à une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json), le nom
   d'un paquet admis pris par un module, un `use` ou un `extern crate` (`mod alloc`), et, dans le corps d'une macro lu
-  jeton par jeton, une macro nommée par une métavariable (`$m!`), un attribut écrit par une métavariable (`#[$m]`)
-  près d'un texte, ou une déclaration (`use`, `mod`, `extern crate`, `macro_rules!`) dont le nom ne se suit pas. Le
+  jeton par jeton, deux règles d'ensemble : aucune métavariable (`$x`, `$( … )`) si ce corps contient un texte (elle
+  peut valoir n'importe quel jeton : le nom d'une autre macro, « ! », « # »), et aucun mot qui lie un nom ou tire un
+  fichier (`use`, `mod`, `extern`, `macro_rules`, `include`), ni là, ni dans l'appel d'une macro hors de la liste
+  blanche (qui pourrait le recombiner) ; enfin `#[macro_use]` et tout `include!` autre que la base des fabricants
+  (`OUT_DIR`), comme `use … as` qui renommerait `include!`. Le
   script de compilation (`build.rs`), la lecture qu'il inclut et la configuration de cargo du dépôt sont jugés par une
   empreinte de tout le fichier, et `Cargo.toml` par la liste exacte de ses cibles et de ses paquets de compilation
   (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Le dépôt n'a ni fichier hérité que

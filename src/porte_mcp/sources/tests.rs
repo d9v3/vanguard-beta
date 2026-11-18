@@ -426,7 +426,7 @@ fn r5_sources_1_une_macro_a_bras_avec_un_texte_arrete_la_compilation() {
     // inconnue sans texte, un `if` ou un `match` du programme plus bas dans une macro admise qui n'est pas relue comme
     // du code (`json!`).
     assert_eq!(
-        un("macro_rules! m { () => { TR(\"vrai\", \"real\") }; ($x:expr) => { TR(\"maison\", \"rouge\") }; }\n"),
+        un("macro_rules! m { () => { TR(\"vrai\", \"real\") }; (un) => { TR(\"maison\", \"rouge\") }; }\n"),
         attendus(&["vrai", "real", "maison", "rouge"])
     );
     assert_eq!(
@@ -522,11 +522,16 @@ fn r7_sources_1_une_macro_nommee_par_une_metavariable_autour_d_un_texte_arrete_l
         "macro_rules! via { ($m:ident) => { $m::format!(\"{}\", TR(\"motsecret\", \"secretword\")) }; }\n",
         "macro_rules! via { () => { $crate::format!(\"{}\", TR(\"motsecret\", \"secretword\")) }; }\n",
     ] {
-        refuse(&[("src/main.rs", texte)], "hors de la liste blanche");
+        // Depuis la 8e passe, la règle d'ensemble les arrête toutes : aucune métavariable près d'un texte.
+        refuse(&[("src/main.rs", texte)], "métavariable");
     }
-    // Témoins : une métavariable appelée sans texte autour reste lue, et `format!` écrit en toutes lettres aussi.
+    // Témoins : une métavariable appelée dans une macro sans texte reste lue, et `format!` écrit en toutes lettres
+    // dans une autre aussi.
     assert_eq!(
-        un("macro_rules! via { ($m:ident) => { $m!(x) }; () => { format!(\"{}\", TR(\"vrai\", \"real\")) }; }\n"),
+        un(
+            "macro_rules! via { ($m:ident) => { $m!(x) }; }\nmacro_rules! fmt { () => { format!(\"{}\", TR(\"vrai\", \
+            \"real\")) }; }\n"
+        ),
         attendus(&["vrai", "real"])
     );
 }
@@ -543,8 +548,17 @@ fn r7_sources_2_un_attribut_ecrit_par_une_metavariable_pres_d_un_texte_arrete_la
          }\noutil!([cfg(test)]);\n",
         "macro_rules! outil { ($a:tt) => { #! $a fn f() -> &'static str { TR(\"motsecret\", \"secretword\") } }; }\n",
     ] {
-        refuse(&[("src/main.rs", texte)], "sans attribut lisible");
+        // Le message de la règle d'ensemble (8e passe), pas celui du « # » illisible : elle les couvre seule.
+        refuse(&[("src/main.rs", texte)], "elle peut valoir n'importe quel jeton");
     }
+    // Un « # » sans attribut lisible et sans métavariable près d'un texte garde son propre refus.
+    refuse(
+        &[(
+            "src/main.rs",
+            "macro_rules! outil { () => { # x fn f() -> &'static str { TR(\"alice\", \"salon\") } }; }\n",
+        )],
+        "sans attribut lisible",
+    );
     // Un attribut d'essai écrit en toutes lettres reste refusé par son propre message.
     refuse(
         &[(
@@ -630,4 +644,164 @@ fn r7_sources_4_un_use_refuse_dit_quoi_ecrire_a_la_place() {
         ),
         attendus(&["vrai", "real"])
     );
+}
+
+/// 8e passe, règle d'ensemble : une métavariable (`$x:tt`) peut valoir n'importe quel jeton. Le corps d'une macro qui
+/// contient un texte n'en a donc aucune : ni le nom de la macro autour (`$($p)::+ !`), ni le « ! » qui en fait un
+/// appel (`$m $b`).
+#[test]
+fn r8_sources_1_une_macro_ecrite_par_des_metavariables_autour_d_un_texte_arrete_la_compilation() {
+    for texte in [
+        "macro_rules! jette { ($($t:tt)*) => { \"\" }; }\nmacro_rules! par { ($($p:ident)::+) => { $($p)::+ ! { \
+         TR(\"motsecret\", \"secretword\") } }; }\nfn main() { let x: &str = par!(jette); println!(\"bonjour{x}\"); }\n",
+        "macro_rules! jette { ($($t:tt)*) => { \"\" }; }\nmacro_rules! par { ($m:ident $b:tt) => { $m $b { \
+         TR(\"motsecret\", \"secretword\") } }; }\nfn main() { let x: &str = par!(jette !); println!(\"bonjour{x}\"); }\n",
+        // Une métavariable seulement dans les règles d'appel (le côté gauche) suffit aussi : la règle est simple.
+        "macro_rules! m { ($x:expr) => { TR(\"motsecret\", \"secretword\") }; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "métavariable");
+    }
+    // Témoins : des métavariables dans une macro sans texte, et un texte dans une macro sans métavariable.
+    assert_eq!(
+        un(
+            "macro_rules! par { ($($p:ident)::+) => { $($p)::+ ! {} }; ($m:ident $b:tt) => { $m $b {} }; }\n\
+             macro_rules! m { () => { format!(\"{}\", TR(\"vrai\", \"real\")) }; (un) => { TR(\"maison\", \"rouge\") }; }\n"
+        ),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+}
+
+/// 8e passe : le « # » d'un attribut d'essai venu d'une métavariable (`outil!(#)`).
+#[test]
+fn r8_sources_2_un_diese_venu_d_une_metavariable_pres_d_un_texte_arrete_la_compilation() {
+    refuse(
+        &[(
+            "src/main.rs",
+            "macro_rules! outil { ($h:tt) => { $h[cfg(test)] fn f() -> &'static str { TR(\"motsecret\", \
+             \"secretword\") } }; }\noutil!(#);\n",
+        )],
+        "métavariable",
+    );
+}
+
+/// 8e passe : un mot qui lie un nom ou tire un fichier (`mod`, `use`, `extern`, `macro_rules`, `include`), passé
+/// dans l'appel d'une macro hors de la liste blanche, qui pourrait le recombiner ; ou écrit dans des jetons.
+#[test]
+fn r8_sources_3_un_mot_qui_lie_dans_l_appel_d_une_macro_maison_arrete_la_compilation() {
+    for texte in [
+        "macro_rules! jette { ($a:expr) => { \"\" }; }\nmacro_rules! pose { ($($t:tt)*) => { $($t)* }; }\n\
+         pose!(mod alloc { pub(crate) use jette as vec; });\nfn main() { let x: &str = alloc::vec!(TR(\"motsecret\", \
+         \"secretword\")); println!(\"bonjour{x}\"); }\n",
+        "pose!(mod x {} use y;);\n",
+        "pose!(use autre::choix as format;);\n",
+        "pose!(extern crate autre as std;);\n",
+        "pose!(macro_rules! format { ($a:expr) => { \"\" }; });\n",
+        "autre::pose! { include!(\"definitions.inc\"); }\n",
+        "fn a() { pose!(r#include); }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "dans l'appel de la macro");
+    }
+    for texte in [
+        "macro_rules! m { () => { include!(\"definitions.inc\") }; }\n",
+        "macro_rules! m { () => { extern { fn f(); } }; }\n",
+        "macro_rules! m { () => { macro_rules! n { () => {} } }; }\n",
+        "macro_rules! m { () => { r#macro_rules! n { () => {} } }; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "lu jeton par jeton");
+    }
+    // Témoins : une macro maison appelée avec des mots ordinaires (`r#mod` en est un), et une macro admise.
+    assert_eq!(
+        un(
+            "fn a() { pose!(x y z); pose!(r#mod); let _ = format!(\"{}\", TR(\"vrai\", \"real\")); \
+             let _ = vec![1, 2]; }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+/// 8e passe : un fichier que la lecture ne suivrait pas arrête la compilation : un module du programme hors de src/,
+/// `#[macro_use]`, un `include!` autre que celui de la base des fabricants, et les détours par `use` vers eux.
+#[test]
+fn r8_sources_4_un_fichier_non_lu_arrete_la_compilation() {
+    refuse(
+        &[("src/main.rs", "#[path = \"../hors/m.rs\"]\nmod m;\n")],
+        "hors de src/",
+    );
+    refuse(
+        &[
+            ("src/main.rs", "mod a;\n"),
+            ("src/a.rs", "#[path = \"../../hors/m.rs\"]\nmod m;\n"),
+        ],
+        "hors de src/",
+    );
+    for texte in [
+        "#[macro_use]\nmod m {}\n",
+        "#[cfg_attr(unix, macro_use)]\nmod m {}\n",
+        "#[macro_use]\nextern crate autre;\n",
+        "#![macro_use]\nfn a() {}\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "macro_use");
+    }
+    for texte in [
+        "include!(\"definitions.inc\");\n",
+        "fn a() -> &'static str { include!(\"texte.inc\") }\n",
+        "mod base { include!(concat!(env!(\"OUT_DIR\"), \"/autre.rs\")); }\n",
+        "mod base { std::include!(concat!(env!(\"OUT_DIR\"), \"/autre.rs\")); }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "include!");
+    }
+    refuse(&[("src/main.rs", "use std::include as i;\n")], "renomme include!");
+    refuse(
+        &[("src/main.rs", "use m::alloc::{self};\n")],
+        "donne le nom d'un paquet admis",
+    );
+    // Témoins : la forme connue de src/reseau/scan.rs, un module hors de src/ sous `#[cfg(kani)]` (une preuve), et
+    // un `#[macro_use]` dans un module d'essais.
+    assert_eq!(
+        un(
+            "mod base {\n    include!(concat!(env!(\"OUT_DIR\"), \"/fabricants.rs\"));\n}\n\
+             #[cfg(kani)]\n#[path = \"../outils/preuves/p.rs\"]\nmod preuve;\n\
+             #[cfg(test)]\n#[macro_use]\nmod essais {}\nfn a() { TR(\"vrai\", \"real\"); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+/// 8e passe : `use std::alloc;` et `use core::alloc;` importent le paquet sous son propre nom ; ils passent. Un refus
+/// dit quoi écrire à la place.
+#[test]
+fn r8_sources_5_un_paquet_admis_importe_sous_son_nom_est_lu() {
+    for texte in [
+        "use std::alloc;\n",
+        "use core::alloc;\n",
+        "use std::alloc::{self};\n",
+        "use std::{alloc, fmt};\n",
+    ] {
+        assert_eq!(
+            un(&format!("{texte}fn a() {{ TR(\"vrai\", \"real\"); }}\n")),
+            attendus(&["vrai", "real"]),
+            "{texte}"
+        );
+    }
+    for (texte, complet) in [
+        ("use autre as std;\n", "autre"),
+        ("use crate::m::alloc;\n", "crate::m::alloc"),
+    ] {
+        refuse(&[("src/main.rs", texte)], &format!("« use {complet} as autre_nom; »"));
+    }
+}
+
+/// Le modèle des couleurs partagé avec fenetre/ n'est pas lu au build (hors de src/) : cet essai le passe aux mêmes
+/// règles que src/, pour qu'il ne cache rien (ni `macro_rules! format`, ni `mod alloc`, ni texte).
+#[test]
+fn le_modele_partage_hors_de_src_suit_les_regles() {
+    let modele = include_str!("../../../fenetre/src/couleurs.rs");
+    let sources = vec![
+        (PathBuf::from("src/main.rs"), String::from("mod modele;\n")),
+        (PathBuf::from("src/modele.rs"), modele.to_string()),
+    ];
+    match vocabulaire(&sources) {
+        Ok(mots) => assert!(mots.is_empty(), "le modèle a des textes : {mots:?}"),
+        Err(Illisible(e)) => panic!("{e}"),
+    }
 }

@@ -1602,7 +1602,7 @@ fn repondre_certain(l: &Lance, c: crate::protection::sources::Certitude, etat: &
     // même (comme le blocage, « sauf une menace certaine ») et l'arrêt est dit : une alerte déclarée normale ne doit
     // pas laisser tourner un logiciel malveillant connu.
     let normale = crate::protection::normales::est_normale(&cle);
-    let nom_aff = crate::ui::affichable(objet);
+    let nom_aff = crate::machine::chasse::nom_montre(objet);
     let decision = match p.chemin.as_deref() {
         Some(chemin) => decider(faits_de(l.pid, &p.nom, chemin, tenu)),
         None => Err(Exception::SansChemin),

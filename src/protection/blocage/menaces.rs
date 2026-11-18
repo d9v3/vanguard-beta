@@ -219,7 +219,7 @@ fn dossier_de_travail(pid: u32) -> Option<PathBuf> {
 
 /// La menace d'un programme en marche jugé dangereux.
 fn menace_programme(p: &EnMarche, j: Jugement) -> Menace {
-    let nom = affichable(&p.nom);
+    let nom = crate::machine::chasse::nom_montre(&p.nom);
     let raison = j.raison;
     let dossier = dossier_de_travail(p.pid);
     let fichier = a_isoler(p, j.script.as_deref(), dossier.as_deref(), Path::is_file)

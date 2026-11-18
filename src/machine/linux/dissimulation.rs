@@ -101,7 +101,11 @@ fn enquete(c: Constat, noyau: bool, outils: &[&str]) -> Constat {
 
 /// Un processus tel qu'il est montré : son nom, choisi par qui l'a lancé, rendu inoffensif.
 fn processus_montre(pid: u32, nom: &str) -> String {
-    trf!("« {} » (PID {pid})", "“{}” (PID {pid})", crate::ui::affichable(nom))
+    trf!(
+        "« {} » (PID {pid})",
+        "“{}” (PID {pid})",
+        crate::machine::chasse::nom_montre(nom)
+    )
 }
 
 /// Au plus `n` éléments, puis « et k autre(s) ».

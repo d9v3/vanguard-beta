@@ -977,19 +977,25 @@ pub(crate) fn en_marche() -> Option<(Vec<EnMarche>, HashSet<u32>)> {
     Some((liste, intouchables))
 }
 
-/// Le nom d'un programme tel qu'il est montré entre guillemets : rendu inoffensif (`affichable`), et sans aucun
-/// guillemet à lui (« » “ ” " et tout ce que la porte MCP ramène à « " ») : chacun devient « ' ». Ce nom est choisi par
-/// qui a lancé le programme ; un guillemet dedans ferait croire à la porte (`porte_mcp::vues`, `debut_du_nom`) que le
-/// nom commence plus loin, et ses parenthèses (« b) "c ») fermeraient l'extrait d'avant, cachant l'alerte du programme
-/// (7e passe, R7-VUES-1). Corrigé ici, là où le nom est écrit, plutôt que deviné à la lecture : la porte retrouve
-/// ainsi le début du nom à coup sûr.
+/// Le nom d'un programme tel qu'il est montré entre guillemets : rendu inoffensif (`affichable`), sans aucun guillemet
+/// ni parenthèse à lui (et sans rien que la porte MCP ramène à l'un d'eux, pleine chasse comprise) : un guillemet
+/// devient « ' », une parenthèse un crochet. Ce nom est choisi par qui a lancé le programme ; la porte
+/// (`porte_mcp::vues`) se repère sur le nom entre guillemets et sur le « (PID n) » qui le suit. Un guillemet dans le
+/// nom (« b) "c ») lui ferait chercher le début du nom plus loin (7e passe, R7-VUES-1), un faux « (PID 5) » (« z (PID
+/// 5) ( ») lui ferait prendre le nom pour un autre programme (8e passe, R8-VUES-1) : chaque fois, des alertes
+/// cachées. Corrigé ici, là où le nom est écrit, plutôt que deviné à la lecture.
 pub(crate) fn nom_montre(nom: &str) -> String {
     affichable(nom)
         .chars()
         .map(|x| {
             let mut un = [0; 4];
-            if crate::amelioration::texte::normalise(x.encode_utf8(&mut un)).contains('"') {
+            let vu = crate::amelioration::texte::normalise(x.encode_utf8(&mut un));
+            if vu.contains('"') {
                 '\''
+            } else if vu.contains('(') {
+                '['
+            } else if vu.contains(')') {
+                ']'
             } else {
                 x
             }

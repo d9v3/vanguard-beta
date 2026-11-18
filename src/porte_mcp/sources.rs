@@ -29,11 +29,15 @@
 //! la lecture les prendrait tous pour du programme ; plutôt que de deviner ses bras, la compilation s'arrête et dit de
 //! l'ajouter à la liste après l'avoir jugée (6e passe, R6-SOURCES-1).
 //!
-//! Dans un corps lu jeton par jeton, un nom n'est pas suivi : une macro nommée par une métavariable (`$m!`,
-//! `$m::format!`) n'est jamais admise, un attribut écrit par une métavariable (`#[$m]`, `# $a`) arrête la compilation
-//! si le corps contient un texte, et toute déclaration (`use`, `mod`, `extern crate`, `macro_rules!`) l'arrête (7e
-//! passe, R7-SOURCES-1 à 3). Dans le code, un module, un `use` ou un `extern crate` ne prend pas le nom d'un paquet
-//! admis (`mod alloc`).
+//! Une métavariable peut valoir n'importe quel jeton (le nom d'une macro, « ! », « # », `mod`) : refuser des jetons
+//! écrits en clair laisse toujours un voisin. Deux règles d'ensemble, donc (8e passe) :
+//! - le corps lu jeton par jeton d'une macro qui contient un texte n'a aucune métavariable ;
+//! - un mot qui lie un nom ou tire un fichier (`use`, `mod`, `extern`, `macro`, `macro_rules`, `include`) n'est
+//!   jamais dans des jetons, ni dans l'appel d'une macro hors de la liste blanche (elle pourrait le recombiner).
+//!
+//! Dans le code, un module, un `use` ou un `extern crate` ne prend pas le nom d'un paquet admis (`mod alloc`) ; un
+//! module du programme hors de src/, un `#[macro_use]` et un `include!` autre que celui d'OUT_DIR arrêtent la
+//! compilation : ils feraient entrer des macros ou des modules que la lecture ne lit pas.
 //!
 //! Rien n'est ignoré en silence, la compilation s'arrête : un fichier que syn ne sait pas lire, une forme qu'il garde
 //! sans la comprendre (`Verbatim`), un `cfg` mal écrit, un module du programme sans fichier, un attribut d'essai dans
@@ -86,6 +90,8 @@ const MACROS_ADMISES: [&str; 11] = [
 /// `serde_json::json!`) ou importée par un `use` : `autre::format!` est une autre macro, qui pourrait choisir par
 /// `cfg` sous un nom admis.
 const RACINES_ADMISES: [&str; 4] = ["std", "core", "alloc", "serde_json"];
+/// Les seuls modules du programme hors de src/ : build.rs ne les lit pas, un essai les passe aux règles de la lecture.
+const HORS_DE_SRC: [&str; 1] = ["fenetre/src/couleurs.rs"];
 
 /// Une forme que la lecture ne sait pas juger, avec ce qu'elle a vu : build.rs arrête la compilation sur elle. Un type
 /// à part plutôt que `Echec` du programme, que build.rs ne peut pas atteindre.
@@ -121,9 +127,20 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
             _ => {}
         }
         if !module.fichier.starts_with("src") {
-            // Un fichier hors de src/ (le modèle des couleurs partagé avec fenetre/) : ses mots ne sont pas
-            // retenus. Le sens sûr : un mot de moins dans la liste blanche est masqué, jamais laissé en clair.
-            continue;
+            // Un module d'essais (ou de preuves) hors de src/ (outils/preuves/) : rien à lire. Le modèle des couleurs
+            // partagé avec fenetre/ : ses mots ne sont pas retenus (le sens sûr, un mot de moins est masqué), et un
+            // essai le passe aux mêmes règles que src/ (`le_modele_partage_hors_de_src_suit_les_regles`).
+            if module.essai || HORS_DE_SRC.iter().any(|f| module.fichier == Path::new(f)) {
+                continue;
+            }
+            // Un autre module du programme hors de src/ ne serait pas lu (build.rs ne lit que src/) : un
+            // `macro_rules! format` ou un `mod alloc` posé là cacherait une macro admise (8e passe, R8-SOURCES-4).
+            return Err(Illisible(format!(
+                "vocabulaire : {} déclare un module du programme hors de src/ ({}) : il ne serait pas lu, forme non \
+                 jugée",
+                module.par,
+                module.fichier.display()
+            )));
         }
         let Some(texte) = textes.get(&module.fichier) else {
             if module.essai {
@@ -252,6 +269,12 @@ impl Lecteur<'_> {
             Ok(false) => {}
             Err(Illisible(e)) => self.erreur(&e),
         }
+        // `#[macro_use]` répand les macros d'un module ou d'un paquet sous leur nom : un `format` venu de là (d'un
+        // fichier non lu, ou d'un autre paquet) cacherait la macro admise (8e passe, R8-SOURCES-4). Le programme n'en
+        // a aucun.
+        if !self.essai && attributs.iter().any(|a| nomme(&a.meta, "macro_use")) {
+            self.erreur("attribut « macro_use » : il répand des macros que la lecture ne suit pas, forme non jugée");
+        }
         suite(self);
         self.essai = avant;
     }
@@ -269,6 +292,18 @@ impl Lecteur<'_> {
         } else {
             let avant = self.texte_au_corps;
             self.texte_au_corps = self.texte > 0 || un_texte(flux);
+            // Une métavariable peut valoir n'importe quel jeton : le nom d'une autre macro (`$m!`, `$($p)::+ !`), le
+            // « ! » lui-même, un « # » devant des crochets écrits en clair (`$h[cfg(test)]`). Refuser des jetons
+            // écrits en clair laisserait toujours un voisin (7e et 8e passes) : près d'un texte, aucune métavariable
+            // (8e passe, R8-SOURCES-1 et 2). Le programme n'en a aucune là : ses macros à texte sont sans « $ ».
+            if self.texte_au_corps && un_dollar(flux) {
+                self.erreur(
+                    "métavariable (« $… ») dans le corps d'une macro qui contient un texte : elle peut valoir \
+                     n'importe quel jeton (le nom d'une autre macro, « ! », « # »), la lecture ne sait pas ce qui \
+                     entoure le texte, forme non jugée ; écrire le texte hors de la macro, ou la macro sans \
+                     métavariable",
+                );
+            }
             self.jetons(flux.clone());
             self.texte_au_corps = avant;
         }
@@ -333,34 +368,25 @@ impl Lecteur<'_> {
                             "« {nom} » dans le corps d'une macro : bras choisis par cfg, forme non jugée"
                         ));
                     }
-                    // Une déclaration dans des jetons donne un nom que la lecture ne suit pas : `mod alloc { use
-                    // jette as vec; }` ferait de `alloc::vec!` une macro inconnue sous un chemin admis, et une
-                    // métavariable (`mod $m`, `use $p as $n`, `macro_rules! $n`) peut donner n'importe quel nom (7e
-                    // passe, R7-SOURCES-3). Le mot-clé seul compte : `r#mod` est un nom ordinaire.
-                    let suivant_est = |x: &str| matches!(suivant, Some(TokenTree::Ident(s)) if *s == x);
-                    let declare = match brut.as_str() {
-                        "use" | "mod" => true,
-                        "extern" => suivant_est("crate"),
-                        "macro_rules" => matches!(suivant, Some(TokenTree::Punct(b)) if b.as_char() == '!'),
-                        _ => false,
-                    };
-                    if declare {
+                    // Un mot qui lie un nom (`mod alloc { use jette as vec; }` ferait de `alloc::vec!` une macro
+                    // inconnue sous un chemin admis) ou qui tire un fichier non lu (`include!`) : la lecture ne le
+                    // suit pas dans des jetons, où une métavariable peut aussi donner le nom (7e passe,
+                    // R7-SOURCES-3 ; 8e passe, R8-SOURCES-3 et 4).
+                    if mot_qui_lie(ident) {
                         self.erreur(&format!(
-                            "« {brut} » dans le corps d'une macro lu jeton par jeton : le nom qu'il donne n'est pas \
-                             suivi (il pourrait cacher une macro ou un paquet admis), forme non jugée"
+                            "« {brut} » dans le corps d'une macro lu jeton par jeton : le nom qu'il donne (ou le \
+                             fichier qu'il tire) n'est pas suivi, il pourrait cacher une macro ou un paquet admis, \
+                             forme non jugée"
                         ));
                     }
-                    // Un nom pris d'une métavariable (`$m!`) n'est connu qu'à l'appel : jamais une macro connue,
-                    // toujours une autre macro, jugée par la liste blanche (7e passe, R7-SOURCES-1).
-                    let meta = i >= 1 && matches!(&arbres[i - 1], TokenTree::Punct(d) if d.as_char() == '$');
                     if let (Some(TokenTree::Punct(b)), Some(TokenTree::Group(g))) = (suivant, arbres.get(i + 2))
                         && b.as_char() == '!'
                     {
-                        if !meta && MACROS_D_ESSAIS.contains(&nom.as_str()) {
+                        if MACROS_D_ESSAIS.contains(&nom.as_str()) {
                             i += 3;
                             continue;
                         }
-                        if !meta && MACROS_DE_TEXTE.contains(&nom.as_str()) {
+                        if MACROS_DE_TEXTE.contains(&nom.as_str()) {
                             self.texte += 1;
                             self.jetons(g.stream());
                             self.texte -= 1;
@@ -399,17 +425,38 @@ impl Lecteur<'_> {
     /// Sinon `use autre::choix as format;` ferait passer une macro inconnue sous un nom de la liste blanche.
     fn importe(&mut self, chemin: &mut Vec<String>, arbre: &syn::UseTree) {
         // Le nom donné dans ce fichier, et le chemin complet de ce qu'il désigne.
-        let juge = |l: &mut Self, nom: &syn::Ident, origine: &syn::Ident| {
-            let nom = sans_r(&nom.to_string()).to_string();
-            let origine = sans_r(&origine.to_string()).to_string();
+        let juge = |l: &mut Self, chemin: &[String], nom: &syn::Ident, origine: &syn::Ident| {
+            let mut chemin = chemin.to_vec();
+            let mut nom = sans_r(&nom.to_string()).to_string();
+            let mut origine = sans_r(&origine.to_string()).to_string();
+            // `use m::alloc::{self};` donne le nom « alloc » : jugé par le dernier segment (8e passe, R8-SOURCES-4).
+            if origine == "self"
+                && let Some(dernier) = chemin.pop()
+            {
+                if nom == "self" {
+                    nom.clone_from(&dernier);
+                }
+                origine = dernier;
+            }
             let mut complet = chemin.clone();
             complet.push(origine.clone());
             // Le nom d'un paquet admis donné à autre chose (`use autre as std;`) : `std::format!` serait une macro
-            // inconnue sous un chemin admis (7e passe, R7-SOURCES-3). Seul `use serde_json;` le donne au paquet même.
-            if RACINES_ADMISES.contains(&nom.as_str()) && !(chemin.is_empty() && nom == origine) {
+            // inconnue sous un chemin admis (7e passe, R7-SOURCES-3). Il reste donné au paquet même (`use
+            // serde_json;`) ou à un module d'un paquet admis sous son propre nom (`use std::alloc;`), qui n'a pas
+            // d'autre macro admise que celles du paquet (8e passe, R8-SOURCES-5).
+            let d_un_admis = chemin.len() <= 1 && chemin.iter().all(|r| RACINES_ADMISES.contains(&r.as_str()));
+            if RACINES_ADMISES.contains(&nom.as_str()) && !(d_un_admis && nom == origine) {
                 l.erreur(&format!(
-                    "« use {} » donne le nom d'un paquet admis (« {nom} ») à autre chose : il cacherait le paquet, \
-                     forme non jugée",
+                    "« use {complet} » donne le nom d'un paquet admis (« {nom} ») à autre chose : il cacherait le \
+                     paquet, forme non jugée ; importer sous un autre nom (« use {complet} as autre_nom; »)",
+                    complet = complet.join("::")
+                ));
+            }
+            // `include` renommé (`use std::include as i;`) tirerait un fichier sous un autre nom, sans être vu.
+            if origine == "include" && nom != origine {
+                l.erreur(&format!(
+                    "« use {} as {nom} » renomme include! : le fichier qu'il tirerait ne serait pas lu, forme non \
+                     jugée",
                     complet.join("::")
                 ));
             }
@@ -436,8 +483,8 @@ impl Lecteur<'_> {
                 self.importe(chemin, &p.tree);
                 chemin.pop();
             }
-            syn::UseTree::Name(n) => juge(self, &n.ident, &n.ident),
-            syn::UseTree::Rename(r) => juge(self, &r.rename, &r.ident),
+            syn::UseTree::Name(n) => juge(self, chemin, &n.ident, &n.ident),
+            syn::UseTree::Rename(r) => juge(self, chemin, &r.rename, &r.ident),
             syn::UseTree::Group(g) => {
                 for arbre in &g.items {
                     self.importe(chemin, arbre);
@@ -495,9 +542,8 @@ fn admise(chemin: &[String]) -> bool {
     MACROS_ADMISES.contains(&nom) && (chemin.len() == 1 || RACINES_ADMISES.contains(&chemin[0].as_str()))
 }
 
-/// Le chemin d'une macro appelée dans des jetons, nom compris (`a::b::c` pour `c!` au jeton `i`). Un segment pris
-/// d'une métavariable (`$m!`, `$m::format!`) garde son « $ » : ce qu'il désigne n'est connu qu'à l'appel, jamais admis
-/// (7e passe, R7-SOURCES-1).
+/// Le chemin d'une macro appelée dans des jetons, nom compris (`a::b::c` pour `c!` au jeton `i`). Une métavariable
+/// (`$m!`, `$m::format!`) n'y arrive pas près d'un texte : le corps est refusé avant (8e passe).
 fn chemin_de(arbres: &[TokenTree], mut i: usize) -> Vec<String> {
     let nom = match arbres.get(i) {
         Some(TokenTree::Ident(nom)) => sans_r(&nom.to_string()).to_string(),
@@ -520,13 +566,32 @@ fn chemin_de(arbres: &[TokenTree], mut i: usize) -> Vec<String> {
             }
         }
     }
-    if i >= 1
-        && matches!(&arbres[i - 1], TokenTree::Punct(d) if d.as_char() == '$')
-        && let Some(premier) = chemin.first_mut()
-    {
-        premier.insert(0, '$');
-    }
     chemin
+}
+
+/// Un mot qui lie un nom (`use`, `mod`, `extern`, `macro`, `macro_rules`) ou qui tire un fichier (`include`) : là où la
+/// lecture ne relit pas le code (jetons, appel d'une macro maison qui peut les recombiner), elle ne suit pas le nom
+/// qu'il donne. Un mot-clé l'est écrit tel quel (`r#mod` est un nom ordinaire) ; `macro_rules` et `include` sont des
+/// noms, que `r#` ne change pas.
+fn mot_qui_lie(ident: &proc_macro2::Ident) -> bool {
+    let brut = ident.to_string();
+    ["use", "mod", "extern", "macro"].contains(&brut.as_str()) || ["macro_rules", "include"].contains(&sans_r(&brut))
+}
+
+/// Le premier mot qui lie un nom dans ces jetons, à toute profondeur.
+fn un_mot_qui_lie(flux: &TokenStream) -> Option<String> {
+    flux.clone().into_iter().find_map(|arbre| match arbre {
+        TokenTree::Ident(i) if mot_qui_lie(&i) => Some(i.to_string()),
+        TokenTree::Group(g) => un_mot_qui_lie(&g.stream()),
+        _ => None,
+    })
+}
+
+/// La seule forme d'`include!` du programme (src/reseau/scan.rs) : un fichier écrit par build.rs dans OUT_DIR. Tout
+/// autre fichier inclus ne serait pas lu par la lecture (8e passe, R8-SOURCES-4).
+fn inclusion_connue(flux: &TokenStream) -> bool {
+    let sans_blanc: String = flux.to_string().chars().filter(|x| !x.is_whitespace()).collect();
+    sans_blanc == "concat!(env!(\"OUT_DIR\"),\"/fabricants.rs\")"
 }
 
 /// Ces jetons contiennent-ils un « $ » (une métavariable), à toute profondeur ?
@@ -551,6 +616,23 @@ fn est(chemin: &syn::Path, nom: &str) -> bool {
             .segments
             .first()
             .is_some_and(|s| s.arguments.is_none() && sans_r(&s.ident.to_string()) == nom)
+}
+
+/// L'attribut est-il `nom`, seul ou posé par un `cfg_attr` à n'importe quelle profondeur ? Dans le doute (le mot
+/// qui serait autre chose dans un `cfg_attr`), oui.
+fn nomme(meta: &Meta, nom: &str) -> bool {
+    fn dedans(flux: TokenStream, nom: &str) -> bool {
+        flux.into_iter().any(|arbre| match arbre {
+            TokenTree::Ident(i) => sans_r(&i.to_string()) == nom,
+            TokenTree::Group(g) => dedans(g.stream(), nom),
+            _ => false,
+        })
+    }
+    meta.path()
+        .segments
+        .last()
+        .is_some_and(|s| sans_r(&s.ident.to_string()) == nom)
+        || matches!(meta, Meta::List(liste) if est(&liste.path, "cfg_attr") && dedans(liste.tokens.clone(), nom))
 }
 
 /// L'attribut est-il un `cfg_attr` qui nomme `path`, à n'importe quelle profondeur (`cfg_attr(a, cfg_attr(b, path =
@@ -1050,6 +1132,33 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
             return;
         }
         let texte = MACROS_DE_TEXTE.contains(&nom);
+        let chemin: Vec<String> = m
+            .path
+            .segments
+            .iter()
+            .map(|s| sans_r(&s.ident.to_string()).to_string())
+            .collect();
+        // Un fichier inclus n'est pas lu : seule la forme connue (OUT_DIR, écrit par build.rs) passe.
+        if nom == "include" && !inclusion_connue(&m.tokens) {
+            self.erreur(&format!(
+                "« include!({}) » : le fichier inclus n'est pas lu (il pourrait poser un module ou une macro au nom \
+                 d'un admis), forme non jugée ; seule la forme connue (OUT_DIR, src/reseau/scan.rs) passe",
+                m.tokens
+            ));
+        }
+        // Une macro maison peut recombiner ce qu'on lui passe : `pose!(mod x {} use y;)` se lit comme deux éléments
+        // permis, mais la macro peut en faire `mod alloc { use jette as vec; }` (8e passe, R8-SOURCES-3). Hors de la
+        // liste blanche (qui ne recombine rien), aucun mot qui lie un nom dans ses arguments.
+        if !texte
+            && !admise(&chemin)
+            && let Some(mot) = un_mot_qui_lie(&m.tokens)
+        {
+            self.erreur(&format!(
+                "« {mot} » dans l'appel de la macro « {}! », hors de la liste blanche : elle pourrait le recombiner \
+                 avec un autre nom (un module ou une macro au nom d'un admis), forme non jugée",
+                chemin.join("::")
+            ));
+        }
         if texte {
             self.texte += 1;
         }
@@ -1057,12 +1166,6 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         if texte {
             self.texte -= 1;
         } else {
-            let chemin: Vec<String> = m
-                .path
-                .segments
-                .iter()
-                .map(|s| sans_r(&s.ident.to_string()).to_string())
-                .collect();
             self.admise(&chemin, &m.tokens);
         }
     }

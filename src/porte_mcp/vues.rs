@@ -1489,6 +1489,75 @@ mod tests {
         }
     }
 
+    /// 8e passe, R8-VUES-1 : un nom qui écrit lui-même un faux « (PID n) » (« z (PID 5) ( », « z) (PID 5) »)
+    /// faisait croire à la vue qu'un programme finissait plus tôt ou plus tard. `nom_montre` change ses parenthèses
+    /// en crochets : chacun des trois programmes reste un, avec sa raison, et aucun extrait ne sort.
+    #[test]
+    fn r8_vues_1_un_faux_pid_dans_le_nom_ne_cache_pas_le_programme() {
+        use crate::machine::chasse::{EnMarche, Soupcon, montrer, nom_montre};
+        let alerte = |noms: [&str; 3], extrait_a: bool| {
+            let extraits = [extrait_a.then_some("/tmp/a -x"), Some("/tmp/b"), Some("/tmp/c")];
+            let programmes: Vec<String> = [11, 22, 33]
+                .into_iter()
+                .zip(noms)
+                .zip(extraits)
+                .map(|((pid, nom), extrait)| {
+                    let p = EnMarche {
+                        pid,
+                        nom: nom.to_string(),
+                        ..EnMarche::default()
+                    };
+                    let s = Soupcon {
+                        niveau: crate::risk::Niveau::Eleve,
+                        raison: "programme inconnu",
+                        extrait: extrait.map(str::to_string),
+                        efface: false,
+                    };
+                    montrer(&p, &s)
+                })
+                .collect();
+            crate::trf!(
+                "Programme(s) en marche qui ont la forme d'une attaque : {}.",
+                "Running program(s) shaped like an attack: {}.",
+                crate::ui::resume(&programmes, 4, crate::tr!(" ; ", "; "))
+            )
+        };
+        let noms = [
+            "z (PID 5) (",
+            "z) (PID 5)",
+            "z (PID 5)",
+            "(PID 5) )",
+            "z （PID 5） (",
+            "z » (PID 5) « (",
+        ];
+        for anglais in [false, true] {
+            for nom in noms {
+                assert!(
+                    !nom_montre(nom).contains(['"', '(', ')']),
+                    "{nom} : {}",
+                    nom_montre(nom)
+                );
+                for place in 0..3 {
+                    for extrait_a in [true, false] {
+                        let mut trois = ["a", "b", "c"];
+                        trois[place] = nom;
+                        let fabrique = || alerte(trois, extrait_a);
+                        let brut = if anglais {
+                            crate::langue::en_anglais(fabrique)
+                        } else {
+                            fabrique()
+                        };
+                        let s = sortie(&brut);
+                        assert_eq!(s.matches("programme inconnu").count(), 3, "{brut:?} : {s:?}");
+                        for extrait in ["/tmp/a", "-x", "/tmp/b", "/tmp/c"] {
+                            assert!(!s.contains(extrait), "{extrait} sorti : {brut:?} : {s:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// 4e re-contrôle VUES-3 : les pluriels d'annonce qui manquaient (identifiants, logins, seeds, phrases de
     /// récupération, recovery phrases) retiennent la suite.
     #[test]
