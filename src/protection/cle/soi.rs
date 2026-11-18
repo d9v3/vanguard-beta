@@ -343,6 +343,43 @@ pub(crate) mod essais {
     /// Un programme qui attend, aux octets connus : `sleep` du système.
     pub(crate) const ATTEND: &str = "/usr/bin/sleep";
 
+    /// Le nom du lien (`Lien`) par lequel `ATTEND` est lancé. Un `sleep` à programme unique (les coreutils d'Ubuntu
+    /// 26.04, uutils, des liens durs d'un seul programme de 11 Mo) choisit l'outil par le nom du fichier lancé (celui
+    /// donné à execve, puis `argv[0]`) et s'arrête aussitôt sous un autre (« coreutils: unknown program 'vanguard' ») :
+    /// copié en `…/vanguard`, ou lancé par `/proc/<pid>/fd/<n>` sous `argv[0]` « vanguard », il ne tournait pas, et les
+    /// essais qui le voulaient en marche échouaient sur la CI. Par un lien de ce nom, il tourne partout ; le noyau
+    /// suit le lien, donc l'image du processus (`/proc/<pid>/exe`), seule lue par la reconnaissance, ne change pas.
+    pub(crate) const NOM_DE_ATTEND: &str = "sleep";
+
+    /// Un lien symbolique nommé `NOM_DE_ATTEND` vers `cible`, dans un dossier neuf des essais, effacé avec lui.
+    pub(crate) struct Lien {
+        dossier: std::path::PathBuf,
+        pub(crate) chemin: std::path::PathBuf,
+    }
+
+    impl Lien {
+        /// `None` si le dossier des essais refuse le lien.
+        pub(crate) fn vers(cible: &Path) -> Option<Lien> {
+            static NUMERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = NUMERO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dossier = crate::essais::temporaire().join(format!("vanguard-soi-lien-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dossier);
+            std::fs::create_dir_all(&dossier).ok()?;
+            let lien = Lien {
+                chemin: dossier.join(NOM_DE_ATTEND),
+                dossier,
+            };
+            std::os::unix::fs::symlink(cible, &lien.chemin).ok()?;
+            Some(lien)
+        }
+    }
+
+    impl Drop for Lien {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dossier);
+        }
+    }
+
     /// Un processus lancé, arrêté à la fin de l'essai même s'il échoue.
     pub(crate) struct Lance(pub std::process::Child);
 
@@ -353,11 +390,17 @@ pub(crate) mod essais {
         }
     }
 
-    /// `octets` lancés depuis un memfd scellé nommé `nom`, comme la fenêtre lance `vanguard` (`arg0` « vanguard ») ;
-    /// `None` si le noyau refuse (memfd non exécutable).
+    /// `octets` (ceux d'`ATTEND`) lancés depuis un memfd scellé nommé `nom`, comme la fenêtre lance `vanguard` (`arg0`
+    /// « vanguard »), par un `Lien` ; `None` si le noyau refuse (memfd non exécutable). Lancé mais arrêté : l'essai
+    /// échoue (`arrete_trop_tot`), jamais sauté pour une autre raison que la sienne.
     pub(crate) fn depuis_un_memfd(nom: &str, octets: &[u8], args: &[&str]) -> Option<Lance> {
         let copie = crate::demarrage::memfd::scelle(nom, octets).ok()?;
-        let fils = std::process::Command::new(format!("/proc/self/fd/{}", copie.as_raw_fd()))
+        let lien = Lien::vers(Path::new(&format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            copie.as_raw_fd()
+        )))?;
+        let fils = std::process::Command::new(&lien.chemin)
             .arg0("vanguard")
             .args(args)
             .stdin(std::process::Stdio::null())
@@ -365,8 +408,24 @@ pub(crate) mod essais {
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()?;
-        let fils = Lance(fils);
-        attendre_l_image(fils.0.id(), Path::new(&format!("/memfd:{nom} (deleted)"))).then_some(fils)
+        let mut fils = Lance(fils);
+        let vu = attendre_l_image(fils.0.id(), Path::new(&format!("/memfd:{nom} (deleted)")));
+        arrete_trop_tot(&mut fils);
+        vu.then_some(fils)
+    }
+
+    /// Le programme lancé s'est-il arrêté (regardé pendant 100 ms) ? L'essai échoue alors, avec son code de sortie :
+    /// un programme qui ne tourne pas ne prouve rien (un « ce n'est pas Vanguard » y serait vrai d'office), et ne doit
+    /// pas passer pour un memfd refusé.
+    pub(crate) fn arrete_trop_tot(fils: &mut Lance) {
+        for _ in 0..5 {
+            let fin = fils.0.try_wait().ok().flatten();
+            assert!(
+                fin.is_none(),
+                "le programme lancé s'est arrêté ({fin:?}) : il ne prouve rien"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     /// Le lien de /proc peut encore montrer le programme d'essai juste après le lancement (vu sous charge, avant
@@ -404,7 +463,8 @@ pub(crate) mod essais {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::essais::{
-        ATTEND, Lance, attendre_l_image, depuis_un_memfd, empreinte, soi_de_la_fenetre as dans_la_fenetre,
+        ATTEND, Lance, Lien, arrete_trop_tot, attendre_l_image, depuis_un_memfd, empreinte,
+        soi_de_la_fenetre as dans_la_fenetre,
     };
     use super::*;
     use crate::machine::chasse::{de_vanguard, en_marche_de};
@@ -556,7 +616,10 @@ mod tests {
         if std::fs::copy(ATTEND, &chemin).is_err() {
             return crate::essais::saute("sleep introuvable");
         }
-        let Ok(fils) = std::process::Command::new(&chemin)
+        let Some(lien) = Lien::vers(&chemin) else {
+            return crate::essais::saute("dossier des essais refusé");
+        };
+        let Ok(fils) = std::process::Command::new(&lien.chemin)
             .arg("30")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -565,9 +628,11 @@ mod tests {
         else {
             return crate::essais::saute("dossier des essais non exécutable");
         };
-        let fils = Lance(fils);
+        let mut fils = Lance(fils);
         let pid = fils.0.id();
-        if !attendre_l_image(pid, &chemin) {
+        let vu = attendre_l_image(pid, &chemin);
+        arrete_trop_tot(&mut fils);
+        if !vu {
             return crate::essais::saute("le programme lancé n'a pas pris son image en deux secondes");
         }
         let taille = std::fs::metadata(&chemin).unwrap().len();
@@ -717,7 +782,8 @@ mod tests {
 
     /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1) : un programme lance un enfant, puis se remplace (exec)
     /// par une image de Vanguard aux vrais octets. Le porteur est bien Vanguard, mais l'enfant né avant n'est pas de
-    /// lui : il reste dans le bilan. `sh -c 'sleep 37 & exec <memfd vanguard> 30'`, rejoué pour de vrai.
+    /// lui : il reste dans le bilan. `sh -c 'sleep 37 & exec <memfd vanguard> 30'`, rejoué pour de vrai ; le memfd est
+    /// lancé par un `Lien`, sous lequel un `sleep` à programme unique tourne.
     #[test]
     fn un_porteur_ne_cache_pas_l_enfant_d_avant() {
         use std::os::fd::AsRawFd;
@@ -728,9 +794,13 @@ mod tests {
             return crate::essais::saute("memfd refusé ici");
         };
         let image = format!("/proc/{}/fd/{}", std::process::id(), copie.as_raw_fd());
-        let porteur = Lance(
+        let Some(lien) = Lien::vers(Path::new(&image)) else {
+            return crate::essais::saute("dossier des essais refusé");
+        };
+        let mut porteur = Lance(
             std::process::Command::new("/bin/sh")
-                .args(["-c", "sleep 37 & exec \"$0\" 30", &image])
+                .args(["-c", "sleep 37 & exec \"$0\" 30"])
+                .arg(&lien.chemin)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -751,6 +821,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let gardes: Vec<Tue> = enfants.iter().map(|&e| Tue(e)).collect();
+        arrete_trop_tot(&mut porteur);
         if !fait {
             return crate::essais::saute("memfd non exécutable ici");
         }
