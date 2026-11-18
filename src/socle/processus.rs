@@ -144,7 +144,13 @@ pub(crate) fn debut(pid: u32) -> Option<u64> {
 #[cfg(target_os = "linux")]
 pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
     let dossier = Path::new("/proc").join(pid.to_string());
-    (0..ENFANTS_ESSAIS).find_map(|_| enfants_dans(&dossier))
+    premiere_lecture(|| enfants_dans(&dossier))
+}
+
+/// La première lecture réussie, en `ENFANTS_ESSAIS` essais au plus.
+#[cfg(target_os = "linux")]
+fn premiere_lecture<T>(mut lire: impl FnMut() -> Option<T>) -> Option<T> {
+    (0..ENFANTS_ESSAIS).find_map(|_| lire())
 }
 
 /// Les lectures de `enfants` au plus.
@@ -330,6 +336,25 @@ mod tests {
 
     /// Les enfants de tous les fils d'exécution, sans doublon ; un fichier illisible ou un mot qui n'est pas un numéro
     /// rend `None` (« peut-être des enfants »), jamais une liste vide.
+    /// Les enfants se relisent jusqu'à `ENFANTS_ESSAIS` fois : un fil parti pendant la lecture ne la fait pas
+    /// manquer ; une lecture toujours ratée s'arrête au bout du compte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enfants_relus_quatre_fois() {
+        let mut fois = 0;
+        let lu = premiere_lecture(|| {
+            fois += 1;
+            (fois == ENFANTS_ESSAIS).then_some(fois)
+        });
+        assert_eq!(lu, Some(ENFANTS_ESSAIS));
+        let mut fois = 0;
+        let rate: Option<()> = premiere_lecture(|| {
+            fois += 1;
+            None
+        });
+        assert_eq!((rate, fois), (None, ENFANTS_ESSAIS));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn enfants_de_tous_les_fils() {
