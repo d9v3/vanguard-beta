@@ -65,6 +65,13 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   nom, pas ses nombres). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots
   de Vanguard.
 
+- **Fenêtre : une rubrique en liste et page, en un clic.** Dans une fenêtre large, une rubrique montre à gauche la liste
+  de ses commandes (titre et état) et à droite la page de la commande choisie ; un clic dans la liste change la page
+  sans rien ajouter à Retour, ↑ et ↓ changent de commande, Entrée ou F5 la relancent, jamais pendant une saisie. Une
+  fenêtre étroite garde ses cartes. Une lecture rapide (3 min au plus, qui ne change rien), jamais lue ou lue il y a
+  plus d'une heure, se relance seule à l'ouverture de sa page, une fois. Une lecture longue et les scans du réseau
+  (appareils, audit du réseau, caméras cachées, NAT) ne partent jamais seuls : ils attendent le bouton « Lancer ».
+
 ## 15 novembre 2026 : version 0.96.0
 
 La 0.95 n'a pas été publiée : tout son travail est dans cette version.

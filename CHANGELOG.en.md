@@ -59,6 +59,13 @@ example, finds it, to rebuild it if needed.
   taken for an address even when named ("version 6.1.0.2" keeps its name, not its numbers). Through the assistants'
   door none of these forms comes out: they are not Vanguard's words.
 
+- **Window: a section as list and page, in one click.** In a wide window, a section shows the list of its commands
+  (title and state) on the left and the chosen command's page on the right; a click in the list changes the page without
+  adding anything to Back, ↑ and ↓ change command, Enter or F5 rerun it, never while typing. A narrow window keeps its
+  cards. A quick read (3 min at most, that changes nothing), never read or read more than an hour ago, reruns by itself
+  once when its page opens. A long read and the network scans (devices, network audit, hidden cameras, NAT) never start
+  by themselves: they wait for the "Run" button.
+
 ## November 15, 2026: version 0.96.0
 
 Version 0.95 was not published: all its work is in this version.
