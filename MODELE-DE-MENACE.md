@@ -698,8 +698,10 @@ gardes :
   va de même si sa naissance n'a pas été vue ou qu'une fiche a pu être oubliée depuis (table pleine, événements
   perdus). Au démarrage du veilleur, chaque Vanguard déjà en marche qui a un enfant, dans sa table ou chez le noyau
   (un enfant caché à la lecture de /proc compris, sans ligne de commande ni programme lisible), est aussi un porteur.
-  Après des événements perdus ou un balayage de la table, chaque Vanguard qui passe encore la marque est revu : un
-  autre départ (numéro repris après une fin perdue) ou une autre image en font un porteur. Les enfants sont lus
+  Après un balayage de la table, et dès des événements perdus puis avant chaque naissance ou exec lu tant que la file
+  n'a pas été vue vide (le noyau jette alors le reste en silence), les maillons d'avant ne passent plus la marque et
+  chaque Vanguard qui la passe encore est revu : un autre départ (numéro repris après une fin perdue), un départ
+  inconnu ou une autre image en font un porteur. Les enfants sont lus
   aussitôt le programme tenu, avant sa lecture et sa reconnaissance ; un Vanguard qui lance une commande avant cette
   lecture, ou dont un fil finit à chaque lecture, reste un porteur : course acceptée, au pire des alertes de trop.
   Sans enfant, le veilleur écarte ce Vanguard et ce qu'il lance ensuite, daté depuis son dernier exec. Le
