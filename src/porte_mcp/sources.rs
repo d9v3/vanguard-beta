@@ -20,6 +20,13 @@
 //! d'outil n'enlève rien, et une macro d'attribut garde le corps (9e passe, R9-SOURCES-1). Un module d'essais n'est lu
 //! que pour suivre ses propres modules, comme essais eux aussi. Un appel `proptest!` ou `quickcheck!` est un essai.
 //!
+//! Le programme publié est compilé sans la fonctionnalité `reception` : `cfg(feature = "x")` est jugé avec celles de
+//! cette compilation (build.rs les lit de Cargo), comme rustc. Trois formes de code compilé que le programme n'exécute
+//! jamais gardent leurs règles (jugées comme le reste) mais pas leurs textes : la branche qu'un `cfg!` fixe écarte, un
+//! élément dit mort (`allow(dead_code)`, `expect(dead_code)`, même par un `cfg_attr` dont la condition n'est pas
+//! fausse) et les fonctions de TEXTES_MORTS, une cause par ligne. C'est le sens sûr : un mot de moins est masqué, et
+//! chaque mot qui reste doit se trouver dans un programme publié (contrôle croisé V1, outils/vocabulaire-binaire.py).
+//!
 //! Tout nom que la lecture reconnaît à son nom (`NOMS_RESERVES` : les macros de texte, la liste blanche, les macros
 //! d'essais, `concat`, `include`, `test`, `bench`) ne se reprend pas : aucune définition (`macro_rules!`, `macro`) sous
 //! ce nom, aucun `use` qui le donne à autre chose, aucun appel par le chemin d'un autre paquet (9e passe,
@@ -28,7 +35,9 @@
 //!
 //! Ne sont lues que les chaînes des appels aux macros de texte (tr!, trf!, trp!, tre!, trw!, trwln!, trpr!, comme
 //! outils/textes.py), à toute profondeur dans leurs arguments ; jamais un commentaire ni une documentation (syn ne
-//! les garde pas comme du code). Le corps d'une macro est relu comme une liste d'expressions ou d'instructions ; s'il
+//! les garde pas comme du code), ni les arguments de `env!` et `cfg!` (un nom de variable, une condition : pas un
+//! texte du programme ; chaque mot du vocabulaire doit se trouver dans un programme publié, contrôle croisé V1 de
+//! outils/vocabulaire-binaire.py). Le corps d'une macro est relu comme une liste d'expressions ou d'instructions ; s'il
 //! n'en est pas une (`macro_rules!`, `matches!`), ses jetons sont parcourus pour trouver les appels de texte.
 //!
 //! Une macro autre que de texte, appelée dans un appel de texte ou dont le corps en contient un, doit être de la liste
@@ -81,7 +90,8 @@ const MACROS_DE_CFG: [&str; 2] = ["cfg_select", "cfg_match"];
 /// été jugée : elle ne choisit rien par `cfg` (une enveloppe comme `cfg_if!` en garderait un seul bras, la lecture
 /// les prendrait tous pour du programme). Toute autre macro à cet endroit arrête la compilation, quelle que soit sa
 /// forme (6e passe, R6-SOURCES-1) ; liste tirée des macros que le programme emploie vraiment autour de ses textes.
-/// `cfg!` ne rend qu'un booléen : les deux branches d'un `if cfg!(…)` sont compilées, toutes deux du programme.
+/// `cfg!` ne rend qu'un booléen : les deux branches d'un `if cfg!(…)` sont compilées (leurs règles jugées), mais
+/// celle que la valeur fixe écarte (`if cfg!(test)`) ne garde pas ses textes (contrôle croisé V1).
 /// `env!` rend une chaîne fixée à la compilation, `macro_rules!` définit une macro sans rien choisir (ses bras sont
 /// tous lus, et un attribut d'essai dedans arrête la compilation).
 const MACROS_ADMISES: [&str; 11] = [
@@ -96,6 +106,45 @@ const MACROS_ADMISES: [&str; 11] = [
     "vec",
     "write",
     "writeln",
+];
+/// Les macros admises dont les arguments ne sont pas des textes du programme : `cfg!` lit une condition
+/// (`target_os = "windows"`), `env!` le nom d'une variable de la compilation (c'est sa valeur, pas son nom, qui entre
+/// dans le programme). Leurs chaînes ne vont pas au vocabulaire : chaque mot du vocabulaire doit se trouver dans un
+/// programme publié (contrôle croisé V1, outils/vocabulaire-binaire.py), et « CARGO_PKG_VERSION » n'y est pas. Les
+/// autres macros qui ne prennent pas de texte (`option_env!`, `include_str!`, `concat!`…) ne sont pas admises autour
+/// d'un texte : leur appel y arrête déjà la compilation.
+const MACROS_SANS_TEXTE: [&str; 2] = ["cfg", "env"];
+/// Les fonctions compilées dont l'optimisation retire les textes (contrôle croisé V1, outils/vocabulaire-binaire.py) :
+/// le programme ne peut pas les écrire, par une constante ou un type que la lecture ne juge pas. Une cause par ligne,
+/// jamais un mot : leurs textes ne vont pas au vocabulaire (le sens sûr, ils sont masqués), leurs règles restent
+/// jugées. Une fonction est nommée par son fichier et son nom (`Type::nom` dans un `impl`) ; une ligne qui ne trouve
+/// plus sa fonction dans un fichier lu arrête la compilation (et un essai garde que chaque fichier existe).
+const TEXTES_MORTS: [(&str, &str, &str); 5] = [
+    (
+        "src/protection/sortantes.rs",
+        "service",
+        "le nom du service n'est jamais affiché : seul `service(…).is_none()` est lu",
+    ),
+    (
+        "src/chiffrement.rs",
+        "Refus::fmt",
+        "chaque appel du programme écrit lui-même le refus `Authentification` (« Phrase incorrecte »)",
+    ),
+    (
+        "src/copier.rs",
+        "empreinte_relue",
+        "`align_offset` d'un tampon d'octets ne peut pas échouer : l'erreur « impossible à aligner » est un filet",
+    ),
+    (
+        "src/parametres/partage.rs",
+        "au_menu",
+        "l'avis du partage attend le relais (`envoi::RELAIS` vaut `None`)",
+    ),
+    (
+        "src/verifier_cle.rs",
+        "annoncer",
+        "les fichiers de l'essai font 1 Gio (constante) : jamais la limite de 4 Go de FAT32",
+    ),
 ];
 /// Les seuls paquets d'où une macro admise peut venir quand elle est appelée par un chemin (`std::format!`,
 /// `serde_json::json!`) ou importée par un `use` : `autre::format!` est une autre macro, qui pourrait choisir par
@@ -130,7 +179,10 @@ pub struct Illisible(pub String);
 
 /// Le vocabulaire de ces sources (chemin et texte de chaque fichier), trié et sans doublon ; une erreur (qui arrête
 /// la compilation) pour toute forme que la lecture ne sait pas juger.
-pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Illisible> {
+pub fn vocabulaire(
+    sources: &[(PathBuf, String)],
+    fonctionnalites: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, Illisible> {
     let textes: BTreeMap<PathBuf, &str> = sources.iter().map(|(c, t)| (propre(c), t.as_str())).collect();
     let mut a_lire: Vec<Declare> = textes
         .keys()
@@ -150,6 +202,7 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
     // Pour chaque fichier lu : vrai s'il l'a été comme programme.
     let mut lus: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let mut morceaux = BTreeSet::new();
+    let mut morts_vus: BTreeSet<(PathBuf, &str)> = BTreeSet::new();
     while let Some(module) = a_lire.pop() {
         match lus.get(&module.fichier) {
             Some(true) => continue,
@@ -192,11 +245,16 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
         })?;
         let mut lecteur = Lecteur {
             textes: &textes,
+            fonctionnalites,
             fichier: &module.fichier,
             enfants: module.enfants,
             en_ligne: 0,
             essai: module.essai,
             texte: 0,
+            sans_texte: 0,
+            mort: 0,
+            impl_de: None,
+            morts_vus: Vec::new(),
             bloc: 0,
             texte_au_corps: false,
             chaines: Vec::new(),
@@ -211,6 +269,7 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
         if let Some(erreur) = lecteur.erreurs.into_iter().next() {
             return Err(Illisible(erreur));
         }
+        morts_vus.extend(lecteur.morts_vus.iter().map(|nom| (module.fichier.clone(), *nom)));
         for chaine in lecteur.chaines {
             morceaux.extend(sans_marques(&chaine).split_whitespace().map(str::to_string));
         }
@@ -221,6 +280,15 @@ pub fn vocabulaire(sources: &[(PathBuf, String)]) -> Result<BTreeSet<String>, Il
         .filter(|f| !lus.contains_key(*f))
         .map(|f| f.display().to_string())
         .collect();
+    // Une ligne de TEXTES_MORTS dont le fichier est lu doit y trouver sa fonction : renommée, elle ne retirerait plus
+    // rien (le contrôle croisé le dirait), déplacée ailleurs, elle pourrait retirer autre chose.
+    for (fichier, nom, _) in TEXTES_MORTS {
+        if lus.get(Path::new(fichier)) == Some(&true) && !morts_vus.contains(&(PathBuf::from(fichier), nom)) {
+            return Err(Illisible(format!(
+                "vocabulaire : TEXTES_MORTS nomme « {nom} » dans {fichier}, qui n'y est plus"
+            )));
+        }
+    }
     if !oublies.is_empty() {
         return Err(Illisible(format!(
             "vocabulaire : fichiers .rs qu'aucun module ne déclare (ni programme, ni essai) : {}",
@@ -266,6 +334,8 @@ struct Declare {
 /// La lecture d'un fichier : son arbre parcouru nœud par nœud, avec ce qu'on sait du nœud courant.
 struct Lecteur<'a> {
     textes: &'a BTreeMap<PathBuf, &'a str>,
+    /// Les fonctionnalités (`feature`) de cette compilation, données par build.rs.
+    fonctionnalites: &'a BTreeSet<String>,
     fichier: &'a Path,
     /// Le dossier des modules à fichier déclarés au niveau courant.
     enfants: PathBuf,
@@ -275,6 +345,15 @@ struct Lecteur<'a> {
     essai: bool,
     /// La profondeur des appels aux macros de texte autour du nœud courant.
     texte: usize,
+    /// La profondeur des appels aux macros dont les arguments ne sont pas des textes (`MACROS_SANS_TEXTE`).
+    sans_texte: usize,
+    /// La profondeur des nœuds compilés dont le programme n'écrit jamais les textes (`TEXTES_MORTS`) : leurs règles
+    /// restent jugées (le code est compilé, une macro qu'il définit compte), leurs chaînes ne vont pas au vocabulaire.
+    mort: usize,
+    /// Le type de l'`impl` autour du nœud courant (`Refus` pour `impl Display for Refus`).
+    impl_de: Option<String>,
+    /// Les lignes de `TEXTES_MORTS` trouvées dans ce fichier.
+    morts_vus: Vec<&'static str>,
     /// La profondeur des blocs (corps de fonction, `const _: () = { … }`) autour du nœud courant.
     bloc: usize,
     /// Le corps de macro lu jeton par jeton contient un appel de texte (ou est dans un) : un attribut qu'on ne sait
@@ -294,11 +373,16 @@ impl Lecteur<'_> {
     /// Parcourt un nœud portant ces attributs : en essai s'ils en font un essai (ou si on y est déjà).
     fn sous(&mut self, attributs: &[Attribute], suite: impl FnOnce(&mut Self)) {
         let avant = self.essai;
-        match essai_par(attributs.iter().map(|a| &a.meta)) {
+        match essai_par(attributs.iter().map(|a| &a.meta), self.fonctionnalites) {
             Ok(true) => self.essai = true,
             Ok(false) => {}
             Err(Illisible(e)) => self.erreur(&e),
         }
+        // Un élément que le code dit mort (`allow(dead_code)`, `expect(dead_code)`, même par un `cfg_attr`) : rustc le
+        // compile, l'optimisation le retire s'il n'est appelé nulle part ; ses textes ne vont pas au vocabulaire (le
+        // sens sûr : un mot de moins, masqué), ses règles restent jugées.
+        let mort = attributs.iter().any(|a| dit_mort(&a.meta, self.fonctionnalites));
+        self.mort += usize::from(mort);
         // `#[macro_use]` répand les macros d'un module ou d'un paquet sous leur nom : un `format` venu de là (d'un
         // fichier non lu, ou d'un autre paquet) cacherait la macro admise (8e passe, R8-SOURCES-4). Le programme n'en
         // a aucun.
@@ -306,7 +390,47 @@ impl Lecteur<'_> {
             self.erreur("attribut « macro_use » : il répand des macros que la lecture ne suit pas, forme non jugée");
         }
         suite(self);
+        self.mort -= usize::from(mort);
         self.essai = avant;
+    }
+
+    /// Cette fonction (`nom`, ou `Type::nom`) est-elle de `TEXTES_MORTS` pour ce fichier ? Notée comme trouvée.
+    fn texte_mort(&mut self, nom: &str) -> bool {
+        let ligne = TEXTES_MORTS
+            .iter()
+            .find(|(fichier, element, _)| self.fichier == Path::new(fichier) && *element == nom);
+        match ligne {
+            Some((_, element, _)) if !self.essai => {
+                self.morts_vus.push(element);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// La valeur d'une condition `cfg!(c)`, `!cfg!(c)` ou `(cfg!(c))` ; inconnue pour toute autre.
+    fn valeur_de_cfg(&self, condition: &Expr) -> Tri {
+        match condition {
+            Expr::Macro(m) if m.attrs.is_empty() => {
+                let chemin: Vec<String> = m
+                    .mac
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| sans_r(&s.ident.to_string()).to_string())
+                    .collect();
+                if sans_texte(&chemin) && chemin.last().is_some_and(|n| n == "cfg") {
+                    un_seul(m.mac.tokens.clone(), self.fonctionnalites).unwrap_or(Tri::Inconnu)
+                } else {
+                    Tri::Inconnu
+                }
+            }
+            Expr::Unary(u) if u.attrs.is_empty() && matches!(u.op, syn::UnOp::Not(_)) => {
+                non(self.valeur_de_cfg(&u.expr))
+            }
+            Expr::Paren(p) if p.attrs.is_empty() => self.valeur_de_cfg(&p.expr),
+            _ => Tri::Inconnu,
+        }
     }
 
     /// Le corps d'une macro : relu comme une liste d'expressions, sinon comme des instructions, sinon jeton par jeton.
@@ -376,7 +500,7 @@ impl Lecteur<'_> {
                         _ => None,
                     };
                     match lu {
-                        Some((g, meta)) if !matches!(essai_par(std::iter::once(&meta)), Ok(false)) => {
+                        Some((g, meta)) if !matches!(essai_par(std::iter::once(&meta), self.fonctionnalites), Ok(false)) => {
                             self.erreur(&format!(
                                 "attribut d'essai (ou cfg illisible) « {} » dans le corps d'une macro que syn ne \
                                  relit pas comme du code",
@@ -432,7 +556,10 @@ impl Lecteur<'_> {
                             continue;
                         }
                         // Une autre macro appelée ici : lue comme un corps, puis jugée par la liste blanche.
+                        let sans_texte = sans_texte(&chemin);
+                        self.sans_texte += usize::from(sans_texte);
                         self.jetons(g.stream());
+                        self.sans_texte -= usize::from(sans_texte);
                         self.admise(&chemin, &g.stream());
                         i += 3;
                         continue;
@@ -453,7 +580,7 @@ impl Lecteur<'_> {
     /// Une chaîne rencontrée : gardée seulement dans un appel de texte du programme. Un caractère de contrôle (« \n »,
     /// « \0 ») sépare deux mots.
     fn chaine(&mut self, valeur: &str) {
-        if self.texte > 0 && !self.essai {
+        if self.texte > 0 && self.sans_texte == 0 && self.mort == 0 && !self.essai {
             self.chaines
                 .push(valeur.chars().map(|x| if x.is_control() { ' ' } else { x }).collect());
         }
@@ -582,6 +709,14 @@ fn admise(chemin: &[String]) -> bool {
     MACROS_ADMISES.contains(&nom) && (chemin.len() == 1 || RACINES_ADMISES.contains(&chemin[0].as_str()))
 }
 
+/// Une macro admise dont les arguments ne sont pas des textes (`MACROS_SANS_TEXTE`) ?
+fn sans_texte(chemin: &[String]) -> bool {
+    admise(chemin)
+        && chemin
+            .last()
+            .is_some_and(|nom| MACROS_SANS_TEXTE.contains(&nom.as_str()))
+}
+
 /// Un nom réservé (`NOMS_RESERVES`) ?
 fn reserve(nom: &str) -> bool {
     NOMS_RESERVES.iter().any(|liste| liste.contains(&nom))
@@ -703,6 +838,39 @@ fn nomme(meta: &Meta, nom: &str) -> bool {
         || matches!(meta, Meta::List(liste) if est(&liste.path, "cfg_attr") && dedans(liste.tokens.clone(), nom))
 }
 
+/// L'attribut dit-il l'élément mort : `allow(…dead_code…)` ou `expect(…dead_code…)`, seul ou posé par un `cfg_attr` à
+/// n'importe quelle profondeur ? Un `cfg_attr` dont la condition est fausse dans le programme (`test`) ne pose rien :
+/// l'élément y est vivant (rustc l'y dirait mort sinon). Dans le doute (condition inconnue, illisible), oui : un mot de
+/// moins.
+fn dit_mort(meta: &Meta, fonctionnalites: &BTreeSet<String>) -> bool {
+    fn nomme_dead_code(flux: TokenStream) -> bool {
+        flux.into_iter().any(|arbre| match arbre {
+            TokenTree::Ident(i) => sans_r(&i.to_string()) == "dead_code",
+            TokenTree::Group(g) => nomme_dead_code(g.stream()),
+            _ => false,
+        })
+    }
+    match meta {
+        Meta::List(liste) if est(&liste.path, "allow") || est(&liste.path, "expect") => {
+            nomme_dead_code(liste.tokens.clone())
+        }
+        Meta::List(liste) if est(&liste.path, "cfg_attr") => {
+            let mut condition = TokenStream::new();
+            let mut reste = TokenStream::new();
+            let mut apres = false;
+            for arbre in liste.tokens.clone() {
+                match &arbre {
+                    TokenTree::Punct(p) if p.as_char() == ',' && !apres => apres = true,
+                    _ if apres => reste.extend([arbre]),
+                    _ => condition.extend([arbre]),
+                }
+            }
+            !matches!(un_seul(condition, fonctionnalites), Ok(Tri::Faux)) && nomme_dead_code(reste)
+        }
+        _ => false,
+    }
+}
+
 /// L'attribut est-il un `cfg_attr` qui nomme `path`, à n'importe quelle profondeur (`cfg_attr(a, cfg_attr(b, path =
 /// "…"))`) ? Dans le doute (un `path` qui serait autre chose), il est refusé.
 fn path_par_cfg_attr(attribut: &Attribute) -> bool {
@@ -734,7 +902,10 @@ fn chemin_d_attribut(attributs: &[Attribute]) -> Option<String> {
 }
 
 /// Ces attributs font-ils du nœud un essai ? Une erreur pour un `cfg` que la lecture ne sait pas juger.
-fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illisible> {
+fn essai_par<'m>(
+    attributs: impl Iterator<Item = &'m Meta>,
+    fonctionnalites: &BTreeSet<String>,
+) -> Result<bool, Illisible> {
     for meta in attributs {
         let chemin = meta.path();
         // Un seul segment : `#[rust_analyzer::test]` finit par « test », mais rustc garde l'élément (9e passe,
@@ -746,14 +917,14 @@ fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illi
             let Meta::List(liste) = meta else {
                 return Err(Illisible(String::from("cfg sans parenthèses")));
             };
-            if un_seul(liste.tokens.clone())? == Tri::Faux {
+            if un_seul(liste.tokens.clone(), fonctionnalites)? == Tri::Faux {
                 return Ok(true);
             }
         } else if est(chemin, "cfg_attr") {
             let Meta::List(liste) = meta else {
                 return Err(Illisible(String::from("cfg_attr sans parenthèses")));
             };
-            if cfg_attr_essai(liste.tokens.clone())? {
+            if cfg_attr_essai(liste.tokens.clone(), fonctionnalites)? {
                 return Ok(true);
             }
         }
@@ -764,7 +935,7 @@ fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illi
 /// `cfg_attr(condition, attr, …)` : un essai si la condition est toujours vraie et qu'un des attributs en fait un.
 /// Sous une condition inconnue (`cfg_attr(unix, test)`), l'élément reste au programme d'une autre cible : il en est
 /// (9e passe, comme `cfg(any(unix, test))`).
-fn cfg_attr_essai(flux: TokenStream) -> Result<bool, Illisible> {
+fn cfg_attr_essai(flux: TokenStream, fonctionnalites: &BTreeSet<String>) -> Result<bool, Illisible> {
     let mut condition = TokenStream::new();
     let mut reste = TokenStream::new();
     let mut apres = false;
@@ -775,13 +946,13 @@ fn cfg_attr_essai(flux: TokenStream) -> Result<bool, Illisible> {
             _ => condition.extend([arbre]),
         }
     }
-    if un_seul(condition)? != Tri::Vrai {
+    if un_seul(condition, fonctionnalites)? != Tri::Vrai {
         return Ok(false);
     }
     let attributs = Punctuated::<Meta, Token![,]>::parse_terminated
         .parse2(reste)
         .map_err(|e| Illisible(format!("cfg_attr illisible : {e}")))?;
-    essai_par(attributs.iter())
+    essai_par(attributs.iter(), fonctionnalites)
 }
 
 /// La valeur d'un `cfg` dans le programme (`test` et `kani` faux, le reste inconnu).
@@ -793,9 +964,9 @@ enum Tri {
 }
 
 /// Exactement une condition (virgule finale permise), comme dans `cfg(…)` et `not(…)`.
-fn un_seul(flux: TokenStream) -> Result<Tri, Illisible> {
+fn un_seul(flux: TokenStream, fonctionnalites: &BTreeSet<String>) -> Result<Tri, Illisible> {
     let texte = flux.to_string();
-    let conditions = conditions(flux)?;
+    let conditions = conditions(flux, fonctionnalites)?;
     match conditions.as_slice() {
         [une] => Ok(*une),
         _ => Err(Illisible(format!(
@@ -805,7 +976,7 @@ fn un_seul(flux: TokenStream) -> Result<Tri, Illisible> {
 }
 
 /// Les conditions d'une liste (`a, all(b, c), feature = "x"`), chacune jugée.
-fn conditions(flux: TokenStream) -> Result<Vec<Tri>, Illisible> {
+fn conditions(flux: TokenStream, fonctionnalites: &BTreeSet<String>) -> Result<Vec<Tri>, Illisible> {
     let texte = flux.to_string();
     let illisible = || Illisible(format!("cfg illisible : « {texte} »"));
     let mut sortie = Vec::new();
@@ -818,18 +989,29 @@ fn conditions(flux: TokenStream) -> Result<Vec<Tri>, Illisible> {
         let valeur = match arbres.peek() {
             Some(TokenTree::Punct(p)) if p.as_char() == '=' => {
                 arbres.next();
-                let Some(TokenTree::Literal(_)) = arbres.next() else {
+                let Some(TokenTree::Literal(litteral)) = arbres.next() else {
                     return Err(illisible());
                 };
-                Tri::Inconnu
+                // `feature = "x"` : vrai si et seulement si cette compilation a la fonctionnalité (rustc la reçoit
+                // ainsi, `--cfg feature="x"`) ; toute autre clé (`target_os`…) reste inconnue.
+                match Lit::new(litteral) {
+                    Lit::Str(s) if nom == "feature" => {
+                        if fonctionnalites.contains(&s.value()) {
+                            Tri::Vrai
+                        } else {
+                            Tri::Faux
+                        }
+                    }
+                    _ => Tri::Inconnu,
+                }
             }
             Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
                 let dedans = g.stream();
                 arbres.next();
                 match nom.as_str() {
-                    "all" => conditions(dedans)?.into_iter().fold(Tri::Vrai, et),
-                    "any" => conditions(dedans)?.into_iter().fold(Tri::Faux, ou),
-                    "not" => non(un_seul(dedans)?),
+                    "all" => conditions(dedans, fonctionnalites)?.into_iter().fold(Tri::Vrai, et),
+                    "any" => conditions(dedans, fonctionnalites)?.into_iter().fold(Tri::Faux, ou),
+                    "not" => non(un_seul(dedans, fonctionnalites)?),
                     _ => return Err(illisible()),
                 }
             }
@@ -1064,6 +1246,34 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         }
     }
 
+    fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+        let avant = self.impl_de.take();
+        self.impl_de = match &*i.self_ty {
+            Type::Path(t) => t.path.segments.last().map(|s| sans_r(&s.ident.to_string()).to_string()),
+            _ => None,
+        };
+        visit::visit_item_impl(self, i);
+        self.impl_de = avant;
+    }
+
+    fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
+        let mort = self.texte_mort(sans_r(&i.sig.ident.to_string()));
+        self.mort += usize::from(mort);
+        visit::visit_item_fn(self, i);
+        self.mort -= usize::from(mort);
+    }
+
+    fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+        let nom = sans_r(&i.sig.ident.to_string()).to_string();
+        let mort = match &self.impl_de {
+            Some(type_) => self.texte_mort(&format!("{type_}::{nom}")),
+            None => false,
+        };
+        self.mort += usize::from(mort);
+        visit::visit_impl_item_fn(self, i);
+        self.mort -= usize::from(mort);
+    }
+
     fn visit_impl_item(&mut self, i: &'ast ImplItem) {
         match attributs_impl(i) {
             Some(a) => self.sous(a, |l| visit::visit_impl_item(l, i)),
@@ -1176,6 +1386,27 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         self.sous(&i.attrs, |l| visit::visit_const_param(l, i));
     }
 
+    /// `if cfg!(test) { … }` : rustc compile les deux branches, mais celle qu'une condition fixe écarte n'est jamais
+    /// exécutée, et l'optimisation la retire du programme publié ; ses textes ne vont pas au vocabulaire (le sens sûr),
+    /// ses règles restent jugées (le code est compilé).
+    fn visit_expr_if(&mut self, i: &'ast syn::ExprIf) {
+        for attribut in &i.attrs {
+            self.visit_attribute(attribut);
+        }
+        let valeur = self.valeur_de_cfg(&i.cond);
+        self.visit_expr(&i.cond);
+        let alors = valeur == Tri::Faux;
+        self.mort += usize::from(alors);
+        self.visit_block(&i.then_branch);
+        self.mort -= usize::from(alors);
+        if let Some((_, sinon)) = &i.else_branch {
+            let sinon_mort = valeur == Tri::Vrai;
+            self.mort += usize::from(sinon_mort);
+            self.visit_expr(sinon);
+            self.mort -= usize::from(sinon_mort);
+        }
+    }
+
     fn visit_block(&mut self, b: &'ast syn::Block) {
         self.bloc += 1;
         visit::visit_block(self, b);
@@ -1242,7 +1473,10 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         if texte {
             self.texte += 1;
         }
+        let sans_texte = sans_texte(&chemin);
+        self.sans_texte += usize::from(sans_texte);
         self.corps(&m.tokens);
+        self.sans_texte -= usize::from(sans_texte);
         if texte {
             self.texte -= 1;
         } else {

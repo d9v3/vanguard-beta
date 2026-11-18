@@ -20,6 +20,9 @@
 #      faux) : jamais sautée ; les programmes de publication vérifiés seulement s'ils sont ceux de ce commit (sinon
 #      c'est dit) ; chacun avec son système (--attendu linux ou windows) ; un refus, ou le programme absent, est un
 #      échec.
+#   7b. Le vocabulaire de la porte MCP dans les programmes (vocabulaire_binaire, lue dans verifier.sh) : ses essais à
+#      chaque passe, sautés ou en échec ils le sont aussi ; les programmes de publication contrôlés seulement s'ils
+#      sont ceux de ce commit (sinon c'est dit) ; un absent, ou un programme qui n'est plus celui du repère, échoue.
 #   8. Les relectures de cargo vet : un Cargo.lock ou un supply-chain/ changé pendant l'étape la fait échouer, et
 #      il est remis tel qu'avant (le passage suivant n'est pas vert sur un verrou réécrit), après que l'état d'après
 #      a été gardé dans un dossier daté et dit ; pas gardé, rien n'est remis (la garde lue dans verifier.sh, l'étape
@@ -226,6 +229,38 @@ rm -rf "$faux"
 grep -q '{ etape durcissement durcissement || true; } && etape regression-detection' outils/verifier.sh &&
   grep -q '^ligne durcissement ' outils/verifier.sh && ok "protections des programmes : lancées et jugées à chaque passe" ||
   ko "verifier.sh : l'étape durcissement n'est pas dans la chaîne Linux ou dans le résumé"
+
+# Le contrôle croisé du vocabulaire de la porte MCP (vocabulaire_binaire, lue dans verifier.sh ; ses essais et l'outil
+# remplacés par des faux qui notent leurs appels).
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-vocabulaire.XXXX")
+mkdir -p "$faux/x86_64-unknown-linux-musl/release/build/vanguard-a/out" "$faux/x86_64-pc-windows-gnu/release"
+echo linux >"$faux/x86_64-unknown-linux-musl/release/vanguard"
+echo windows >"$faux/x86_64-pc-windows-gnu/release/vanguard.exe"
+echo mot >"$faux/x86_64-unknown-linux-musl/release/build/vanguard-a/out/vocabulaire.txt"
+fonction=$(awk '/^vocabulaire_binaire\(\) \{/,/^\}/' outils/verifier.sh)
+controler() { # code-des-essais code-de-l-outil
+  : >"$faux/appels"
+  SORTIE=$(CARGO_TARGET_DIR=$faux bash -c "bash() { echo \"essais \$*\" >>'$faux/appels'; return $1; }
+python3() { echo \"outil \$*\" >>'$faux/appels'; return $2; }
+$fonction
+vocabulaire_binaire" 2>&1)
+  CODE=$?
+}
+outil_lance() { grep -q '^outil .*vocabulaire-binaire.py .*--a-cote reversinglabs.yara .*vocabulaire.txt -- .*/vanguard .*/vanguard.exe$' "$faux/appels"; }
+rm -f "$faux/.compilation"
+controler 0 0
+[[ -n $fonction && $CODE == 0 ]] && grep -q 'pas compilés de ce commit' <<<"$SORTIE" &&
+  grep -q '^essais .*essais-vocabulaire-binaire.sh' "$faux/appels" && ! outil_lance &&
+  repere "$ici" oui "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" && controler 0 0 && [[ $CODE == 0 ]] &&
+  outil_lance && controler 0 1 && [[ $CODE == 1 ]] && controler 77 0 && [[ $CODE == 77 ]] && ! outil_lance &&
+  controler 1 0 && [[ $CODE == 1 ]] && repere "$ici" oui autre && controler 0 0 && [[ $CODE == 1 ]] && ! outil_lance &&
+  grep -q 'vanguard.exe n.est plus celui' <<<"$SORTIE" &&
+  ok "vocabulaire de la porte : essais à chaque passe, programmes de ce commit contrôlés, un absent ou un autre programme échoue" ||
+  ko "vocabulaire de la porte (code $CODE) : $(tail -n 2 <<<"$SORTIE") $(cat "$faux/appels")"
+rm -rf "$faux"
+grep -q '^  etape vocabulaire-binaire vocabulaire_binaire &$' outils/verifier.sh &&
+  grep -q '^  ligne vocabulaire-binaire ' outils/verifier.sh && ok "vocabulaire de la porte : lancé et jugé à chaque passe" ||
+  ko "verifier.sh : l'étape vocabulaire-binaire n'est pas lancée ou pas dans le résumé"
 
 if [[ $(cargo vet --version 2>/dev/null) == "cargo-vet 0.10.3" ]]; then
   lancer env VANGUARD_HORS_LIGNE=1 bash outils/verifier.sh --seulement relectures

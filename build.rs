@@ -211,13 +211,37 @@ fn vocabulaire() {
         })
         .collect();
     let sortie = std::env::var("OUT_DIR").expect("OUT_DIR");
-    let mut texte = sources::vocabulaire(&sources)
+    let mut texte = sources::vocabulaire(&sources, &fonctionnalites())
         .expect("lecture des sources pour le vocabulaire")
         .into_iter()
         .collect::<Vec<_>>()
         .join("\n");
     texte.push('\n');
     std::fs::write(Path::new(&sortie).join("vocabulaire.txt"), texte).expect("vocabulaire non écrit");
+}
+
+/// Les fonctionnalités de cette compilation, par leur nom exact (`CARGO_CFG_FEATURE`, ce que rustc reçoit en `--cfg
+/// feature="x"`) : la lecture juge `cfg(feature = "x")` comme rustc (un texte de la réception, hors du programme publié,
+/// n'est pas au vocabulaire de celui-ci). Recoupées avec les `CARGO_FEATURE_*` : un désaccord arrête la compilation,
+/// plutôt qu'un `cfg` jugé faux que rustc compile.
+fn fonctionnalites() -> std::collections::BTreeSet<String> {
+    let noms: std::collections::BTreeSet<String> = std::env::var("CARGO_CFG_FEATURE")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut attendues: Vec<String> = noms.iter().map(|n| n.to_uppercase().replace('-', "_")).collect();
+    attendues.sort();
+    let mut posees: Vec<String> = std::env::vars()
+        .filter_map(|(cle, _)| cle.strip_prefix("CARGO_FEATURE_").map(str::to_string))
+        .collect();
+    posees.sort();
+    assert_eq!(
+        attendues, posees,
+        "CARGO_CFG_FEATURE et CARGO_FEATURE_* ne disent pas les mêmes fonctionnalités"
+    );
+    noms
 }
 
 /// Les fichiers `.rs` sous `dossier`, sans les fichiers tests.rs ni les dossiers tests/ (les autres essais sont

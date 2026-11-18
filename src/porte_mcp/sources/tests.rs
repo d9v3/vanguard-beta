@@ -12,7 +12,7 @@ fn source(texte: &str) -> String {
 
 fn lecture(fichiers: &[(&str, &str)]) -> Result<BTreeSet<String>, Illisible> {
     let sources: Vec<(PathBuf, String)> = fichiers.iter().map(|(c, t)| (PathBuf::from(c), source(t))).collect();
-    vocabulaire(&sources)
+    vocabulaire(&sources, &BTreeSet::new())
 }
 
 fn mots(fichiers: &[(&str, &str)]) -> BTreeSet<String> {
@@ -811,7 +811,7 @@ fn le_modele_partage_hors_de_src_suit_les_regles() {
         (PathBuf::from("src/main.rs"), String::from("mod modele;\n")),
         (PathBuf::from("src/modele.rs"), modele.to_string()),
     ];
-    match vocabulaire(&sources) {
+    match vocabulaire(&sources, &BTreeSet::new()) {
         Ok(mots) => assert!(mots.is_empty(), "le modèle a des textes : {mots:?}"),
         Err(Illisible(e)) => panic!("{e}"),
     }
@@ -989,5 +989,137 @@ fn r9_sources_3_une_macro_de_texte_ne_se_reprend_pas() {
             &[("src/main.rs", &racine), (fichier, &texte)],
             "définie sous un nom réservé",
         );
+    }
+}
+
+#[test]
+fn les_arguments_d_env_et_de_cfg_ne_sont_pas_des_textes() {
+    // Le nom d'une variable de la compilation (`env!`) ou une condition (`cfg!`) n'entre pas dans le programme comme un
+    // texte : compté, il serait un mot du vocabulaire qu'aucun programme publié ne porte (contrôle croisé V1). Témoin :
+    // le texte voisin, et la chaîne d'un `format!`, restent lus.
+    let lus = un(
+        "fn a() -> String { TRF(\"version {} {}\", \"release {} {}\", env!(\"NOM_INVENTE\"), \
+                  if cfg!(target_os = \"plan9\") { format!(\"{}\", \"gardé\") } else { String::new() }) }\n",
+    );
+    assert_eq!(lus, attendus(&["version", "release", "gardé"]));
+    assert!(un("fn a() { TR(\"vrai\", \"real\"); let _ = env!(\"NOM_INVENTE\"); }\n").contains("vrai"));
+}
+
+/// Comme `lecture`, avec les fonctionnalités de la compilation.
+fn lecture_avec(fichiers: &[(&str, &str)], fonctionnalites: &[&str]) -> Result<BTreeSet<String>, Illisible> {
+    let sources: Vec<(PathBuf, String)> = fichiers.iter().map(|(c, t)| (PathBuf::from(c), source(t))).collect();
+    vocabulaire(&sources, &attendus(fonctionnalites))
+}
+
+#[test]
+fn une_fonctionnalite_est_jugee_comme_rustc() {
+    // Contrôle croisé V1 : les textes de la réception (`feature = "reception"`, hors du programme publié) n'y sont
+    // pas ; avec la fonctionnalité, ils en sont, et `not(feature = …)` devient un essai.
+    let texte = "#[cfg(feature = \"reception\")]\nfn a() { TR(\"flotte\", \"fleet\"); }\n\
+                 #[cfg(not(feature = \"reception\"))]\nfn b() { TR(\"publie\", \"published\"); }\n\
+                 #[cfg_attr(feature = \"reception\", test)]\nfn c() { TR(\"commun\", \"shared\"); }\n\
+                 fn d() { TR(\"toujours\", \"always\"); }\n";
+    let sans = lecture_avec(&[("src/main.rs", texte)], &[]).unwrap_or_else(|Illisible(e)| panic!("{e}"));
+    assert_eq!(
+        sans,
+        attendus(&["publie", "published", "commun", "shared", "toujours", "always"])
+    );
+    let avec = lecture_avec(&[("src/main.rs", texte)], &["reception"]).unwrap_or_else(|Illisible(e)| panic!("{e}"));
+    assert_eq!(avec, attendus(&["flotte", "fleet", "toujours", "always"]));
+    // Une autre clé (`target_os`) reste inconnue : lue comme du programme d'une autre cible.
+    assert!(un("#[cfg(target_os = \"plan9\")]\nfn a() { TR(\"cible\", \"target\"); }\n").contains("cible"));
+}
+
+#[test]
+fn la_branche_qu_un_cfg_fixe_ecarte_n_est_pas_lue() {
+    // Contrôle croisé V1 : `if cfg!(test) { … }` est compilé, mais jamais exécuté dans le programme publié ;
+    // l'optimisation en retire les textes. Une condition inconnue garde les deux branches.
+    let lus = un(
+        "fn a() {\n    if cfg!(test) { TR(\"essai\", \"x\"); } else { TR(\"vrai\", \"real\"); }\n    \
+                  if !cfg!(test) { TR(\"publie\", \"published\"); } else if cfg!(unix) { TR(\"cache\", \"y\"); }\n    \
+                  if (cfg!(all(unix, test))) { TR(\"aussi\", \"z\"); }\n    \
+                  if cfg!(unix) { TR(\"lin\", \"lin\"); } else { TR(\"win\", \"win\"); }\n    \
+                  if cfg!(test) && vrai() { TR(\"compose\", \"composed\"); }\n}\n",
+    );
+    assert_eq!(
+        lus,
+        attendus(&[
+            "vrai",
+            "real",
+            "publie",
+            "published",
+            "lin",
+            "win",
+            "compose",
+            "composed"
+        ])
+    );
+    // Le code de la branche écartée est compilé : ses règles restent jugées (une macro admise redéfinie là y vaut).
+    refuse(
+        &[(
+            "src/main.rs",
+            "fn a() { if cfg!(test) { macro_rules! format { ($($t:tt)*) => { \"\" }; } } }\n",
+        )],
+        "définie sous un nom réservé",
+    );
+}
+
+#[test]
+fn un_element_dit_mort_n_est_pas_lu() {
+    // Contrôle croisé V1 : `allow(dead_code)` ou `expect(dead_code)` (même sous `cfg_attr`) dit un élément que
+    // l'optimisation retire s'il n'est appelé nulle part ; ses textes n'y sont pas, ses règles restent jugées.
+    let lus = un("#[allow(dead_code)]\nfn a() { TR(\"mort\", \"dead\"); }\n\
+                  #[cfg_attr(windows, expect(dead_code, reason = \"x\"))]\nfn b() { TR(\"linux\", \"linux\"); }\n\
+                  #[allow(unused)]\nfn c() { TR(\"vivant\", \"alive\"); }\n");
+    assert_eq!(lus, attendus(&["vivant", "alive"]));
+    refuse(
+        &[(
+            "src/main.rs",
+            "#[allow(dead_code)]\nmod m { macro_rules! vec { ($($t:tt)*) => { \"\" }; } }\n",
+        )],
+        "définie sous un nom réservé",
+    );
+}
+
+#[test]
+fn textes_morts_retire_seulement_ses_fonctions() {
+    // Une ligne de TEXTES_MORTS : la fonction nommée, dans son fichier (et `Type::nom` dans un `impl`), seulement.
+    let sortantes = "fn service() { TR(\"courriel\", \"email\"); }\nfn autre() { TR(\"garde\", \"kept\"); }\n";
+    let chiffrement = "impl Display for Refus { fn fmt(&self) { TR(\"incorrecte\", \"wrong\"); } }\n\
+                       impl Display for Autre { fn fmt(&self) { TR(\"lu\", \"read\"); } }\nfn service() { TR(\"ici\", \"here\"); }\n";
+    let racine = "mod protection { mod sortantes; }\nmod chiffrement;\nmod copier;\nmod verifier_cle;\nmod parametres { mod partage; }\n";
+    let lus = lecture(&[
+        ("src/main.rs", racine),
+        ("src/protection/sortantes.rs", sortantes),
+        ("src/chiffrement.rs", chiffrement),
+        ("src/copier.rs", "fn empreinte_relue() {}\n"),
+        ("src/verifier_cle.rs", "fn annoncer() {}\n"),
+        ("src/parametres/partage.rs", "fn au_menu() {}\n"),
+    ])
+    .unwrap_or_else(|Illisible(e)| panic!("{e}"));
+    assert_eq!(lus, attendus(&["garde", "kept", "lu", "read", "ici", "here"]));
+    // Une ligne qui ne trouve plus sa fonction dans un fichier lu arrête la compilation.
+    refuse(
+        &[
+            ("src/main.rs", "mod protection { mod sortantes; }\n"),
+            (
+                "src/protection/sortantes.rs",
+                "fn services() { TR(\"courriel\", \"email\"); }\n",
+            ),
+        ],
+        "TEXTES_MORTS nomme « service »",
+    );
+}
+
+#[test]
+fn chaque_fichier_de_textes_morts_existe() {
+    // Un fichier renommé : sa ligne ne retirerait plus rien sans que la lecture le voie (elle ne le lit plus).
+    let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (fichier, nom, cause) in TEXTES_MORTS {
+        assert!(
+            racine.join(fichier).is_file(),
+            "TEXTES_MORTS : {fichier} ({nom}) absent"
+        );
+        assert!(!cause.is_empty(), "TEXTES_MORTS : {fichier} ({nom}) sans cause");
     }
 }

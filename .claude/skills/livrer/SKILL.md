@@ -26,7 +26,9 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    `outils/livrer-branche.sh`, jamais un commit fait à la main sur master (deployer.sh le refuserait à chaque
    relance). Alors seulement retirer worktree et branche. Si l'arbre principal a
    des changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures
-   n'ont pas pu se faire, le dire. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
+   n'ont pas pu se faire, le dire. « ✖ le vocabulaire de la porte MCP n'est pas dans les programmes » (compiler-version.sh,
+   contrôle croisé V1) : chaque mot nommé est un texte que rustc n'a pas gardé ; la cause se règle dans la lecture
+   (src/porte_mcp/sources.rs), jamais en sautant le contrôle. Rien n'est poussé si un détail personnel paraît ou si un lien est mort
    (`outils/liens.py`) : corriger sur une branche posée sur master, livrée par `outils/livrer-branche.sh`. Un lien
    douteux montré : l'ouvrir (WebFetch) ; bon mais refusé aux programmes, l'ajouter à `outils/liens.txt`.
 4. Page de la version (Releases) : `deployer.sh` la publie tout seul pour chaque publication, 0.x.0 comme 0.x.y

@@ -18,7 +18,8 @@ example, finds it, to rebuild it if needed.
   itself writes in its messages, in French and English; any other word, digit or sign becomes "…", which holds back
   paths, addresses and any value made of digits or signs. These words are read from the code at each build, through
   its syntax tree, following the modules as the compiler does, without the tests; a form this reading cannot judge
-  stops the build. After a word that announces a secret (password, key, code, PIN, NIP, token, secret, seed, recovery
+  stops the build. Each word must also be found as is in the published programs, or nothing is published: a text the
+  compiler did not keep (a trick the reading would have missed) shows there. After a word that announces a secret (password, key, code, PIN, NIP, token, secret, seed, recovery
   phrase, identifier, login…), the whole rest of the text is held back, and so is the command excerpt of each program in
   a watcher alert; the price: a useful sentence that follows one of these words is lost. Limits, stated in the threat
   model: a name made of Vanguard's words ("admin", "maison") comes out, with its case; a value written before the

@@ -18,7 +18,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   programme) n'en sort que fait des mots que Vanguard écrit lui-même dans ses messages, en français et en anglais ; tout
   autre mot, chiffre ou signe devient « … », ce qui retient les chemins, les adresses et toute valeur à chiffres ou à
   signes. Ces mots sont lus dans le code à chaque compilation, par son arbre syntaxique, comme le compilateur suit les
-  modules, sans les essais ; une forme que cette lecture ne sait pas juger arrête la compilation. Après un mot qui
+  modules, sans les essais ; une forme que cette lecture ne sait pas juger arrête la compilation. Chaque mot doit aussi
+  se retrouver tel quel dans les programmes publiés, sans quoi rien n'est publié : un texte que le compilateur n'a pas
+  gardé (une ruse que la lecture n'aurait pas vue) se voit là. Après un mot qui
   annonce un secret (mot de passe, clé, code, PIN, NIP, jeton, secret, seed, phrase de récupération, identifiant,
   login…), tout le reste du texte est retenu, et l'extrait de commande de chaque programme d'une alerte du veilleur
   aussi ; le prix : une phrase utile qui suit un de ces mots est perdue. Limites, dites au modèle de menace : un nom fait

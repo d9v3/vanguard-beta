@@ -830,11 +830,20 @@ to start (code 2) until it has been tried on a real Windows.
   repository has no legacy file that cargo or rustup would prefer to the judged one (`.cargo/config`,
   `rust-toolchain`), no symbolic link tracked by git (even under `target/`), and
   no untracked link outside `target/` and `.git/` (`target` may be a link to another disk); outside the root of a git
-  repository, tracked links are "not verified", a failure. Not verified: cargo configuration outside the repository,
-  a macro of an ordinary dependency that would read the disk, `cfg!(test)` written in a program expression (read as
-  program), and a macro from another package that would take an allowed macro's name through a glob import
-  (`use other::*;`). A macro with arms of another form is no longer a limit: any unknown macro around a text stops the
-  build, whatever its arms.
+  repository, tracked links are "not verified", a failure. A macro with arms of
+  another form is no longer a limit: any unknown macro around a text stops the build, whatever its arms. Guaranteed
+  by the cross-check (`outils/vocabulaire-binaire.py`): every word of the vocabulary must be found, byte for byte, in
+  one of the published programs (Linux or Windows, built as a release, with LTO); a single missing word stops
+  `outils/compiler-version.sh` before it sets its marker, so nothing is published, and names the word and its file
+  (`outils/verifier.sh` redoes it on the programs of the verified commit, step "vocabulaire-binaire"). A trick the
+  reading did not see (another package's macro taken through a glob import, `cfg!(test)` in an expression, any form
+  still unknown) yields a word rustc did not keep: it is missing from the programs and publishing stops. Code that
+  is compiled but never run is removed from the reading at the source, never from the check: a feature absent from
+  the build, a branch a `cfg!` rules out, an item marked `dead_code`, and a short named list of functions
+  (`TEXTES_MORTS`, one cause per line). What remains: a trick's word that is also found elsewhere in the programs
+  passes (the check judges bytes, not an origin); only the published programs are checked, not a development build;
+  the Windows program has no gate and only counts in the union; cargo configuration outside the repository and a
+  macro of an ordinary dependency that would read the disk remain unverified.
 - **It cannot prove it is the real Vanguard.** A fake program placed at the same path would answer the same, `identite`
   included; and a program of the account can write to Vanguard's files (the seals are a barrier, not a safe: see "The
   programs of your account do not target Vanguard itself"). The proof is made before starting, by the client: start a

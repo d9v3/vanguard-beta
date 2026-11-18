@@ -879,11 +879,21 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Le dépôt n'a ni fichier hérité que
   cargo ou rustup préférerait au fichier jugé (`.cargo/config`, `rust-toolchain`), ni aucun lien symbolique suivi par git (même
   sous `target/`), ni aucun lien non suivi hors de `target/` et `.git/` (`target` peut être un lien vers un autre
-  disque) ; hors de la racine d'un dépôt git, les liens suivis sont « non vérifiés », un échec. Non vérifié : la
-  configuration de cargo hors du dépôt, une macro d'un paquet ordinaire qui lirait le disque, `cfg!(test)` écrit dans
-  une expression du programme (lu comme du programme), et une macro d'un autre paquet qui prendrait le nom d'une macro
-  admise par une importation globale (`use autre::*;`). Une macro à bras d'une autre forme n'est plus une limite :
-  toute macro inconnue autour d'un texte arrête la compilation, quels que soient ses bras.
+  disque) ; hors de la racine d'un dépôt git, les liens suivis sont « non vérifiés », un échec. Une macro à bras
+  d'une autre forme n'est plus une limite : toute macro inconnue autour d'un texte arrête la compilation, quels que
+  soient ses bras. Garantie par le contrôle croisé (`outils/vocabulaire-binaire.py`) : chaque mot du vocabulaire doit
+  se trouver, octet pour octet, dans l'un des programmes publiés (Linux ou Windows, compilés comme une version, avec
+  LTO) ; un seul absent arrête `outils/compiler-version.sh` sans poser son repère, donc sans publication, et nomme le
+  mot et son fichier (`outils/verifier.sh` le refait sur les programmes du commit vérifié, étape
+  « vocabulaire-binaire »). Une ruse que la lecture n'a pas vue (macro d'un autre paquet prise par une importation
+  globale, `cfg!(test)` dans une expression, toute forme encore inconnue) donne un mot que rustc n'a pas gardé : il
+  manque aux programmes et la publication s'arrête. Le code compilé mais jamais exécuté est retiré de la lecture à la
+  source, jamais du contrôle : fonctionnalité absente de la compilation, branche qu'un `cfg!` fixe écarte, élément
+  dit `dead_code`, et une courte liste nommée de fonctions (`TEXTES_MORTS`, une cause par ligne). Ce qui reste : le
+  mot d'une ruse qui se trouve aussi ailleurs dans les programmes passe (le contrôle juge des octets, pas une
+  origine) ; seuls les programmes publiés sont contrôlés, pas une compilation de développement ; le programme
+  Windows n'a pas la porte et ne compte que dans l'union ; la configuration de cargo hors du dépôt et une macro d'un
+  paquet ordinaire qui lirait le disque restent non vérifiées.
 - **Elle ne peut pas prouver qu'elle est le vrai Vanguard.** Un faux programme posé au même chemin répondrait la même
   chose, `identite` comprise ; et un programme du compte peut écrire dans les fichiers de Vanguard (les sceaux sont une
   barrière, pas un coffre : voir « Les programmes de votre compte ne visent pas Vanguard lui-même »). La preuve se fait

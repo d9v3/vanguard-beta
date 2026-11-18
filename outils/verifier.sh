@@ -3,15 +3,16 @@
 # Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature des
 # versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh), de la
-# livraison (outils/essais-livrer-branche.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
-# internes, la fenêtre de Vanguard (fenetre/ : clippy sur les deux cibles, tests Linux), carte de couverture ATT&CK à
-# jour (outils/couverture-attack.py), nombres des README à jour (outils/chiffres-readme.py), documentation du code
-# sans avertissement (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/,
-# outils/relais-schema.py), protections des programmes lues dans leurs
+# livraison (outils/essais-livrer-branche.sh), du contrôle croisé du vocabulaire de la porte MCP dans les programmes
+# publiés (outils/essais-vocabulaire-binaire.sh, et les programmes eux-mêmes s'ils sont de ce commit) et de ce script
+# même sous --seulement (outils/essais-verifier.sh), liens internes, la fenêtre de Vanguard (fenetre/ : clippy sur les
+# deux cibles, tests Linux), carte de couverture ATT&CK à jour (outils/couverture-attack.py), nombres des README à jour
+# (outils/chiffres-readme.py), documentation du code sans avertissement (cargo doc), textes français et anglais
+# (outils/textes.py), relais des lots (relais/, outils/relais-schema.py), protections des programmes lues dans leurs
 # en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
-# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny ; bibliothèques à
-# constructeurs refusées : outils/essais-constructeurs.sh) et leurs failles connues (cargo audit), banc de fuzzing
-# compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
+# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny ; bibliothèques à constructeurs
+# refusées : outils/essais-constructeurs.sh) et leurs failles connues (cargo audit), banc de fuzzing compilé et passé
+# quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -617,6 +618,38 @@ durcissement() {
   return "$code"
 }
 
+# Le contrôle croisé du vocabulaire de la porte MCP (lot V1, outils/vocabulaire-binaire.py) : chaque mot qu'une réponse
+# de la porte peut laisser sortir est, octet pour octet, dans un programme publié. À chaque passe, ses essais (de faux
+# programmes, et un petit programme compilé comme la publication) ; les programmes de publication eux-mêmes quand ce
+# sont ceux de ce commit (repère de outils/compiler-version.sh, comme pour les protections). Sinon c'est dit, sans se
+# dire sautée : les compiler ici coûterait environ 8 min à chaque passe, et compiler-version.sh les contrôle de toute
+# façon avant d'écrire un repère, sans lequel rien n'est publié (deployer.sh, publier-version.sh, la CI). Lue telle
+# quelle par outils/essais-verifier.sh.
+vocabulaire_binaire() {
+  bash outils/essais-vocabulaire-binaire.sh || return
+  local cible=${CARGO_TARGET_DIR:-target} repere sorte fichier v programmes=() vocabulaires=()
+  repere=$cible/.compilation
+  if [[ $(sed -n 's/^commit //p' "$repere" 2>/dev/null) != "$(git rev-parse HEAD)" ||
+    $(sed -n 's/^propre //p' "$repere" 2>/dev/null) != oui ]]; then
+    echo "programmes de publication pas compilés de ce commit (outils/compiler-version.sh, environ 8 min) : ses essais seulement, compiler-version.sh les contrôlera"
+    return 0
+  fi
+  for sorte in linux-x86_64 windows-x86_64; do
+    fichier=$cible/x86_64-unknown-linux-musl/release/vanguard
+    [[ $sorte == linux-x86_64 ]] || fichier=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
+    # Un programme qui n'est plus celui du repère : rien n'est conclu, il manquerait ses textes à l'union.
+    [[ -f $fichier && $(sha256sum "$fichier" | cut -d' ' -f1) == "$(sed -n "s/^$sorte //p" "$repere")" ]] ||
+      { echo "$fichier n'est plus celui de la compilation de ce commit : relancer outils/compiler-version.sh"; return 1; }
+    programmes+=("$fichier")
+  done
+  for v in "$cible"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
+    [[ -f $v ]] && vocabulaires+=(--vocabulaire "$v")
+  done
+  ((${#vocabulaires[@]})) || { echo "aucun vocabulaire.txt dans $cible : rien de conclu"; return 1; }
+  python3 -I outils/vocabulaire-binaire.py --sources src --a-cote reversinglabs.yara --a-cote fabricants.rs \
+    "${vocabulaires[@]}" -- "${programmes[@]}"
+}
+
 # La documentation du code (cargo doc) sans aucun avertissement : un `<pid>` pris pour une balise HTML ou un
 # `[Install]` pris pour un lien se voit ici plutôt que dans une page cassée.
 documentation() { RUSTDOCFLAGS="-D warnings" cargo doc -q --locked --no-deps; }
@@ -652,6 +685,7 @@ if [[ $MODE != --rapide ]]; then
   etape essais-confidentialite bash outils/essais-confidentialite.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
   etape essais-livrer bash outils/essais-livrer-branche.sh &
+  etape vocabulaire-binaire vocabulaire_binaire &
   etape constructeurs bash outils/essais-constructeurs.sh &
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
@@ -872,6 +906,9 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-confidentialite "garde de confidentialité (noms, types)"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne essais-livrer "essais de livrer-branche.sh"
+  ligne vocabulaire-binaire "vocabulaire de la porte MCP (V1)"
+  [[ $(cat "$TRAVAIL/vocabulaire-binaire.etat" 2>/dev/null) != ok* ]] ||
+    grep -E '^(programmes de publication|✔ vocabulaire)' "$TRAVAIL/vocabulaire-binaire.log" | sed 's/^/      /'
   ligne constructeurs "constructeurs avant main (deny)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"

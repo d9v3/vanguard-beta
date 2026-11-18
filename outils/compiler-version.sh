@@ -249,6 +249,18 @@ bash outils/caisses-fenetre.sh --vanguard "$CIBLES/x86_64-unknown-linux-musl/rel
 python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS_CHAINE[@]}" \
   "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
   { echo "✖ vanguard compilé garde un chemin de cet ordinateur : aucun repère, rien n'est publié" >&2; exit 1; }
+# Le contrôle croisé du vocabulaire de la porte MCP (lot V1) : chaque mot qu'une réponse de la porte peut laisser sortir
+# est, octet pour octet, dans l'un des deux programmes publiés. Un mot absent est un texte que rustc n'a pas gardé (une
+# ruse de lecture, du code mort) : aucun repère, rien n'est publié. Les candidats : chaque OUT_DIR de vanguard ;
+# l'outil prend celui que les programmes portent, par ses octets, et les données à retirer à côté de lui.
+VOCABULAIRES=()
+for v in "$CIBLES"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
+  [[ -f $v ]] && VOCABULAIRES+=(--vocabulaire "$v")
+done
+python3 -I outils/vocabulaire-binaire.py --sources src --a-cote reversinglabs.yara --a-cote fabricants.rs \
+  "${VOCABULAIRES[@]}" -- "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" \
+  "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" ||
+  { echo "✖ le vocabulaire de la porte MCP n'est pas dans les programmes : aucun repère, rien n'est publié" >&2; exit 1; }
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
 [[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- "${ARBRE[@]}" 2>/dev/null) ]] ||
   PROPRE=non

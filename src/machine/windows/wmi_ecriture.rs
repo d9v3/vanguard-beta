@@ -898,6 +898,9 @@ fn remettre_apres_confirmation(w: &AbonnementWmi) -> Resultat {
     dans_wmi(move |abandon| remettre_ici(&w, abandon))
 }
 
+// Mort lui aussi jusqu'à la passe 3.5d : seul `remettre_apres_confirmation` l'appelle (rustc ne le dit pas, un élément
+// sous `allow(dead_code)` compte pour lui comme appelé) ; ses textes ne vont pas au vocabulaire de la porte MCP.
+#[allow(dead_code)]
 fn remettre_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
     let nom_note = nom_note(w);
     let Some(note) = lire_note(&nom_note).filter(|n| n.valide(w)) else {
