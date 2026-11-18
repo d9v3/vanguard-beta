@@ -2364,6 +2364,14 @@ mod tests {
     #[test]
     fn pkexec_depuis_la_fenetre_prend_l_origine_sure() {
         use std::path::PathBuf;
+        // Dans un espace de noms d'utilisateurs (verifier.sh, unshare -rn), les fichiers de root y paraissent à
+        // « nobody » : rien n'y est à root seul, l'essai n'a de sens qu'en dehors.
+        let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        if !carte.is_empty() && carte.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"] {
+            return crate::essais::saute(
+                "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
+            );
+        }
         let racine = PathBuf::from("/usr/bin/env");
         assert!(chemin_sur(&racine), "/usr/bin/env doit être à root");
         let du_compte = crate::essais::temporaire().join("vanguard-origine-essai");
