@@ -264,7 +264,8 @@ safeguards:
   back a startup program, applying an account fix, putting it back as before, installing the Vanguard update (each
   described below). Everything else is reading: it runs the `vanguard` program placed next to it (absolute path,
   never looked up in the PATH; started from an in-memory file, it receives that path from `vanguard` through
-  `--vanguard`, and applies the same safeguards to it) with a command from a closed list, which changes nothing on
+  `--vanguard`, along with its fingerprint, and applies the same safeguards to it) with a command from a closed
+  list, which changes nothing on
   the computer (`audit`,
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped,
@@ -642,7 +643,12 @@ safeguards:
   can modify, in folders that neither the group nor others can modify, when the in-memory file cannot be started (a
   kernel set to `vm.memfd_noexec=2`, an SELinux or AppArmor policy refusing it: never a fallback to the path), or
   when it does not say "open" within 20 seconds. `vanguard --menu` forces
-  the menu.
+  the menu. The `vanguard` it runs is the one that opened it: `vanguard` gives it the SHA-256 fingerprint of its own
+  program (`--empreinte-vanguard`, read on Linux from the running image), and for each command the window reads the
+  file again, copies it into a sealed in-memory file, compares that copy's fingerprint and runs only the copy, never
+  the path. Replaced since the window opened, even by this account or by an update: it is not run, the reason is
+  given and the window asks to be reopened. Opened alone, without `vanguard`, the window takes its neighbour's
+  fingerprint when it opens (trust on first use).
 - **Its libraries.** On Windows, like `vanguard.exe`, it loads its DLLs from System32 only: those it imports
   (DependentLoadFlags), and those a library opens by name after startup (SetDefaultDllDirectories, first line of the
   program; opengl32.dll for example). A DLL placed next to it, on the key or in Downloads, is never loaded. On Linux,
@@ -652,7 +658,10 @@ safeguards:
 - **Limits.** Like the program, it assumes only you can modify its folder: a fake window placed next to it is no
   longer started, but whoever can replace `vanguard` can replace both. On Windows, the launch is checked under Wine
   only (not yet on a real Windows), and the process is not created suspended to compare its image with the held
-  handle: the handle without write sharing is what guarantees the file. On Windows, the window and `vanguard` only check that the other one is a regular file:
+  handle: the handle without write sharing is what guarantees the file. Likewise when the window runs
+  `vanguard.exe`: the fingerprint is that of the bytes read through the held handle, but the path is what is started;
+  and `vanguard.exe` started outside its temporary copy reads its own fingerprint through its path, not from the
+  running image. On Windows, the window and `vanguard` only check that the other one is a regular file:
   neither its owner nor the permissions (ACLs) of the file and its folders, which Windows does not let you read as
   simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, each command it
   runs is put in its own job object: Stop, the time limit and the end of the command also stop what it started, and

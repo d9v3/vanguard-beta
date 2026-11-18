@@ -75,6 +75,13 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   fenêtre étroite garde ses cartes. Une lecture rapide (3 min au plus, qui ne change rien), jamais lue ou lue il y a
   plus d'une heure, se relance seule à l'ouverture de sa page, une fois. Une lecture longue et les scans du réseau
   (appareils, audit du réseau, caméras cachées, NAT) ne partent jamais seuls : ils attendent le bouton « Lancer ».
+- **Fenêtre : elle ne relance que le `vanguard` qui l'a ouverte.** Elle relançait le même chemin pendant des heures,
+  sans revoir le contenu : un `vanguard` remplacé par ce compte lui faisait afficher ses réponses et recevait ses
+  gestes. `vanguard` lui donne maintenant l'empreinte SHA-256 de son propre programme ; à chaque commande, la fenêtre
+  relit le fichier, le copie dans un fichier en mémoire scellé, compare son empreinte et ne lance que cette copie,
+  jamais le chemin. Remplacé depuis l'ouverture (une mise à jour aussi) : rien n'est lancé, la raison est dite, et
+  il suffit de rouvrir la fenêtre. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le
+  chemin qui est lancé (limites dites au modèle de menace).
 
 ## 15 novembre 2026 : version 0.96.0
 
