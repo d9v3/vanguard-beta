@@ -239,6 +239,9 @@ pub struct Appli {
     choisies: HashMap<Rubrique, Commande>,
     /// La page de commande montrée à la dernière image (`page_montree`) : une ouverture ne lance qu'une fois.
     page: Option<Commande>,
+    /// La dernière image était-elle assez large pour une liste et sa page (`vue_large`) ? Une rubrique y montre
+    /// alors une page, pas des cartes.
+    large: bool,
     /// Une lecture rapide vieillie se relance-t-elle d'elle-même à l'ouverture de sa page ? (Jamais dans les
     /// captures, où rien ne se lance.)
     relecture: Relecture,
@@ -280,13 +283,25 @@ impl Appli {
             (Ecran::Rubrique(r), Some(c)) if c.rubrique() == r => ecran_de(c),
             (e, _) => e,
         };
-        if retenir && quitte != vers {
+        // Dans l'autre sens aussi : la rubrique où l'on va montrera peut-être la page même que l'on quitte (Lenteur
+        // tapée dans la console, puis Ordinateur au rail) ; la retenir ferait un Retour vers la même vue.
+        let arrive = match vers {
+            Ecran::Rubrique(r) if self.large => self.montree(r).map_or(vers, ecran_de),
+            e => e,
+        };
+        if retenir && quitte != arrive {
             if self.retours.len() >= RETOURS_MAX {
                 self.retours.remove(0);
             }
             self.retours.push(quitte);
         }
         self.ecran = vers;
+    }
+
+    /// Dit si la fenêtre est assez large pour une liste et sa page (le dessin, à chaque image) : « Retour » ne retient
+    /// pas une rubrique qui montrera la page que l'on quitte.
+    pub fn vue_large(&mut self, large: bool) {
+        self.large = large;
     }
 
     /// La page montrée à côté de la liste de la rubrique `r` : la dernière ouverte, sinon la première de la liste.
@@ -419,6 +434,7 @@ impl Appli {
             revenir: None,
             choisies: HashMap::new(),
             page: None,
+            large: false,
             relecture: Relecture::Seule,
         };
         #[cfg(target_os = "linux")]
@@ -2310,6 +2326,7 @@ mod tests {
         assert_eq!(fiche.rubrique(), r);
         let montrer = |a: &mut Appli, large: bool| {
             let page = if large { a.detail() } else { commande_de(a.ecran) };
+            a.vue_large(large);
             a.page_montree(page);
         };
         a.aller(Ecran::Rubrique(r));
@@ -2337,6 +2354,15 @@ mod tests {
         let pile = a.retours.clone();
         a.aller(Ecran::Commande(fiche));
         assert_eq!(a.retours, pile, "un pas pour rien dans « Retour »");
+        // Dans l'autre sens : de la page vers sa rubrique, qui la montre déjà, rien de plus non plus.
+        montrer(&mut a, true);
+        a.aller(Ecran::Rubrique(r));
+        assert_eq!(a.retours, pile, "un pas pour rien dans « Retour », vers la rubrique");
+        // Étroit, la rubrique montre ses cartes : une autre vue, retenue.
+        a.aller(Ecran::Commande(fiche));
+        montrer(&mut a, false);
+        a.aller(Ecran::Rubrique(r));
+        assert_eq!(a.retour(), Some(Ecran::Commande(fiche)));
     }
 
     /// Parcourir la liste avec ↓ pendant qu'une lecture tourne ne met rien en file : une relance d'elle-même ne part

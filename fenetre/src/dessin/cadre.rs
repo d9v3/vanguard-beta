@@ -49,6 +49,7 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     // Une rubrique dans une fenêtre large : sa liste à gauche, fixe, et la page choisie à droite. Plus étroite, elle
     // garde ses cartes, et chaque carte ouvre sa page.
     let large = ui.available_rect_before_wrap().width() >= super::ecrans::LARGEUR_LISTE_ET_PAGE;
+    appli.vue_large(large);
     if large && let Some(c) = appli.detail() {
         egui::Panel::left("liste-rubrique")
             .exact_size(super::ecrans::LARGEUR_LISTE)
