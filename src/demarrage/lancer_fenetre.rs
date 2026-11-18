@@ -118,15 +118,53 @@ pub(crate) fn voisine(programme: &Path) -> Option<PathBuf> {
     Some(premiere)
 }
 
-/// Ce que reçoit la fenêtre : dire « ouverte » à ce programme, sa langue, et le programme qu'elle lancera, celui
-/// d'origine (`programme`) : lancée d'une copie en mémoire, elle n'a plus de dossier où le trouver.
-fn arguments(programme: &Path) -> Vec<std::ffi::OsString> {
+/// Ce que reçoit la fenêtre : dire « ouverte » à ce programme, sa langue, le programme qu'elle lancera, celui
+/// d'origine (`programme`) : lancée d'une copie en mémoire, elle n'a plus de dossier où le trouver ; et l'empreinte
+/// SHA-256 de ce programme-ci (`soi`, en hexadécimal) : elle ne lancera ce chemin que si ses octets l'ont encore (L2 de
+/// la relecture 0.96 : la fenêtre vit des heures, et le fichier au bout du chemin peut avoir changé).
+fn arguments(programme: &Path, soi: &[u8; 32]) -> Vec<std::ffi::OsString> {
+    use std::fmt::Write;
     let langue = if crate::langue::anglais() { "en" } else { "fr" };
     let mut a: Vec<std::ffi::OsString> = ["--depuis-vanguard", "--langue", langue, "--vanguard"]
         .map(Into::into)
         .into();
     a.push(programme.into());
+    let hex = soi.iter().fold(String::with_capacity(64), |mut h, o| {
+        let _ = write!(h, "{o:02x}");
+        h
+    });
+    a.extend(["--empreinte-vanguard".into(), hex.into()]);
     a
+}
+
+/// L'empreinte SHA-256 de ce programme, lue par son image : sous Linux `/proc/self/exe`, l'image qui tourne, même
+/// effacée ou remplacée depuis le lancement ; sous Windows, son fichier, ouvert sans partage d'écriture (dans une copie
+/// temporaire, tenu depuis le départ par `cle::soi_au_depart` ; hors d'une copie, le fichier qui se trouve à ce chemin
+/// maintenant, la limite dite là). Celle que la fenêtre exigera de chaque `vanguard` qu'elle relance.
+fn empreinte_de_soi() -> std::io::Result<[u8; 32]> {
+    use sha2::Digest;
+    use std::io::Read;
+    #[cfg(target_os = "linux")]
+    let mut f = std::fs::File::open("/proc/self/exe")?;
+    #[cfg(windows)]
+    let mut f = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(std::env::current_exe()?)?
+    };
+    let mut h = sha2::Sha256::new();
+    let mut tampon = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut tampon)?;
+        let Some(lus) = tampon.get(..n).filter(|l| !l.is_empty()) else {
+            break;
+        };
+        h.update(lus);
+    }
+    Ok(h.finalize().into())
 }
 
 /// Pourquoi la fenêtre posée à côté n'est pas lancée, s'il y a une raison. Sous Linux, elle doit être un vrai
@@ -659,6 +697,17 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
             .into(),
         );
     };
+    // Ce programme-ci d'abord : sans son empreinte, la fenêtre refuserait chaque commande (`--empreinte-vanguard`).
+    let soi = match empreinte_de_soi() {
+        Ok(e) => e,
+        Err(e) => {
+            return Lancement::Refusee(trf!(
+                "l'empreinte de ce programme est illisible : {}",
+                "this program's fingerprint is unreadable: {}",
+                e
+            ));
+        }
+    };
     #[cfg(target_os = "linux")]
     let verifiee = verifier(chemin, &attendue, crate::socle::uid());
     #[cfg(windows)]
@@ -673,7 +722,7 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     let mut c = commande(&verifiee, std::env::vars_os());
     #[cfg(windows)]
     let mut c = commande(&verifiee);
-    c.args(arguments(programme))
+    c.args(arguments(programme, &soi))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1062,17 +1111,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// La fenêtre reçoit le programme d'origine à lancer, tel quel (même téléchargé sous le nom de la page).
+    /// La fenêtre reçoit le programme d'origine à lancer, tel quel (même téléchargé sous le nom de la page), et
+    /// l'empreinte qu'il doit avoir, en 64 chiffres hexadécimaux minuscules (fenetre/src/main.rs les exige ainsi).
     #[test]
     fn la_fenetre_recoit_le_programme_a_lancer() {
-        let a = arguments(Path::new("/opt/v/vanguard-linux-x86_64"));
+        let mut soi = [0u8; 32];
+        soi[0] = 0xab;
+        soi[31] = 0x0c;
+        let a = arguments(Path::new("/opt/v/vanguard-linux-x86_64"), &soi);
         let i = a.iter().position(|x| x == "--vanguard").expect("--vanguard");
         assert_eq!(
             a.get(i + 1).map(PathBuf::from),
             Some(PathBuf::from("/opt/v/vanguard-linux-x86_64"))
         );
+        let i = a
+            .iter()
+            .position(|x| x == "--empreinte-vanguard")
+            .expect("--empreinte-vanguard");
+        let attendue = format!("ab{}0c", "00".repeat(30));
+        assert_eq!(a.get(i + 1).and_then(|x| x.to_str()), Some(attendue.as_str()));
         assert!(a.iter().any(|x| x == "--depuis-vanguard"));
         assert!(a.iter().any(|x| x == "--langue"));
+    }
+
+    /// L'empreinte de soi est celle des octets du programme qui tourne (ici, le programme d'essai).
+    #[test]
+    fn l_empreinte_de_soi_est_celle_du_programme() {
+        use sha2::Digest;
+        let octets = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let attendue: [u8; 32] = sha2::Sha256::digest(&octets).into();
+        assert_eq!(empreinte_de_soi().unwrap(), attendue);
     }
 
     /// Une fenêtre que d'autres comptes pourraient remplacer n'est pas lancée ; un lien non plus.
