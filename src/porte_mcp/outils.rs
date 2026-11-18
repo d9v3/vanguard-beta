@@ -477,16 +477,21 @@ impl Porte {
     fn identite(&mut self) -> Map<String, Value> {
         self.identite
             .get_or_insert_with(|| {
-                let sha = std::env::current_exe()
-                    .ok()
-                    .and_then(|c| crate::protection::empreintes::sha256(&c))
-                    .map(|h| {
-                        h.iter().fold(String::with_capacity(64), |mut s, o| {
-                            use std::fmt::Write as _;
-                            let _ = write!(s, "{o:02x}");
-                            s
-                        })
-                    });
+                // Sous Linux, l'image qui tourne (/proc/self/exe) : le chemin de `current_exe` peut avoir été remplacé
+                // depuis le lancement, et celui d'un `vanguard` lancé par la fenêtre (« /memfd:vanguard (deleted) »)
+                // ne s'ouvre pas ; l'empreinte dirait alors celle d'un autre fichier, ou rien.
+                let image = if cfg!(target_os = "linux") {
+                    Some(std::path::PathBuf::from("/proc/self/exe"))
+                } else {
+                    std::env::current_exe().ok()
+                };
+                let sha = image.and_then(|c| crate::protection::empreintes::sha256(&c)).map(|h| {
+                    h.iter().fold(String::with_capacity(64), |mut s, o| {
+                        use std::fmt::Write as _;
+                        let _ = write!(s, "{o:02x}");
+                        s
+                    })
+                });
                 let mut m = tete();
                 m.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
                 m.insert("compile".into(), json!(env!("VANGUARD_COMPILE")));
