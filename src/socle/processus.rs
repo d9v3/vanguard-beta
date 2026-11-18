@@ -334,8 +334,6 @@ pub(crate) fn plafond_lu(texte: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// Les enfants de tous les fils d'exécution, sans doublon ; un fichier illisible ou un mot qui n'est pas un numéro
-    /// rend `None` (« peut-être des enfants »), jamais une liste vide.
     /// Les enfants se relisent jusqu'à `ENFANTS_ESSAIS` fois : un fil parti pendant la lecture ne la fait pas
     /// manquer ; une lecture toujours ratée s'arrête au bout du compte.
     #[cfg(target_os = "linux")]
@@ -355,6 +353,8 @@ mod tests {
         assert_eq!((rate, fois), (None, ENFANTS_ESSAIS));
     }
 
+    /// Les enfants de tous les fils d'exécution, sans doublon ; un fichier illisible ou un mot qui n'est pas un numéro
+    /// rend `None` (« peut-être des enfants »), jamais une liste vide.
     #[cfg(target_os = "linux")]
     #[test]
     fn enfants_de_tous_les_fils() {
