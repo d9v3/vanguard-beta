@@ -42,6 +42,16 @@ fn courtes() -> Bornes {
     }
 }
 
+/// Les bornes des essais qui jugent les réponses, pas le rythme (le rythme a ses propres essais, avec `courtes`) :
+/// le temps de traitement compte dans le silence du client, et sous Wine chargé (verifier.sh avec le fuzzing) une
+/// réponse passait 400 ms, la session finissait alors par « inactivité » au lieu de « fin du flot ».
+fn de_contenu() -> Bornes {
+    Bornes {
+        inactivite: Duration::from_secs(10),
+        ..courtes()
+    }
+}
+
 /// Un noteur qui ne note rien : le transport seul.
 struct Muet;
 
@@ -254,7 +264,7 @@ fn trace_de(entree: String) -> Vec<String> {
         Cursor::new(entree.into_bytes()),
         &mut SortieTemoin(trace.clone()),
         &mut b,
-        courtes(),
+        de_contenu(),
     );
     trace.take()
 }
@@ -455,7 +465,7 @@ fn le_vrai_journal_ne_note_que_les_sessions_servies() {
             noteur: &mut noteur,
             arret: &arret,
         };
-        servir(Cursor::new(entree.into_bytes()), &mut Vec::new(), &mut b, courtes());
+        servir(Cursor::new(entree.into_bytes()), &mut Vec::new(), &mut b, de_contenu());
     };
     servir_journal(format!("{INIT}\n{PING}\n"));
     assert_eq!(porte_mcp(&dossier), Vec::<String>::new());
@@ -654,13 +664,8 @@ fn premiere_page(dossier: &std::path::Path) -> (Vec<String>, Option<String>, Bor
     }
     let mut sortie = Vec::new();
     let entree = Cursor::new(lignes.iter().fold(String::new(), |t, l| t + l + "\n").into_bytes());
-    // Sous le rythme : quinze lignes, moins de vingt. Le temps de traitement compte dans le silence du client : sous
-    // Wine chargé (verifier.sh), une réponse passait 400 ms et la session finissait par « inactivité ». Cet essai juge
-    // les réponses, pas le rythme (essayé par ses propres essais, avec les bornes courtes).
-    let bornes = Bornes {
-        inactivite: Duration::from_secs(10),
-        ..courtes()
-    };
+    // Sous le rythme : quinze lignes, moins de vingt.
+    let bornes = de_contenu();
     let bilan = servir_muet(entree, &mut sortie, &mut porte, bornes);
     assert_eq!(bilan.fin, Fin::FlotFini, "{bilan:?}");
     let reponses: Vec<String> = String::from_utf8(sortie).unwrap().lines().map(str::to_string).collect();
@@ -939,7 +944,7 @@ fn la_note_de_la_porte_ne_rend_pas_son_journal_perime() {
         |id: u8| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "evenements" } });
     let mut sortie = Vec::new();
     let entree = format!("{INIT}\n{}\n{}\n", appel(1), appel(2));
-    servir(Cursor::new(entree.into_bytes()), &mut sortie, &mut b, courtes());
+    servir(Cursor::new(entree.into_bytes()), &mut sortie, &mut b, de_contenu());
     let pages: Vec<Value> = String::from_utf8(sortie)
         .unwrap()
         .lines()
