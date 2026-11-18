@@ -495,15 +495,16 @@ fn recu(ui: &mut Ui, famille: Famille, issue: &IssueChange) {
                 ),
                 crate::donnees::changements::Relu::MisAJour => (
                     // Sous Windows, la nouvelle copie n'est pas lancée pour essai (`mise_a_jour::essayer`).
+                    // La fenêtre ne relance que le `vanguard` qui l'a ouverte : la nouvelle version, une fois rouverte.
                     if cfg!(windows) {
                         crate::tr!(
-                            "Vanguard a relu et comparé chaque programme posé : à jour.",
-                            "Vanguard read back and compared each program placed: up to date."
+                            "Vanguard a relu et comparé chaque programme posé : à jour. Fermez la fenêtre et relancez Vanguard pour la nouvelle version.",
+                            "Vanguard read back and compared each program placed: up to date. Close the window and start Vanguard again for the new version."
                         )
                     } else {
                         crate::tr!(
-                            "Vanguard a relu, comparé et essayé chaque programme posé : à jour.",
-                            "Vanguard read back, compared and tried each program placed: up to date."
+                            "Vanguard a relu, comparé et essayé chaque programme posé : à jour. Fermez la fenêtre et relancez Vanguard pour la nouvelle version.",
+                            "Vanguard read back, compared and tried each program placed: up to date. Close the window and start Vanguard again for the new version."
                         )
                     },
                     p.bon,

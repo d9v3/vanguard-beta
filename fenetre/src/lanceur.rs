@@ -159,6 +159,9 @@ impl Programme {
     }
 }
 
+/// La variable par laquelle `vanguard`, lancé de sa copie en mémoire, apprend le chemin de son fichier.
+const ORIGINE: &str = "VANGUARD_ORIGINE";
+
 /// Le nom du `vanguard` voisin.
 const NOM: &str = if cfg!(windows) { "vanguard.exe" } else { "vanguard" };
 
@@ -617,13 +620,18 @@ impl Tache {
 /// La commande qui lance le `vanguard` vérifié (`v`). Sous Linux, sa copie scellée : `/proc/self/fd/<n>`, ce que fait
 /// `fexecve`, jamais le chemin ; le descripteur est fermé au lancement (`MFD_CLOEXEC`), `vanguard` ne l'hérite pas, et
 /// son nom affiché reste `vanguard`. Sous Windows, le chemin, tant que `v` tient le fichier et ses dossiers.
+///
+/// Lancé de sa copie, `vanguard` n'a plus de fichier : `VANGUARD_ORIGINE`, dans son seul environnement, lui dit le
+/// chemin vérifié (sa mise à jour, sa clé, sa tâche s'y rapportent). Il ne la croit que dans cette copie scellée et
+/// aux octets de ce fichier (src/protection/cle.rs, `exe_d_origine`). Partout ailleurs, retirée, comme `vanguard` la
+/// retire de l'environnement de la fenêtre (L2 de la relecture 0.96).
 fn preparer(programme: &Programme, v: &Verifie, lancement: &Lancement, anglais: bool) -> Command {
     #[cfg(target_os = "linux")]
     let mut c = {
         use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
         let mut c = Command::new(format!("/proc/self/fd/{}", v.copie.as_raw_fd()));
-        c.arg0("vanguard");
+        c.arg0("vanguard").env(ORIGINE, &programme.chemin);
         #[cfg(test)]
         if v.script {
             garder_pour_l_interprete(&mut c, v.copie.as_raw_fd());
@@ -633,7 +641,9 @@ fn preparer(programme: &Programme, v: &Verifie, lancement: &Lancement, anglais: 
     #[cfg(not(target_os = "linux"))]
     let mut c = {
         let _ = v;
-        Command::new(&programme.chemin)
+        let mut c = Command::new(&programme.chemin);
+        c.env_remove(ORIGINE);
+        c
     };
     c.args(lancement.arguments())
         .stdin(Stdio::null())
@@ -1249,6 +1259,42 @@ esac
         let (_, fin) = attendre(&Tache::lancer(&p, Commande::Bilan.into(), false, &rien));
         assert_eq!(fin.issue, Issue::Terminee);
         assert_eq!(lance(), "audit\naudit\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// L2(b) : le `vanguard` lancé de sa copie reçoit le chemin vérifié par `VANGUARD_ORIGINE`, posé par la commande
+    /// même : une valeur que la fenêtre aurait reçue (d'un programme qui l'a lancée) ne passe jamais.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn le_vanguard_lance_recoit_le_chemin_verifie() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::banc("origine");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("vanguard");
+        std::fs::write(
+            &f,
+            "#!/bin/sh\nprintf '%s' \"$VANGUARD_ORIGINE\" > origine\nprintf '{}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let p = Programme::dans(&d, moi).unwrap();
+        let v = p.ouvrir().unwrap();
+        let mut c = preparer(&p, &v, &Commande::Bilan.into(), false);
+        // Fixée par la commande elle-même : une valeur héritée par la fenêtre serait remplacée, jamais transmise.
+        let fixee = c
+            .get_envs()
+            .find(|(n, _)| *n == ORIGINE)
+            .and_then(|(_, v)| v.map(ToOwned::to_owned));
+        assert_eq!(fixee.as_deref(), Some(p.chemin.as_os_str()));
+        let sortie = c.output().unwrap();
+        assert!(sortie.status.success(), "{sortie:?}");
+        drop(v);
+        assert_eq!(
+            std::fs::read(d.join("origine")).unwrap(),
+            p.chemin.as_os_str().as_encoded_bytes()
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

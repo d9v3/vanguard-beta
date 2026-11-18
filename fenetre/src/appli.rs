@@ -1880,6 +1880,16 @@ pub fn phrase_issue(famille: Famille, issue: &IssueChange) -> String {
             "Unknown outcome ({}): Vanguard may have replaced a program. The preview tells each one's version again.",
             r
         ),
+        // La fenêtre ne relance que le `vanguard` à l'empreinte reçue à son ouverture : la nouvelle version ne sert
+        // qu'une fois la fenêtre rouverte par elle (L2(b) ; jamais l'empreinte crue ici, d'après la sortie).
+        (Famille::MiseAJour, IssueChange::Fait { .. }) => format!(
+            "{} {}",
+            phrase_issue_commune(issue),
+            crate::tr!(
+                "Fermez la fenêtre et relancez Vanguard pour la nouvelle version.",
+                "Close the window and start Vanguard again for the new version."
+            )
+        ),
         (_, issue) => phrase_issue_commune(issue),
     }
 }
