@@ -858,7 +858,8 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier ;
   `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. N'est un essai que ce que
   rustc retire vraiment : `#[test]` ou `#[bench]` d'un seul segment, un `cfg` faux, un `cfg_attr` dont la condition
-  est sûrement vraie ; un attribut d'outil ou de paquet (`#[rust_analyzer::test]`, `#[tokio::test]`) reste du
+  est sûrement vraie (`true` et `false` écrits tels quels ; `r#true` est un nom de cfg ordinaire, jamais posé) ; un
+  attribut d'outil ou de paquet (`#[rust_analyzer::test]`, `#[tokio::test]`) reste du
   programme. Elle arrête la compilation sur
   une forme qu'elle ne sait pas juger : `cfg_select!` ou `cfg_match!`, un `path` posé par `cfg_attr` sur un module, un
   module à fichier déclaré dans un bloc (fonction, `const`), et toute macro hors d'une liste blanche jugée (`format!`,
@@ -868,7 +869,10 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   `bench`) donné à autre chose : définition (`macro_rules!`, `macro`), `use` qui le renomme ou le tire d'un autre
   paquet, appel par le chemin d'un autre paquet (seules les macros de texte elles-mêmes, au premier niveau de
   `src/langue.rs`, sont définies sous leur nom), le nom
-  d'un paquet admis pris par un module, un `use` ou un `extern crate` (`mod alloc`), et, dans le corps d'une macro lu
+  d'un paquet admis pris par un module, un `use` ou un `extern crate` (`mod alloc`), un `extern crate` d'un paquet
+  non admis, un chemin du programme vers un nom réservé qui passe par un module (`crate::pont::tr!`, où `pont` peut
+  être un autre paquet ; seule exception, `crate::ui::tr`, admis si `src/ui.rs` réexporte la vraie macro), et, dans
+  le corps d'une macro lu
   jeton par jeton, deux règles d'ensemble : aucune métavariable (`$x`, `$( … )`) si ce corps contient un texte (elle
   peut valoir n'importe quel jeton : le nom d'une autre macro, « ! », « # »), et aucun mot qui lie un nom ou tire un
   fichier (`use`, `mod`, `extern`, `macro_rules`, `include`), ni là, ni dans l'appel d'une macro hors de la liste

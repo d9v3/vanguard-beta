@@ -972,10 +972,11 @@ fn r9_sources_3_une_macro_de_texte_ne_se_reprend_pas() {
         mots(&[
             (
                 "src/main.rs",
-                "mod langue;\nmod ui { pub use crate::tr; }\nmod rapport { use crate::ui::tr; use super::tr as t; }\n\
+                "mod langue;\nmod ui;\nmod rapport { use crate::ui::tr; use super::tr as t; }\n\
                  fn a() { TR(\"vrai\", \"real\"); crate::tr!(\"maison\", \"rouge\"); proptest::proptest! {} }\n",
             ),
             ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::tr;\n"),
         ]),
         attendus(&["vrai", "real", "maison", "rouge"])
     );
@@ -1121,5 +1122,135 @@ fn chaque_fichier_de_textes_morts_existe() {
             "TEXTES_MORTS : {fichier} ({nom}) absent"
         );
         assert!(!cause.is_empty(), "TEXTES_MORTS : {fichier} ({nom}) sans cause");
+    }
+}
+
+#[test]
+fn r10_sources_1_r_true_est_un_nom_de_cfg_ordinaire() {
+    // Les trois preuves : `r#true` n'est pas le littéral `true` pour rustc (un nom de cfg jamais posé) ; la lecture
+    // le prenait pour vrai, et le module qui cache `vec!` ou `format!` pour du code retiré.
+    let corps = |cache: &str| {
+        format!(
+            "mod alloc {{ macro_rules! {cache} {{ ($($t:tt)*) => {{ \"\" }}; }} pub(crate) use {cache}; }}\nfn main() \
+             {{ println!(\"bonjour{{}}\", alloc::{cache}!(TR(\"motsecret\", \"secretword\"))); }}\n"
+        )
+    };
+    for texte in [
+        format!("#[cfg(not(r#true))]\n{}", corps("vec")),
+        format!("#[cfg(not(r#true))]\n{}", corps("format")),
+        format!("#[cfg_attr(r#true, test)]\n{}", corps("vec")),
+    ] {
+        refuse(&[("src/main.rs", &texte)], "module « alloc » au nom d'un paquet admis");
+    }
+    // `r#false` non plus n'est pas le littéral : inconnu, lu comme du programme.
+    assert_eq!(
+        un("#[cfg(r#false)]\nfn a() { TR(\"vrai\", \"real\"); }\n"),
+        attendus(&["vrai", "real"])
+    );
+    // Témoins : les littéraux écrits tels quels, et `r#test`, qui est `test` pour rustc.
+    assert_eq!(
+        un(
+            "#[cfg(true)]\nfn a() { TR(\"vrai\", \"real\"); }\n#[cfg(false)]\nfn b() { TR(\"retire\", \"gone\"); }\n\
+             #[cfg(r#test)]\nfn c() { TR(\"essai\", \"test\"); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+#[test]
+fn r10_sources_2_un_chemin_du_programme_ne_mene_pas_a_un_autre_paquet() {
+    // Un autre paquet lié par `extern crate`, à la racine comme dans un module.
+    for texte in [
+        "extern crate autre;\n",
+        "mod m { pub extern crate autre; }\n",
+        "extern crate self as moi;\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "lie un paquet qui n'est pas admis");
+    }
+    // Un paquet ou son alias, puis un nom réservé par un chemin du programme qui passe par lui : dans le code, dans
+    // le corps d'une macro, et importé.
+    let appel = "(TR(\"motsecret\", \"secretword\"))";
+    for texte in [
+        format!("use autre;\nfn a() -> &'static str {{ crate::autre::tr!{appel} }}\n"),
+        format!("use ::autre as pont;\nfn a() -> &'static str {{ crate::pont::tr!{appel} }}\n"),
+        format!(
+            "mod m {{ pub use ::autre as pont; }}\nfn a() -> &'static str {{ self::m::pont::autre::tr!{appel} }}\n"
+        ),
+        format!("mod m {{ use ::autre as pont; mod n {{ fn a() -> &'static str {{ super::pont::tr!{appel} }} }} }}\n"),
+        format!("use ::autre as pont;\nmacro_rules! m {{ () => {{ crate::pont::tr!{appel} }}; }}\n"),
+    ] {
+        refuse(&[("src/main.rs", &texte)], "chemin d'un autre paquet");
+    }
+    refuse(
+        &[("src/main.rs", "use autre;\nuse crate::autre::vec;\n")],
+        "donne un nom réservé",
+    );
+    // L'exception nommée : `crate::ui::tr`, seulement si src/ui.rs est le module `ui` de la seule racine et qu'il
+    // réexporte le nom du programme, sans attribut ni renommage.
+    let langue = "#[macro_export]\nmacro_rules! tr { ($fr:literal, $en:literal $(,)?) => { $fr }; }\n";
+    let main = "mod langue;\nmod ui;\nfn a() -> &'static str { crate::ui::tr!(\"vrai\", \"real\") }\nmod b { use \
+                crate::ui::tr; }\n";
+    assert_eq!(
+        mots(&[
+            ("src/main.rs", main),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::{tr, trf};\n")
+        ]),
+        attendus(&["vrai", "real"])
+    );
+    let alias = "mod langue;\nuse ::autre as ui;\nfn a() -> &'static str { crate::ui::tr!(\"motsecret\", \"secretword\") \
+                 }\n";
+    let deplace = main.replace("mod ui;", "#[path = \"autre.rs\"]\nmod ui;");
+    // Le vrai src/ui.rs lu sous un autre nom, et le module `ui` pris ailleurs : l'attribut sur `mod ui` suffit à refuser.
+    let detourne = main.replace(
+        "mod ui;",
+        "#[path = \"pont.rs\"]\nmod ui;\n#[path = \"ui.rs\"]\nmod vrai;",
+    );
+    for fichiers in [
+        vec![("src/main.rs", alias), ("src/langue.rs", langue)],
+        vec![
+            ("src/main.rs", alias),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::tr;\n"),
+        ],
+        vec![
+            ("src/main.rs", main),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "#[cfg(unix)]\npub use crate::tr;\n"),
+        ],
+        vec![
+            ("src/main.rs", main),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::tr as tr;\n"),
+        ],
+        vec![
+            ("src/main.rs", main),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use autre::*;\n"),
+        ],
+        vec![
+            ("src/main.rs", main),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "mod m { pub use crate::tr; }\n"),
+        ],
+        vec![
+            ("src/main.rs", &deplace),
+            ("src/langue.rs", langue),
+            ("src/autre.rs", "pub use crate::tr;\n"),
+        ],
+        vec![
+            ("src/main.rs", &detourne),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::tr;\n"),
+            ("src/pont.rs", "pub use autre::*;\n"),
+        ],
+        vec![
+            ("src/main.rs", main),
+            ("src/lib.rs", ""),
+            ("src/langue.rs", langue),
+            ("src/ui.rs", "pub use crate::tr;\n"),
+        ],
+    ] {
+        refuse(&fichiers, "n'est admis que si");
     }
 }

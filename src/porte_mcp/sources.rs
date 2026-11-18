@@ -203,6 +203,10 @@ pub fn vocabulaire(
     let mut lus: BTreeMap<PathBuf, bool> = BTreeMap::new();
     let mut morceaux = BTreeSet::new();
     let mut morts_vus: BTreeSet<(PathBuf, &str)> = BTreeSet::new();
+    let mut par_ui: BTreeSet<(String, PathBuf)> = BTreeSet::new();
+    let mut ui_declare = false;
+    let mut ui_reexporte: BTreeSet<String> = BTreeSet::new();
+    let racines: Vec<&PathBuf> = textes.keys().filter(|f| est_racine(f)).collect();
     while let Some(module) = a_lire.pop() {
         match lus.get(&module.fichier) {
             Some(true) => continue,
@@ -260,6 +264,9 @@ pub fn vocabulaire(
             chaines: Vec::new(),
             modules: Vec::new(),
             erreurs: Vec::new(),
+            par_ui: Vec::new(),
+            ui_declare: false,
+            ui_reexporte: Vec::new(),
         };
         lecteur.sous(&arbre.attrs, |l| {
             for element in &arbre.items {
@@ -270,6 +277,9 @@ pub fn vocabulaire(
             return Err(Illisible(erreur));
         }
         morts_vus.extend(lecteur.morts_vus.iter().map(|nom| (module.fichier.clone(), *nom)));
+        par_ui.extend(lecteur.par_ui.into_iter().map(|nom| (nom, module.fichier.clone())));
+        ui_declare |= lecteur.ui_declare;
+        ui_reexporte.extend(lecteur.ui_reexporte);
         for chaine in lecteur.chaines {
             morceaux.extend(sans_marques(&chaine).split_whitespace().map(str::to_string));
         }
@@ -288,6 +298,20 @@ pub fn vocabulaire(
                 "vocabulaire : TEXTES_MORTS nomme « {nom} » dans {fichier}, qui n'y est plus"
             )));
         }
+    }
+    // `crate::ui::tr` n'est la vraie macro que si `crate::ui` est bien src/ui.rs et qu'il la réexporte (10e passe,
+    // R10-SOURCES-2) : sinon `ui` pourrait être l'alias d'un autre paquet.
+    let seule_racine = racines.as_slice() == [&PathBuf::from("src/main.rs")];
+    if let Some((nom, fichier)) = par_ui
+        .iter()
+        .find(|(nom, _)| !(seule_racine && ui_declare && ui_reexporte.contains(nom)))
+    {
+        return Err(Illisible(format!(
+            "vocabulaire : {} : « crate::ui::{nom} » n'est admis que si src/main.rs, seule racine, déclare « mod \
+             ui; » à son premier niveau et que src/ui.rs réexporte « pub use crate::{nom}; » à son premier niveau, \
+             sans attribut : forme non jugée",
+            fichier.display()
+        )));
     }
     if !oublies.is_empty() {
         return Err(Illisible(format!(
@@ -362,9 +386,24 @@ struct Lecteur<'a> {
     chaines: Vec<String>,
     modules: Vec<Declare>,
     erreurs: Vec<String>,
+    /// Les noms réservés pris par `crate::ui::nom` dans ce fichier (`par_ui`).
+    par_ui: Vec<String>,
+    /// `src/main.rs` déclare `mod ui;` à son premier niveau, sans attribut.
+    ui_declare: bool,
+    /// Les noms que `src/ui.rs` réexporte du programme à son premier niveau (`pub use crate::{tr, …};`).
+    ui_reexporte: Vec<String>,
 }
 
 impl Lecteur<'_> {
+    /// Un chemin `crate::ui::nom` du programme : admis seulement si src/ui.rs le réexporte (`par_ui`, jugé à la fin).
+    fn note_ui<S: AsRef<str>>(&mut self, chemin: &[S]) {
+        if !self.essai
+            && let Some(nom) = par_ui(chemin)
+        {
+            self.par_ui.push(nom.to_string());
+        }
+    }
+
     fn erreur(&mut self, quoi: &str) {
         self.erreurs
             .push(format!("vocabulaire : {} : {quoi}", self.fichier.display()));
@@ -537,6 +576,7 @@ impl Lecteur<'_> {
                         && b.as_char() == '!'
                     {
                         let chemin = chemin_de(&arbres, i);
+                        self.note_ui(&chemin);
                         if appel_d_ailleurs(&chemin) {
                             self.erreur(&format!(
                                 "« {}! » dans le corps d'une macro : un nom réservé (NOMS_RESERVES) appelé par le \
@@ -633,7 +673,8 @@ impl Lecteur<'_> {
             if reserve(&nom) {
                 let racine = complet.first().map(String::as_str).unwrap_or_default();
                 // Le message dit quoi faire : les deux formes qu'il propose sont lues (7e passe, R7-SOURCES-4).
-                if nom != origine || complet.len() < 2 || !origine_permise(&nom, racine) {
+                l.note_ui(&complet);
+                if nom != origine || complet.len() < 2 || !origine_permise(&nom, racine) || par_un_detour(&complet) {
                     l.erreur(&format!(
                         "« use {complet} » donne un nom réservé (« {nom} » : une macro que la lecture reconnaît par \
                          son nom, NOMS_RESERVES) à ce qui ne vient pas d'où la lecture l'attend (elle le prendrait \
@@ -740,8 +781,38 @@ fn origine_permise(nom: &str, racine: &str) -> bool {
 fn appel_d_ailleurs(chemin: &[String]) -> bool {
     let chemin: Vec<&str> = chemin.iter().map(String::as_str).filter(|s| *s != "::").collect();
     match chemin.as_slice() {
-        [racine, .., nom] => reserve(nom) && !origine_permise(nom, racine),
+        [racine, .., nom] => reserve(nom) && (!origine_permise(nom, racine) || par_un_detour(&chemin)),
         _ => false,
+    }
+}
+
+/// Un chemin du programme (`crate`, `self`, `super`) vers un nom réservé qui passe par un autre nom que `super` :
+/// `crate::pont::tr!`. Ce nom peut être un paquet ou son alias (`use ::autre as pont;`, `extern crate autre;` dans
+/// un module) : la macro serait celle de l'autre paquet, jamais jugée (10e passe, R10-SOURCES-2). Les vraies
+/// (macros de texte, `#[macro_export]`) sont à la racine : `crate::tr!`, ou importées sous leur nom (`use
+/// crate::tr;`). Seule exception, une cause : `crate::ui::tr`, que `src/ui.rs` réexporte (`par_ui`, vérifié à la fin).
+fn par_un_detour<S: AsRef<str>>(chemin: &[S]) -> bool {
+    match chemin {
+        [racine, milieu @ .., _] => {
+            ["crate", "self", "super"].contains(&racine.as_ref())
+                && milieu.iter().any(|s| s.as_ref() != "super")
+                && par_ui(chemin).is_none()
+        }
+        _ => false,
+    }
+}
+
+/// Le nom réservé d'un chemin `crate::ui::nom` : `src/ui.rs` réexporte les macros de texte pour les fichiers qui
+/// prennent ses couleurs avec elles (`use crate::ui::{tr, GRIS};`). Ce chemin n'est admis qu'à la fin de la lecture,
+/// si `src/main.rs` est la seule racine, déclare `mod ui;` à son premier niveau, sans attribut, et que `src/ui.rs`
+/// réexporte ce nom du programme, à son premier niveau (`pub use crate::{tr, …};`, sans attribut ni renommage) :
+/// un nom écrit ainsi passe avant toute importation globale, c'est donc la vraie macro.
+fn par_ui<S: AsRef<str>>(chemin: &[S]) -> Option<&str> {
+    match chemin {
+        [racine, module, nom] if racine.as_ref() == "crate" && module.as_ref() == "ui" && reserve(nom.as_ref()) => {
+            Some(nom.as_ref())
+        }
+        _ => None,
     }
 }
 
@@ -985,7 +1056,10 @@ fn conditions(flux: TokenStream, fonctionnalites: &BTreeSet<String>) -> Result<V
         let TokenTree::Ident(nom) = arbre else {
             return Err(illisible());
         };
-        let nom = sans_r(&nom.to_string()).to_string();
+        // `true` et `false` sont des littéraux seulement écrits tels quels : `r#true` est un nom de cfg ordinaire,
+        // inconnu (10e passe, R10-SOURCES-1 : `#[cfg(not(r#true))]` passait pour du code retiré).
+        let brut = nom.to_string();
+        let nom = sans_r(&brut).to_string();
         let valeur = match arbres.peek() {
             Some(TokenTree::Punct(p)) if p.as_char() == '=' => {
                 arbres.next();
@@ -1015,10 +1089,11 @@ fn conditions(flux: TokenStream, fonctionnalites: &BTreeSet<String>) -> Result<V
                     _ => return Err(illisible()),
                 }
             }
-            _ => match nom.as_str() {
+            _ => match brut.as_str() {
                 "true" => Tri::Vrai,
                 "false" => Tri::Faux,
-                n if CFG_FAUX.contains(&n) => Tri::Faux,
+                // `r#test` est `test` pour rustc (un mot ordinaire écrit brut).
+                _ if CFG_FAUX.contains(&nom.as_str()) => Tri::Faux,
                 _ => Tri::Inconnu,
             },
         };
@@ -1208,6 +1283,15 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
         let nom = sans_r(&m.ident.to_string()).to_string();
+        if self.fichier == Path::new("src/main.rs")
+            && self.en_ligne == 0
+            && self.bloc == 0
+            && nom == "ui"
+            && m.attrs.is_empty()
+            && m.content.is_none()
+        {
+            self.ui_declare = true;
+        }
         // Un module au nom d'un paquet admis le cache : `alloc::vec!` serait la macro qu'il contient, inconnue (7e
         // passe, R7-SOURCES-3).
         if !self.essai && RACINES_ADMISES.contains(&nom.as_str()) {
@@ -1438,6 +1522,7 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
             .collect();
         // Un nom réservé appelé par le chemin d'un autre paquet (`autre::tr!`, `autre::include!`) : une macro que
         // personne n'a jugée, prise pour la vraie par son nom (9e passe, R9-SOURCES-2 et 3).
+        self.note_ui(&chemin);
         if appel_d_ailleurs(&chemin) {
             self.erreur(&format!(
                 "« {}! » : un nom réservé (NOMS_RESERVES) appelé par le chemin d'un autre paquet, la lecture le \
@@ -1519,12 +1604,40 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
                 ));
             }
         }
+        // Un autre paquet lié par son nom dans un module (`extern crate autre;`) rendrait `crate::m::autre::tr!` à
+        // cet autre paquet (10e passe, R10-SOURCES-2) : seuls les paquets admis le sont, et jamais `self`.
+        if !self.essai && !RACINES_ADMISES.contains(&paquet.as_str()) {
+            self.erreur(&format!(
+                "« extern crate {paquet} » lie un paquet qui n'est pas admis (RACINES_ADMISES) : ses macros pourraient \
+                 être appelées par un chemin du programme, forme non jugée"
+            ));
+        }
         visit::visit_item_extern_crate(self, i);
     }
 
     fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
         if !self.essai {
             self.importe(&mut Vec::new(), &i.tree);
+        }
+        // Ce que src/ui.rs réexporte du programme (`par_ui`) : à son premier niveau, public, sans attribut.
+        if self.fichier == Path::new("src/ui.rs")
+            && !self.essai
+            && self.en_ligne == 0
+            && self.bloc == 0
+            && i.attrs.is_empty()
+            && matches!(i.vis, syn::Visibility::Public(_))
+            && let syn::UseTree::Path(p) = &i.tree
+            && p.ident == "crate"
+        {
+            let noms: Vec<&syn::UseTree> = match &*p.tree {
+                syn::UseTree::Group(g) => g.items.iter().collect(),
+                arbre => vec![arbre],
+            };
+            for arbre in noms {
+                if let syn::UseTree::Name(n) = arbre {
+                    self.ui_reexporte.push(sans_r(&n.ident.to_string()).to_string());
+                }
+            }
         }
         visit::visit_item_use(self, i);
     }

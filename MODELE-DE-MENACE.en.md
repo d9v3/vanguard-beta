@@ -810,7 +810,8 @@ to start (code 2) until it has been tried on a real Windows.
   the same rules as `src/`; any other program module outside `src/` stops the build. The reading follows `r#test` and `r#cfg` as the compiler does, and a
   `#[path]` on an inline module from the file's folder; `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` and `cfg(miri)` are
   false in the program. Only what rustc really removes is a test: a single-segment `#[test]` or `#[bench]`, a false
-  `cfg`, a `cfg_attr` whose condition is surely true; a tool or package attribute (`#[rust_analyzer::test]`,
+  `cfg`, a `cfg_attr` whose condition is surely true (`true` and `false` written as is; `r#true` is an ordinary cfg
+  name, never set); a tool or package attribute (`#[rust_analyzer::test]`,
   `#[tokio::test]`) stays program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
   `cfg_attr` on a module, a file module declared in a block (function, `const`), and any macro outside a reviewed
   allow-list (`format!`, `write!`, `json!`, `vec!`…) called inside a text call or whose body contains one (`cfg_if!`,
@@ -819,7 +820,10 @@ to start (code 2) until it has been tried on a real Windows.
   `bench`) given to something else: a definition (`macro_rules!`, `macro`), a `use` that renames it or takes it from
   another package, a call through another package's path (only the text macros themselves, at the top level of
   `src/langue.rs`, are defined under their name), an
-  allowed package's name taken by a module, a `use` or an `extern crate` (`mod alloc`), and, in a macro body read token
+  allowed package's name taken by a module, a `use` or an `extern crate` (`mod alloc`), an `extern crate` of a package
+  that is not allowed, a program path to a reserved name that goes through a module (`crate::bridge::tr!`, where
+  `bridge` can be another package; only exception, `crate::ui::tr`, allowed if `src/ui.rs` re-exports the real
+  macro), and, in a macro body read token
   by token, two overall rules: no metavariable (`$x`, `$( … )`) if that body contains a text (it can stand for any
   token: another macro's name, "!", "#"), and no word that binds a name or pulls in a file (`use`, `mod`, `extern`,
   `macro_rules`, `include`), neither there nor in the call of a macro outside the allow-list (which could recombine
