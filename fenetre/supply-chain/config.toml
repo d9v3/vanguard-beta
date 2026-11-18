@@ -164,6 +164,11 @@ version = "2.13.2"
 criteria = "safe-to-deploy"
 notes = "Caisse de base de l'écosystème Rust (structures, journal, macros d'erreur), sans accès au système de son côté. Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
 
+[[exemptions.block-buffer]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
+
 [[exemptions.block2]]
 version = "0.5.1"
 criteria = "safe-to-deploy"
@@ -259,10 +264,20 @@ version = "0.8.23"
 criteria = "safe-to-deploy"
 notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
+[[exemptions.crypto-common]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
+
 [[exemptions.cursor-icon]]
 version = "1.2.0"
 criteria = "safe-to-deploy"
 notes = "Famille winit (Rust Windowing, Smithay) : le lien au bureau (Wayland, X11, clavier, curseurs). Elle ne parle qu'au compositeur et charge les bibliothèques du système ; sous Linux, dans le bac à sable (ni fichier du compte, ni réseau, ni programme). Exemptée à ce numéro au lot 1b : aucune relecture publiée chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (imports ci-dessus) ; la relecture viendra par eux (cargo vet suggest)."
+
+[[exemptions.digest]]
+version = "0.11.3"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
 
 [[exemptions.dispatch]]
 version = "0.2.0"
@@ -498,6 +513,11 @@ notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov.
 version = "0.5.3"
 criteria = "safe-to-deploy"
 notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+
+[[exemptions.hybrid-array]]
+version = "0.4.15"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
 
 [[exemptions.iana-time-zone]]
 version = "0.1.65"
@@ -1019,6 +1039,11 @@ version = "0.1.21"
 criteria = "safe-to-deploy"
 notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
 
+[[exemptions.sha2]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
+
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
@@ -1148,6 +1173,11 @@ notes = "Entrée dans le programme au lot « finition de la fenêtre » (10 nov.
 version = "0.5.1"
 criteria = "safe-to-deploy"
 notes = "Seulement dans le Cargo.lock de vanguard-fenetre : pour un autre système (macOS, iOS, Android, le web, Redox, UEFI) ou une option éteinte, jamais compilée pour ses deux cibles, x86_64 Linux et Windows (cargo tree, lot 1b). Exemptée à ce numéro sans relecture ; à relire si elle y entre."
+
+[[exemptions.typenum]]
+version = "1.20.1"
+criteria = "safe-to-deploy"
+notes = "Même caisse, même numéro que dans le Cargo.lock de vanguard (supply-chain/config.toml de la racine, exemptée là au même numéro) : amenée par sha2 0.11.1, l'empreinte SHA-256 du vanguard relancé à chaque geste (L2 de la relecture 0.96). Aucune relecture publiée à ce numéro chez Mozilla, Google, Bytecode Alliance, ISRG ou Zcash (cargo vet suggest) ; à relire avec celle de la racine."
 
 [[exemptions.uds_windows]]
 version = "1.2.1"

@@ -27,6 +27,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "raw_value"] }
 # L'heure locale des lignes de la console et l'âge des événements (écrits en temps universel), comme Vanguard.
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+# L'empreinte du `vanguard` relancé à chaque geste, comparée à celle que `vanguard` a donnée en ouvrant la fenêtre
+# (`--empreinte-vanguard`, L2 de la relecture 0.96) : la même caisse, la même version et les mêmes options que
+# `vanguard` (Cargo.toml de la racine), qui vérifie la fenêtre de la même façon.
+sha2 = { version = "0.11.1", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Les bibliothèques de Wayland chargées à l'exécution (dlopen), comme celles d'X11 et d'OpenGL : le programme
