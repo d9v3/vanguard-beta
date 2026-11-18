@@ -332,6 +332,10 @@ fn arreter_sans_origine_dans_la_fenetre() {
 
 #[tokio::main]
 async fn main() {
+    // Les enfants de ce processus avant qu'il ait rien lancé : un exec garde le numéro et les enfants du programme
+    // d'avant, qui ne sont pas de Vanguard (le bilan et le veilleur ne les écartent pas, voir `chasse::de_vanguard`).
+    #[cfg(target_os = "linux")]
+    crate::socle::processus::enfants_d_avant();
     // La clé de données gardée pour la session, effacée à chaque retour de `main` et pendant une panique ;
     // `std::process::exit` ne détruisant rien, ses appels plus bas l'effacent eux-mêmes.
     let _oubli = chiffrement::OublierALaSortie;

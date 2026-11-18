@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(p.chemin.as_deref(), Some("/memfd:vanguard"), "{p:?}");
         let liste = [p];
         // Un `moi` hors de la liste : le fils de ce test n'est pas écarté pour être de sa descendance.
-        de_vanguard(&liste, u32::MAX, &|p| soi.est_moi(p.pid, p.chemin.as_deref())).contains(&pid)
+        de_vanguard(&liste, u32::MAX, &|p| soi.est_moi(p.pid, p.chemin.as_deref()), true).contains(&pid)
     }
 
     /// HAUTE (relecture adverse du lot L2(b), constat A) : dans l'image de la fenêtre, le nom « /memfd:vanguard » ne
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(liste.len(), 2, "{liste:?}");
         assert_eq!(liste[1].parent, Some(pid));
         let soi = dans_la_fenetre(Path::new(ATTEND), empreinte(Path::new(ATTEND)).unwrap());
-        let ecartes = de_vanguard(&liste, u32::MAX, &|p| soi.est_moi(p.pid, p.chemin.as_deref()));
+        let ecartes = de_vanguard(&liste, u32::MAX, &|p| soi.est_moi(p.pid, p.chemin.as_deref()), true);
         assert!(
             ecartes.contains(&pid),
             "le porteur, aux octets de Vanguard, est reconnu"

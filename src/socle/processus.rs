@@ -136,6 +136,38 @@ pub(crate) fn debut(pid: u32) -> Option<u64> {
     debut_du_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
 }
 
+/// Les enfants vivants du processus `pid`, de tous ses fils d'exécution (`/proc/<pid>/task/*/children`). `None` :
+/// illisible (parti, un fil fini pendant la lecture, ou un noyau sans CONFIG_PROC_CHILDREN), à prendre comme « peut-être
+/// des enfants ».
+#[cfg(target_os = "linux")]
+pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
+    enfants_dans(&Path::new("/proc").join(pid.to_string()))
+}
+
+/// `enfants`, pour le dossier `/proc/<pid>` donné (fabriqué pour un essai).
+#[cfg(target_os = "linux")]
+fn enfants_dans(dossier: &Path) -> Option<Vec<u32>> {
+    let mut tous = Vec::new();
+    for fil in std::fs::read_dir(dossier.join("task")).ok()? {
+        let texte = std::fs::read_to_string(fil.ok()?.path().join("children")).ok()?;
+        for mot in texte.split_whitespace() {
+            tous.push(mot.parse().ok()?);
+        }
+    }
+    tous.sort_unstable();
+    tous.dedup();
+    Some(tous)
+}
+
+/// Les enfants qu'avait ce processus au début de `main`, qui le relève avant tout le reste : un `exec` garde le numéro
+/// du processus et ses enfants, et ceux-là sont nés avant que ce programme-ci tourne, donc pas de lui (relecture
+/// adverse du lot L2(b), 3e ronde). Relevé une seule fois, au premier appel. `None` : illisible.
+#[cfg(target_os = "linux")]
+pub(crate) fn enfants_d_avant() -> Option<&'static [u32]> {
+    static RELEVE: std::sync::OnceLock<Option<Vec<u32>>> = std::sync::OnceLock::new();
+    RELEVE.get_or_init(|| enfants(std::process::id())).as_deref()
+}
+
 /// Les quatre comptes de la ligne « Uid: » de `/proc/<pid>/status` (réel, effectif, sauvé, système de fichiers) sont-ils
 /// tous `uid` ? Un programme setuid lancé depuis ce compte a un autre compte effectif : il n'est pas « du compte », et
 /// ce n'est pas au veilleur, sans droits, de l'arrêter.
@@ -288,6 +320,29 @@ pub(crate) fn plafond_lu(texte: &str) -> Option<u64> {
 )]
 mod tests {
     use super::*;
+
+    /// Les enfants de tous les fils d'exécution, sans doublon ; un fichier illisible ou un mot qui n'est pas un numéro
+    /// rend `None` (« peut-être des enfants »), jamais une liste vide.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enfants_de_tous_les_fils() {
+        let d = crate::essais::Jetable::nouveau("processus-enfants");
+        let fil = |n: &str, texte: &str| {
+            std::fs::create_dir_all(d.join("task").join(n)).unwrap();
+            std::fs::write(d.join("task").join(n).join("children"), texte).unwrap();
+        };
+        fil("70", "");
+        assert_eq!(enfants_dans(&d), Some(vec![]));
+        fil("70", "75 71 ");
+        fil("72", "71 90\n");
+        assert_eq!(enfants_dans(&d), Some(vec![71, 75, 90]));
+        fil("73", "x");
+        assert_eq!(enfants_dans(&d), None, "un mot qui n'est pas un numéro");
+        std::fs::remove_dir_all(d.join("task").join("73")).unwrap();
+        std::fs::create_dir_all(d.join("task").join("74")).unwrap();
+        assert_eq!(enfants_dans(&d), None, "un fil sans fichier children");
+        assert_eq!(enfants_dans(&d.join("absent")), None);
+    }
 
     #[test]
     fn le_plafond_de_taille_se_lit_dans_les_limites() {
