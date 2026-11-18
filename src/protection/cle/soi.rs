@@ -337,7 +337,6 @@ fn identite(image: &Path) -> Option<Image> {
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) mod essais {
     use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
     use std::path::Path;
 
     /// Un programme qui attend, aux octets connus : `sleep` du système.
@@ -345,7 +344,7 @@ pub(crate) mod essais {
 
     /// Le nom du lien (`Lien`) par lequel `ATTEND` est lancé. Un `sleep` à programme unique (les coreutils d'Ubuntu
     /// 26.04, uutils, des liens durs d'un seul programme de 11 Mo) choisit l'outil par le nom du fichier lancé (celui
-    /// donné à execve, puis `argv[0]`) et s'arrête aussitôt sous un autre (« coreutils: unknown program 'vanguard' ») :
+    /// `argv[0]`) et s'arrête aussitôt sous un autre (« coreutils: unknown program 'vanguard' ») :
     /// copié en `…/vanguard`, ou lancé par `/proc/<pid>/fd/<n>` sous `argv[0]` « vanguard », il ne tournait pas, et les
     /// essais qui le voulaient en marche échouaient sur la CI. Par un lien de ce nom, il tourne partout ; le noyau
     /// suit le lien, donc l'image du processus (`/proc/<pid>/exe`), seule lue par la reconnaissance, ne change pas.
@@ -390,8 +389,9 @@ pub(crate) mod essais {
         }
     }
 
-    /// `octets` (ceux d'`ATTEND`) lancés depuis un memfd scellé nommé `nom`, comme la fenêtre lance `vanguard` (`arg0`
-    /// « vanguard »), par un `Lien` ; `None` si le noyau refuse (memfd non exécutable). Lancé mais arrêté : l'essai
+    /// `octets` (ceux d'`ATTEND`) lancés depuis un memfd scellé nommé `nom`, comme la fenêtre lance `vanguard`, par un
+    /// `Lien`, sous `argv[0]` « sleep » (le chemin du lien : uutils choisit l'outil d'après `argv[0]`, et seule l'image
+    /// du processus compte pour la reconnaissance) ; `None` si le noyau refuse (memfd non exécutable). Lancé mais arrêté : l'essai
     /// échoue (`arrete_trop_tot`), jamais sauté pour une autre raison que la sienne.
     pub(crate) fn depuis_un_memfd(nom: &str, octets: &[u8], args: &[&str]) -> Option<Lance> {
         let copie = crate::demarrage::memfd::scelle(nom, octets).ok()?;
@@ -401,7 +401,6 @@ pub(crate) mod essais {
             copie.as_raw_fd()
         )))?;
         let fils = std::process::Command::new(&lien.chemin)
-            .arg0("vanguard")
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
