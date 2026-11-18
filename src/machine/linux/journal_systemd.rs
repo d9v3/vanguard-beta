@@ -196,10 +196,21 @@ fn chercher_dans_le_systeme(requete: &Requete, systeme_seul: bool) -> Option<Vec
     None
 }
 
+/// Ce qui fait qu'une entrée est la même dans deux fichiers : sa suite de numéros, et tout son en-tête (numéro,
+/// heure, temps monotone, démarrage, empreinte XOR de ses champs), comme `compare_with_location` de journalctl.
+/// Le numéro seul ne suffit pas : après un arrêt brusque, journald peut redonner au démarrage suivant des numéros
+/// déjà écrits dans un autre fichier (vu le 18 nov. 2026), et deux entrées différentes en devenaient une.
+type Identite = ([u8; 16], [u8; 48]);
+
+/// L'identité de l'entrée dont `o` est le début (64 octets au moins) ; `None` s'il est trop court.
+fn identite(suite: [u8; 16], o: &[u8]) -> Option<Identite> {
+    Some((suite, o.get(16..64)?.try_into().ok()?))
+}
+
 /// Les entrées de `fichiers` qui répondent à la requête, de la plus ancienne à la plus récente. Une entrée recopiée
-/// dans deux fichiers (même suite de numéros, même numéro) ne compte qu'une fois, comme dans journalctl.
+/// dans deux fichiers (même `Identite`) ne compte qu'une fois, comme dans journalctl.
 pub(crate) fn chercher(fichiers: &[PathBuf], requete: &Requete) -> Option<Vec<Entree>> {
-    let mut vues: HashSet<([u8; 16], u64)> = HashSet::new();
+    let mut vues: HashSet<Identite> = HashSet::new();
     let mut toutes: Vec<(u64, u64, Entree)> = Vec::new();
     for chemin in fichiers {
         let fichier = match std::fs::File::open(chemin) {
@@ -211,8 +222,8 @@ pub(crate) fn chercher(fichiers: &[PathBuf], requete: &Requete) -> Option<Vec<En
         let Ouvert::Pret(mut journal) = Journal::ouvrir(fichier)? else {
             continue;
         };
-        for (numero, entree) in journal.chercher(requete)? {
-            if vues.insert((journal.suite, numero)) {
+        for (numero, cle, entree) in journal.chercher(requete)? {
+            if vues.insert(cle) {
                 toutes.push((entree.quand, numero, entree));
             }
         }
@@ -440,32 +451,61 @@ pub(crate) fn tout_le_journal(depuis: u64, mut ecrire: impl FnMut(&str) -> bool)
     parcourir(reculs, depuis, &mut ecrire)
 }
 
-fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) -> bool) -> Option<Parcours> {
-    use std::collections::BinaryHeap;
-    // (heure, numéro dans le fichier, fichier, position) de l'entrée la plus récente de chaque fichier.
-    let mut tas: BinaryHeap<(u64, u64, usize, u64)> = BinaryHeap::new();
-    let avancer = |reculs: &mut Vec<Recul>, i: usize, tas: &mut BinaryHeap<(u64, u64, usize, u64)>| -> Option<()> {
-        let recul = reculs.get_mut(i)?;
-        if let Some(pos) = recul.precedente().ok()? {
-            let (numero, quand) = recul.journal.en_tete(pos)?;
-            tas.push((quand, numero, i, pos));
-        }
-        Some(())
+/// L'ordre de deux entrées, comme `journal_file_compare_locations` de journalctl : même suite de numéros, par
+/// numéro ; sinon même démarrage, par temps monotone ; sinon par heure, puis par empreinte XOR. L'heure seule ne
+/// suffit pas : quand l'horloge recule (la première synchronisation après un démarrage), journalctl garde l'ordre
+/// d'écriture et l'heure le mélangeait.
+fn ordre(a: &Identite, b: &Identite) -> std::cmp::Ordering {
+    let champ = |i: &Identite, k: usize| {
+        i.1.get(k..)
+            .and_then(<[u8]>::first_chunk::<8>)
+            .map(|o| u64::from_le_bytes(*o))
     };
-    for i in 0..reculs.len() {
-        avancer(&mut reculs, i, &mut tas)?;
+    let mut ordre = std::cmp::Ordering::Equal;
+    if a.0 == b.0 {
+        ordre = champ(a, 0).cmp(&champ(b, 0));
     }
-    let mut vues: HashSet<([u8; 16], u64)> = HashSet::new();
+    if ordre.is_eq() && a.1.get(24..40) == b.1.get(24..40) {
+        ordre = champ(a, 16).cmp(&champ(b, 16));
+    }
+    ordre
+        .then_with(|| champ(a, 8).cmp(&champ(b, 8)))
+        .then_with(|| champ(a, 40).cmp(&champ(b, 40)))
+}
+
+fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) -> bool) -> Option<Parcours> {
+    // L'entrée la plus récente pas encore écrite de chaque fichier : (heure, position, identité). Pas de tas : l'ordre
+    // de journalctl n'est pas total entre deux suites de numéros ; comme lui, on prend la plus récente des têtes.
+    let mut tetes: Vec<Option<(u64, u64, Identite)>> = Vec::with_capacity(reculs.len());
+    for recul in &mut reculs {
+        tetes.push(tete(recul).ok()?);
+    }
+    let mut vues: HashSet<Identite> = HashSet::new();
     let mut caches: Vec<Cache> = (0..reculs.len()).map(|_| Cache::default()).collect();
     let mut parcours = Parcours::default();
-    while let Some((quand, numero, i, pos)) = tas.pop() {
+    loop {
+        let mut choisie: Option<usize> = None;
+        for (i, t) in tetes.iter().enumerate() {
+            let Some((_, _, cle)) = t else { continue };
+            let plus_recente = match choisie.and_then(|c| tetes.get(c)?.as_ref()) {
+                Some((_, _, autre)) => ordre(cle, autre).is_gt(),
+                None => true,
+            };
+            if plus_recente {
+                choisie = Some(i);
+            }
+        }
+        let Some(i) = choisie else {
+            return Some(parcours);
+        };
+        // `i` est un rang de `tetes`, de la même longueur que `reculs` et `caches`.
+        let (recul, cache, place) = (reculs.get_mut(i)?, caches.get_mut(i)?, tetes.get_mut(i)?);
+        let (quand, pos, cle) = place.take()?;
         if quand < depuis {
             // Le plus récent de ce fichier est plus ancien que la borne : il n'a plus rien à donner.
             continue;
         }
-        // `i` vient du tas, rempli avec les rangs de `reculs` ; `caches` a la même longueur.
-        let (recul, cache) = (reculs.get_mut(i)?, caches.get_mut(i)?);
-        if vues.insert((recul.journal.suite, numero)) {
+        if vues.insert(cle) {
             let e = recul.journal.entree(pos, CHAMPS_COURTS, cache)?;
             if let Some(l) = ligne_courte(&e) {
                 if !ecrire(&l) {
@@ -476,9 +516,17 @@ fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) 
                 parcours.entrees = parcours.entrees.saturating_add(1);
             }
         }
-        avancer(&mut reculs, i, &mut tas)?;
+        *place = tete(recul).ok()?;
     }
-    Some(parcours)
+}
+
+/// L'entrée précédente d'un fichier parcouru à l'envers : `Ok(None)` quand il est fini, `Err` s'il ne se lit pas.
+fn tete(recul: &mut Recul) -> Result<Option<(u64, u64, Identite)>, ()> {
+    let Some(pos) = recul.precedente()? else {
+        return Ok(None);
+    };
+    let (_, quand, cle) = recul.journal.en_tete(pos).ok_or(())?;
+    Ok(Some((quand, pos, cle)))
 }
 
 /// Un fichier ouvert, lu par morceaux de 64 Kio gardés en mémoire (les objets voisins se lisent d'un coup).
@@ -836,8 +884,9 @@ impl Journal {
         Some(sortie)
     }
 
-    /// Les entrées de ce fichier qui répondent à la requête, avec leur numéro dans la suite du fichier.
-    fn chercher(&mut self, r: &Requete) -> Option<Vec<(u64, Entree)>> {
+    /// Les entrées de ce fichier qui répondent à la requête, avec leur numéro dans la suite du fichier et leur
+    /// identité.
+    fn chercher(&mut self, r: &Requete) -> Option<Vec<(u64, Identite, Entree)>> {
         if r.depuis
             .is_some_and(|t| self.derniere_heure != 0 && self.derniere_heure < t)
         {
@@ -856,6 +905,7 @@ impl Journal {
             let o = self.lecteur.lire(pos, usize::try_from(taille).ok()?)?;
             let numero = u64_a(&o, 16);
             let quand = u64_a(&o, 24);
+            let cle = identite(self.suite, &o)?;
             if r.depuis.is_some_and(|t| quand < t) || r.demarrage.is_some_and(|b| o.get(40..56) != Some(&b[..])) {
                 continue;
             }
@@ -877,16 +927,16 @@ impl Journal {
                     lus.push((nom, valeur));
                 }
             }
-            sortie.push((numero, Entree { quand, champs: lus }));
+            sortie.push((numero, cle, Entree { quand, champs: lus }));
         }
         Some(sortie)
     }
 
-    /// Le numéro et l'heure d'une entrée (sans ses champs).
-    fn en_tete(&mut self, pos: u64) -> Option<(u64, u64)> {
+    /// Le numéro, l'heure et l'identité d'une entrée (sans ses champs).
+    fn en_tete(&mut self, pos: u64) -> Option<(u64, u64, Identite)> {
         self.objet(pos, ENTREE, 64)?;
         let o = self.lecteur.lire(pos, 64)?;
-        Some((u64_a(&o, 16), u64_a(&o, 24)))
+        Some((u64_a(&o, 16), u64_a(&o, 24), identite(self.suite, &o)?))
     }
 
     /// Une entrée et ses champs voulus ; `cache` garde les champs déjà lus (un même champ revient dans beaucoup
@@ -1639,6 +1689,60 @@ mod tests {
             "rouge fin x"
         );
         assert_eq!(sans_ansi("\x1b"), "\x1b");
+    }
+
+    /// Après un arrêt brusque, journald redonne au démarrage suivant un numéro déjà écrit dans un autre fichier de la
+    /// même suite (vu le 18 nov. 2026) : deux entrées différentes, toutes deux montrées par journalctl, jamais prises
+    /// pour une copie. Et l'horloge qui recule (première synchronisation) ne change pas l'ordre : celui des numéros.
+    #[test]
+    fn meme_numero_apres_un_redemarrage() {
+        let dossier = jetable("meme-numero");
+        for drapeaux in [HACHAGE_A_CLE | COMPACT | ZSTD | LZ4, 0] {
+            let mut a = Ecrivain::new(drapeaux);
+            a.entree(1_000, AUTRE_DEMARRAGE, &[b"PRIORITY=3", b"_COMM=un", b"MESSAGE=a1"]);
+            a.entree(5_000, DEMARRAGE, &[b"PRIORITY=3", b"_COMM=deux", b"MESSAGE=a2"]);
+            a.tableaux_des_entrees(1);
+            let fa = a.fichier(&dossier, "system.journal");
+            // Même suite de numéros ; b2 reprend le numéro 2 de `a` (la dernière entrée avant l'arrêt), b3 est écrite
+            // après a2 mais l'horloge a reculé entre les deux.
+            let mut b = Ecrivain::new(drapeaux);
+            b.numero = 1;
+            b.entree(2_000, AUTRE_DEMARRAGE, &[b"PRIORITY=3", b"_COMM=trois", b"MESSAGE=b2"]);
+            b.entree(4_000, DEMARRAGE, &[b"PRIORITY=3", b"_COMM=quatre", b"MESSAGE=b3"]);
+            b.tableaux_des_entrees(2);
+            let fb = b.fichier(&dossier, "user-1000.journal");
+            let reculs: Vec<Recul> = [&fa, &fb]
+                .iter()
+                .map(|f| {
+                    let mut journal = ouvert(f);
+                    let tableaux = journal.tableaux_des_entrees().unwrap();
+                    Recul {
+                        journal,
+                        tableaux,
+                        cases: Vec::new(),
+                    }
+                })
+                .collect();
+            let mut lignes = Vec::new();
+            parcourir(reculs, 0, &mut |l: &str| {
+                lignes.push(l.rsplit(' ').next().unwrap_or_default().to_string());
+                true
+            })
+            .unwrap();
+            assert_eq!(lignes, ["b3", "a2", "b2", "a1"]);
+            let trouvees = chercher(
+                &[fa.clone(), fb.clone(), fa],
+                &Requete {
+                    un_de: &["PRIORITY=3"],
+                    depuis: None,
+                    demarrage: None,
+                    champs: &["MESSAGE"],
+                },
+            )
+            .unwrap();
+            let messages: Vec<&str> = trouvees.iter().filter_map(|e| e.champ("MESSAGE")).collect();
+            assert_eq!(messages, ["a1", "b2", "b3", "a2"]);
+        }
     }
 
     #[test]
