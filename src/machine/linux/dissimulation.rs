@@ -932,13 +932,16 @@ mod tests {
             juger_exe("/memfd:vanguard (deleted)", false, ""),
             Some(SansFichier::Memoire)
         );
-        let autre = soi_de_la_fenetre("une autre empreinte".into());
+        let autre = soi_de_la_fenetre(std::path::Path::new(ATTEND), "une autre empreinte".into());
         assert_eq!(
             a_juger([moi, pid], moi, &autre),
             [pid],
             "un autre programme nommé vanguard, jamais écarté"
         );
-        let identique = soi_de_la_fenetre(empreinte(std::path::Path::new(ATTEND)).unwrap());
+        let identique = soi_de_la_fenetre(
+            std::path::Path::new(ATTEND),
+            empreinte(std::path::Path::new(ATTEND)).unwrap(),
+        );
         assert!(
             a_juger([moi, pid], moi, &identique).is_empty(),
             "un vanguard aux mêmes octets, dénoncé"

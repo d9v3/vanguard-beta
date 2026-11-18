@@ -61,7 +61,9 @@ const NOM_COPIE: &str = "vanguard.exe";
 /// strictement (`image_de_la_fenetre`) ; la règle des mêmes octets reste. Un programme du compte qui lance lui-même
 /// une image memfd de Vanguard avec la variable vers une copie exacte n'y gagne rien : la variable n'est crue que
 /// vers un fichier aux octets du programme qui tourne, et lancer ce fichier lui-même donne déjà la même origine (le
-/// même cas que R2W-N1, en moins : aucun dossier à la forme d'une copie).
+/// même cas que R2W-N1, en moins : aucun dossier à la forme d'une copie). Ce qu'il avait lancé avant son exec reste
+/// jugé (`soi`, 2e ronde de L2(b), N1), et l'origine n'est qu'un candidat pour reconnaître Vanguard : ses octets
+/// décident (`soi::Soi::est_moi`).
 pub fn exe_d_origine() -> Option<PathBuf> {
     /// L'origine décidée, et l'écart à dire : (chemin désigné montrable, raison).
     type Decision = (Option<PathBuf>, Option<(String, String)>);
@@ -142,7 +144,8 @@ pub(crate) fn lance_par_la_fenetre() -> bool {
 /// changé depuis sa vérification par la fenêtre) : dit, et la commande doit s'arrêter là (`true`). La fenêtre refuse
 /// de lancer un programme qu'elle n'a pas vérifié, sans repli ; de même ici : sans fichier d'origine, la mise à jour,
 /// la tâche du veilleur, pkexec et la reconnaissance de soi n'auraient plus de programme à elles, et retomberaient
-/// sur un nom à chercher dans le PATH du compte. Lu au démarrage (`main`), après `proteger_cle`.
+/// sur un nom à chercher dans le PATH du compte. Lu au démarrage (`main`, `arreter_sans_origine_dans_la_fenetre`),
+/// avant `proteger_cle`, et dans la porte des assistants et les aperçus, qui s'arrêtent plus tôt.
 pub fn origine_manquante_dans_la_fenetre() -> bool {
     if !lance_par_la_fenetre() || exe_d_origine().is_some() {
         return false;
@@ -165,16 +168,20 @@ const IMAGE_DE_LA_FENETRE: &str = "/memfd:vanguard (deleted)";
 /// n'a pas ces sceaux (le noyau ne les pose que sur un memfd qui les accepte) ; tout doute : non.
 #[cfg(target_os = "linux")]
 fn image_de_la_fenetre(image: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    const SCELLEE: libc::c_int = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
     if std::fs::read_link(image).ok().as_deref().map(Path::as_os_str) != Some(IMAGE_DE_LA_FENETRE.as_ref()) {
         return false;
     }
-    let Ok(f) = std::fs::File::open(image) else {
-        return false;
-    };
+    std::fs::File::open(image).is_ok_and(|f| scellee_comme_la_fenetre(&f))
+}
+
+/// Linux : le fichier ouvert `f` a-t-il ce que seul le memfd scellé de la fenêtre peut montrer (un fichier ordinaire
+/// sans aucun lien, sceaux d'écriture, de taille et des sceaux eux-mêmes) ? Son nom se vérifie à part.
+#[cfg(target_os = "linux")]
+fn scellee_comme_la_fenetre(f: &std::fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    const SCELLEE: libc::c_int = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
     f.metadata().is_ok_and(|m| m.file_type().is_file() && m.nlink() == 0)
-        && crate::demarrage::memfd::sceaux(&f).is_ok_and(|s| s & SCELLEE == SCELLEE)
+        && crate::demarrage::memfd::sceaux(f).is_ok_and(|s| s & SCELLEE == SCELLEE)
 }
 
 /// Linux : le chemin d'une image effacée, sans « (deleted) » que le noyau ajoute (`effacee` : plus aucun lien).
@@ -1326,6 +1333,12 @@ mod tests {
             println!("copie:{}", dans_une_copie());
             let origine = exe_d_origine().map(|p| p.display().to_string()).unwrap_or_default();
             println!("origine:{origine}");
+            // Le vrai câblage de la reconnaissance de soi (bilan, veilleur, dissimulation, quarantaine) dans cette image.
+            let soi = soi::Soi::courant();
+            println!("fenetre:{}", lance_par_la_fenetre());
+            println!("programme:{}", soi.programme().unwrap_or_default());
+            println!("moi:{}", soi.est_moi(std::process::id(), None));
+            println!("parent:{}", soi.est_moi(std::os::unix::process::parent_id(), None));
         }
     }
 
@@ -1374,13 +1387,22 @@ mod tests {
             );
             dit
         };
-        let attendue = format!("origine:{}\n", exacte.canonicalize().unwrap().display());
+        let canonique = exacte.canonicalize().unwrap();
+        let attendue = format!("origine:{}\n", canonique.display());
+        // Ce Vanguard se reconnaît (même image) ; son parent, ce programme d'essai aux mêmes octets mais à un autre
+        // chemin que l'origine, non : un chemin ne fait que désigner un candidat.
+        let soi = |fenetre: bool, programme: &str| {
+            format!("fenetre:{fenetre}\nprogramme:{programme}\nmoi:true\nparent:false\n")
+        };
         let dit = lancer("vanguard", &exacte);
         assert!(dit.contains("copie:true\n") && dit.contains(&attendue), "(a) {dit}");
+        assert!(dit.contains(&soi(true, &canonique.display().to_string())), "(a) {dit}");
         let dit = lancer("vanguard", &autre);
         assert!(dit.contains("copie:true\n") && dit.contains("origine:\n"), "(b) {dit}");
+        assert!(dit.contains(&soi(true, "")), "(b) {dit}");
         let dit = lancer("vanguard-autre", &exacte);
         assert!(dit.contains("copie:false\n") && dit.contains("origine:\n"), "(c) {dit}");
+        assert!(dit.contains(&soi(false, "")), "(c) {dit}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

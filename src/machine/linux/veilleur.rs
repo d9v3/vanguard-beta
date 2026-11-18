@@ -369,6 +369,11 @@ struct Fiche {
     /// Vanguard lui-même (son programme, ou le veilleur) : une racine. La marque ne passe pas aux enfants : un
     /// descendant est « de Vanguard » tant que la chaîne de ses parents connus mène à une racine encore là.
     racine: bool,
+    /// Le compte des entrées quand ce processus est devenu une racine : seuls les enfants entrés après sont de lui.
+    racine_depuis: u64,
+    /// Sa naissance a été vue (une fourche) : sinon, rien ne dit qu'il est né après que son parent est devenu
+    /// Vanguard (fiche lue au départ, ou oubliée puis refaite à un lancement).
+    nee_vue: bool,
     /// Son numéro d'entrée, pour que l'éviction des plus anciens ne retire pas une fiche reprise depuis.
     entree: u64,
 }
@@ -402,6 +407,8 @@ impl Table {
                 parent,
                 nom: nom_borne(nom),
                 racine,
+                racine_depuis: self.entrees,
+                nee_vue: false,
                 entree: self.entrees,
             },
         );
@@ -446,10 +453,14 @@ impl Table {
     fn fourche(&mut self, parent: u32, enfant: u32, vivant: &dyn Fn(u32) -> bool) {
         let nom = self.fiches.get(&parent).map(|f| f.nom.clone()).unwrap_or_default();
         self.inserer(enfant, Some(parent), &nom, false, vivant);
+        if let Some(f) = self.fiches.get_mut(&enfant) {
+            f.nee_vue = true;
+        }
     }
 
     /// Un lancement : le nom et le parent lus (s'ils l'ont été), et `racine` si le programme est celui de Vanguard.
     /// Rien n'est repris de la marque d'avant : un processus qui lance autre chose que Vanguard n'est plus une racine.
+    /// Devenu Vanguard à ce lancement : ses enfants d'avant ne sont pas de lui (`racine_depuis`).
     fn lancement(&mut self, pid: u32, lu: Option<&EnMarche>, racine: bool, vivant: &dyn Fn(u32) -> bool) {
         let ancienne = self.fiches.get(&pid).cloned();
         let parent = lu.and_then(|p| p.parent).or(ancienne.as_ref().and_then(|f| f.parent));
@@ -461,6 +472,9 @@ impl Table {
             Some(f) => {
                 f.parent = parent;
                 f.nom = nom_borne(&nom);
+                if racine && !f.racine {
+                    f.racine_depuis = self.entrees;
+                }
                 f.racine = racine;
             }
             None => self.inserer(pid, parent, &nom, racine, vivant),
@@ -475,9 +489,16 @@ impl Table {
     /// au plus, arrêtée sur une boucle). La fin d'un intermédiaire retire sa fiche et coupe la chaîne : le navigateur
     /// ouvert par Vanguard (par xdg-open), rattaché ailleurs quand xdg-open se termine, est alors jugé, comme le
     /// bilan le juge sur l'arbre du moment.
+    ///
+    /// Chaque maillon sous la racine doit être né sous les yeux du veilleur (`nee_vue`) après qu'elle est devenue
+    /// Vanguard (`racine_depuis`) : un programme qui lance un enfant puis se remplace (exec) par une image de Vanguard
+    /// ne lui passe pas la marque (relecture adverse du lot L2(b), 2e ronde, N1). Une fiche lue au départ, ou oubliée
+    /// puis refaite, ne la reçoit pas non plus : jugée, au pire une alerte de trop.
     fn de_vanguard(&self, pid: u32) -> bool {
         let mut vus = HashSet::new();
         let mut courant = Some(pid);
+        // La plus ancienne entrée des maillons sous la racine (aucun encore : u64::MAX).
+        let mut plus_ancienne = u64::MAX;
         while let Some(p) = courant
             && vus.len() < CHAINE_MAX
             && vus.insert(p)
@@ -486,8 +507,12 @@ impl Table {
                 return false;
             };
             if f.racine {
-                return true;
+                return plus_ancienne > f.racine_depuis;
             }
+            if !f.nee_vue {
+                return false;
+            }
+            plus_ancienne = plus_ancienne.min(f.entree);
             courant = f.parent;
         }
         false
@@ -1013,7 +1038,8 @@ fn a_tour_de_role(
 impl Veilleur {
     /// Ouvre les deux flux. La table part des programmes déjà en marche ; les racines sont celles du bilan
     /// (`chasse::de_vanguard`) : le programme de Vanguard et ce processus, jamais leurs ancêtres (systemd de
-    /// l'utilisateur, le terminal), dont tout ce qui est lancé serait sinon écarté. L'arrêt demandé pendant la
+    /// l'utilisateur, le terminal), dont tout ce qui est lancé serait sinon écarté. Les fiches lues ici n'ont pas vu
+    /// naître leurs processus : aucune ne reçoit la marque d'une racine (`Table::de_vanguard`). L'arrêt demandé pendant la
     /// lecture de /proc, qui peut être longue sous charge, est vu avant de commencer.
     pub(crate) fn ouvrir() -> Result<Veilleur, Refus> {
         let connecteur = ouvrir_connecteur()?;
@@ -5165,6 +5191,39 @@ mod tests {
         assert!(t.fiches.get(&1).is_some_and(|f| f.racine));
     }
 
+    /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1) : un programme lance un enfant, puis se remplace (exec)
+    /// par Vanguard. Lui est Vanguard, et ce qu'il lance ensuite ; l'enfant d'avant et sa descendance, non. Une fiche
+    /// oubliée puis refaite à son lancement (naissance pas vue) n'est jamais de Vanguard.
+    #[test]
+    fn un_porteur_ne_passe_pas_la_marque() {
+        let tous = |_: u32| true;
+        let lu = |pid: u32, parent: u32, nom: &str| EnMarche {
+            parent: Some(parent),
+            ..en_marche(pid, nom, None)
+        };
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.fourche(1, 70, &tous);
+        t.lancement(70, Some(&lu(70, 1, "sh")), false, &tous);
+        t.fourche(70, 71, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, &tous);
+        t.fourche(70, 72, &tous);
+        t.fourche(71, 73, &tous);
+        t.lancement(71, Some(&lu(71, 70, "sleep")), false, &tous);
+        assert!(t.de_vanguard(70) && t.de_vanguard(72));
+        assert!(
+            !t.de_vanguard(71) && !t.de_vanguard(73),
+            "l'enfant d'avant l'exec, de Vanguard"
+        );
+        t.fin(72);
+        t.lancement(72, Some(&lu(72, 70, "journalctl")), false, &tous);
+        assert!(!t.de_vanguard(72), "une naissance pas vue, de Vanguard");
+        // Relancé en Vanguard sans cesser de l'être : ses enfants restent les siens.
+        t.fourche(70, 74, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, &tous);
+        assert!(t.de_vanguard(74));
+    }
+
     #[test]
     fn la_marque_de_vanguard_ne_se_transmet_pas() {
         let tous = |_: u32| true;
@@ -5204,7 +5263,7 @@ mod tests {
         assert!(!t.de_vanguard(60));
         t.inserer(1000, None, "vanguard", true, &tous);
         for p in 1001..1100 {
-            t.inserer(p, Some(p - 1), "x", false, &tous);
+            t.fourche(p - 1, p, &tous);
         }
         assert!(t.de_vanguard(1000 + u32::try_from(CHAINE_MAX).unwrap() - 1));
         assert!(!t.de_vanguard(1099));
