@@ -39,7 +39,10 @@ fn au_clavier(ctx: &Context) -> bool {
 
 /// L'anneau autour de `zone` (au rayon `rayon` de l'élément) si `rep` a le focus et qu'on y est venu au clavier.
 pub fn anneau_zone(ui: &Ui, rep: &Response, zone: Rect, rayon: f32) {
-    if rep.has_focus() && au_clavier(ui.ctx()) {
+    // Lu à chaque image, focus ou non : un clic qui fait perdre le focus doit quand même éteindre l'anneau (sinon,
+    // le focus rendu ensuite sans le clavier le rallumait).
+    let clavier = au_clavier(ui.ctx());
+    if rep.has_focus() && clavier {
         ui.painter().rect_stroke(
             zone.expand(ECART),
             rayon + ECART,
@@ -120,6 +123,15 @@ mod tests {
         };
         image(&ctx, 1.7, vec![egui::Event::PointerMoved(ici), clic(true), clic(false)]);
         assert!(!image(&ctx, 1.8, vec![]).1, "l'anneau reste après un clic");
+        // Le focus rendu sans le clavier (comme après un clic qui le garde) : toujours pas d'anneau.
+        if let Some(id) = premier {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        let (focus, anneau) = image(&ctx, 1.85, vec![]);
+        assert!(
+            focus == premier && !anneau,
+            "un anneau sans geste au clavier : {focus:?} {premier:?} {anneau}"
+        );
         image(&ctx, 1.9, vec![touche(egui::Key::Tab, false)]);
         assert!(image(&ctx, 2.0, vec![]).1, "Tab ne rallume pas l'anneau");
     }
