@@ -212,7 +212,7 @@ fn juger(navigateur: &str, extensions: &[Extension]) -> Vec<Constat> {
                     trf!(
                         "{navigateur} : extension « {} » {raison}{}. Retirez-la si vous ne l'avez pas installée vous-même.",
                         "{navigateur}: extension “{}” {raison}{}. Remove it if you did not install it yourself.",
-                        e.nom,
+                        crate::machine::chasse::nom_montre(&e.nom),
                         if e.partout {
                             tr!(", avec accès à tous les sites", ", with access to every site")
                         } else {

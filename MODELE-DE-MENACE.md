@@ -833,7 +833,11 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   avant comme après lui ; les parenthèses du nom entre guillemets du programme suivant (« (sd-pam) », « b(1) ») ne
   comptent pas dans l'extrait d'avant, et le veilleur écrit ce nom sans aucun guillemet à lui (chacun devient « ' »)
   ni aucune parenthèse (« ( » devient « [ », « ) » devient « ] »), pour que son début se retrouve à coup sûr
-  (« b) "c » ne ferme plus l'extrait d'avant, « z (PID 5) ( » n'écrit plus un faux programme) ; une autre parenthèse ne sort
+  (« b) "c » ne ferme plus l'extrait d'avant, « z (PID 5) ( » n'écrit plus un faux programme) ; tout autre texte
+  qui montre le nom d'un programme, d'un module, d'un service ou d'une extension (lignée, rançongiciel, ports en
+  écoute, modules du noyau, espions, mémoire, démarrage) l'écrit de la même façon, sans quoi un faux « (PID 5) ( »
+  cachait le reste de l'alerte ; un chemin (« Program Files (x86) ») ou le nom d'un fichier téléchargé ou d'une clé USB garde ses parenthèses et
+  reste une limite connue, du côté sûr (le reste du texte est retenu, pas montré) ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -852,12 +856,18 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   que masquer davantage, et un essai le passe aux mêmes règles que `src/` ; tout autre module du programme hors de
   `src/` arrête la compilation. La lecture suit
   `r#test` et `r#cfg` comme le compilateur, et un `#[path]` sur un module en ligne depuis le dossier du fichier ;
-  `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. Elle arrête la compilation sur
+  `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` et `cfg(miri)` sont faux dans le programme. N'est un essai que ce que
+  rustc retire vraiment : `#[test]` ou `#[bench]` d'un seul segment, un `cfg` faux, un `cfg_attr` dont la condition
+  est sûrement vraie ; un attribut d'outil ou de paquet (`#[rust_analyzer::test]`, `#[tokio::test]`) reste du
+  programme. Elle arrête la compilation sur
   une forme qu'elle ne sait pas juger : `cfg_select!` ou `cfg_match!`, un `path` posé par `cfg_attr` sur un module, un
   module à fichier déclaré dans un bloc (fonction, `const`), et toute macro hors d'une liste blanche jugée (`format!`,
   `write!`, `json!`, `vec!`…) appelée dans un appel de texte ou dont le corps en contient un (`cfg_if!`, une enveloppe
-  d'un autre paquet, une macro maison qui choisirait par `cfg`, quelle que soit la forme de ses bras), comme un nom de
-  la liste blanche donné à une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json), le nom
+  d'un autre paquet, une macro maison qui choisirait par `cfg`, quelle que soit la forme de ses bras), comme un nom
+  que la lecture reconnaît à son nom (macros de texte, liste blanche, macros d'essais, `concat`, `include`, `test`,
+  `bench`) donné à autre chose : définition (`macro_rules!`, `macro`), `use` qui le renomme ou le tire d'un autre
+  paquet, appel par le chemin d'un autre paquet (seules les macros de texte elles-mêmes, au premier niveau de
+  `src/langue.rs`, sont définies sous leur nom), le nom
   d'un paquet admis pris par un module, un `use` ou un `extern crate` (`mod alloc`), et, dans le corps d'une macro lu
   jeton par jeton, deux règles d'ensemble : aucune métavariable (`$x`, `$( … )`) si ce corps contient un texte (elle
   peut valoir n'importe quel jeton : le nom d'une autre macro, « ! », « # »), et aucun mot qui lie un nom ou tire un

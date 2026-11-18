@@ -20,6 +20,10 @@ mod trame;
 mod vocabulaire;
 mod vues;
 
+/// Pour les essais des textes qui atteignent la porte (veilleur, dissimulation) : lus comme la porte les lit.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use vues::texte_externe;
+
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;

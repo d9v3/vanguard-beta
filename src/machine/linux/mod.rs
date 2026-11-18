@@ -802,7 +802,9 @@ fn ports_ecoute(pare_feu_actif: bool, ufw: bool) -> Vec<Constat> {
             }
             // Le nom que s'est donné le programme, prêt à montrer ; sinon son service.
             let nomme = prise.nom();
-            let programme = nomme
+            // Montré sans guillemet ni parenthèse à lui : la porte MCP se repère sur eux (9e passe, R9-VUES-1).
+            let montre = nomme.as_deref().map(crate::machine::chasse::nom_montre);
+            let programme = montre
                 .as_deref()
                 .unwrap_or(tr!("programme inconnu (root ?)", "unknown program (root?)"));
             let (niveau, constat) = super::port_expose(port, proto, &i, programme, pare_feu_actif);

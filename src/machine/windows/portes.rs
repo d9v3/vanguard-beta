@@ -13,6 +13,7 @@ use super::corrections::Resultat;
 use super::persistance::lancement_suspect;
 use super::*;
 use crate::commande::decouper_commande;
+use crate::machine::chasse::nom_montre;
 use crate::machine::gestes::{self, Acte, NomFichier, Vue};
 use crate::machine::regles::{Os, regle};
 use crate::ui::{affichable, couper, trf};
@@ -172,7 +173,7 @@ fn juger_ifeo(total: usize, reglages: &[Reglage], moniteurs: &[Moniteur]) -> Vec
         let Some(debogueur) = &r.debogueur else {
             continue;
         };
-        let (programme, valeur) = (affichable(&r.programme), couper(&affichable(debogueur), 160));
+        let (programme, valeur) = (nom_montre(&r.programme), couper(&affichable(debogueur), 160));
         let message = if est_accessibilite(&r.programme) {
             trf!(
                 "Porte dérobée sur « {programme} » : un débogueur le remplace ({valeur}). À l'écran de connexion, ce raccourci d'accessibilité ouvre alors ce programme avec les droits du système, sans mot de passe.",
@@ -218,7 +219,7 @@ fn juger_ifeo(total: usize, reglages: &[Reglage], moniteurs: &[Moniteur]) -> Vec
         } else {
             Niveau::Moyen
         };
-        let (programme, processus) = (affichable(&m.programme), couper(&affichable(&m.processus), 160));
+        let (programme, processus) = (nom_montre(&m.programme), couper(&affichable(&m.processus), 160));
         let constat = alerte(
             CAT,
             niveau,

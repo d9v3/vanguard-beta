@@ -787,8 +787,11 @@ to start (code 2) until it has been tried on a real Windows.
   it; the parentheses of the next program's quoted name ("(sd-pam)", "b(1)") do not count in the excerpt before, and
   the watcher writes that name without any quote of its own (each becomes "'") and without any parenthesis ("(" becomes
   "[", ")" becomes "]"), so its start is always found (a name like b) "c no longer closes the excerpt before, and
-  z (PID 5) ( no longer writes a fake program); any
-  other parenthesis
+  z (PID 5) ( no longer writes a fake program); every other text that shows the name of a program, a module, a
+  service or an extension (lineage, ransomware, listening ports, kernel modules, spyware, memory, startup) writes it
+  the same way, otherwise a fake "(PID 5) (" hid the rest of the alert; a path ("Program Files (x86)") or the name of a
+  downloaded or USB file keeps its parentheses and remains a known limit, on the safe side (the rest of the text is withheld, not shown);
+  any other parenthesis
   comes out only if all its words are known. The price:
   useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
   "registry key" and "code" included). These are safety nets, not a guarantee: a value that nothing announces comes out
@@ -806,11 +809,16 @@ to start (code 2) until it has been tried on a real Windows.
   in a list) is not read at build time: it has no message, one word less only masks more, and a test runs it through
   the same rules as `src/`; any other program module outside `src/` stops the build. The reading follows `r#test` and `r#cfg` as the compiler does, and a
   `#[path]` on an inline module from the file's folder; `cfg(test)`, `cfg(kani)`, `cfg(fuzzing)` and `cfg(miri)` are
-  false in the program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
+  false in the program. Only what rustc really removes is a test: a single-segment `#[test]` or `#[bench]`, a false
+  `cfg`, a `cfg_attr` whose condition is surely true; a tool or package attribute (`#[rust_analyzer::test]`,
+  `#[tokio::test]`) stays program. It stops the build on a form it cannot judge: `cfg_select!` or `cfg_match!`, a `path` set by
   `cfg_attr` on a module, a file module declared in a block (function, `const`), and any macro outside a reviewed
   allow-list (`format!`, `write!`, `json!`, `vec!`…) called inside a text call or whose body contains one (`cfg_if!`,
   a wrapper from another package, a home-made macro that would choose by `cfg`, whatever the form of its arms), as well
-  as an allow-list name given to another macro (`macro_rules!`, `use … as`, a path outside std and serde_json), an
+  as a name the reading recognises by its name (text macros, allow-list, test macros, `concat`, `include`, `test`,
+  `bench`) given to something else: a definition (`macro_rules!`, `macro`), a `use` that renames it or takes it from
+  another package, a call through another package's path (only the text macros themselves, at the top level of
+  `src/langue.rs`, are defined under their name), an
   allowed package's name taken by a module, a `use` or an `extern crate` (`mod alloc`), and, in a macro body read token
   by token, two overall rules: no metavariable (`$x`, `$( … )`) if that body contains a text (it can stand for any
   token: another macro's name, "!", "#"), and no word that binds a name or pulls in a file (`use`, `mod`, `extern`,

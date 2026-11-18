@@ -12,11 +12,19 @@
 //!
 //! Les essais n'y entrent pas : leurs valeurs inventées (« alice », « Salon ») ne sont pas des mots de Vanguard. Est un
 //! essai tout nœud de l'arbre (élément, module, `impl`, champ, variante, bras, instruction, expression, argument,
-//! motif…) qui porte un attribut `test`, `bench` (`#[tokio::test]` compris), ou un `cfg` faux quand `test` (et `kani`,
-//! les preuves de outils/preuves/) sont faux : `cfg(test)`, `cfg(all(…, test))` à toute profondeur, `cfg(test,)`,
-//! `cfg(any())`, `cfg(false)`, et un `cfg_attr(…, cfg(test))`. `cfg(any(unix, test))` et `cfg(not(test))` restent du
-//! programme. Un module d'essais n'est lu que pour suivre ses propres modules, comme essais eux aussi. Un appel
-//! `proptest!` ou `quickcheck!` est un essai.
+//! motif…) que rustc retire vraiment du programme : un attribut `#[test]` ou `#[bench]` d'un seul segment, ou un `cfg`
+//! faux quand `test` (et `kani`, les preuves de outils/preuves/) sont faux : `cfg(test)`, `cfg(all(…, test))` à toute
+//! profondeur, `cfg(test,)`, `cfg(any())`, `cfg(false)`, et un `cfg_attr(c, test)` ou `cfg_attr(c, cfg(test))` dont la
+//! condition `c` est sûrement vraie. `cfg(any(unix, test))`, `cfg(not(test))`, un `cfg_attr(unix, test)` et tout
+//! attribut à plusieurs segments (`#[tokio::test]`, `#[rust_analyzer::test]`) restent du programme : un attribut
+//! d'outil n'enlève rien, et une macro d'attribut garde le corps (9e passe, R9-SOURCES-1). Un module d'essais n'est lu
+//! que pour suivre ses propres modules, comme essais eux aussi. Un appel `proptest!` ou `quickcheck!` est un essai.
+//!
+//! Tout nom que la lecture reconnaît à son nom (`NOMS_RESERVES` : les macros de texte, la liste blanche, les macros
+//! d'essais, `concat`, `include`, `test`, `bench`) ne se reprend pas : aucune définition (`macro_rules!`, `macro`) sous
+//! ce nom, aucun `use` qui le donne à autre chose, aucun appel par le chemin d'un autre paquet (9e passe,
+//! R9-SOURCES-2 et 3). Seule exception, nommée par son chemin : les macros de texte elles-mêmes, au premier niveau de
+//! src/langue.rs.
 //!
 //! Ne sont lues que les chaînes des appels aux macros de texte (tr!, trf!, trp!, tre!, trw!, trwln!, trpr!, comme
 //! outils/textes.py), à toute profondeur dans leurs arguments ; jamais un commentaire ni une documentation (syn ne
@@ -42,8 +50,8 @@
 //! Rien n'est ignoré en silence, la compilation s'arrête : un fichier que syn ne sait pas lire, une forme qu'il garde
 //! sans la comprendre (`Verbatim`), un `cfg` mal écrit, un module du programme sans fichier, un attribut d'essai dans
 //! le corps d'une macro qui n'est pas relu comme du code, une macro hors de la liste blanche autour d'un texte, un nom
-//! de la liste blanche pris par une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json), un nom
-//! de paquet admis pris par autre chose, un fichier .rs de la liste qu'aucun module ne déclare.
+//! réservé pris par une autre macro (`macro_rules!`, `macro`, `use … as`, `use autre::nom`, chemin d'un autre paquet),
+//! un nom de paquet admis pris par autre chose, un fichier .rs de la liste qu'aucun module ne déclare.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -58,7 +66,10 @@ use syn::{Attribute, Expr, ForeignItem, ImplItem, Item, Lit, Meta, Pat, Token, T
 const MACROS_DE_TEXTE: [&str; 7] = ["tr", "trf", "trp", "tre", "trw", "trwln", "trpr"];
 /// Les macros qui n'écrivent que des essais.
 const MACROS_D_ESSAIS: [&str; 2] = ["proptest", "quickcheck"];
-/// Les attributs qui font d'une fonction un essai (dernier nom du chemin : `test`, `tokio::test`).
+/// Les attributs qui font d'une fonction un essai, écrits seuls (`#[test]`, `#[bench]`) : rustc ne retire du programme
+/// que ceux-là (et un `cfg` faux). Un autre chemin qui finit par le même nom (`#[rust_analyzer::test]`,
+/// `#[rustfmt::test]`, `#[tokio::test]`) est un attribut d'outil ou d'un autre paquet : rustc garde l'élément, la
+/// lecture aussi (9e passe, R9-SOURCES-1).
 const ATTRIBUTS_D_ESSAIS: [&str; 2] = ["test", "bench"];
 /// Les `cfg` faux dans le programme : ses essais, les preuves de Kani (outils/preuves.sh), le banc de fuzzing (fuzz/)
 /// et Miri (outils/preuves.sh) ; aucun n'est posé par la compilation du programme (4e re-contrôle, SOURCES-4).
@@ -92,6 +103,25 @@ const MACROS_ADMISES: [&str; 11] = [
 const RACINES_ADMISES: [&str; 4] = ["std", "core", "alloc", "serde_json"];
 /// Les seuls modules du programme hors de src/ : build.rs ne les lit pas, un essai les passe aux règles de la lecture.
 const HORS_DE_SRC: [&str; 1] = ["fenetre/src/couleurs.rs"];
+/// Les macros que la lecture reconnaît par l'écriture de leur appel : `include!(concat!(env!("OUT_DIR"), …))`
+/// (`inclusion_connue`). `env` est déjà parmi les macros admises.
+const MACROS_ECRITES: [&str; 2] = ["concat", "include"];
+/// Les noms réservés : tout ce que la lecture reconnaît par son nom (macros de texte, admises, d'essais, écrites,
+/// attributs d'essais). Un nom ne désigne ce que la lecture croit que si personne d'autre ne le porte : aucune
+/// définition (`macro_rules!`) ni aucun import (`use … as nom`, `use autre::nom`) sous ces noms dans le programme,
+/// et un appel par un chemin ne vient que d'une origine permise (`origine_permise`), sauf les définitions des
+/// macros de texte dans `DEFINITIONS_DE_TEXTE` (9e passe, R9-SOURCES-2 et 3). Une liste de listes : un nom ajouté à
+/// l'une d'elles est réservé du même coup.
+const NOMS_RESERVES: [&[&str]; 5] = [
+    &MACROS_DE_TEXTE,
+    &MACROS_ADMISES,
+    &MACROS_D_ESSAIS,
+    &MACROS_ECRITES,
+    &ATTRIBUTS_D_ESSAIS,
+];
+/// Le seul fichier où les macros de texte sont définies (`macro_rules! tr`…, à son premier niveau) : la vraie
+/// définition, celle dont les arguments sont écrits dans le programme.
+const DEFINITIONS_DE_TEXTE: &str = "src/langue.rs";
 
 /// Une forme que la lecture ne sait pas juger, avec ce qu'elle a vu : build.rs arrête la compilation sur elle. Un type
 /// à part plutôt que `Echec` du programme, que build.rs ne peut pas atteindre.
@@ -382,6 +412,14 @@ impl Lecteur<'_> {
                     if let (Some(TokenTree::Punct(b)), Some(TokenTree::Group(g))) = (suivant, arbres.get(i + 2))
                         && b.as_char() == '!'
                     {
+                        let chemin = chemin_de(&arbres, i);
+                        if appel_d_ailleurs(&chemin) {
+                            self.erreur(&format!(
+                                "« {}! » dans le corps d'une macro : un nom réservé (NOMS_RESERVES) appelé par le \
+                                 chemin d'un autre paquet, forme non jugée",
+                                chemin.join("::")
+                            ));
+                        }
                         if MACROS_D_ESSAIS.contains(&nom.as_str()) {
                             i += 3;
                             continue;
@@ -395,7 +433,7 @@ impl Lecteur<'_> {
                         }
                         // Une autre macro appelée ici : lue comme un corps, puis jugée par la liste blanche.
                         self.jetons(g.stream());
-                        self.admise(&chemin_de(&arbres, i), &g.stream());
+                        self.admise(&chemin, &g.stream());
                         i += 3;
                         continue;
                     }
@@ -460,18 +498,20 @@ impl Lecteur<'_> {
                     complet.join("::")
                 ));
             }
-            if MACROS_ADMISES.contains(&nom.as_str()) {
-                // Un nom du paquet même (`use super::json`, une fonction) : une macro de ce nom y serait définie par un
-                // `macro_rules!`, refusé plus bas. D'ailleurs, seul un paquet admis.
+            // Un nom réservé (macro de texte, admise, d'essais, écrite, attribut d'essai) n'est importé que sous son
+            // propre nom, d'une origine permise : du programme même (`use crate::tr;`, `use super::json`, une
+            // fonction ; une macro de ce nom y serait définie par un `macro_rules!`, refusé plus bas), d'un paquet
+            // admis, ou de son paquet pour une macro d'essais (7e passe ; 9e passe, R9-SOURCES-2 et 3 :
+            // `use m::jette as tr;`, `use m::chemin as concat;`).
+            if reserve(&nom) {
                 let racine = complet.first().map(String::as_str).unwrap_or_default();
-                let ici = complet.len() > 1 && ["crate", "self", "super"].contains(&racine);
                 // Le message dit quoi faire : les deux formes qu'il propose sont lues (7e passe, R7-SOURCES-4).
-                if nom != origine || !(ici || complet.len() > 1 && admise(&complet)) {
+                if nom != origine || complet.len() < 2 || !origine_permise(&nom, racine) {
                     l.erreur(&format!(
-                        "« use {complet} » donne le nom d'une macro admise (« {nom} ») à ce qui ne vient pas d'un \
-                         paquet admis (la lecture le prendrait pour la macro admise) : écrire plutôt le chemin \
-                         complet à l'appel (« {complet}(…) ») ou importer sous un autre nom (« use {complet} as \
-                         autre_nom; »)",
+                        "« use {complet} » donne un nom réservé (« {nom} » : une macro que la lecture reconnaît par \
+                         son nom, NOMS_RESERVES) à ce qui ne vient pas d'où la lecture l'attend (elle le prendrait \
+                         pour le vrai) : écrire plutôt le chemin complet à l'appel (« {complet}(…) ») ou importer \
+                         sous un autre nom (« use {complet} as autre_nom; »)",
                         complet = complet.join("::")
                     ));
                 }
@@ -540,6 +580,34 @@ impl Lecteur<'_> {
 fn admise(chemin: &[String]) -> bool {
     let nom = chemin.last().map(String::as_str).unwrap_or_default();
     MACROS_ADMISES.contains(&nom) && (chemin.len() == 1 || RACINES_ADMISES.contains(&chemin[0].as_str()))
+}
+
+/// Un nom réservé (`NOMS_RESERVES`) ?
+fn reserve(nom: &str) -> bool {
+    NOMS_RESERVES.iter().any(|liste| liste.contains(&nom))
+}
+
+/// D'où un nom réservé peut venir quand il est appelé par un chemin (`std::format!`) ou importé (`use crate::tr;`) :
+/// du programme même (`crate`, `self`, `super` : son nom y est jugé, définition comme import) ; d'un paquet admis
+/// pour les macros admises, écrites et les attributs d'essais (`std::concat`) ; de son propre paquet pour une macro
+/// d'essais (`proptest::proptest!`). Jamais d'ailleurs : la macro d'un autre paquet sous un nom réservé n'a pas été
+/// jugée (9e passe, R9-SOURCES-2 et 3).
+fn origine_permise(nom: &str, racine: &str) -> bool {
+    let texte = MACROS_DE_TEXTE.contains(&nom);
+    let essais = MACROS_D_ESSAIS.contains(&nom);
+    ["crate", "self", "super"].contains(&racine)
+        || !texte && !essais && RACINES_ADMISES.contains(&racine)
+        || essais && racine == nom
+}
+
+/// Un appel par un chemin (`autre::tr!`) d'un nom réservé : vrai s'il ne vient pas d'une origine permise. Un chemin
+/// absolu (`::std::format!`) nomme un paquet, jugé par son premier nom.
+fn appel_d_ailleurs(chemin: &[String]) -> bool {
+    let chemin: Vec<&str> = chemin.iter().map(String::as_str).filter(|s| *s != "::").collect();
+    match chemin.as_slice() {
+        [racine, .., nom] => reserve(nom) && !origine_permise(nom, racine),
+        _ => false,
+    }
 }
 
 /// Le chemin d'une macro appelée dans des jetons, nom compris (`a::b::c` pour `c!` au jeton `i`). Une métavariable
@@ -669,8 +737,9 @@ fn chemin_d_attribut(attributs: &[Attribute]) -> Option<String> {
 fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illisible> {
     for meta in attributs {
         let chemin = meta.path();
-        let dernier = chemin.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-        if ATTRIBUTS_D_ESSAIS.contains(&sans_r(&dernier)) {
+        // Un seul segment : `#[rust_analyzer::test]` finit par « test », mais rustc garde l'élément (9e passe,
+        // R9-SOURCES-1). Le nom seul ne peut pas être repris : `test` et `bench` sont réservés (`NOMS_RESERVES`).
+        if ATTRIBUTS_D_ESSAIS.iter().any(|nom| est(chemin, nom)) {
             return Ok(true);
         }
         if est(chemin, "cfg") {
@@ -692,7 +761,9 @@ fn essai_par<'m>(attributs: impl Iterator<Item = &'m Meta>) -> Result<bool, Illi
     Ok(false)
 }
 
-/// `cfg_attr(condition, attr, …)` : un essai si la condition peut être vraie et qu'un des attributs en fait un.
+/// `cfg_attr(condition, attr, …)` : un essai si la condition est toujours vraie et qu'un des attributs en fait un.
+/// Sous une condition inconnue (`cfg_attr(unix, test)`), l'élément reste au programme d'une autre cible : il en est
+/// (9e passe, comme `cfg(any(unix, test))`).
 fn cfg_attr_essai(flux: TokenStream) -> Result<bool, Illisible> {
     let mut condition = TokenStream::new();
     let mut reste = TokenStream::new();
@@ -704,7 +775,7 @@ fn cfg_attr_essai(flux: TokenStream) -> Result<bool, Illisible> {
             _ => condition.extend([arbre]),
         }
     }
-    if un_seul(condition)? == Tri::Faux {
+    if un_seul(condition)? != Tri::Vrai {
         return Ok(false);
     }
     let attributs = Punctuated::<Meta, Token![,]>::parse_terminated
@@ -1128,16 +1199,25 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         }
         let nom = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
         let nom = sans_r(&nom);
-        if MACROS_D_ESSAIS.contains(&nom) {
-            return;
-        }
-        let texte = MACROS_DE_TEXTE.contains(&nom);
         let chemin: Vec<String> = m
             .path
             .segments
             .iter()
             .map(|s| sans_r(&s.ident.to_string()).to_string())
             .collect();
+        // Un nom réservé appelé par le chemin d'un autre paquet (`autre::tr!`, `autre::include!`) : une macro que
+        // personne n'a jugée, prise pour la vraie par son nom (9e passe, R9-SOURCES-2 et 3).
+        if appel_d_ailleurs(&chemin) {
+            self.erreur(&format!(
+                "« {}! » : un nom réservé (NOMS_RESERVES) appelé par le chemin d'un autre paquet, la lecture le \
+                 prendrait pour le vrai, forme non jugée",
+                chemin.join("::")
+            ));
+        }
+        if MACROS_D_ESSAIS.contains(&nom) {
+            return;
+        }
+        let texte = MACROS_DE_TEXTE.contains(&nom);
         // Un fichier inclus n'est pas lu : seule la forme connue (OUT_DIR, écrit par build.rs) passe.
         if nom == "include" && !inclusion_connue(&m.tokens) {
             self.erreur(&format!(
@@ -1171,15 +1251,25 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
     }
 
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
-        // Une macro du programme au nom d'une macro admise la cacherait : elle passerait la liste blanche sans avoir
-        // été jugée.
+        // Une macro du programme sous un nom réservé cacherait la vraie : une macro admise passerait la liste blanche
+        // sans avoir été jugée, un `tr` maison qui jette ses arguments les ferait lire comme du texte, un `concat`
+        // maison tromperait `inclusion_connue` (9e passe, R9-SOURCES-2 et 3). Seules les vraies macros de texte, au
+        // premier niveau de leur fichier, sont définies sous leur nom.
         if let Some(nom) = &i.ident
             && !self.essai
-            && MACROS_ADMISES.contains(&sans_r(&nom.to_string()))
         {
-            self.erreur(&format!(
-                "macro « {nom}! » définie sous le nom d'une macro admise : forme non jugée"
-            ));
+            let nom = sans_r(&nom.to_string()).to_string();
+            let vraie = MACROS_DE_TEXTE.contains(&nom.as_str())
+                && self.fichier == Path::new(DEFINITIONS_DE_TEXTE)
+                && self.en_ligne == 0
+                && self.bloc == 0;
+            if reserve(&nom) && !vraie {
+                self.erreur(&format!(
+                    "macro « {nom}! » définie sous un nom réservé (NOMS_RESERVES : une macro que la lecture \
+                     reconnaît par son nom ; les macros de texte, seulement au premier niveau de \
+                     {DEFINITIONS_DE_TEXTE}) : forme non jugée"
+                ));
+            }
         }
         visit::visit_item_macro(self, i);
     }

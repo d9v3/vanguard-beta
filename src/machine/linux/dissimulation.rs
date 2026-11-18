@@ -690,7 +690,10 @@ pub(super) fn juger_modules(
     outils: &[&str],
 ) -> Vec<Constat> {
     let mut constats = Vec::new();
-    let montrer = |noms: &[String]| -> Vec<String> { noms.iter().map(|n| crate::ui::affichable(n)).collect() };
+    // Un nom de module, montré sans parenthèse ni guillemet à lui : un faux « (PID 5) ( » cacherait le reste du
+    // constat à la porte MCP (9e passe, R9-VUES-1).
+    let montrer =
+        |noms: &[String]| -> Vec<String> { noms.iter().map(|n| crate::machine::chasse::nom_montre(n)).collect() };
     if !caches.is_empty() {
         constats.push(enquete(
             alerte(
@@ -1103,6 +1106,39 @@ v4l2loopback 49152 0 - Live 0x0000000000000000 (OE)
         // Nom piégé : montré inoffensif, jamais dans une commande.
         let c = juger_modules(&[], &["a;rm -rf ~".into()], &charges, Some(0), &[]);
         assert_eq!(c[0].correctif.as_ref().unwrap().commandes, Vec::<String>::new());
+    }
+
+    /// 9e passe, R9-VUES-1 : un module nommé « z (PID 5) ( » (le nom, choisi par qui charge le module) ouvrait pour la
+    /// porte MCP un extrait jamais fermé : tout le reste du constat devenait « … ».
+    #[test]
+    fn r9_vues_1_un_faux_pid_dans_un_nom_de_module_ne_cache_pas_le_constat() {
+        let lu = |brut: &str| {
+            crate::porte_mcp::texte_externe(brut)["texte_externe"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let charges = BTreeMap::new();
+        for anglais in [false, true] {
+            for nom in ["z (PID 5) (", "(PID 5) (", "z \"(PID 5) ("] {
+                let juge = || {
+                    let c = juger_modules(&[nom.into()], &[nom.into()], &charges, Some(0), &[]);
+                    (c[0].message.clone(), c[1].message.clone())
+                };
+                let (cache, inconnu) = if anglais {
+                    crate::langue::en_anglais(juge)
+                } else {
+                    juge()
+                };
+                let (suite_cache, suite_inconnu) = if anglais {
+                    ("twice in a row", "loads the same way")
+                } else {
+                    ("deux fois de suite", "se charge de la même façon")
+                };
+                assert!(lu(&cache).contains(suite_cache), "{cache:?} : {:?}", lu(&cache));
+                assert!(lu(&inconnu).contains(suite_inconnu), "{inconnu:?} : {:?}", lu(&inconnu));
+            }
+        }
     }
 
     #[test]

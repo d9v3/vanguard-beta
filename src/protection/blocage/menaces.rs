@@ -305,7 +305,7 @@ fn refus_du_garde(
         let montre = chemin_affichable(&chemin);
         let nom = chemin
             .file_name()
-            .map_or_else(|| montre.clone(), |n| affichable(&n.to_string_lossy()));
+            .map_or_else(|| montre.clone(), |n| chasse::nom_montre(&n.to_string_lossy()));
         let raison = raison_lancement_refuse();
         menaces.push(Menace {
             categorie: Categorie::Programmes,
@@ -648,7 +648,7 @@ pub(super) fn menace_du_fichier(chemin: PathBuf, r: &crate::protection::moteur::
     let montre = chemin_affichable(&chemin);
     let nom = chemin
         .file_name()
-        .map_or_else(|| montre.clone(), |n| affichable(&n.to_string_lossy()));
+        .map_or_else(|| montre.clone(), |n| chasse::nom_montre(&n.to_string_lossy()));
     Some(Menace {
         categorie: Categorie::Programmes,
         certaine,
@@ -682,9 +682,10 @@ fn connexions(t: &mut Trouvees) {
         if !vues.insert(c.adresse) {
             continue;
         }
-        let programme = c
-            .programme
-            .unwrap_or_else(|| tr!("programme d'un autre compte", "another account's program").to_string());
+        let programme = c.programme.map_or_else(
+            || tr!("programme d'un autre compte", "another account's program").to_string(),
+            |p| chasse::nom_montre(&p),
+        );
         let pid = c.pid.map(|p| format!(" (PID {p})")).unwrap_or_default();
         t.menaces.push(Menace {
             categorie: Categorie::Connexions,
@@ -741,13 +742,14 @@ fn demarrage(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees) 
             continue;
         };
         let nom = e.nom;
+        let montre = chasse::nom_montre(&nom);
         t.menaces.push(Menace {
             categorie: Categorie::Demarrage,
             certaine,
             type_alerte: None,
             quoi: trf!(
-                "« {nom} » se lance au démarrage : {raison}",
-                "“{nom}” starts at login: {raison}"
+                "« {montre} » se lance au démarrage : {raison}",
+                "“{montre}” starts at login: {raison}"
             ),
             cle: e.id.clone(),
             geste: Geste::Demarrage {

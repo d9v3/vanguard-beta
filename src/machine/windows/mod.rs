@@ -1702,8 +1702,8 @@ fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
         // La clé garde le nom tel que Windows le donne (sans casse), jamais « ? » traduit ni rendu affichable.
         let nom = programme.to_lowercase();
         let objet = crate::modele::Objet::port(port, "tcp", (nom != "?").then_some(nom.as_str()));
-        // Chaque programme choisit son nom : montré, il est rendu inoffensif.
-        let programme = crate::ui::affichable(programme);
+        // Chaque programme choisit son nom : montré, il est rendu inoffensif, sans guillemet ni parenthèse à lui.
+        let programme = crate::machine::chasse::nom_montre(programme);
         let i = info_port(port);
         if bloques.contains(&port) {
             constats.push(alerte(
@@ -1901,7 +1901,7 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
         let programme = if programme.is_empty() {
             tr!("programme inconnu", "unknown program").to_string()
         } else {
-            crate::ui::affichable(programme)
+            crate::machine::chasse::nom_montre(programme)
         };
         let constat = alerte(
             "Ports en écoute",

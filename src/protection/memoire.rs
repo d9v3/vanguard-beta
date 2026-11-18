@@ -1401,7 +1401,7 @@ fn releve(bilan: &Bilan, regles: &Regles) -> resultat::Releve {
         r.trouves.push(trf!(
             "{} (PID {}) : nom d'un processus de Windows, porté par un programme hors de System32 (masquage, T1036.005) : {}",
             "{} (PID {}): a Windows process name, carried by a program outside System32 (masquerading, T1036.005): {}",
-            affichable(&m.programme),
+            crate::machine::chasse::nom_montre(&m.programme),
             m.pid,
             affichable(&m.chemin)
         ));
@@ -1410,7 +1410,7 @@ fn releve(bilan: &Bilan, regles: &Regles) -> resultat::Releve {
         r.trouves.push(trf!(
             "{} (PID {}) : {} ({}), région 0x{:x}, {} Kio. Rien n'a été arrêté : une alerte à juger.",
             "{} (PID {}): {} ({}), region 0x{:x}, {} KiB. Nothing was stopped: an alert to judge.",
-            affichable(&t.programme),
+            crate::machine::chasse::nom_montre(&t.programme),
             t.pid,
             yara::famille(&t.regle),
             affichable(&t.regle),

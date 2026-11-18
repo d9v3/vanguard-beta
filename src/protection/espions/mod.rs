@@ -258,8 +258,8 @@ fn connexions_espions(r: &mut Releve, ind: &Indicateurs, connexions: &[Connexion
                 Niveau::Eleve,
                 tr!("programme d'un autre compte", "program of another account").to_string(),
             ),
-            (Some(p), true) => (Niveau::Moyen, p.clone()),
-            (Some(p), false) => (Niveau::Eleve, p.clone()),
+            (Some(p), true) => (Niveau::Moyen, crate::machine::chasse::nom_montre(p)),
+            (Some(p), false) => (Niveau::Eleve, crate::machine::chasse::nom_montre(p)),
         };
         let pid = c.pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
         let objet = match genre {
@@ -318,7 +318,9 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
                 continue;
             };
             let comm = affichable(&comm);
-            let ou = trf!("en cours : {comm} (pid {pid})", "running: {comm} (pid {pid})");
+            // Le nom reconnu reste celui du système ; montré, il perd ses guillemets et parenthèses (9e passe).
+            let montre = crate::machine::chasse::nom_montre(&comm);
+            let ou = trf!("en cours : {montre} (pid {pid})", "running: {montre} (pid {pid})");
             r.programme(&comm, ou.clone(), true, ind);
             if let Some(exe) = processus::programme(pid)
                 && let Some(nom) = exe.file_name().map(|n| n.to_string_lossy().into_owned())
@@ -344,9 +346,10 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
     for l in &lecteurs {
         let claviers = l.claviers.join(", ");
         // L'exécutable est montré même pour un lecteur reconnu : un nom court emprunté se voit à côté de lui.
+        let montre = crate::machine::chasse::nom_montre(&l.programme);
         let lecteur = match l.chemin.as_deref() {
-            Some(c) => format!("{} (pid {}, {})", l.programme, l.pid, affichable(c)),
-            None => format!("{} (pid {})", l.programme, l.pid),
+            Some(c) => format!("{montre} (pid {}, {})", l.pid, affichable(c)),
+            None => format!("{montre} (pid {})", l.pid),
         };
         let ou = trf!("{lecteur} tient : {claviers}", "{lecteur} holds: {claviers}");
         match clavier::juger(l, &montages) {
@@ -355,7 +358,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
                 let quoi = trf!(
                     "{} lit le clavier — {raison}",
                     "{} reads the keyboard — {raison}",
-                    l.programme
+                    montre
                 );
                 r.signe(Section::Systeme, niveau, &format!("clavier:{}", l.programme), &quoi, ou);
             }

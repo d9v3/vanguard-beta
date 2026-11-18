@@ -66,14 +66,12 @@ fn chaque_forme_d_essai_est_retiree() {
         // R2-COMPILATION-1 : #[test] et #[bench] seuls (sans cfg(test) autour), un proptest! hors des essais.
         "#[test]\nfn f() { assert_eq!(TR(\"alice\", \"salon\"), \"\"); }\n",
         "#[bench]\nfn f(b: &mut B) { b.iter(|| TR(\"salon\", \"x\")); }\n",
-        "#[tokio::test]\nasync fn f() { TR(\"salon\", \"x\"); }\n",
         "proptest! {\n    #[test]\n    fn f(x in 0u8..) { TR(\"salon\", \"x\"); }\n}\n",
         // R2-COMPILATION-4 : écritures rares de cfg(test).
         "#[cfg(all(unix, all(test)))]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(test,)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(/* x */ test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg_attr(all(), cfg(test))]\nfn a() { TR(\"salon\", \"x\"); }\n",
-        "#[cfg_attr(unix, test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(kani)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(not(any(unix, not(test))))]\nfn a() { TR(\"salon\", \"x\"); }\n",
         // R2-COMPILATION-2 : la fin de l'élément est celle de l'arbre, pas la première accolade.
@@ -93,6 +91,11 @@ fn chaque_forme_d_essai_est_retiree() {
         "#[cfg_attr(test, allow(dead_code))]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(all(unix, tests))]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg_attr(test, test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        // 9e passe, R9-SOURCES-1 : rustc ne retire que `#[test]` seul ; un autre chemin, ou un `cfg_attr` dont la
+        // condition n'est pas toujours vraie, garde l'élément (dans une cible au moins).
+        "#[tokio::test]\nasync fn f() { TR(\"salon\", \"x\"); }\n",
+        "#[cfg_attr(unix, test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[rust_analyzer::test]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(not(all(unix, test)))]\nfn a() { TR(\"salon\", \"x\"); }\n",
     ];
     for texte in programme {
@@ -179,7 +182,7 @@ fn les_identifiants_bruts_sont_lus_comme_rustc() {
         "#[r#test]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[r#cfg(test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "#[cfg(all(unix, r#test))]\nfn a() { TR(\"salon\", \"x\"); }\n",
-        "#[r#cfg_attr(unix, r#test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
+        "#[r#cfg_attr(r#not(r#test), r#test)]\nfn a() { TR(\"salon\", \"x\"); }\n",
         "r#proptest! {\n    fn f(x in 0u8..) { TR(\"salon\", \"x\"); }\n}\n",
     ];
     for texte in essais {
@@ -462,7 +465,15 @@ fn r6_sources_1_une_macro_hors_de_la_liste_blanche_autour_d_un_texte_arrete_la_c
     ] {
         match lecture(&[("src/main.rs", texte)]) {
             Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
-            Err(Illisible(e)) => assert!(e.contains("hors de la liste blanche"), "{e} ({texte})"),
+            // Par son chemin, un nom admis est refusé comme nom réservé (9e passe, `NOMS_RESERVES`).
+            Err(Illisible(e)) => assert!(
+                e.contains(if texte.contains("autre::format!") {
+                    "nom réservé"
+                } else {
+                    "hors de la liste blanche"
+                }),
+                "{e} ({texte})"
+            ),
         }
     }
     // Un nom admis donné à une autre macro : par un `use` ou par une définition.
@@ -474,12 +485,12 @@ fn r6_sources_1_une_macro_hors_de_la_liste_blanche_autour_d_un_texte_arrete_la_c
     ] {
         match lecture(&[("src/main.rs", texte)]) {
             Ok(mots) => panic!("lu sans erreur : {mots:?} ({texte})"),
-            Err(Illisible(e)) => assert!(e.contains("donne le nom d'une macro admise"), "{e} ({texte})"),
+            Err(Illisible(e)) => assert!(e.contains("donne un nom réservé"), "{e} ({texte})"),
         }
     }
     refuse(
         &[("src/main.rs", "macro_rules! format { (test => $a:expr) => { $a }; }\n")],
-        "définie sous le nom d'une macro admise",
+        "définie sous un nom réservé",
     );
     // Restent lus : les importations admises, et un nom admis du paquet même (une fonction `json`).
     assert_eq!(
@@ -803,5 +814,180 @@ fn le_modele_partage_hors_de_src_suit_les_regles() {
     match vocabulaire(&sources) {
         Ok(mots) => assert!(mots.is_empty(), "le modèle a des textes : {mots:?}"),
         Err(Illisible(e)) => panic!("{e}"),
+    }
+}
+
+/// 9e passe, R9-SOURCES-1 : un attribut d'outil qui finit par `test` (`#[rust_analyzer::test]`, `#[rustfmt::test]`)
+/// faisait passer du vrai code pour un essai ; rustc le garde. Seuls `#[test]` et `#[bench]` écrits seuls sont des
+/// essais, et leurs noms sont réservés.
+#[test]
+fn r9_sources_1_un_attribut_d_outil_ne_fait_pas_un_essai() {
+    // La preuve (sans sa définition de `tr`, refusée par ailleurs) : le module hors de src/, puis la variante en ligne.
+    for texte in [
+        "#[rust_analyzer::test]\n#[path = \"../hors/defs.rs\"]\nmod alloc;\nfn main() { let x: &str = \
+         alloc::vec!(TR(\"motsecret\", \"secretword\")); println!(\"bonjour{x}\"); }\n",
+        "#[rustfmt::test]\nmod alloc { macro_rules! vec { ($($t:tt)*) => { \"\" }; } pub(crate) use vec; }\nfn main() \
+         { let x: &str = alloc::vec!(TR(\"motsecret\", \"secretword\")); println!(\"bonjour{x}\"); }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "module « alloc » au nom d'un paquet admis");
+    }
+    // La preuve entière (avec sa définition de `tr`) est refusée aussi.
+    refuse(
+        &[(
+            "src/main.rs",
+            "macro_rules! tr { ($a:expr, $b:expr) => { $a }; }\n#[rust_analyzer::test]\n#[path = \
+             \"../hors/defs.rs\"]\nmod alloc;\nfn main() { let x: &str = alloc::vec!(TR(\"motsecret\", \
+             \"secretword\")); println!(\"bonjour{x}\"); }\n",
+        )],
+        "nom réservé",
+    );
+    // Contre-épreuve : la fonction marquée par un attribut d'outil est du programme, ses mots sont lus.
+    assert_eq!(
+        un("#[rustfmt::test]\nfn cache() -> &'static str { TR(\"alice\", \"salon\") }\n"),
+        attendus(&["alice", "salon"])
+    );
+    // Les noms `test` et `bench` ne se reprennent pas.
+    for texte in [
+        "use autre::attribut as test;\n",
+        "use autre::bench;\n",
+        "macro_rules! test { () => {}; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "nom réservé");
+    }
+    // Témoins : `#[test]` seul (aussi `r#test`) reste un essai, le vrai attribut importé de std se lit.
+    assert_eq!(
+        un(
+            "#[test]\nfn a() { TR(\"salon\", \"x\"); }\n#[r#test]\nfn b() { TR(\"salon\", \"x\"); }\n\
+            use std::prelude::v1::test;\nfn c() { TR(\"vrai\", \"real\"); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+/// 9e passe, R9-SOURCES-2 : `concat` repris par une macro maison trompait `inclusion_connue`, qui juge l'écriture de
+/// l'appel : `include!` tirait alors un fichier hors de src/, jamais lu.
+#[test]
+fn r9_sources_2_concat_et_include_ne_se_reprennent_pas() {
+    let suite = "include!(concat!(env!(\"OUT_DIR\"), \"/fabricants.rs\"));\nfn main() { let x: &str = \
+                 alloc::vec!(TR(\"motsecret\", \"secretword\")); println!(\"bonjour{x}\"); }\n";
+    // Les deux preuves, entières (avec leur `tr` maison) puis sans lui.
+    for tr_maison in ["macro_rules! tr { ($a:expr, $b:expr) => { $a }; }\n", ""] {
+        for (pose, attendu) in [
+            (
+                "macro_rules! concat { ($a:expr, $b:expr) => { \"../hors/defs.rs\" }; }\n",
+                "définie sous un nom réservé",
+            ),
+            (
+                "mod m { macro_rules! chemin { ($a:expr, $b:expr) => { \"../hors/defs.rs\" }; } pub(crate) use \
+                 chemin; }\nuse m::chemin as concat;\n",
+                "donne un nom réservé",
+            ),
+        ] {
+            let attendu = if tr_maison.is_empty() { attendu } else { "nom réservé" };
+            refuse(&[("src/main.rs", &format!("{tr_maison}{pose}{suite}"))], attendu);
+        }
+    }
+    // Les voisins : `include`, `env` ou `concat` d'un autre paquet, par un import ou par le chemin de l'appel.
+    for (texte, attendu) in [
+        ("use autre::concat;\n", "donne un nom réservé"),
+        ("use m::chemin as include;\n", "donne un nom réservé"),
+        ("use m::chemin as env;\n", "donne un nom réservé"),
+        (
+            "mod base { autre::include!(concat!(env!(\"OUT_DIR\"), \"/fabricants.rs\")); }\n",
+            "chemin d'un autre paquet",
+        ),
+        (
+            "mod base { include!(concat!(autre::env!(\"OUT_DIR\"), \"/fabricants.rs\")); }\n",
+            "include!",
+        ),
+        ("macro_rules! include { () => {}; }\n", "définie sous un nom réservé"),
+    ] {
+        refuse(&[("src/main.rs", texte)], attendu);
+    }
+    // Témoins : la forme connue, aussi par `std::`, et `concat` importé de std.
+    assert_eq!(
+        un(
+            "use std::concat;\nmod a { include!(concat!(env!(\"OUT_DIR\"), \"/fabricants.rs\")); }\nmod b { \
+             std::include!(concat!(env!(\"OUT_DIR\"), \"/fabricants.rs\")); }\nfn c() { TR(\"vrai\", \"real\"); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+/// 9e passe, R9-SOURCES-3 : une macro maison sous le nom d'une macro de texte (définie dans un module, ou importée
+/// sous ce nom) jetait ses arguments, que la lecture prenait pour du texte du programme. Les macros de texte ne
+/// sont définies qu'au premier niveau de src/langue.rs, et importées sous leur nom depuis le programme même.
+#[test]
+fn r9_sources_3_une_macro_de_texte_ne_se_reprend_pas() {
+    // Les deux preuves.
+    refuse(
+        &[(
+            "src/main.rs",
+            "mod m { macro_rules! tr { ($($t:tt)*) => { \"\" }; } pub fn f() -> &'static str { TR(\"motsecret\", \
+             \"secretword\") } }\nfn main() { println!(\"bonjour{}\", m::f()); }\n",
+        )],
+        "définie sous un nom réservé",
+    );
+    refuse(
+        &[(
+            "src/main.rs",
+            "mod m { macro_rules! jette { ($($t:tt)*) => { \"\" }; } pub(crate) use jette; }\nuse m::jette as tr;\n\
+             fn main() { println!(\"bonjour{}\", TR(\"motsecret\", \"secretword\")); }\n",
+        )],
+        "donne un nom réservé",
+    );
+    // Les voisins : une autre macro de texte, un import d'un autre paquet, un renommage entre macros de texte, un
+    // appel par le chemin d'un autre paquet (dans le code et dans des jetons), une macro d'essais reprise.
+    for (texte, attendu) in [
+        (
+            "macro_rules! trwln { ($($t:tt)*) => {}; }\n",
+            "définie sous un nom réservé",
+        ),
+        (
+            "fn a() { macro_rules! trf { ($($t:tt)*) => { \"\" }; } }\n",
+            "définie sous un nom réservé",
+        ),
+        ("use autre::tr;\n", "donne un nom réservé"),
+        ("use crate::tr as trf;\n", "donne un nom réservé"),
+        ("use std::tr;\n", "donne un nom réservé"),
+        ("use m::passe as proptest;\n", "donne un nom réservé"),
+        (
+            "fn a() -> &'static str { autre::tr!(\"motsecret\", \"secretword\") }\n",
+            "chemin d'un autre paquet",
+        ),
+        (
+            "macro_rules! m { () => { autre::tr!(\"motsecret\", \"secretword\") }; }\n",
+            "chemin d'un autre paquet",
+        ),
+        (
+            "autre::proptest! { #[path = \"../hors/defs.rs\"] mod alloc; }\n",
+            "chemin d'un autre paquet",
+        ),
+    ] {
+        refuse(&[("src/main.rs", texte)], attendu);
+    }
+    // La vraie définition : au premier niveau de src/langue.rs. Ailleurs, ou dans un module de ce fichier, refusée.
+    let langue = "#[macro_export]\nmacro_rules! tr { ($fr:literal, $en:literal $(,)?) => { $fr }; }\n";
+    assert_eq!(
+        mots(&[
+            (
+                "src/main.rs",
+                "mod langue;\nmod ui { pub use crate::tr; }\nmod rapport { use crate::ui::tr; use super::tr as t; }\n\
+                 fn a() { TR(\"vrai\", \"real\"); crate::tr!(\"maison\", \"rouge\"); proptest::proptest! {} }\n",
+            ),
+            ("src/langue.rs", langue),
+        ]),
+        attendus(&["vrai", "real", "maison", "rouge"])
+    );
+    for (fichier, texte) in [
+        ("src/outil.rs", langue.to_string()),
+        ("src/langue.rs", format!("mod interne {{ {langue} }}")),
+        ("src/langue.rs", format!("fn f() {{ {langue} }}")),
+    ] {
+        let racine = format!("mod {};\n", if fichier == "src/outil.rs" { "outil" } else { "langue" });
+        refuse(
+            &[("src/main.rs", &racine), (fichier, &texte)],
+            "définie sous un nom réservé",
+        );
     }
 }

@@ -44,7 +44,12 @@ pub(super) fn relever(r: &mut Releve, ind: Option<&Indicateurs>) {
         r.verifies += 1;
     }
     for p in liste {
-        let ou = crate::trf!("en cours : {} (pid {})", "running: {} (pid {})", p.nom, p.pid);
+        let ou = crate::trf!(
+            "en cours : {} (pid {})",
+            "running: {} (pid {})",
+            crate::machine::chasse::nom_montre(&p.nom),
+            p.pid
+        );
         r.programme(&p.nom, ou, true, ind);
     }
     // Les services : nom, nom affiché et fichier ; démarrage automatique (Start ≤ 2) compté comme en marche.
