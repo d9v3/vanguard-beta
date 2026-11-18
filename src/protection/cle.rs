@@ -50,6 +50,16 @@ const NOM_COPIE: &str = "vanguard.exe";
 /// (N3-O5) : ce faux dossier est alors tenu pour la clé du lancement, et la copie locale posée a les octets du vrai
 /// Vanguard ; pas de gain trouvé pour un programme qui a déjà les droits du compte. Non vérifié : ce que les autres
 /// usages de la clé du lancement (journal, mise à jour de la clé) écriraient dans ce dossier.
+///
+/// La fenêtre (L2 de la relecture 0.96) lance `vanguard` depuis une copie scellée en mémoire (memfd nommé
+/// `vanguard`), jamais par son chemin : le programme qui tourne n'a alors plus de fichier (« /memfd:vanguard
+/// (deleted) »), et sans origine la mise à jour, la clé du lancement, le manifeste, la tâche du veilleur et la
+/// désinstallation ne sauraient plus quel programme est le sien. La fenêtre pose donc `VANGUARD_ORIGINE` (le chemin
+/// qu'elle a vérifié), dans l'environnement de ce seul `vanguard`, et cette image est reconnue comme une copie,
+/// strictement (`image_de_la_fenetre`) ; la règle des mêmes octets reste. Un programme du compte qui lance lui-même
+/// une image memfd de Vanguard avec la variable vers une copie exacte n'y gagne rien : la variable n'est crue que
+/// vers un fichier aux octets du programme qui tourne, et lancer ce fichier lui-même donne déjà la même origine (le
+/// même cas que R2W-N1, en moins : aucun dossier à la forme d'une copie).
 pub fn exe_d_origine() -> Option<PathBuf> {
     /// L'origine décidée, et l'écart à dire : (chemin désigné montrable, raison).
     type Decision = (Option<PathBuf>, Option<(String, String)>);
@@ -90,8 +100,13 @@ fn origine_de(designee: Option<&Path>) -> (Option<PathBuf>, Option<Echec>) {
 /// Le programme qui tourne est-il une copie temporaire, de nom exact (`vanguard-<chiffres>-<chiffres>`) ? Sous Linux,
 /// une copie effacée (elle s'efface au démarrage) puis relancée par `/proc/self/exe` (l'autotest) se dit
 /// « `<chemin> (deleted)` » : la marque est retirée, seulement quand l'image n'a vraiment plus de nom (aucun lien),
-/// sinon un fichier nommé ainsi passerait pour la copie.
+/// sinon un fichier nommé ainsi passerait pour la copie. Sous Linux, l'image scellée d'un `vanguard` lancé par la
+/// fenêtre compte aussi (`image_de_la_fenetre`).
 fn dans_une_copie() -> bool {
+    #[cfg(target_os = "linux")]
+    if image_de_la_fenetre(Path::new("/proc/self/exe")) {
+        return true;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
@@ -102,6 +117,29 @@ fn dans_une_copie() -> bool {
         sans_marque_d_effacement(exe, effacee)
     };
     nom_exact_de_copie(&exe) && est_une_copie(&exe)
+}
+
+/// Le nom que le noyau donne à l'image d'un `vanguard` lancé par la fenêtre : son memfd, nommé `vanguard`
+/// (fenetre/src/lanceur.rs), qui n'a jamais eu de lien.
+#[cfg(target_os = "linux")]
+const IMAGE_DE_LA_FENETRE: &str = "/memfd:vanguard (deleted)";
+
+/// Linux : `image` (`/proc/self/exe`) est-elle la copie scellée où la fenêtre lance `vanguard` ? Le nom exact, et ce
+/// que seul un memfd scellé peut montrer : un fichier ordinaire sans aucun lien, qui ne peut plus être écrit,
+/// raccourci ni allongé, ni ses sceaux changés. Un fichier effacé nommé `/memfd:vanguard` sur un disque ou un tmpfs
+/// n'a pas ces sceaux (le noyau ne les pose que sur un memfd qui les accepte) ; tout doute : non.
+#[cfg(target_os = "linux")]
+fn image_de_la_fenetre(image: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    const SCELLEE: libc::c_int = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+    if std::fs::read_link(image).ok().as_deref().map(Path::as_os_str) != Some(IMAGE_DE_LA_FENETRE.as_ref()) {
+        return false;
+    }
+    let Ok(f) = std::fs::File::open(image) else {
+        return false;
+    };
+    f.metadata().is_ok_and(|m| m.file_type().is_file() && m.nlink() == 0)
+        && crate::demarrage::memfd::sceaux(&f).is_ok_and(|s| s & SCELLEE == SCELLEE)
 }
 
 /// Linux : le chemin d'une image effacée, sans « (deleted) » que le noyau ajoute (`effacee` : plus aucun lien).
@@ -1206,6 +1244,109 @@ mod tests {
         ] {
             assert!(!nom_exact_de_copie(&dans(faux)), "{faux}");
         }
+    }
+
+    /// L2(b) : l'image d'un `vanguard` lancé par la fenêtre (memfd nommé `vanguard`, scellé) est reconnue ; un autre
+    /// nom de memfd, un fichier ordinaire effacé ou le programme d'essai lui-même, non.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_de_la_fenetre_reconnue_strictement() {
+        use std::os::fd::AsRawFd;
+        let image = |f: &std::fs::File| PathBuf::from(format!("/proc/self/fd/{}", f.as_raw_fd()));
+        let octets = b"programme de vanguard";
+        let bonne = crate::demarrage::memfd::scelle("vanguard", octets).unwrap();
+        assert!(image_de_la_fenetre(&image(&bonne)));
+        for nom in [
+            "vanguard-fenetre",
+            "Vanguard",
+            "vanguard ",
+            "vanguard (deleted)",
+            "autre",
+        ] {
+            let f = crate::demarrage::memfd::scelle(nom, octets).unwrap();
+            assert!(!image_de_la_fenetre(&image(&f)), "{nom}");
+        }
+        let d = crate::essais::temporaire().join(format!("vanguard-image-fenetre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let chemin = d.join("vanguard");
+        std::fs::write(&chemin, octets).unwrap();
+        let ouvert = std::fs::File::open(&chemin).unwrap();
+        std::fs::remove_file(&chemin).unwrap();
+        assert!(!image_de_la_fenetre(&image(&ouvert)), "un fichier effacé");
+        assert!(!image_de_la_fenetre(Path::new("/proc/self/exe")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// La variable qui fait parler `joue_vanguard_de_la_fenetre`.
+    #[cfg(target_os = "linux")]
+    const JOUER: &str = "VANGUARD_ESSAI_ORIGINE_FENETRE";
+
+    /// Dit ce que le programme qui tourne croit de lui-même (`dans_une_copie`, `exe_d_origine`) ; rien sans `JOUER`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "lancé seulement par origine_d_un_vanguard_lance_par_la_fenetre, depuis une copie scellée"]
+    fn joue_vanguard_de_la_fenetre() {
+        if std::env::var_os(JOUER).is_some() {
+            println!("copie:{}", dans_une_copie());
+            let origine = exe_d_origine().map(|p| p.display().to_string()).unwrap_or_default();
+            println!("origine:{origine}");
+        }
+    }
+
+    /// L2(b), au plus près de la fenêtre : ce programme d'essai (un vrai ELF) lancé comme elle lance `vanguard`,
+    /// depuis un memfd scellé nommé `vanguard` (`/proc/self/fd/N`, `arg0` « vanguard »), `VANGUARD_ORIGINE` vers le
+    /// chemin vérifié. (a) Aux mêmes octets : l'origine est ce chemin. (b) D'autres octets : ignorée, origine inconnue.
+    /// (c) Un autre nom de memfd : pas une copie, la variable n'est pas crue, même aux mêmes octets.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn origine_d_un_vanguard_lance_par_la_fenetre() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let octets = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let d = crate::essais::temporaire().join(format!("vanguard-origine-fenetre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let exacte = d.join("vanguard");
+        std::fs::write(&exacte, &octets).unwrap();
+        let autre = d.join("autre");
+        let mut differents = octets.clone();
+        differents.push(0);
+        std::fs::write(&autre, &differents).unwrap();
+        let lancer = |nom: &str, origine: &Path| {
+            let copie = crate::demarrage::memfd::scelle(nom, &octets).unwrap();
+            let essai = "protection::cle::tests::joue_vanguard_de_la_fenetre";
+            let sortie = std::process::Command::new(format!("/proc/self/fd/{}", copie.as_raw_fd()))
+                .arg0("vanguard")
+                .args([
+                    "--exact",
+                    essai,
+                    "--ignored",
+                    "--nocapture",
+                    "--quiet",
+                    "--test-threads=1",
+                ])
+                .env(JOUER, "1")
+                .env(ORIGINE, origine)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let dit = String::from_utf8_lossy(&sortie.stdout).into_owned();
+            assert!(
+                sortie.status.success(),
+                "{dit}{}",
+                String::from_utf8_lossy(&sortie.stderr)
+            );
+            dit
+        };
+        let attendue = format!("origine:{}\n", exacte.canonicalize().unwrap().display());
+        let dit = lancer("vanguard", &exacte);
+        assert!(dit.contains("copie:true\n") && dit.contains(&attendue), "(a) {dit}");
+        let dit = lancer("vanguard", &autre);
+        assert!(dit.contains("copie:true\n") && dit.contains("origine:\n"), "(b) {dit}");
+        let dit = lancer("vanguard-autre", &exacte);
+        assert!(dit.contains("copie:false\n") && dit.contains("origine:\n"), "(c) {dit}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// BASSE (relecture adverse, R2W-N2) : la marque « (deleted) » n'est retirée que d'une image sans aucun lien.
