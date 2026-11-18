@@ -977,8 +977,28 @@ pub(crate) fn en_marche() -> Option<(Vec<EnMarche>, HashSet<u32>)> {
     Some((liste, intouchables))
 }
 
-/// Un programme repéré, tel qu'il est montré : son nom (choisi par qui l'a lancé, rendu inoffensif), son numéro, la
-/// raison, et ce qu'on montre de lui.
+/// Le nom d'un programme tel qu'il est montré entre guillemets : rendu inoffensif (`affichable`), et sans aucun
+/// guillemet à lui (« » “ ” " et tout ce que la porte MCP ramène à « " ») : chacun devient « ' ». Ce nom est choisi par
+/// qui a lancé le programme ; un guillemet dedans ferait croire à la porte (`porte_mcp::vues`, `debut_du_nom`) que le
+/// nom commence plus loin, et ses parenthèses (« b) "c ») fermeraient l'extrait d'avant, cachant l'alerte du programme
+/// (7e passe, R7-VUES-1). Corrigé ici, là où le nom est écrit, plutôt que deviné à la lecture : la porte retrouve
+/// ainsi le début du nom à coup sûr.
+pub(crate) fn nom_montre(nom: &str) -> String {
+    affichable(nom)
+        .chars()
+        .map(|x| {
+            let mut un = [0; 4];
+            if crate::amelioration::texte::normalise(x.encode_utf8(&mut un)).contains('"') {
+                '\''
+            } else {
+                x
+            }
+        })
+        .collect()
+}
+
+/// Un programme repéré, tel qu'il est montré : son nom (choisi par qui l'a lancé, rendu inoffensif et sans
+/// guillemet : `nom_montre`), son numéro, la raison, et ce qu'on montre de lui.
 pub(crate) fn montrer(p: &EnMarche, s: &Soupcon) -> String {
     let efface = if s.efface {
         tr!(", effacé depuis", ", deleted since")
@@ -989,7 +1009,7 @@ pub(crate) fn montrer(p: &EnMarche, s: &Soupcon) -> String {
     trf!(
         "« {} » (PID {}) {}{efface}{suite}",
         "“{}” (PID {}) {}{efface}{suite}",
-        affichable(&p.nom),
+        nom_montre(&p.nom),
         p.pid,
         s.raison
     )

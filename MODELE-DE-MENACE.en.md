@@ -784,7 +784,9 @@ to start (code 2) until it has been tried on a real Windows.
   word, with or without a parenthesis, and an extra closing parenthesis after a "(PID n)" shows it was quoted in the
   excerpt before, which then runs up to it; after a closed excerpt, a "(PID n)" opens a new program only behind the
   watcher's exact gap ("; “name”"): otherwise it was quoted, and the excerpt is held back whole, before and after
-  it; the parentheses of the next program's quoted name ("(sd-pam)", "b(1)") do not count in the excerpt before; any
+  it; the parentheses of the next program's quoted name ("(sd-pam)", "b(1)") do not count in the excerpt before, and
+  the watcher writes that name without any quote of its own (each becomes "'"), so its start is always found (a name like
+  b) "c no longer closes the excerpt before); any
   other parenthesis
   comes out only if all its words are known. The price:
   useful text that follows an announcement is lost (about 0.8% of Vanguard's text pieces contain one of these words,
@@ -806,7 +808,10 @@ to start (code 2) until it has been tried on a real Windows.
   `cfg_attr` on a module, a file module declared in a block (function, `const`), and any macro outside a reviewed
   allow-list (`format!`, `write!`, `json!`, `vec!`…) called inside a text call or whose body contains one (`cfg_if!`,
   a wrapper from another package, a home-made macro that would choose by `cfg`, whatever the form of its arms), as well
-  as an allow-list name given to another macro (`macro_rules!`, `use … as`, a path outside std and serde_json). The build script (`build.rs`), the reading it includes and the
+  as an allow-list name given to another macro (`macro_rules!`, `use … as`, a path outside std and serde_json), an
+  allowed package's name taken by a module, a `use` or an `extern crate` (`mod alloc`), and, in a macro body read token
+  by token, a macro named by a metavariable (`$m!`), an attribute written by a metavariable (`#[$m]`) near a text, or
+  a declaration (`use`, `mod`, `extern crate`, `macro_rules!`) whose name cannot be followed. The build script (`build.rs`), the reading it includes and the
   repository's cargo configuration are judged by a hash of the whole file, and `Cargo.toml` by the exact list of its
   targets and build dependencies (`outils/essais-signature.sh`): a change there calls for a deliberate review. The
   repository has no legacy file that cargo or rustup would prefer to the judged one (`.cargo/config`,

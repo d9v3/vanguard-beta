@@ -510,3 +510,124 @@ fn r6_sources_2_un_if_dans_une_macro_admise_dans_une_autre_est_lu() {
         attendus(&["vrai", "real", "maison", "rouge"])
     );
 }
+
+#[test]
+fn r7_sources_1_une_macro_nommee_par_une_metavariable_autour_d_un_texte_arrete_la_compilation() {
+    // La preuve de la 7e passe : `$format!` est la macro passée à l'appel (`jette`), pas `format!`. Puis le même par
+    // un chemin : une métavariable devant `::` n'est pas plus un paquet admis.
+    for texte in [
+        "macro_rules! jette { ($($t:tt)*) => { \"\" }; }\nmacro_rules! via { ($format:ident) => { $format!{ \
+         TR(\"motsecret\", \"secretword\") } }; }\nfn main() { let x: &str = via!(jette); println!(\"bonjour{x}\"); }\n",
+        "macro_rules! via { ($std:ident) => { $std::format!(\"{}\", TR(\"motsecret\", \"secretword\")) }; }\n",
+        "macro_rules! via { ($m:ident) => { $m::format!(\"{}\", TR(\"motsecret\", \"secretword\")) }; }\n",
+        "macro_rules! via { () => { $crate::format!(\"{}\", TR(\"motsecret\", \"secretword\")) }; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "hors de la liste blanche");
+    }
+    // Témoins : une métavariable appelée sans texte autour reste lue, et `format!` écrit en toutes lettres aussi.
+    assert_eq!(
+        un("macro_rules! via { ($m:ident) => { $m!(x) }; () => { format!(\"{}\", TR(\"vrai\", \"real\")) }; }\n"),
+        attendus(&["vrai", "real"])
+    );
+}
+
+#[test]
+fn r7_sources_2_un_attribut_ecrit_par_une_metavariable_pres_d_un_texte_arrete_la_compilation() {
+    // Les trois formes de la 7e passe : l'attribut n'est connu qu'à l'appel (`cfg(test)` en ferait un essai).
+    for texte in [
+        "macro_rules! outil { ($(#[$m:meta])* $nom:ident) => { $(#[$m])* fn $nom() -> &'static str { \
+         TR(\"motsecret\", \"secretword\") } }; }\noutil!(#[cfg(test)] secret);\n",
+        "macro_rules! outil { ($m:meta) => { #[$m] fn f() -> &'static str { TR(\"motsecret\", \"secretword\") } }; \
+         }\noutil!(cfg(test));\n",
+        "macro_rules! outil { ($a:tt) => { # $a fn f() -> &'static str { TR(\"motsecret\", \"secretword\") } }; \
+         }\noutil!([cfg(test)]);\n",
+        "macro_rules! outil { ($a:tt) => { #! $a fn f() -> &'static str { TR(\"motsecret\", \"secretword\") } }; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "sans attribut lisible");
+    }
+    // Un attribut d'essai écrit en toutes lettres reste refusé par son propre message.
+    refuse(
+        &[(
+            "src/main.rs",
+            "macro_rules! outil { () => { #[cfg(test)] fn f() -> &'static str { TR(\"alice\", \"salon\") } }; }\n",
+        )],
+        "attribut d'essai",
+    );
+    // Témoins : l'idiome du programme (la documentation d'un type passée par `$(#[$doc])*`) dans un corps sans
+    // texte, et un attribut lisible près d'un texte.
+    assert_eq!(
+        un(
+            "macro_rules! chaine { ($(#[$doc:meta])* $nom:ident) => { $(#[$doc])* pub struct $nom(String); }; }\n\
+             macro_rules! m { () => { #[derive(Debug)] struct S; fn f() -> &'static str { TR(\"vrai\", \"real\") } \
+             }; }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+#[test]
+fn r7_sources_3_un_nom_de_paquet_ou_de_macro_admis_cache_par_une_declaration_arrete_la_compilation() {
+    // La preuve de la 7e passe : `mod alloc` posé par une macro, puis `alloc::vec!` (la macro `jette`).
+    let preuve = "macro_rules! jette { ($a:expr) => { \"\" }; }\nmacro_rules! pose { () => { mod alloc { pub(crate) \
+                  use jette as vec; } }; }\npose!();\nfn main() { let x: &str = alloc::vec!(TR(\"motsecret\", \
+                  \"secretword\")); println!(\"bonjour{x}\"); }\n";
+    // Toute déclaration dans des jetons : le nom qu'elle donne peut venir d'une métavariable.
+    for texte in [
+        preuve,
+        "macro_rules! pose { () => { macro_rules! format { ($a:expr) => { \"\" }; } }; }\n",
+        "macro_rules! pose { ($n:ident) => { mod $n {} }; }\n",
+        "macro_rules! pose { ($p:path, $n:ident) => { use $p as $n; }; }\n",
+        "macro_rules! pose { () => { extern crate autre as std; }; }\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "lu jeton par jeton");
+    }
+    // Dans du code : un module, un `use` ou un `extern crate` au nom d'un paquet admis.
+    refuse(
+        &[(
+            "src/main.rs",
+            "mod alloc {}\nfn main() { let _ = alloc::vec!(TR(\"motsecret\", \"secretword\")); }\n",
+        )],
+        "module « alloc » au nom d'un paquet admis",
+    );
+    for texte in [
+        "use autre as std;\n",
+        "use autre::serde_json;\n",
+        "use crate::m as alloc;\n",
+    ] {
+        refuse(&[("src/main.rs", texte)], "donne le nom d'un paquet admis");
+    }
+    refuse(
+        &[("src/main.rs", "extern crate autre as core;\n")],
+        "donne le nom d'un paquet admis",
+    );
+    // Témoins : le paquet sous son propre nom, un module d'un autre nom, `r#mod` (un nom ordinaire) dans des jetons.
+    assert_eq!(
+        un(
+            "use serde_json;\nextern crate alloc;\nextern crate alloc as alloc;\nmod stdx {}\nmacro_rules! m { () => { \
+             let r#mod = 1; format!(\"{}\", TR(\"vrai\", \"real\")) }; }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}
+
+#[test]
+fn r7_sources_4_un_use_refuse_dit_quoi_ecrire_a_la_place() {
+    for (texte, complet) in [
+        ("use libc::write;\n", "libc::write"),
+        ("use tokio::fs::{read, write};\n", "tokio::fs::write"),
+    ] {
+        refuse(
+            &[("src/main.rs", texte)],
+            &format!("le chemin complet à l'appel (« {complet}(…) »)"),
+        );
+        refuse(&[("src/main.rs", texte)], &format!("« use {complet} as autre_nom; »"));
+    }
+    // Les deux formes conseillées sont lues.
+    assert_eq!(
+        un(
+            "use libc::write as ecrire;\nfn a() { let _ = libc::write(1, p, n); let _ = ecrire(1, p, n); \
+             TR(\"vrai\", \"real\"); }\n"
+        ),
+        attendus(&["vrai", "real"])
+    );
+}

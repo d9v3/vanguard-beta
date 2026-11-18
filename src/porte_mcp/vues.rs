@@ -1431,6 +1431,64 @@ mod tests {
         }
     }
 
+    /// 7e passe, R7-VUES-1 : un nom de programme à parenthèse puis guillemet (« b) "c ») ne cache plus le programme
+    /// suivant. L'alerte est écrite par le veilleur lui-même (`chasse::montrer`, joints comme `chasse::resume`), en
+    /// français et en anglais, avec et sans extrait pour le premier programme : trois programmes, trois « programme
+    /// inconnu », aucun extrait sorti.
+    #[test]
+    fn r7_vues_1_un_guillemet_dans_le_nom_ne_cache_pas_le_programme() {
+        use crate::machine::chasse::{EnMarche, Soupcon, montrer, nom_montre};
+        let alerte = |noms: [&str; 3], extrait_a: bool| {
+            let extraits = [extrait_a.then_some("/tmp/a -x"), Some("/tmp/b"), Some("/tmp/c")];
+            let programmes: Vec<String> = [11, 22, 33]
+                .into_iter()
+                .zip(noms)
+                .zip(extraits)
+                .map(|((pid, nom), extrait)| {
+                    let p = EnMarche {
+                        pid,
+                        nom: nom.to_string(),
+                        ..EnMarche::default()
+                    };
+                    let s = Soupcon {
+                        niveau: crate::risk::Niveau::Eleve,
+                        raison: "programme inconnu",
+                        extrait: extrait.map(str::to_string),
+                        efface: false,
+                    };
+                    montrer(&p, &s)
+                })
+                .collect();
+            crate::trf!(
+                "Programme(s) en marche qui ont la forme d'une attaque : {}.",
+                "Running program(s) shaped like an attack: {}.",
+                crate::ui::resume(&programmes, 4, crate::tr!(" ; ", "; "))
+            )
+        };
+        // Les noms de la preuve, puis les témoins qui donnaient déjà trois.
+        let noms = [
+            "b) \"c", "(b \"c)", "b) «c", "b) “c", "b) ”c", "b) ＂c", "b)", "(b", "b) c", "b \"c", "b )", "( b",
+        ];
+        for anglais in [false, true] {
+            for nom in noms {
+                assert!(!nom_montre(nom).contains(['"', '«', '»', '“', '”', '＂']), "{nom}");
+                for extrait_a in [true, false] {
+                    let fabrique = || alerte(["a", nom, "c"], extrait_a);
+                    let brut = if anglais {
+                        crate::langue::en_anglais(fabrique)
+                    } else {
+                        fabrique()
+                    };
+                    let s = sortie(&brut);
+                    assert_eq!(s.matches("programme inconnu").count(), 3, "{brut:?} : {s:?}");
+                    for extrait in ["/tmp/a", "-x", "/tmp/b", "/tmp/c"] {
+                        assert!(!s.contains(extrait), "{extrait} sorti : {brut:?} : {s:?}");
+                    }
+                }
+            }
+        }
+    }
+
     /// 4e re-contrôle VUES-3 : les pluriels d'annonce qui manquaient (identifiants, logins, seeds, phrases de
     /// récupération, recovery phrases) retiennent la suite.
     #[test]

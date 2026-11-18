@@ -831,7 +831,8 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   l'extrait d'avant, qui va alors jusqu'à lui ; après un extrait refermé, un « (PID n) » n'ouvre un nouveau programme
   que derrière l'écart exact du veilleur (« ; « nom » ») : sinon il était cité, et l'extrait est retenu en entier,
   avant comme après lui ; les parenthèses du nom entre guillemets du programme suivant (« (sd-pam) », « b(1) ») ne
-  comptent pas dans l'extrait d'avant ; une autre parenthèse ne sort
+  comptent pas dans l'extrait d'avant, et le veilleur écrit ce nom sans aucun guillemet à lui (chacun devient « ' »),
+  pour que son début se retrouve à coup sûr (« b) "c » ne ferme plus l'extrait d'avant) ; une autre parenthèse ne sort
   que si tous ses mots sont connus. Le
   prix : un texte utile qui suit une annonce est perdu (environ 0,8 % des morceaux de texte de Vanguard contiennent un
   de ces mots, « clé de registre » et « code » compris). Ce sont des filets, pas une garantie : une valeur que rien
@@ -853,7 +854,10 @@ commande refuse de démarrer (code 2) tant qu'elle n'a pas été essayée sur un
   module à fichier déclaré dans un bloc (fonction, `const`), et toute macro hors d'une liste blanche jugée (`format!`,
   `write!`, `json!`, `vec!`…) appelée dans un appel de texte ou dont le corps en contient un (`cfg_if!`, une enveloppe
   d'un autre paquet, une macro maison qui choisirait par `cfg`, quelle que soit la forme de ses bras), comme un nom de
-  la liste blanche donné à une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json). Le
+  la liste blanche donné à une autre macro (`macro_rules!`, `use … as`, chemin hors de std et serde_json), le nom
+  d'un paquet admis pris par un module, un `use` ou un `extern crate` (`mod alloc`), et, dans le corps d'une macro lu
+  jeton par jeton, une macro nommée par une métavariable (`$m!`), un attribut écrit par une métavariable (`#[$m]`)
+  près d'un texte, ou une déclaration (`use`, `mod`, `extern crate`, `macro_rules!`) dont le nom ne se suit pas. Le
   script de compilation (`build.rs`), la lecture qu'il inclut et la configuration de cargo du dépôt sont jugés par une
   empreinte de tout le fichier, et `Cargo.toml` par la liste exacte de ses cibles et de ses paquets de compilation
   (`outils/essais-signature.sh`) : un changement y demande une relecture voulue. Le dépôt n'a ni fichier hérité que
