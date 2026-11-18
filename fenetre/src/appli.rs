@@ -241,7 +241,7 @@ pub struct Appli {
     page: Option<Commande>,
     /// La dernière image était-elle assez large pour une liste et sa page (`vue_large`) ? Une rubrique y montre
     /// alors une page, pas des cartes.
-    large: bool,
+    largeur: Largeur,
     /// Une lecture rapide vieillie se relance-t-elle d'elle-même à l'ouverture de sa page ? (Jamais dans les
     /// captures, où rien ne se lance.)
     relecture: Relecture,
@@ -253,6 +253,13 @@ enum Relecture {
     Seule,
     #[cfg_attr(not(test), allow(dead_code))]
     Jamais,
+}
+
+/// La largeur de la dernière image : assez pour une liste et sa page, ou pas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Largeur {
+    Etroite,
+    Large,
 }
 
 impl Appli {
@@ -286,7 +293,7 @@ impl Appli {
         // Dans l'autre sens aussi : la rubrique où l'on va montrera peut-être la page même que l'on quitte (Lenteur
         // tapée dans la console, puis Ordinateur au rail) ; la retenir ferait un Retour vers la même vue.
         let arrive = match vers {
-            Ecran::Rubrique(r) if self.large => self.montree(r).map_or(vers, ecran_de),
+            Ecran::Rubrique(r) if self.largeur == Largeur::Large => self.montree(r).map_or(vers, ecran_de),
             e => e,
         };
         if retenir && quitte != arrive {
@@ -301,7 +308,7 @@ impl Appli {
     /// Dit si la fenêtre est assez large pour une liste et sa page (le dessin, à chaque image) : « Retour » ne retient
     /// pas une rubrique qui montrera la page que l'on quitte.
     pub fn vue_large(&mut self, large: bool) {
-        self.large = large;
+        self.largeur = if large { Largeur::Large } else { Largeur::Etroite };
     }
 
     /// La page montrée à côté de la liste de la rubrique `r` : la dernière ouverte, sinon la première de la liste.
@@ -434,7 +441,7 @@ impl Appli {
             revenir: None,
             choisies: HashMap::new(),
             page: None,
-            large: false,
+            largeur: Largeur::Etroite,
             relecture: Relecture::Seule,
         };
         #[cfg(target_os = "linux")]
