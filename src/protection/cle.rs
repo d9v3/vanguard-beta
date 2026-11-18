@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::modele::Echec;
 use crate::ui::*;
 
+pub(crate) mod soi;
+
 /// Le contexte des échecs de la copie du programme hors de la clé.
 const OU_COPIE: &str = "cle/copie";
 

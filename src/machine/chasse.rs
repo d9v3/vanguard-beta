@@ -905,22 +905,10 @@ pub(crate) fn juger_programme(p: &EnMarche, systeme: Os) -> Option<Soupcon> {
 /// élevée en administrateur), et tout ce qu'ils ont lancé (PowerShell, journalctl, ps pendant le bilan). Un parent né
 /// après son enfant n'est pas son parent : sous Windows, le numéro d'un parent mort (celui de l'explorateur, par
 /// exemple) peut avoir été repris par Vanguard, qui aurait sinon écarté l'explorateur et tout ce qu'il a lancé. Sans
-/// les deux dates, le lien est gardé.
-pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, mon_programme: Option<&str>) -> HashSet<u32> {
-    let meme_programme = |c: &str| {
-        mon_programme.is_some_and(|m| {
-            if cfg!(windows) {
-                c.eq_ignore_ascii_case(m)
-            } else {
-                c == m
-            }
-        })
-    };
-    let mut racines: Vec<u32> = liste
-        .iter()
-        .filter(|p| p.chemin.as_deref().is_some_and(meme_programme))
-        .map(|p| p.pid)
-        .collect();
+/// les deux dates, le lien est gardé. `est_vanguard` : ce processus est-il ce Vanguard (`cle::soi::Soi::est_moi`,
+/// jamais par un nom de memfd) ?
+pub(crate) fn de_vanguard(liste: &[EnMarche], moi: u32, est_vanguard: &dyn Fn(&EnMarche) -> bool) -> HashSet<u32> {
+    let mut racines: Vec<u32> = liste.iter().filter(|p| est_vanguard(p)).map(|p| p.pid).collect();
     racines.push(moi);
     let nes: HashMap<u32, NaiveDateTime> = liste.iter().filter_map(|p| Some((p.pid, p.ne?))).collect();
     let paires: Vec<(u32, u32)> = liste
@@ -963,16 +951,17 @@ pub(crate) fn ancetres(liste: &[EnMarche], pid: u32) -> Vec<u32> {
     trouves
 }
 
+/// Le programme en marche `p` est-il ce Vanguard (`Soi::est_moi`) ?
+fn est_ce_vanguard(p: &EnMarche) -> bool {
+    crate::protection::cle::soi::Soi::courant().est_moi(p.pid, p.chemin.as_deref())
+}
+
 /// Pour le blocage : les programmes en marche, et ceux qu'il ne faut jamais arrêter parce qu'ils sont Vanguard, ce
 /// qu'il a lancé, ou ce qui le fait tourner (ses ancêtres). `None` : la liste ne se lit pas.
 pub(crate) fn en_marche() -> Option<(Vec<EnMarche>, HashSet<u32>)> {
     let (liste, _) = programmes_en_marche().filter(|(l, _)| !l.is_empty())?;
-    let mon_programme = std::env::current_exe().ok().map(|c| {
-        let c = c.to_string_lossy();
-        c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
-    });
     let moi = std::process::id();
-    let mut intouchables = de_vanguard(&liste, moi, mon_programme.as_deref());
+    let mut intouchables = de_vanguard(&liste, moi, &est_ce_vanguard);
     intouchables.extend(ancetres(&liste, moi));
     Some((liste, intouchables))
 }
@@ -1157,11 +1146,7 @@ fn programmes_suspects() -> Vec<Constat> {
             ),
         )];
     };
-    let mon_programme = std::env::current_exe().ok().map(|c| {
-        let c = c.to_string_lossy();
-        c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
-    });
-    let ecartes = de_vanguard(&liste, std::process::id(), mon_programme.as_deref());
+    let ecartes = de_vanguard(&liste, std::process::id(), &est_ce_vanguard);
     #[cfg(target_os = "linux")]
     {
         let mut intouchables = ecartes.clone();
@@ -1342,6 +1327,12 @@ fn date_cim(texte: &str) -> Option<NaiveDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Vanguard reconnu à son seul chemin (`Soi::chemin_a_moi`, sans casse sous Windows), sans lire de vrai processus.
+    fn par_chemin(moi: &str) -> impl Fn(&EnMarche) -> bool {
+        let soi = crate::protection::cle::soi::Soi::par_chemin(moi);
+        move |p: &EnMarche| soi.chemin_a_moi(p.chemin.as_deref())
+    }
 
     fn ip(texte: &str) -> IpAddr {
         texte.parse().unwrap()
@@ -1960,7 +1951,7 @@ mod tests {
                 ..EnMarche::default()
             },
         ];
-        let ecartes = de_vanguard(&liste, 100, Some(moi));
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
         assert!([100, 200, 300].iter().all(|p| ecartes.contains(p)));
         assert!(!ecartes.contains(&500));
         // La même casse de chemin vaut partout ; une autre casse ne vaut que sous Windows.
@@ -1976,7 +1967,12 @@ mod tests {
         assert!(!c[0].message.contains("SQBFAFgA"), "{}", c[0].message);
         // Rien de suspect : sain, en disant ce qui n'a pu être lu qu'en partie.
         liste.truncate(4);
-        let c = juger_programmes(&liste, Os::Windows, &de_vanguard(&liste, 100, Some(moi)), Some("x."));
+        let c = juger_programmes(
+            &liste,
+            Os::Windows,
+            &de_vanguard(&liste, 100, &par_chemin(moi)),
+            Some("x."),
+        );
         assert_eq!(c.len(), 1);
         assert!(c[0].verifie && c[0].probleme.is_none());
         assert!(c[0].message.ends_with("x."), "{}", c[0].message);
@@ -2006,7 +2002,7 @@ mod tests {
             cache,
             processus(200, 100, "powershell.exe", "090001"),
         ];
-        let ecartes = de_vanguard(&liste, 100, Some(moi));
+        let ecartes = de_vanguard(&liste, 100, &par_chemin(moi));
         assert!(ecartes.contains(&100) && ecartes.contains(&200), "{ecartes:?}");
         assert!(!ecartes.contains(&500) && !ecartes.contains(&600), "{ecartes:?}");
         let c = juger_programmes(&liste, Os::Windows, &ecartes, None);
@@ -2023,7 +2019,7 @@ mod tests {
                 ..p
             })
             .collect();
-        let ecartes = de_vanguard(&sans, 100, Some(moi));
+        let ecartes = de_vanguard(&sans, 100, &par_chemin(moi));
         assert!(ecartes.contains(&500) && ecartes.contains(&600), "{ecartes:?}");
     }
 
@@ -2118,7 +2114,7 @@ mod tests {
     fn lecture_reelle() {
         if let Some((liste, _)) = programmes_en_marche() {
             let moi = std::process::id();
-            let ecartes = de_vanguard(&liste, moi, None);
+            let ecartes = de_vanguard(&liste, moi, &|_| false);
             assert!(ecartes.contains(&moi));
             for c in juger_programmes(&liste, Os::actuel(), &ecartes, None) {
                 assert!(!c.message.contains(&format!("(PID {moi})")), "{}", c.message);

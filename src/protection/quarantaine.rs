@@ -372,8 +372,8 @@ fn garde_de_signature(chemin: &Path, automatique: bool, lancees: &mut Vec<String
         // Lisible et pas Microsoft : rien de plus qu'avant (les autres gardes sont celles de l'appelant).
         return Ok(());
     }
-    let mon_programme = std::env::current_exe().ok().map(|c| c.to_string_lossy().into_owned());
-    let autre = gardes::fichier_intouchable(&texte, crate::machine::regles::Os::actuel(), mon_programme.as_deref());
+    let mon_programme = crate::protection::cle::soi::Soi::courant().programme();
+    let autre = gardes::fichier_intouchable(&texte, crate::machine::regles::Os::actuel(), mon_programme);
     let raison = match gardes::decider_signature(sig, autre, !automatique, gardes::console_reelle()) {
         Decision::Permis => return Ok(()),
         Decision::Refuse(r) => return Err(std::io::Error::other(r)),

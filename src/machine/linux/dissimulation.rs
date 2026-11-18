@@ -517,6 +517,16 @@ pub(super) fn juger_sans_fichier(
     constats
 }
 
+/// Les programmes à juger : tous, sauf ce Vanguard, ce processus ou un autre dont l'image est vraiment la sienne
+/// (`Soi::meme_image` : le même fichier, ou les mêmes octets ; relecture adverse du lot L2(b), constat B). Deux
+/// `vanguard` lancés par la fenêtre ne se dénoncent plus l'un l'autre ; tout autre memfd, même nommé « vanguard »,
+/// reste jugé.
+fn a_juger(pids: impl IntoIterator<Item = u32>, moi: u32, soi: &crate::protection::cle::soi::Soi) -> Vec<u32> {
+    pids.into_iter()
+        .filter(|&pid| pid != moi && !soi.meme_image(pid))
+        .collect()
+}
+
 /// Programmes qui tournent sans fichier : le lien `/proc/<pid>/exe` de chacun, lisible sans droits pour ceux du compte
 /// seulement. Ce qui est repéré est relu : runc ne passe par la mémoire qu'un instant.
 pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
@@ -533,7 +543,7 @@ pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
     };
     let (mut lus, mut illisibles) = (0usize, 0usize);
     let mut reperes = Vec::new();
-    for &pid in pids.iter().filter(|p| **p != moi) {
+    for pid in a_juger(pids, moi, crate::protection::cle::soi::Soi::courant()) {
         match lien(pid) {
             Ok(l) => {
                 lus = lus.saturating_add(1);
@@ -901,6 +911,40 @@ pub(super) fn ecoute_du_reseau() -> Option<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MOYENNE (relecture adverse du lot L2(b), constat B) : un memfd scellé nommé « vanguard » aux autres octets que
+    /// ce Vanguard reste jugé, et signalé (sans fichier) ; aux mêmes octets, c'est un autre `vanguard` lancé par la
+    /// fenêtre : il n'est plus dénoncé.
+    #[test]
+    fn un_autre_vanguard_de_la_fenetre_n_est_pas_denonce() {
+        use crate::protection::cle::soi::essais::{ATTEND, depuis_un_memfd, empreinte, soi_de_la_fenetre};
+        let Ok(octets) = std::fs::read(ATTEND) else {
+            return crate::essais::saute("sleep introuvable");
+        };
+        let Some(fils) = depuis_un_memfd("vanguard", &octets, &["30"]) else {
+            return crate::essais::saute("memfd non exécutable ici");
+        };
+        let pid = fils.0.id();
+        let moi = std::process::id();
+        let lien = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+        assert_eq!(lien.to_string_lossy(), "/memfd:vanguard (deleted)");
+        assert_eq!(
+            juger_exe("/memfd:vanguard (deleted)", false, ""),
+            Some(SansFichier::Memoire)
+        );
+        let autre = soi_de_la_fenetre("une autre empreinte".into());
+        assert_eq!(
+            a_juger([moi, pid], moi, &autre),
+            [pid],
+            "un autre programme nommé vanguard, jamais écarté"
+        );
+        let identique = soi_de_la_fenetre(empreinte(std::path::Path::new(ATTEND)).unwrap());
+        assert!(
+            a_juger([moi, pid], moi, &identique).is_empty(),
+            "un vanguard aux mêmes octets, dénoncé"
+        );
+        drop(fils);
+    }
 
     const STATUS: &str = "Name:\tsshd\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t812\nNgid:\t0\nPid:\t812\nPPid:\t1\n";
 

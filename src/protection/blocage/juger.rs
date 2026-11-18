@@ -59,7 +59,9 @@ fn contexte() -> Contexte {
         )),
         admin: gestes::administrateur_ou_inconnu(),
         interactif: false,
-        mon_programme: std::env::current_exe().ok().map(|c| c.to_string_lossy().into_owned()),
+        mon_programme: crate::protection::cle::soi::Soi::courant()
+            .programme()
+            .map(str::to_string),
         examine: None,
     }
 }

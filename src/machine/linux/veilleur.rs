@@ -947,7 +947,6 @@ pub(crate) struct Veilleur {
     /// Les fins de prises, ou pourquoi elles ne s'écoutent pas : les lancements se voient quand même.
     prises: Result<Prise, Refus>,
     table: Table,
-    mon_programme: Option<String>,
     rafale: (Instant, u32),
     tampon: Vec<u8>,
     /// En pause (protection en temps réel coupée) : la table suit, mais /proc n'est plus lu.
@@ -956,13 +955,6 @@ pub(crate) struct Veilleur {
 
 fn vivant(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
-}
-
-fn mon_programme() -> Option<String> {
-    std::env::current_exe().ok().map(|c| {
-        let c = c.to_string_lossy();
-        c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
-    })
 }
 
 /// `/proc/<pid>/exe`, cmdline (bornée) et status, lus aussitôt et dans cet ordre : le programme part vite.
@@ -1026,12 +1018,12 @@ impl Veilleur {
     pub(crate) fn ouvrir() -> Result<Veilleur, Refus> {
         let connecteur = ouvrir_connecteur()?;
         let prises = ouvrir_prise(NETLINK_SOCK_DIAG, GROUPES_FINS_DE_PRISES);
-        let mon_programme = mon_programme();
+        let soi = crate::protection::cle::soi::Soi::courant();
         let mut table = Table::default();
         if let Some((liste, _)) = chasse::en_marche() {
             let moi = std::process::id();
             for p in &liste {
-                let racine = p.pid == moi || (p.chemin.is_some() && p.chemin == mon_programme);
+                let racine = p.pid == moi || soi.est_moi(p.pid, p.chemin.as_deref());
                 table.inserer(p.pid, p.parent, &p.nom, racine, &vivant);
             }
         }
@@ -1042,7 +1034,6 @@ impl Veilleur {
             connecteur,
             prises,
             table,
-            mon_programme,
             rafale: (Instant::now(), 0),
             tampon: vec![0u8; 64 << 10],
             lire: true,
@@ -1144,9 +1135,10 @@ impl Veilleur {
             Lecture::Complet(p) | Lecture::NomSeul(p) => Some(p),
             Lecture::Parti | Lecture::NonLu => None,
         };
+        // Ce Vanguard (`Soi::est_moi`) : par son chemin ou son image, jamais par un nom de memfd.
         let le_mien = lu
-            .and_then(|p| p.chemin.as_deref())
-            .is_some_and(|c| self.mon_programme.as_deref() == Some(c));
+            .filter(|p| p.chemin.is_some())
+            .is_some_and(|p| crate::protection::cle::soi::Soi::courant().est_moi(pid, p.chemin.as_deref()));
         self.table.lancement(pid, lu, le_mien, &vivant);
         Some(Lance {
             pid,

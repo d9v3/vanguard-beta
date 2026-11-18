@@ -45,10 +45,9 @@ impl Contexte {
             pare_feu: pare_feu::detecter(),
             admin: administrateur(),
             interactif,
-            mon_programme: std::env::current_exe().ok().map(|c| {
-                let c = c.to_string_lossy();
-                c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
-            }),
+            mon_programme: crate::protection::cle::soi::Soi::courant()
+                .programme()
+                .map(str::to_string),
             examine: None,
         }
     }
