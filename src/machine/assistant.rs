@@ -2342,8 +2342,18 @@ mod tests {
         assert!(image.is_some());
         let tout_sur = |_: &std::path::Path| true;
         assert_eq!(pour_pkexec(false, || None, || image.clone(), tout_sur), image);
-        // Le programme d'essai est dans un dossier du compte : pas pour pkexec.
-        assert_eq!(programme(Methode::Pkexec), None);
+        // Un programme dans un dossier du compte : pas pour pkexec.
+        let du_compte = crate::essais::temporaire().join(format!("vanguard-pkexec-essai-{}", std::process::id()));
+        std::fs::write(&du_compte, b"x").unwrap();
+        assert_eq!(
+            pour_pkexec(false, || None, || Some(du_compte.clone()), chemin_sur),
+            None
+        );
+        let _ = std::fs::remove_file(&du_compte);
+        // Le vrai câblage : le chemin du programme d'essai, seulement s'il est à l'abri. Selon où il est compilé
+        // (dossier du compte, ou de root sous une CI), l'un ou l'autre ; jamais l'origine (pas lancé par la fenêtre).
+        let attendu = image.filter(|c| chemin_sur(c)).map(std::path::PathBuf::into_os_string);
+        assert_eq!(programme(Methode::Pkexec), attendu);
         let par_proc = Some(std::ffi::OsString::from(format!("/proc/{}/exe", std::process::id())));
         assert_eq!(programme(Methode::Run0), par_proc);
         assert_eq!(programme(Methode::Sudo), par_proc);
