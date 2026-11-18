@@ -42,6 +42,11 @@ INTERDITS_SANS_CASSE=(
 # Les noms de marque d'outils : cherchés EN MINUSCULES tels quels, pour ne pas confondre avec le nom affiché
 # (« Mimikatz », « SharpHound », « Rubeus », « LaZagne », « XMRig »), qui, lui, est normal et lisible.
 INTERDITS_AVEC_CASSE=("mimikatz" "sharphound" "rubeus" "lazagne" "xmrig")
+# Mots du code qui, collés par hasard à leur voisin dans le binaire (le compilateur met les textes bout à bout, sans
+# séparateur), forment un mot interdit : « zenpower » (pilote de température) suivi de « catroot2 » (dossier de
+# Windows) donne « powercat ». Ils sont remplacés par une espace avant la recherche, et seulement eux. Le seul trou
+# ouvert : un « powercat » écrit juste après « zen », qui ne sert à rien dans une commande.
+VOISINS_SANS_DANGER=("zenpower")
 
 MOTIFS_I=$(mktemp)
 MOTIFS_C=$(mktemp)
@@ -89,6 +94,10 @@ cherche() {
   shift 2
   local chaines vus
   chaines=$(strings -a "$@" -- "$bin")
+  local voisin
+  for voisin in "${VOISINS_SANS_DANGER[@]}"; do
+    chaines=${chaines//"$voisin"/ }
+  done
   vus=$( { grep -iF -f "$MOTIFS_I" <<<"$chaines"; grep -F -f "$MOTIFS_C" <<<"$chaines"; } | sort -u)
   [[ -z $vus ]] && return 0
   echo "✖ $bin : mot(s) d'attaque en clair ($nom) :"
