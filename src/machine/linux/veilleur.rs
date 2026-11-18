@@ -377,6 +377,9 @@ struct Fiche {
     nee_vue: bool,
     /// Son numéro d'entrée, pour que l'éviction des plus anciens ne retire pas une fiche reprise depuis.
     entree: u64,
+    /// Le départ du processus quand il a été reconnu Vanguard (`processus::debut`) : après un oubli, une racine dont
+    /// la fin a pu être perdue se revoit sur ce départ (`Table::revoir_les_racines`). `None` : inconnu.
+    debut: Option<u64>,
 }
 
 /// Ce que le veilleur sait des processus : de quoi remonter une lignée et reconnaître Vanguard. Bornée.
@@ -388,6 +391,8 @@ struct Table {
     /// Le compte des entrées au dernier oubli (fiches balayées ou évincées, événements perdus) : une fiche entrée avant
     /// peut avoir perdu la trace d'un enfant.
     oubli: u64,
+    /// Un oubli depuis la dernière revue des racines (`revoir_les_racines`) : la fin d'une racine a pu être perdue.
+    a_revoir: bool,
 }
 
 fn nom_borne(nom: &str) -> String {
@@ -414,6 +419,7 @@ impl Table {
                 racine_depuis: self.entrees,
                 nee_vue: false,
                 entree: self.entrees,
+                debut: None,
             },
         );
         self.ordre.push_back((pid, self.entrees));
@@ -468,6 +474,35 @@ impl Table {
     /// Des fiches ont pu perdre la trace d'enfants (éviction, événements perdus).
     fn oublier(&mut self) {
         self.oubli = self.entrees;
+        self.a_revoir = true;
+    }
+
+    /// Le départ de `pid`, reconnu Vanguard à ce départ.
+    fn noter_debut(&mut self, pid: u32, debut: Option<u64>) {
+        if let Some(f) = self.fiches.get_mut(&pid) {
+            f.debut = debut;
+        }
+    }
+
+    /// Après un oubli (événements perdus, balayage) : la fin d'une racine a pu être perdue, et son numéro repris par
+    /// un autre processus, dont les enfants passeraient la marque (relecture adverse du lot L2(b), 4e ronde, R2).
+    /// Chaque racine qui passe encore la marque est revue : `encore(pid, debut)` dit si c'est toujours le même
+    /// processus (même départ), toujours Vanguard ; sinon, un porteur. Rien à revoir sans oubli.
+    fn revoir_les_racines(&mut self, encore: &dyn Fn(u32, Option<u64>) -> bool) {
+        if !std::mem::take(&mut self.a_revoir) {
+            return;
+        }
+        let a_voir: Vec<(u32, Option<u64>)> = self
+            .fiches
+            .iter()
+            .filter(|(_, f)| f.racine && f.racine_depuis != u64::MAX)
+            .map(|(&p, f)| (p, f.debut))
+            .collect();
+        for (p, debut) in a_voir {
+            if !encore(p, debut) {
+                self.porteur(p);
+            }
+        }
     }
 
     /// Une fiche de la table a `pid` pour parent.
@@ -516,13 +551,24 @@ impl Table {
         }
     }
 
-    /// À l'ouverture : chaque racine qui a des enfants dans la table est un porteur ; `moi` (ce processus) seulement
-    /// si `moi_porteur` (des enfants au début de `main`, ou illisibles), ses enfants d'après étant les siens.
-    fn porteurs_au_depart(&mut self, moi: u32, moi_porteur: bool) {
+    /// À l'ouverture : chaque racine qui a des enfants, dans la table ou chez le noyau (`enfants_de` :
+    /// `processus::enfants`, illisible compté comme « peut-être »), est un porteur. La table seule ne suffit pas : le
+    /// relevé du départ (`chasse::en_marche`) laisse de côté un processus sans ligne de commande ni programme lisible,
+    /// et cet enfant caché d'avant l'exec pourrait ensuite donner des frères à la racine (CLONE_PARENT ; relecture
+    /// adverse du lot L2(b), 4e ronde, R1). `moi` (ce processus) seulement si `moi_porteur` (des enfants au début de
+    /// `main`, ou illisibles), ses enfants d'après étant les siens.
+    fn porteurs_au_depart(&mut self, moi: u32, moi_porteur: bool, enfants_de: &dyn Fn(u32) -> Option<Vec<u32>>) {
         let porteurs: Vec<u32> = self
             .fiches
             .iter()
-            .filter(|&(&p, f)| f.racine && if p == moi { moi_porteur } else { self.a_des_enfants(p) })
+            .filter(|&(&p, f)| {
+                f.racine
+                    && if p == moi {
+                        moi_porteur
+                    } else {
+                        self.a_des_enfants(p) || enfants_de(p).is_none_or(|e| !e.is_empty())
+                    }
+            })
             .map(|(&p, _)| p)
             .collect();
         for p in porteurs {
@@ -1108,11 +1154,18 @@ impl Veilleur {
         let mut table = Table::default();
         if let Some((liste, _)) = chasse::en_marche() {
             for p in &liste {
+                // Le départ lu avant l'image : un numéro repris entre les deux garde le départ de l'autre, et la
+                // racine sera revue comme un porteur.
+                let debut = crate::socle::processus::debut(p.pid);
                 let racine = p.pid == moi || soi.est_moi(p.pid, p.chemin.as_deref());
                 table.inserer(p.pid, p.parent, &p.nom, racine, &vivant);
+                if racine {
+                    table.noter_debut(p.pid, debut);
+                }
             }
         }
-        table.porteurs_au_depart(moi, moi_porteur);
+        table.porteurs_au_depart(moi, moi_porteur, &crate::socle::processus::enfants);
+        table.revoir_les_racines(&toujours_vanguard);
         if arret_demande() {
             return Err(Refus::Arrete);
         }
@@ -1156,8 +1209,10 @@ impl Veilleur {
         let n = match recevoir(&self.connecteur.0, &mut self.tampon) {
             Recu::Octets(n) => n,
             Recu::Perdus => {
-                // Une fourche perdue : l'enfant vivant d'un futur porteur peut manquer à la table.
+                // Une fourche perdue : l'enfant vivant d'un futur porteur peut manquer à la table. Une fin perdue :
+                // une racine partie, son numéro peut-être repris.
                 self.table.oublier();
+                self.table.revoir_les_racines(&toujours_vanguard);
                 vus.push(Vu::Perdus(1));
                 return Ok(true);
             }
@@ -1166,7 +1221,11 @@ impl Veilleur {
         };
         for e in lire_evenements_proc(self.tampon.get(..n).ok_or(libc::EOVERFLOW)?) {
             match e {
-                EvenementProc::Fourche { parent, enfant } => self.table.fourche(parent, enfant, &vivant),
+                EvenementProc::Fourche { parent, enfant } => {
+                    self.table.fourche(parent, enfant, &vivant);
+                    // Une fourche peut avoir balayé la table (`faire_de_la_place`).
+                    self.table.revoir_les_racines(&toujours_vanguard);
+                }
                 EvenementProc::Lancement { pid } => {
                     if let Some(l) = self.lancement(pid) {
                         vus.push(Vu::Lance(l));
@@ -1205,6 +1264,7 @@ impl Veilleur {
     fn lancement(&mut self, pid: u32) -> Option<Lance> {
         if !self.lire {
             self.table.lancement(pid, None, false, false, &vivant);
+            self.table.revoir_les_racines(&toujours_vanguard);
             return None;
         }
         let maintenant = Instant::now();
@@ -1212,33 +1272,89 @@ impl Veilleur {
             self.rafale = (maintenant, 0);
         }
         self.rafale.1 = self.rafale.1.saturating_add(1);
-        // Le programme tenu d'abord (il part vite), puis ce qui se lit de lui.
-        let (lecture, tenu) = if self.rafale.1 > LECTURES_PAR_SECONDE {
-            (Lecture::NonLu, None)
+        // Le programme tenu d'abord (il part vite), puis ses enfants, puis ce qui se lit de lui.
+        let lu = if self.rafale.1 > LECTURES_PAR_SECONDE {
+            Lu {
+                lecture: Lecture::NonLu,
+                tenu: None,
+                enfants: None,
+            }
         } else {
-            let tenu = crate::socle::processus::tenir(pid);
-            (lire_proc(pid), tenu)
+            lire_un_lancement(pid)
         };
-        let lu = match &lecture {
-            Lecture::Complet(p) | Lecture::NomSeul(p) => Some(p),
-            Lecture::Parti | Lecture::NonLu => None,
-        };
-        // Ce Vanguard (`Soi::est_moi`) : par son chemin ou son image, jamais par un nom de memfd.
-        let le_mien = lu
-            .filter(|p| p.chemin.is_some())
-            .is_some_and(|p| crate::protection::cle::soi::Soi::courant().est_moi(pid, p.chemin.as_deref()));
-        // Ses enfants de maintenant : illisibles, il en a peut-être.
-        let enfants_vus = le_mien && crate::socle::processus::enfants(pid).is_none_or(|e| !e.is_empty());
-        self.table.lancement(pid, lu, le_mien, enfants_vus, &vivant);
-        Some(Lance {
+        let soi = crate::protection::cle::soi::Soi::courant();
+        Some(porter_lancement(
+            &mut self.table,
             pid,
-            parent: lu.and_then(|p| p.parent).or_else(|| self.table.parent(pid)),
-            lignee: self.table.lignee(pid),
-            de_vanguard: self.table.de_vanguard(pid),
-            lecture,
-            tenu,
-        })
+            lu,
+            &|p, chemin| soi.est_moi(p, chemin),
+            &toujours_vanguard,
+        ))
     }
+}
+
+/// Ce qui est lu d'un programme lancé, dans cet ordre.
+struct Lu {
+    tenu: Option<crate::socle::processus::Tenu>,
+    /// `processus::enfants`, lus juste après `tenu`.
+    enfants: Option<Vec<u32>>,
+    lecture: Lecture,
+}
+
+/// Lit le lancement de `pid` : le programme tenu (il part vite), puis ses enfants, puis /proc. Les enfants avant la
+/// lecture de /proc et la reconnaissance (lente sur une grande image) : un vrai Vanguard qui lance aussitôt une
+/// commande la verrait sinon comptée comme un enfant d'avant son exec, et deviendrait porteur pour toute sa vie
+/// (relecture adverse du lot L2(b), 4e ronde, R3). Une course reste : un enfant né entre l'exec et cette lecture.
+fn lire_un_lancement(pid: u32) -> Lu {
+    let tenu = crate::socle::processus::tenir(pid);
+    let enfants = crate::socle::processus::enfants(pid);
+    Lu {
+        tenu,
+        enfants,
+        lecture: lire_proc(pid),
+    }
+}
+
+/// Un lancement lu, porté à la table. `est_moi` : ce Vanguard (`Soi::est_moi`), par son image, jamais par un nom de
+/// memfd ; alors ses enfants lus (`Lu::enfants`, illisibles : il en a peut-être) en font un porteur
+/// (`Table::lancement`), et son départ tenu est noté pour la revue des racines (`encore`, après un oubli).
+fn porter_lancement(
+    table: &mut Table,
+    pid: u32,
+    lu: Lu,
+    est_moi: &dyn Fn(u32, Option<&str>) -> bool,
+    encore: &dyn Fn(u32, Option<u64>) -> bool,
+) -> Lance {
+    let Lu { tenu, enfants, lecture } = lu;
+    let en_marche = match &lecture {
+        Lecture::Complet(p) | Lecture::NomSeul(p) => Some(p),
+        Lecture::Parti | Lecture::NonLu => None,
+    };
+    let le_mien = en_marche
+        .filter(|p| p.chemin.is_some())
+        .is_some_and(|p| est_moi(pid, p.chemin.as_deref()));
+    let enfants_vus = le_mien && enfants.is_none_or(|e| !e.is_empty());
+    table.lancement(pid, en_marche, le_mien, enfants_vus, &vivant);
+    if le_mien {
+        table.noter_debut(pid, tenu.as_ref().map(|t| t.debut));
+    }
+    table.revoir_les_racines(encore);
+    Lance {
+        pid,
+        parent: en_marche.and_then(|p| p.parent).or_else(|| table.parent(pid)),
+        lignee: table.lignee(pid),
+        de_vanguard: table.de_vanguard(pid),
+        lecture,
+        tenu,
+    }
+}
+
+/// La revue d'une racine après un oubli (`Table::revoir_les_racines`) : le même processus qu'à sa reconnaissance
+/// (même départ, lu dans /proc), et toujours ce Vanguard par son image. Départ inconnu : pas revu, un porteur.
+fn toujours_vanguard(pid: u32, debut: Option<u64>) -> bool {
+    debut.is_some()
+        && crate::socle::processus::debut(pid) == debut
+        && (pid == std::process::id() || crate::protection::cle::soi::Soi::courant().meme_image(pid))
 }
 
 // ───────────────────────────── Jugement, sans règle nouvelle ─────────────────────────────
@@ -5387,14 +5503,189 @@ mod tests {
             t.inserer(40, Some(1), "vanguard", true, &tous);
             t.inserer(50, Some(1), "vanguard", true, &tous);
             t.inserer(51, Some(50), "journalctl", false, &tous);
-            t.porteurs_au_depart(50, moi_porteur);
+            // 60 : un enfant caché au relevé du départ (sans ligne de commande ni programme lisible), que le noyau
+            // donne ; 70 : enfants illisibles.
+            t.inserer(60, Some(1), "vanguard", true, &tous);
+            t.inserer(70, Some(1), "vanguard", true, &tous);
+            let noyau = |p: u32| match p {
+                60 => Some(vec![61]),
+                70 => None,
+                50 => panic!("ce processus-ci se juge par moi_porteur"),
+                _ => Some(Vec::new()),
+            };
+            t.porteurs_au_depart(50, moi_porteur, &noyau);
             t.fourche(30, 32, &tous);
             t.fourche(40, 41, &tous);
             t.fourche(50, 52, &tous);
+            t.fourche(60, 62, &tous);
+            t.fourche(70, 72, &tous);
             assert!(!t.de_vanguard(32), "une racine avec un enfant au départ");
             assert!(t.de_vanguard(41));
             assert_eq!(t.de_vanguard(52), !moi_porteur);
+            assert!(!t.de_vanguard(62), "un enfant caché à la table, vu par le noyau");
+            assert!(!t.de_vanguard(72), "des enfants illisibles");
         }
+    }
+
+    /// Un vrai processus à un seul fil qui a un enfant : `sh` lance `sleep` puis se remplace par un autre `sleep`.
+    /// Rend le parent et l'enfant, tués tous deux à la fin. Un processus d'essai à fils courts (celui-ci, sous la
+    /// suite en parallèle) se lit trop souvent « illisible » pour un essai sûr.
+    struct ParentEtEnfant {
+        parent: std::process::Child,
+        enfant: u32,
+    }
+
+    impl Drop for ParentEtEnfant {
+        fn drop(&mut self) {
+            if let Ok(e) = libc::pid_t::try_from(self.enfant) {
+                // SAFETY: un signal à un numéro lu chez notre enfant encore là (pas récolté, donc son enfant pas
+                // rattaché ailleurs à ce moment) ; un entier, aucun pointeur.
+                unsafe {
+                    libc::kill(e, libc::SIGKILL);
+                }
+            }
+            let _ = self.parent.kill();
+            let _ = self.parent.wait();
+        }
+    }
+
+    fn parent_et_enfant() -> Option<ParentEtEnfant> {
+        let parent = std::process::Command::new("sh")
+            .args(["-c", "sleep 60 & exec sleep 61"])
+            .spawn()
+            .ok()?;
+        let pid = parent.id();
+        let mut pe = ParentEtEnfant { parent, enfant: 0 };
+        for _ in 0..200 {
+            let fait = std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "sleep");
+            if fait && let Some(&[e]) = crate::socle::processus::enfants(pid).as_deref() {
+                pe.enfant = e;
+                return Some(pe);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// Le vrai noyau à l'ouverture : une racine dont un enfant manque à la table est un porteur par
+    /// `processus::enfants`.
+    #[test]
+    fn porteur_a_l_ouverture_par_le_noyau() {
+        let Some(pe) = parent_et_enfant() else {
+            return crate::essais::saute("sh, sleep ou /proc/<pid>/task/*/children manquent ici");
+        };
+        let racine = pe.parent.id();
+        let tous = |_: u32| true;
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.inserer(racine, Some(1), "vanguard", true, &tous);
+        t.porteurs_au_depart(u32::MAX, false, &crate::socle::processus::enfants);
+        t.fourche(racine, 4_000_001, &tous);
+        assert!(!t.de_vanguard(4_000_001));
+    }
+
+    /// Après un oubli, une racine dont le processus n'est plus le même (départ changé, numéro repris) ou n'est plus
+    /// Vanguard devient un porteur ; celle qui l'est toujours garde la marque. Sans oubli, rien n'est revu.
+    #[test]
+    fn racines_revues_apres_un_oubli() {
+        let tous = |_: u32| true;
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        for p in [30, 40, 50] {
+            t.inserer(p, Some(1), "vanguard", true, &tous);
+            t.noter_debut(p, Some(u64::from(p) * 10));
+        }
+        t.inserer(60, Some(1), "vanguard", true, &tous);
+        // 30 : le même ; 40 : numéro repris (autre départ) ; 50 : plus Vanguard ; 60 : départ jamais noté.
+        let encore = |p: u32, debut: Option<u64>| p != 50 && debut == Some(u64::from(p) * 10) && p != 40;
+        let jamais = |_: u32, _: Option<u64>| -> bool { panic!("rien à revoir sans oubli") };
+        t.revoir_les_racines(&jamais);
+        t.oublier();
+        t.revoir_les_racines(&encore);
+        t.revoir_les_racines(&jamais);
+        for p in [30, 40, 50, 60] {
+            t.fourche(p, p + 1, &tous);
+        }
+        assert!(t.de_vanguard(31));
+        assert!(!t.de_vanguard(41), "numéro repris");
+        assert!(!t.de_vanguard(51), "plus Vanguard");
+        assert!(!t.de_vanguard(61), "départ inconnu");
+    }
+
+    /// Le vrai noyau : un processus d'essai parti, son départ noté ; `toujours_vanguard` ne le reconnaît plus, ni un
+    /// départ inconnu. Ce processus-ci, à son vrai départ, oui.
+    #[test]
+    fn toujours_vanguard_sur_le_vrai_noyau() {
+        let moi = std::process::id();
+        let Some(debut) = crate::socle::processus::debut(moi) else {
+            return crate::essais::saute("/proc/self/stat illisible ici");
+        };
+        assert!(toujours_vanguard(moi, Some(debut)));
+        assert!(!toujours_vanguard(moi, Some(debut.wrapping_add(1))));
+        assert!(!toujours_vanguard(moi, None));
+        let Ok(mut parti) = std::process::Command::new("true").spawn() else {
+            return crate::essais::saute("true introuvable ici");
+        };
+        let pid = parti.id();
+        let debut_parti = crate::socle::processus::debut(pid);
+        let _ = parti.wait();
+        assert!(!toujours_vanguard(pid, debut_parti.or(Some(1))));
+    }
+
+    /// Un lancement lu porté à la table : reconnu Vanguard, ses enfants lus (non vides ou illisibles) en font un
+    /// porteur ; sans enfant, ce qu'il lance ensuite passe la marque. Un lancement d'autre chose n'est pas une racine,
+    /// enfants ou pas.
+    #[test]
+    fn enfants_lus_au_lancement() {
+        let tous = |_: u32| true;
+        let lu = |pid: u32, enfants: Option<Vec<u32>>| Lu {
+            tenu: None,
+            enfants,
+            lecture: Lecture::Complet(EnMarche {
+                parent: Some(1),
+                chemin: Some("/opt/vanguard".into()),
+                ..en_marche(pid, "vanguard", None)
+            }),
+        };
+        let oui = |_: u32, _: Option<&str>| true;
+        let non = |_: u32, _: Option<&str>| false;
+        let encore = |_: u32, _: Option<u64>| true;
+        for (pid, enfants, porteur) in [(30, Some(vec![]), false), (40, Some(vec![41]), true), (50, None, true)] {
+            let mut t = Table::default();
+            t.inserer(1, None, "systemd", false, &tous);
+            t.fourche(1, pid, &tous);
+            let l = porter_lancement(&mut t, pid, lu(pid, enfants), &oui, &encore);
+            assert_eq!(l.de_vanguard, !porteur, "{pid}");
+            t.fourche(pid, pid + 5, &tous);
+            assert_eq!(t.de_vanguard(pid + 5), !porteur, "{pid}");
+        }
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.fourche(1, 60, &tous);
+        let l = porter_lancement(&mut t, 60, lu(60, Some(vec![])), &non, &encore);
+        assert!(!l.de_vanguard);
+        t.fourche(60, 65, &tous);
+        assert!(!t.de_vanguard(65));
+        // Un lancement porté après un oubli fait revoir les racines : 30, plus le même, devient un porteur.
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.inserer(30, Some(1), "vanguard", true, &tous);
+        t.oublier();
+        let plus_le_meme = |_: u32, _: Option<u64>| false;
+        porter_lancement(&mut t, 70, lu(70, Some(vec![])), &non, &plus_le_meme);
+        t.fourche(30, 31, &tous);
+        assert!(!t.de_vanguard(31));
+    }
+
+    /// Le vrai noyau : les enfants lus au lancement sont ceux de `processus::enfants`, avec le programme tenu.
+    #[test]
+    fn lire_un_lancement_lit_les_enfants() {
+        let Some(pe) = parent_et_enfant() else {
+            return crate::essais::saute("sh, sleep ou /proc/<pid>/task/*/children manquent ici");
+        };
+        let lu = lire_un_lancement(pe.parent.id());
+        assert_eq!(lu.enfants, Some(vec![pe.enfant]));
+        assert!(lu.tenu.is_some_and(|t| t.pid == pe.parent.id()));
     }
 
     /// Le vrai noyau : un clone avec CLONE_PARENT donne au nouveau processus le parent de celui qui clone, et
