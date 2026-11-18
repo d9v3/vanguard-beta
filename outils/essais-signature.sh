@@ -891,6 +891,10 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 #   dépendance, de toute section (cibles et essais compris), du registre, sans renommage ni nom de la bibliothèque
 #   standard (std, core, alloc, proc_macro, test) : la porte MCP admet `alloc::format!` ou `serde_json::json!` à leur
 #   nom, une clé `alloc = { package = "autre" }` en ferait un autre paquet (11e passe, R11-R10-3) ;
+# - les paquets résolus (cargo metadata complet, --locked --offline : Cargo.lock à jour, rien de téléchargé) : aucune
+#   bibliothèque (lib, proc-macro…) ne porte un nom que la porte admet ou réserve (std, core, alloc, proc_macro, test,
+#   serde_json, les RACINES_ADMISES de sources.rs), sauf serde_json lui-même, du registre. Un paquet au nom anodin
+#   avec `[lib] name = "alloc"` prendrait sinon le chemin `alloc::format!` sans aucun renommage (12e passe, R12-GARDE-1) ;
 # - Cargo.lock : chaque paquet autre que vanguard vient du registre crates.io, et seules les clés connues y sont ;
 # - rust-toolchain.toml : seulement channel, profile, components et targets (pas de chaîne prise dans un dossier) ;
 # - aucun fichier hérité que les outils préfèrent au fichier jugé (4e re-contrôle) : .cargo/config (cargo le lit à la
@@ -939,6 +943,18 @@ garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si
           | " Cargo.toml : dépendance renommée, hors du registre ou au nom de la bibliothèque standard : "
             + ({name, rename, kind, target, source, path} | tojson))
       end' <<<"$meta" || echo " Cargo.toml non vérifié (jq en échec)"
+  fi
+  if ! command -v jq >/dev/null ||
+    ! meta=$(cd "$d" && cargo metadata --locked --offline --format-version 1 2>/dev/null); then
+    echo " paquets résolus non vérifiés (cargo metadata --locked --offline en échec : Cargo.lock pas à jour ou paquet absent du cache)"
+  else
+    jq -r --arg r "$REGISTRE" '
+      .packages[] | . as $p | .targets[]
+      | select(any(.kind[]; IN("lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro")))
+      | select((.name | gsub("-"; "_")) | IN("std", "core", "alloc", "proc_macro", "test", "serde_json"))
+      | select(($p.name == "serde_json" and $p.source == $r and .name == "serde_json") | not)
+      | " paquet résolu \($p.name) \($p.version) : sa bibliothèque se nomme « \(.name) », un nom que la porte"
+        + " MCP admet ou réserve"' <<<"$meta" || echo " paquets résolus non vérifiés (jq en échec)"
   fi
   awk -v r="$REGISTRE" '
     function fin() { if (n == "vanguard") { v++; if (s != "") print " Cargo.lock : vanguard a une source" }
@@ -1027,6 +1043,22 @@ garde_copie && mkdir -p "$G/voisin/src" && : >"$G/voisin/src/lib.rs" &&
   printf '[package]\nname = "serde_json"\nversion = "1.0.154"\nedition = "2024"\n' >"$G/voisin/Cargo.toml" &&
   sed -i 's/^serde_json = .*/serde_json = { path = "voisin" }/' "$G/Cargo.toml" &&
   garde_voit "hors du registre" "serde_json pris dans un dossier local"
+# Un paquet au nom anodin dont la bibliothèque prend un nom admis (12e passe, R12-GARDE-1) : Cargo.lock mis à jour
+# hors ligne d'abord, pour que seul le nom de la bibliothèque soit en cause dans le metadata complet.
+faux_paquet() { # $1 : le nom de la bibliothèque ; $2 : « proc-macro = true » ou rien ; $3, $4 : comme garde_voit
+  garde_copie && mkdir -p "$G/anodin" && : >"$G/anodin/lib.rs" &&
+    printf '[package]\nname = "anodin"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\nname = "%s"\npath = "lib.rs"\n%s\n' \
+      "$1" "$2" >"$G/anodin/Cargo.toml" &&
+    sed -i 's/^\[dependencies\]$/&\nanodin = { path = "anodin" }/' "$G/Cargo.toml" &&
+    (cd "$G" && cargo metadata --offline --format-version 1 >/dev/null 2>&1) && garde_voit "$3" "$4" ||
+    ko "garde de compilation : le faux paquet « $1 » n'a pas pu être monté (rien de prouvé)"
+}
+faux_paquet alloc "" "paquet résolu anodin 0.1.0 : sa bibliothèque se nomme « alloc »" \
+  "un paquet anodin dont la bibliothèque se nomme alloc"
+faux_paquet core "proc-macro = true" "sa bibliothèque se nomme « core »" \
+  "une macro procédurale dont la bibliothèque se nomme core"
+faux_paquet serde_json "" "paquet résolu anodin 0.1.0 : sa bibliothèque se nomme « serde_json »" \
+  "un autre paquet dont la bibliothèque se nomme serde_json"
 garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\n' >>"$G/Cargo.lock" &&
   garde_voit "voisin ne vient pas du registre" "un paquet sans source dans Cargo.lock"
 garde_copie && printf '\n[[package]]\nname = "voisin"\nversion = "0.1.0"\nsource = "git+https://exemple.invalid/v"\n' \
