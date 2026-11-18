@@ -24,7 +24,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 |---|---|
 | Un logiciel malveillant connu sur l'ordinateur | Moteur de Vanguard (empreintes de MalwareBazaar et de ClamAV, règles YARA, signatures de ClamAV, heuristiques) avec l'antivirus du système, mémoire des programmes, lancements au démarrage, signes d'un rootkit ; blocage après accord, ou de lui-même pour ce qui ne fait aucun doute (protection active). |
 | Un rançongiciel | Fichiers-pièges vérifiés chaque heure ; sous Linux, une fois allumé, un veilleur en direct qui arrête un cas quasi certain avec la protection active. |
-| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). Baisser une protection reste le choix de la personne, jamais celui de Vanguard (voir [Baisses par choix](#baisses-par-choix)). |
+| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; pour l'instant chaque correction après accord (la direction : [Mode autonome](#mode-autonome)), annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). Baisser une protection reste le choix de la personne, jamais celui de Vanguard (voir [Baisses par choix](#baisses-par-choix)). |
 | Une exposition vers Internet | Ports que le routeur ouvre (demandés au routeur lui-même, ouvertures UPnP comprises), IPv6 publique sans pare-feu ; dans les journaux, les mots de passe devinés et les connexions au Bureau à distance depuis l'extérieur. |
 | Un intrus sur le réseau local ou le Wi-Fi | Inventaire des appareils et des nouveaux venus, faux point d'accès, DNS et certificats détournés ; mode Wi-Fi public en déplacement. |
 | Un proche qui surveille la personne | Logiciels espions, prise de contrôle à distance (faux technicien). |
@@ -246,7 +246,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   sa propre liste des paquets installés avant checkupdates, et la lecture peut alors dire « à jour ». Ce n'est pas vu.
   La vraie parade, un service qui tourne sous un autre compte que le vôtre (administrateur), est prévue pour une
   version à venir.
-- **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
+- **Vanguard agit, la personne garde la main.** Ce qui protège, entretient ou améliore est fait pour elle, noté et
+  annulable ; une baisse de protection reste son choix (voir [Mode autonome](#mode-autonome)). Aujourd'hui, rien
+  n'est encore modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
   sauf ce qui rallume une protection (dont le durcissement du noyau sous Linux) et l'arrêt d'un programme ; une
   correction dont l'état d'avant ne se relève pas est dite « non annulable » avant d'être appliquée. Les réglages de
   durcissement de Windows (WDigest, NLA…) et les protections de Defender sont, eux aussi, des protections : l'annulation
@@ -259,6 +261,28 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Les essais ont leurs limites.** Vanguard est essayé sur l'ordinateur de l'auteur, une VM Windows, un second PC
   Windows et les machines de GitHub (Windows, vraies distributions Linux) ; d'autres cas restent à essayer sur du vrai
   matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
+
+## Mode autonome
+
+**Prévu, pas encore fait.** Aujourd'hui, chaque correction attend l'accord de la personne ; seule la protection
+active, une fois mise en marche, bloque seule ce qui ne fait aucun doute. La direction du produit : ce qui protège,
+entretient ou améliore se fera seul, sans être montré avant, mais avec l'état d'avant noté (ou un point de
+restauration), journalisé, annulable exactement, et un compte rendu après. Chaque fonction ne le deviendra qu'avec son
+propre code et ses freins ; ce que ce document dit d'elle (« après accord ») reste vrai jusque-là.
+
+**Reste toujours demandé** : toute baisse de protection (par les Options de défense, voir [Baisses par
+choix](#baisses-par-choix)), tout geste qui coupe une connexion, supprime ou déplace des données de la personne,
+désactive quelque chose ou ne s'annule pas exactement. L'Agent ne recevra pas les corrections automatiques.
+
+**Freins prévus** :
+
+- une liste fermée de gestes permis, chacun rejugé sur l'état relu juste avant d'agir ;
+- un plafond par passe et par jour, et un disjoncteur qui arrête tout au-delà ;
+- un constat qui revient après sa correction devient une alerte, pas une nouvelle correction ;
+- jamais par-dessus un choix de la personne, qui reste scellé ;
+- un interrupteur du mode autonome, scellé ; l'éteindre est une baisse par choix ;
+- la ligne « Ce que Vanguard a changé » posée avant le geste, pas après ;
+- rien d'automatique sur le pare-feu entrant, les ports, le réseau ni la prise en main à distance.
 
 ## La fenêtre
 

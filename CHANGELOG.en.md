@@ -87,6 +87,13 @@ example, finds it, to rebuild it if needed.
   if it is owned by root and protected; otherwise it is not offered. On Windows, the file is held and its fingerprint
   compared, but the path is still what is started (limits stated in the threat model). Opened alone, without
   `vanguard`, the window trusts its neighbour on first use.
+- **Vanguard's principle, rewritten: Vanguard acts, you stay in control.** What protects, maintains or improves the
+  computer will be done on its own, with the previous state recorded, logged, exactly undoable and reported
+  afterwards; only lowering a protection waits for your choice, and any action that cuts a connection, deletes or
+  moves your data, turns something off or cannot be undone exactly is still asked. This is the direction: nothing
+  changes in the program yet, every fix still waits for your consent. The threat model gains an “Autonomous mode”
+  section that says what is planned and its brakes (a closed list of actions, a ceiling and a circuit breaker, a
+  sealed switch, nothing automatic on the network or remote control).
 
 ## November 15, 2026: version 0.96.0
 

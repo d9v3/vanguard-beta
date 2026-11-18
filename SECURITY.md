@@ -58,8 +58,10 @@ Merci de garder le secret jusqu'à la publication de l'avis.
 
 Par exemple :
 
-- Vanguard qui affaiblit la sécurité : une correction qui coupe une protection, un réglage qui ne s'annule pas
-  exactement, une commande lancée sans votre accord ;
+- Vanguard qui affaiblit la sécurité ou ne vous laisse pas la main : une correction qui coupe une protection, un
+  réglage qui ne s'annule pas exactement, un changement fait sans être noté ni annulable, ou fait sans votre accord
+  alors qu'il doit vous être demandé (une baisse de protection, une connexion coupée, vos données supprimées ou
+  déplacées, et aujourd'hui toute correction : voir « Mode autonome » dans MODELE-DE-MENACE.md) ;
 - une injection de commande (shell, PowerShell) par un nom de fichier, un nom d'appareil, une réponse du réseau ou le
   contenu d'un fichier lu par Vanguard ;
 - la clé USB : protection en écriture contournée, programme de la clé remplacé ou lancé à la place d'un autre ;
@@ -171,8 +173,10 @@ Please keep the flaw secret until the advisory is published.
 
 For example:
 
-- Vanguard weakening security: a fix that turns a protection off, a setting that cannot be undone exactly, a command
-  run without your consent;
+- Vanguard weakening security or taking control away from you: a fix that turns a protection off, a setting that
+  cannot be undone exactly, a change made without being recorded or undoable, or made without your consent when it
+  must be asked (a protection lowered, a connection cut, your data deleted or moved, and today any fix: see
+  “Autonomous mode” in MODELE-DE-MENACE.en.md);
 - command injection (shell, PowerShell) through a file name, a device name, a network answer or the content of a file
   Vanguard reads;
 - the USB key: write protection bypassed, the key's program replaced or run instead of another one;

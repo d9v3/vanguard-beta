@@ -94,6 +94,13 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   il n'est pas proposé. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui
   est lancé (limites dites au modèle de menace). Ouverte seule, sans `vanguard`, la fenêtre fait confiance à son
   voisin au premier usage.
+- **Le principe de Vanguard, réécrit : Vanguard agit, vous gardez la main.** Ce qui protège, entretient ou améliore
+  l'ordinateur se fera seul, l'état d'avant noté, journalisé, annulable exactement, avec un compte rendu après ; seule
+  une baisse de protection attend votre choix, et reste demandé tout geste qui coupe une connexion, supprime ou déplace
+  vos données, désactive quelque chose ou ne s'annule pas exactement. C'est la direction : rien ne change encore dans
+  le programme, chaque correction attend toujours votre accord. Le modèle de menace gagne une section « Mode
+  autonome » qui dit ce qui est prévu et ses freins (liste fermée de gestes, plafond et disjoncteur, interrupteur
+  scellé, rien d'automatique sur le réseau ni la prise en main à distance).
 
 ## 15 novembre 2026 : version 0.96.0
 

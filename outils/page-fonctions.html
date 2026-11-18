@@ -8,12 +8,12 @@
      dans des menus déroulants (<details>) : replié à l'écran, trouvé quand même par la recherche du navigateur,
      déplié à l'impression. Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
 <title>Vanguard {{VERSION_COURTE}}</title>
-<meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, GPL-3.0-or-later.">
+<meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, GPL-3.0-or-later.">
 <meta name="theme-color" content="{{FOND_CLAIR}}" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="{{FOND_SOMBRE}}" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Vanguard {{VERSION_COURTE}}">
-<meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, Rust.">
+<meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, Rust.">
 <meta property="og:url" content="https://d9v3.github.io/vanguard-beta/">
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
@@ -378,7 +378,7 @@ footer a:hover { color: var(--encre); }
   <ol class="points">
     <li class="carte"><b>Il fait le bilan.</b> {{REGLES}} règles à identifiant stable, chacune avec sa référence (CIS, Microsoft ou ANSSI ; MITRE ATT&amp;CK), une note de A à F pour l'ordinateur ; {{FICHES}} fiches pour le réseau, en six notes.</li>
     <li class="carte"><b>Il cherche ce qui ne devrait pas être là.</b> Logiciels espions, programmes lancés en cachette, traces d'intrusion, rançongiciels ; un courriel ou un lien douteux examiné sans être ouvert.</li>
-    <li class="carte"><b>Il corrige et bloque, après accord.</b> Chaque correction est montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
+    <li class="carte"><b>Il corrige et bloque.</b> Pour l'instant, chaque correction attend votre accord : montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
     <li class="carte"><b>Il dépanne.</b> Pas à pas quand Internet, le son ou l'ordinateur ne marchent plus comme avant ; les sauvegardes et le ménage en plus.</li>
   </ol>
   <p class="cap"><b>Défensif seulement.</b> Le code est ouvert (GPL) et chaque version est signée en Ed25519 : chacun peut voir ce que fait le programme et vérifier d'où il vient. Vanguard évolue souvent : lisez ce que fait chaque correction avant de l'accepter.</p>
@@ -432,7 +432,7 @@ footer a:hover { color: var(--encre); }
           </ul>
           <p class="touches">Un clic ou une touche saute l'ouverture. Dans la rubrique Vanguard, Animations « Réduites » la retire pour de bon.</p>
           <details class="plus"><summary>Qu'est-ce qui se lance tout seul ?</summary>
-            <p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Rien de ce qui changerait l'ordinateur ne part seul : chaque changement est montré, puis lancé seulement après votre accord. Depuis la fenêtre, quatre gestes : retirer ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à jour de Vanguard. Les corrections de tout l'ordinateur, les réglages et la quarantaine restent pour l'instant dans le menu de Vanguard.</p>
+            <p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Pour l'instant, rien de ce qui changerait l'ordinateur ne part seul : chaque changement est montré, puis lancé seulement après votre accord. Depuis la fenêtre, quatre gestes : retirer ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à jour de Vanguard. Les corrections de tout l'ordinateur, les réglages et la quarantaine restent pour l'instant dans le menu de Vanguard.</p>
           </details>
         </div>
       </li>
@@ -718,7 +718,7 @@ footer a:hover { color: var(--encre); }
     <div class="tete-section">
       <p class="surtitre">Fonctions de sécurité, menace par menace</p>
       <h2>Ce qu'il lit, ce qu'il juge, ce qu'il fait</h2>
-      <p>Pour chaque menace : ce que Vanguard lit (dans le système même, en Rust, sans lancer un programme à chaque lecture), ce qu'il juge, et ce qu'il peut faire. Rien n'est modifié sans accord ; chaque geste est montré avant d'être fait, noté avec l'état d'avant et s'annule, sauf ceux qui rallument une protection ; « Tout remettre comme avant » défait tout ce que Vanguard a changé.</p>
+      <p>Pour chaque menace : ce que Vanguard lit (dans le système même, en Rust, sans lancer un programme à chaque lecture), ce qu'il juge, et ce qu'il peut faire. Le principe : Vanguard agit, vous gardez la main ; ce qui protège, entretient ou améliore est fait pour vous, noté, annulable exactement et rapporté après, et une baisse de protection reste votre choix. Pour l'instant, rien n'est modifié sans accord ; chaque geste est montré avant d'être fait, noté avec l'état d'avant et s'annule, sauf ceux qui rallument une protection ; « Tout remettre comme avant » défait tout ce que Vanguard a changé.</p>
     </div>
     <div class="tableau"><table class="menaces">
       <thead><tr><th scope="col">Menace</th><th scope="col">Ce qu'il lit</th><th scope="col">Ce qu'il juge</th><th scope="col">Ce qu'il peut faire</th></tr></thead>
@@ -880,7 +880,7 @@ footer a:hover { color: var(--encre); }
       <h2>Ce que Vanguard ne fait pas</h2>
     </div>
     <div class="principes">
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Vous gardez la main</b><span>Jamais une protection baissée, une connexion coupée ni vos données supprimées ou déplacées sans votre choix. Ce qui protège se fera de plus en plus seul, noté, annulable et rapporté après ; pour l'instant, chaque changement est montré avant d'être fait, et la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>

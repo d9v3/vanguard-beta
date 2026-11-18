@@ -41,9 +41,14 @@ the signed history, is the proof that they are genuine.
 ## Security functions, threat by threat
 
 For each threat: what Vanguard **reads** (directly from the system, in Rust, without starting a program for each
-reading), what it **judges**, and what it can **do**. Nothing is changed without consent; each action is shown
-before it is taken, recorded with the previous state and can be undone, except those that turn a protection back
-on; “Put everything back” undoes everything Vanguard changed. Vanguard never lowers a protection on its own: the
+reading), what it **judges**, and what it can **do**. The principle: Vanguard acts, the person stays in control.
+What protects, maintains or improves is done for them, with the previous state recorded, logged, exactly undoable and
+reported afterwards; only lowering a protection waits for their choice, and any action that cuts a connection,
+deletes or moves their data, turns something off or cannot be undone exactly is still asked. Today, every fix still
+waits for their consent: it is shown before it is taken, recorded with the previous state and can be undone, except
+those that turn a protection back on; the autonomous mode is coming one function at a time, with its brakes
+([Autonomous mode](MODELE-DE-MENACE.en.md#autonomous-mode)). “Put everything back” undoes everything Vanguard
+changed. Vanguard never lowers a protection on its own: the
 person can, in Windows or in the Defense options, where the lowering is shown, confirmed and recorded, and “Turn back
 on” restores it ([Lowered by choice](MODELE-DE-MENACE.en.md#lowered-by-choice)).
 

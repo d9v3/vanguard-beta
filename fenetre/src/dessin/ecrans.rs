@@ -398,8 +398,8 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Ici : le démarrage, les corrections du compte et leur remise comme avant, la mise à jour. Le reste de ce qui change l'ordinateur (corrections de tout l'ordinateur, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, toujours montré puis accepté.",
-            "Here: startup, account fixes and putting them back, the update. The rest of what changes the computer (whole-computer fixes, settings, quarantine) stays in Vanguard's menu for now: it comes here batch by batch, always shown then accepted."
+            "Ici : le démarrage, les corrections du compte et leur remise comme avant, la mise à jour. Le reste de ce qui change l'ordinateur (corrections de tout l'ordinateur, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, avec les mêmes garde-fous.",
+            "Here: startup, account fixes and putting them back, the update. The rest of what changes the computer (whole-computer fixes, settings, quarantine) stays in Vanguard's menu for now: it comes here batch by batch, with the same safeguards."
         ),
         13.0,
         p.discret,

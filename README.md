@@ -41,9 +41,14 @@ chaque version et dans l'historique signé, est la preuve qu'ils sont bien eux.
 ## Fonctions de sécurité, menace par menace
 
 Pour chaque menace : ce que Vanguard **lit** (directement dans le système, en Rust, sans lancer un programme par
-lecture), ce qu'il **juge**, et ce qu'il peut **faire**. Rien n'est changé sans accord ; chaque geste est montré
-avant d'être fait, noté avec l'état d'avant et annulable, sauf ceux qui rallument une protection ; « Tout remettre
-comme avant » défait tout ce que Vanguard a changé. Vanguard ne baisse jamais une protection de lui-même : la personne
+lecture), ce qu'il **juge**, et ce qu'il peut **faire**. Le principe : Vanguard agit, la personne garde la main. Ce
+qui protège, entretient ou améliore est fait pour elle, l'état d'avant noté, journalisé, annulable exactement, avec
+un compte rendu après ; seule une baisse de protection attend son choix, et reste demandé tout geste qui coupe une
+connexion, supprime ou déplace ses données, désactive quelque chose ou ne s'annule pas exactement. Aujourd'hui, chaque
+correction attend encore son accord : elle est montrée avant d'être faite, notée avec l'état d'avant et annulable,
+sauf celles qui rallument une protection ; le mode autonome arrive fonction par fonction, avec ses freins
+([Mode autonome](MODELE-DE-MENACE.md#mode-autonome)). « Tout remettre comme avant » défait tout ce que Vanguard a
+changé. Vanguard ne baisse jamais une protection de lui-même : la personne
 peut le faire, dans Windows ou dans les Options de défense, où la baisse est montrée, confirmée et notée, et
 « Rallumer » la remet ([Baisses par choix](MODELE-DE-MENACE.md#baisses-par-choix)).
 

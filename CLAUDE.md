@@ -116,8 +116,13 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   par « Tout corriger », les réglages recommandés, la réponse automatique ni l'Agent. Une baisse n'existe que par choix
   de la personne (Options de défense) : montrée, confirmée, notée, Rallumer ; jamais dans une liste mêlée ni remise
   par « Tout remettre comme avant » (voir « Baisses par choix » de MODELE-DE-MENACE.md).
-- Rien n'est changé sans être montré puis accepté ; point de restauration avant de toucher au système ; un réglage
-  doit s'annuler exactement (valeur d'avant notée, voir `optimiser/`).
+- Vanguard agit, la personne garde la main : ce qui protège, entretient ou améliore se fait seul, sans être montré
+  avant, mais avec l'état d'avant noté (point de restauration avant de toucher au système), journalisé, et doit
+  s'annuler exactement (valeur d'avant notée, voir `optimiser/`) ; un compte rendu le dit après. Reste demandé : toute
+  baisse de protection (Options de défense), tout geste qui coupe une connexion, supprime ou déplace des données de la
+  personne, désactive quelque chose ou ne s'annule pas exactement. C'est la direction (section « Mode autonome » de
+  MODELE-DE-MENACE.md, freins compris) : aujourd'hui chaque correction attend encore l'accord ; une fonction ne devient
+  automatique qu'avec son code et ses freins, et ses textes (« après accord ») changent avec elle, pas avant.
 - Ne jamais couper une connexion à distance en cours (SSH, Bureau à distance).
 - Ce qui n'a pas pu être vérifié est dit, jamais compté comme sain. Exemple : `read_to_string(chemin).unwrap_or_default()`
   ou `.ok()?` qui ferait d'un fichier illisible (droits, disque, nom non UTF-8) une « protection active » ou « rien à

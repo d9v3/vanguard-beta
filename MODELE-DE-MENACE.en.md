@@ -23,7 +23,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 |---|---|
 | Known malware on the computer | Vanguard's engine (MalwareBazaar and ClamAV hashes, YARA rules, ClamAV signatures, heuristics) with the system antivirus, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
 | Ransomware | Trap files checked every hour; on Linux, once turned on, a live watcher that stops a near-certain case when active protection is on. |
-| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
+| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; for now every fix after consent (the direction: [Autonomous mode](#autonomous-mode)), undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
 | Exposure to the Internet | Ports the router opens (asked of the router itself, UPnP openings included), public IPv6 without a firewall; in the logs, guessed passwords and Remote Desktop connections from outside. |
 | An intruder on the local network or the Wi-Fi | Inventory of the devices and of newcomers, fake access point, hijacked DNS and certificates; public Wi-Fi mode when traveling. |
 | Someone close who spies on the person | Spyware, remote control (fake technician). |
@@ -228,7 +228,9 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   released. Those of a Vanguard killed in the meantime are lost without being counted, and that count, written without
   a seal, can be deleted. Each file is sealed in two steps: Vanguard first notes the content it is about to put down (“pending”), then writes and seals it. Killed between the two, it then accepts the old content as well as the new one, until a command that can write reads that file again; killed during a removal, the removed content, put back by another program, reads as intact. Both contents are Vanguard's, and forging a pending entry takes rewriting its seals (see above). An older version of Vanguard, put back after an update, does not know these pending entries: it reports as tampered a file left between the two steps (safe direction). Updates on Arch (checkupdates) are read with a separate database, in a folder with a random name, closed to other accounts, under the temporary folder: a program of the account that watches for its creation can put its own list of installed packages there before checkupdates does, and the reading can then say “up to date”. This is not seen. The real answer, a service running under an account other than yours (administrator), is
   planned for a future version.
-- **The person decides.** Nothing is changed without their consent. What they accept can be undone one fix at a
+- **Vanguard acts, the person stays in control.** What protects, maintains or improves is done for them, recorded
+  and undoable; lowering a protection remains their choice (see [Autonomous mode](#autonomous-mode)). Today, nothing
+  is yet changed without their consent. What they accept can be undone one fix at a
   time, except what turns a protection back on (kernel hardening on Linux included) and the stopping of a program; a
   fix whose previous state cannot be read is reported as “not undoable” before it is applied. Windows hardening
   settings (WDigest, NLA…) and Defender protections are protections too: undoing does not reverse them, and a
@@ -240,6 +242,28 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **Testing has its limits.** Vanguard is tested on the author's computer, a Windows VM, a second Windows PC and
   GitHub's machines (Windows, real Linux distributions); other cases are still to be tried on real hardware (other
   distributions, a real UPnP router, booting the key).
+
+## Autonomous mode
+
+**Planned, not done yet.** Today, every fix waits for the person's consent; only the active protection, once turned
+on, blocks on its own what leaves no doubt. The direction of the product: what protects, maintains or improves will
+be done on its own, without being shown beforehand, but with the previous state recorded (or a restore point), logged,
+exactly undoable, and a report afterwards. Each function will only become automatic with its own code and its
+brakes; what this document says about it (“after consent”) stays true until then.
+
+**Always still asked**: any lowering of a protection (through the Defense options, see [Lowered by
+choice](#lowered-by-choice)), any action that cuts a connection, deletes or moves the person's data, turns something
+off or cannot be undone exactly. The Agent will not receive automatic fixes.
+
+**Planned brakes**:
+
+- a closed list of allowed actions, each judged again on the state reread just before acting;
+- a ceiling per pass and per day, and a circuit breaker that stops everything beyond it;
+- a finding that comes back after its fix becomes an alert, not a new fix;
+- never over a choice of the person, which stays sealed;
+- a switch for the autonomous mode, sealed; turning it off is a lowering by choice;
+- the “What Vanguard changed” line written before the action, not after;
+- nothing automatic on the incoming firewall, ports, the network or remote control.
 
 ## The window
 
