@@ -11,6 +11,10 @@ example, finds it, to rebuild it if needed.
 
 ## 0.97 (in preparation)
 
+- **The system journal is read in full, like `journalctl`.** After a reboot, the journal can give a new entry the
+  number of an older one. Vanguard took it for a copy and skipped it. An entry is now recognized by its whole header
+  (number, time, boot, hash), and the files are merged in writing order, not by time alone, which can go backward when
+  the clock is set at boot.
 - **New read-only door for AI assistants (`vanguard mcp`), on Linux only.** An assistant you connect can read Vanguard's
   state, events and findings, and cannot change anything. It uses only the program's standard input and output, with no
   port and no network, refuses to run as administrator and marks everything it returns as untrusted. A text that comes

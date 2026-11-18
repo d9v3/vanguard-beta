@@ -11,6 +11,10 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 ## 0.97 (en préparation)
 
+- **Le journal du système est lu en entier, comme `journalctl`.** Après un redémarrage, le journal peut redonner à
+  une nouvelle entrée le numéro d'une entrée plus ancienne. Vanguard la prenait pour une copie et la sautait. Une entrée
+  est maintenant reconnue par tout son en-tête (numéro, heure, démarrage, empreinte) et les fichiers sont fusionnés dans
+  l'ordre d'écriture, pas par l'heure seule, qui peut reculer quand l'horloge se règle au démarrage.
 - **Nouvelle porte de lecture pour les assistants d'IA (`vanguard mcp`), sous Linux seulement.** Un assistant que vous
   branchez peut lire l'état de Vanguard, ses événements et ses constats, sans pouvoir rien changer. Elle passe seulement
   par l'entrée et la sortie du programme, sans port ni réseau, refuse de tourner en administrateur et marque tout ce
