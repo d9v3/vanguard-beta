@@ -316,6 +316,20 @@ fn portee(dossier: Option<std::path::PathBuf>, complet: bool) -> protection::ant
     }
 }
 
+/// Lancé par la fenêtre sans origine vérifiée (déplacée, effacée ou changée) : arrêt net, code 2, sans repli (voir
+/// `protection::cle::origine_manquante_dans_la_fenetre`, qui dit pourquoi). Appelé sur chaque chemin qui peut se
+/// servir de l'origine (mise à jour, désinstallation, relance, autorisations du pare-feu, veilleur, porte des
+/// assistants, aperçus), après les réglages pour que le texte soit dans la bonne langue. En sont exemptés, exprès :
+/// `--version` et l'aide (un texte connu d'avance, rien d'autre) ; le garde, l'isolement au démarrage et le processus
+/// élevé, lancés en root par systemd ou pkexec depuis un chemin réel, jamais par la fenêtre, et qui ne demandent pas
+/// l'origine.
+fn arreter_sans_origine_dans_la_fenetre() {
+    if protection::cle::origine_manquante_dans_la_fenetre() {
+        chiffrement::oublier_session();
+        std::process::exit(2);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // La clé de données gardée pour la session, effacée à chaque retour de `main` et pendant une panique ;
@@ -359,6 +373,7 @@ async fn main() {
     if std::env::args_os().skip(1).eq(["mcp"]) {
         autotest::lecture_seule::poser();
         parametres::au_lancement();
+        arreter_sans_origine_dans_la_fenetre();
         let code = porte_mcp::servir_stdio();
         chiffrement::oublier_session();
         std::process::exit(code);
@@ -413,6 +428,7 @@ async fn main() {
             .and_then(|m| Args::from_arg_matches(&m))
         {
             parametres::au_lancement();
+            arreter_sans_origine_dans_la_fenetre();
             let code = machine::apercu::voir(&voir, json);
             chiffrement::oublier_session();
             std::process::exit(code);
@@ -434,6 +450,7 @@ async fn main() {
             .and_then(|m| Args::from_arg_matches(&m))
         {
             parametres::au_lancement();
+            arreter_sans_origine_dans_la_fenetre();
             let code = mise_a_jour::apercu::voir(json);
             chiffrement::oublier_session();
             std::process::exit(code);
@@ -456,6 +473,7 @@ async fn main() {
             .and_then(|m| Args::from_arg_matches(&m))
         {
             parametres::au_lancement();
+            arreter_sans_origine_dans_la_fenetre();
             let code = machine::annuler::voir(&voir, json);
             chiffrement::oublier_session();
             std::process::exit(code);
@@ -510,13 +528,11 @@ async fn main() {
     if let Err(e) = relro {
         journal::erreur(crate::compte_rendu::Contexte::ProtectionRelro, &e.to_string());
     }
+    // Lancé par la fenêtre sans origine vérifiée : arrêt net, sans repli (voir protection::cle), avant la protection
+    // de la clé, qui décide l'origine elle aussi et efface les copies orphelines.
+    arreter_sans_origine_dans_la_fenetre();
     #[cfg(target_os = "linux")]
     protection::cle::proteger_cle();
-    // Lancé par la fenêtre sans origine vérifiée : arrêt net, sans repli (voir protection::cle).
-    if protection::cle::origine_manquante_dans_la_fenetre() {
-        chiffrement::oublier_session();
-        std::process::exit(2);
-    }
     // Lancé depuis la clé : ce processus attend la copie qu'il lance et ne revient pas (voir protection::cle).
     #[cfg(windows)]
     protection::cle::se_detacher_de_la_cle();

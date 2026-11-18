@@ -10012,3 +10012,91 @@ mod porte_mcp {
         assert!(sessions.contains(r#""fin":"signal""#), "{sessions}");
     }
 }
+
+/// MOYENNE (relecture adverse du lot L2(b), 2e ronde, N5) : un `vanguard` lancé comme la fenêtre le lance (le vrai
+/// programme, depuis un memfd scellé nommé `vanguard`, par `/proc/self/fd/N`) sans origine vérifiée s'arrête net,
+/// code 2, avec le message ; avec son origine, il fait la commande. Linux seulement : ni memfd ni fenêtre ailleurs.
+#[cfg(target_os = "linux")]
+mod lance_par_la_fenetre {
+    use super::{maison_jetable, vanguard_dans_env};
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::path::Path;
+
+    const ARRET: &str =
+        "Vanguard lancé par la fenêtre, mais le fichier d'où elle l'a lancé n'est plus celui qu'elle a vérifié";
+
+    /// `octets` dans un memfd nommé `vanguard`, scellé comme la fenêtre le scelle (fenetre/src/lanceur.rs) ; `None`
+    /// si le noyau refuse un memfd exécutable.
+    fn scelle(octets: &[u8]) -> Option<File> {
+        let base = libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING;
+        // SAFETY: le nom est une chaîne C littérale, terminée par un zéro et vivante pendant l'appel.
+        let mut fd = unsafe { libc::memfd_create(c"vanguard".as_ptr(), base | libc::MFD_EXEC) };
+        if fd < 0 {
+            // SAFETY: même appel, sans MFD_EXEC (noyau d'avant la 6.3).
+            fd = unsafe { libc::memfd_create(c"vanguard".as_ptr(), base) };
+        }
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: `fd` vient d'être rendu par memfd_create, ouvert et à personne d'autre.
+        let mut f = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        f.write_all(octets).ok()?;
+        let sceaux = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+        // SAFETY: F_ADD_SEALS sur un descripteur que `f` garde ouvert, avec un entier : aucune mémoire touchée.
+        (unsafe { libc::fcntl(f.as_raw_fd(), libc::F_ADD_SEALS, sceaux) } == 0).then_some(f)
+    }
+
+    #[test]
+    fn sans_origine_verifiee_rien_n_est_fait() {
+        let octets = std::fs::read(env!("CARGO_BIN_EXE_vanguard")).unwrap();
+        let Some(copie) = scelle(&octets) else {
+            return super::essais::saute("memfd scellé refusé par le noyau");
+        };
+        let programme = format!("/proc/self/fd/{}", copie.as_raw_fd());
+        let maison = maison_jetable();
+        let exacte = maison.join("vanguard");
+        std::fs::write(&exacte, &octets).unwrap();
+        let mut autres = octets.clone();
+        autres.push(0);
+        let changee = maison.join("vanguard-change");
+        std::fs::write(&changee, &autres).unwrap();
+        let partie = maison.join("vanguard-parti");
+        let lancer = |args: &[&str], origine: Option<&Path>| {
+            let origine = origine.map(|o| o.to_str().unwrap().to_string());
+            let env: Vec<(&str, &str)> = origine.iter().map(|o| ("VANGUARD_ORIGINE", o.as_str())).collect();
+            vanguard_dans_env(Path::new(&programme), &maison, "fr", args, "", 60, &env)
+        };
+        // Avec son origine : la commande se fait. Sinon, l'exécution elle-même est refusée ici, et rien ne prouverait
+        // que l'arrêt plus bas vient du contrôle.
+        let s = lancer(&["regles", "--json"], Some(&exacte));
+        if s.code == Some(126) || s.erreurs.contains("Permission denied") {
+            return super::essais::saute("memfd non exécutable ici");
+        }
+        assert_eq!(s.code, Some(0), "avec son origine : {}", s.erreurs);
+        assert!(!s.erreurs.contains(ARRET), "{}", s.erreurs);
+        for origine in [Some(changee.as_path()), Some(partie.as_path()), None] {
+            for args in [
+                &["regles", "--json"][..],
+                &["se-mettre-a-jour", "--voir", "--json"],
+                &["mcp"],
+            ] {
+                let s = lancer(args, origine);
+                assert_eq!(
+                    s.code,
+                    Some(2),
+                    "{args:?}, origine {origine:?} : {}{}",
+                    s.texte,
+                    s.erreurs
+                );
+                assert!(
+                    s.erreurs.contains(ARRET),
+                    "{args:?}, origine {origine:?} : {}",
+                    s.erreurs
+                );
+                assert!(!s.texte.contains("\"bilan\""), "{args:?} : la commande a tourné");
+            }
+        }
+    }
+}

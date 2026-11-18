@@ -84,8 +84,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   lancé de cette copie reçoit, dans son seul environnement, le chemin vérifié (`VANGUARD_ORIGINE`) : il ne le croit que
   dans cette image reconnue strictement et vers un fichier à ses octets exacts, et sa mise à jour, sa clé et sa tâche
   gardent le bon fichier ; ce chemin manquant ou refusé, il s'arrête et dit de rouvrir la fenêtre, sans repli. Il se
-  reconnaît par le fichier ou les octets, jamais par le nom `/memfd:vanguard` : un autre programme lancé d'un memfd à
-  ce nom reste montré et traitable, et deux `vanguard` de la fenêtre ne se dénoncent plus l'un l'autre. pkexec y
+  reconnaît par le fichier ou les octets, jamais par le nom `/memfd:vanguard` ni par un chemin seul : un autre
+  programme lancé d'un memfd à ce nom ou refait à son chemin reste montré et traitable, ce qu'un programme avait lancé
+  avant de devenir Vanguard reste jugé, et deux `vanguard` de la fenêtre ne se dénoncent plus l'un l'autre. pkexec y
   exécute le chemin vérifié, seulement s'il est à root et protégé ; sinon il n'est pas proposé. Sous Windows, le
   fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui est lancé (limites dites au modèle de
   menace). Ouverte seule, sans `vanguard`, la fenêtre fait confiance à son voisin au premier usage.
