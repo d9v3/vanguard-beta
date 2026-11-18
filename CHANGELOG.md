@@ -90,10 +90,10 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   un enfant quand le veilleur démarre, voit tout ce qu'il lance jugé : cet enfant peut lui donner des frères ou ses
   orphelins ; une racine partie dont le numéro est repris après des événements perdus ne passe plus la marque), une
   inondation de copies de même taille ne fait plus oublier un Vanguard déjà reconnu, et deux `vanguard` de la fenêtre
-  ne se dénoncent plus l'un l'autre. pkexec y
-  exécute le chemin vérifié, seulement s'il est à root et protégé ; sinon il n'est pas proposé. Sous Windows, le
-  fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui est lancé (limites dites au modèle de
-  menace). Ouverte seule, sans `vanguard`, la fenêtre fait confiance à son voisin au premier usage.
+  ne se dénoncent plus l'un l'autre. pkexec y exécute le chemin vérifié, seulement s'il est à root et protégé ; sinon
+  il n'est pas proposé. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui
+  est lancé (limites dites au modèle de menace). Ouverte seule, sans `vanguard`, la fenêtre fait confiance à son
+  voisin au premier usage.
 
 ## 15 novembre 2026 : version 0.96.0
 

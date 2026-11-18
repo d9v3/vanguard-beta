@@ -79,14 +79,14 @@ example, finds it, to rebuild it if needed.
   exact bytes, and its update, its key and its task keep the right file; with that path missing or refused, it stops
   and says to reopen the window, with no fallback. It recognises itself by its file or its bytes, never by the name
   `/memfd:vanguard` nor by a path alone: another program started from a memfd with that name or rebuilt at its path
-  is still shown and treatable, what a program had started before becoming Vanguard is still judged (a Vanguard that still has a child at the
-  exec, or already running with a child when the watcher starts, has everything it starts judged: that child can
-  give it siblings or its orphans; a root that has gone and whose number is reused after lost events no longer
-  passes the mark), a flood of same-size copies no longer makes it forget a Vanguard already recognised, and two
-  `vanguard` from the window no longer report each other. pkexec runs the checked path there, only if it is owned by
-  root and protected; otherwise it is not offered. On Windows, the file is held and its fingerprint compared, but the
-  path is still what is started (limits stated in the threat model). Opened alone, without `vanguard`, the window
-  trusts its neighbour on first use.
+  is still shown and treatable, what a program had started before becoming Vanguard is still judged (a Vanguard that
+  still has a child at the exec, or already running with a child when the watcher starts, has everything it starts
+  judged: that child can give it siblings or its orphans; a root that has gone and whose number is reused after lost
+  events no longer passes the mark), a flood of same-size copies no longer makes it forget a Vanguard already
+  recognised, and two `vanguard` from the window no longer report each other. pkexec runs the checked path there, only
+  if it is owned by root and protected; otherwise it is not offered. On Windows, the file is held and its fingerprint
+  compared, but the path is still what is started (limits stated in the threat model). Opened alone, without
+  `vanguard`, the window trusts its neighbour on first use.
 
 ## November 15, 2026: version 0.96.0
 
