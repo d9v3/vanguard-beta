@@ -209,164 +209,30 @@ pub(crate) fn reduire_chemin(chemin: &str, maisons: &[String]) -> String {
 /// un nom (« Rapport.alice », « firefox.desktop » sur l'ordinateur « desktop », « Lettre.Tremblay ») : gardée, elle
 /// sortait, ou le contrôle final refusait tout le brouillon (relecture 0.97, moyen).
 pub(crate) fn marqueur_de_chemin(chemin: &str) -> String {
-    let nom = chemin.rsplit(['/', '\\']).next().unwrap_or_default();
-    nom.rsplit_once('.')
-        .filter(|(debut, e)| !debut.is_empty() && crate::amelioration::texte::extension_connue(e))
-        .map_or_else(
-            || "<chemin>".to_string(),
-            |(_, e)| format!("<chemin .{}>", e.to_ascii_lowercase()),
-        )
+    // Le même constructeur que le masquage commun et le journal : une seule règle, pas trois qui divergent
+    // (relecture 0.97, ronde 4, haut).
+    crate::amelioration::texte::marqueur_de_chemin(chemin)
 }
 
 /// La ponctuation qui ferme un chemin cité (« (~/a/x.exe) », « ~/a/x.exe. »).
 const FIN_DE_CHEMIN: [char; 7] = ['.', ',', ';', ')', '»', '"', '\''];
 
 /// Les chemins sous un dossier personnel cités dans un texte (une alerte, un message d'examen), réduits comme
-/// `reduire_chemin`. Un chemin s'arrête au premier espace : un nom de fichier qui en contient laisse passer sa fin, ce
-/// que la relecture par la personne doit voir (c'est dit dans le brouillon). Un chemin coupé à gauche par « … »
-/// (`chasse::extrait`) est réduit en entier : son début est perdu, rien ne prouve qu'il est hors d'un dossier
-/// personnel.
+/// `reduire_chemin`. Un chemin s'arrête au premier espace ici : les noms à espaces sont pris avant, par le masquage
+/// commun. Un chemin coupé à gauche par « … » (`chasse::extrait`) est retiré jusqu'à la fin de la ligne
+/// (`texte::sans_coupes`) : son début est perdu, et rien ne dit où finit un nom à espaces (relecture 0.97, ronde 4).
 pub(crate) fn reduire_chemins_dans(texte: &str, maisons: &[String]) -> String {
-    reduire_lignes(texte, maisons, true)
-}
-
-/// Seulement les chemins coupés à gauche par « … », avant le masquage commun : lui prend un chemin absolu entier,
-/// espaces comprises (« /home/alice/Documents/CV de Zoé Martin.pdf »), alors que la réduction s'arrête à la première
-/// espace et lui laissait la fin du nom (relecture 0.97, régression de la ronde 2) ; un chemin coupé à gauche, lui,
-/// n'est plus reconnu par le masquage et doit passer avant.
-fn reduire_coupes_dans(texte: &str, maisons: &[String]) -> String {
-    reduire_lignes(texte, maisons, false)
-}
-
-fn reduire_lignes(texte: &str, maisons: &[String], tout: bool) -> String {
-    texte
+    crate::amelioration::texte::sans_coupes(texte)
         .split('\n')
-        .map(|ligne| reduire_ligne(ligne, maisons, tout))
+        .map(|ligne| {
+            ligne
+                .split(' ')
+                .map(|morceau| reduire_morceau(morceau, maisons))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Un chemin coupé à gauche en cours de lecture, sur plusieurs morceaux quand le compte a une espace
-/// (« (…oé Martin\Downloads\x.exe) ») : ce qui précède le « … », le chemin lu jusqu'ici, et le texte d'origine, rendu
-/// tel quel s'il ne s'avère pas être un chemin (« …et 3 autres »).
-struct Coupe {
-    prefixe: String,
-    chemin: String,
-    origine: String,
-}
-
-impl Coupe {
-    /// Un morceau qui commence un chemin coupé : un « … » avant sa première barre, suivi d'au moins un caractère.
-    fn lire(morceau: &str) -> Option<Coupe> {
-        let barre = morceau.find(['/', '\\']).unwrap_or(morceau.len());
-        let k = morceau[..barre].rfind('…')?;
-        let corps = morceau.trim_end_matches(FIN_DE_CHEMIN);
-        let apres = corps
-            .get(k.saturating_add('…'.len_utf8())..)
-            .filter(|a| !a.is_empty())?;
-        Some(Coupe {
-            prefixe: morceau[..k].to_string(),
-            chemin: apres.to_string(),
-            origine: morceau.to_string(),
-        })
-    }
-
-    fn a_une_barre(&self) -> bool {
-        self.chemin.contains(['/', '\\'])
-    }
-
-    /// Réduit en entier s'il porte une barre ; sinon le texte d'origine, qui n'était pas un chemin.
-    fn rendre(self, suite: &str, maisons: &[String]) -> String {
-        if self.a_une_barre() {
-            format!(
-                "{}{}{suite}",
-                self.prefixe,
-                reduire_chemin(&format!("~/{}", self.chemin), maisons)
-            )
-        } else {
-            self.origine
-        }
-    }
-}
-
-/// La fin d'un nom de fichier à espaces après un chemin coupé : jusqu'à `MOTS_APRES_COUPE` mots sans barre, dont le
-/// dernier finit par une extension (« …\\Downloads\\Facture Bob Exemple.exe ») ; l'indice de ce dernier mot.
-fn fin_du_nom(morceaux: &[&str], j: usize) -> Option<usize> {
-    const MOTS_APRES_COUPE: usize = 4;
-    (j..morceaux.len().min(j.saturating_add(MOTS_APRES_COUPE)))
-        .take_while(|&k| morceaux.get(k).is_some_and(|m| !m.contains(['/', '\\'])))
-        .find(|&k| {
-            let corps = morceaux.get(k).map_or("", |m| m.trim_end_matches(FIN_DE_CHEMIN));
-            corps.rsplit_once('.').is_some_and(|(nom, e)| {
-                !nom.is_empty()
-                    && (1..=crate::amelioration::texte::EXTENSION_MAX).contains(&e.len())
-                    && e.chars().all(|c| c.is_ascii_alphanumeric())
-                    && e.chars().any(|c| c.is_ascii_alphabetic())
-            })
-        })
-}
-
-fn reduire_ligne(ligne: &str, maisons: &[String], tout: bool) -> String {
-    let morceaux: Vec<&str> = ligne.split(' ').collect();
-    let mut l = String::with_capacity(ligne.len());
-    let mut coupe: Option<Coupe> = None;
-    let mut j = 0;
-    while let Some(&morceau) = morceaux.get(j) {
-        let corps = morceau.trim_end_matches(FIN_DE_CHEMIN);
-        let suite = &morceau[corps.len()..];
-        if let Some(mut c) = coupe.take() {
-            if c.a_une_barre() && !morceau.contains(['/', '\\']) {
-                // Le chemin est fini, sauf si un nom à espaces le termine : ses mots en font partie.
-                if let Some(k) = fin_du_nom(&morceaux, j) {
-                    let mut suite_finale = "";
-                    for m in morceaux.get(j..=k).unwrap_or_default() {
-                        let corps = m.trim_end_matches(FIN_DE_CHEMIN);
-                        c.chemin.push(' ');
-                        c.chemin.push_str(corps);
-                        suite_finale = &m[corps.len()..];
-                    }
-                    l.push_str(&c.rendre(suite_finale, maisons));
-                    j = k.saturating_add(1);
-                    continue;
-                }
-                l.push_str(&c.rendre("", maisons));
-            } else {
-                // Encore le chemin (le reste d'un compte avec une espace, ou un dossier).
-                c.origine.push(' ');
-                c.origine.push_str(morceau);
-                c.chemin.push(' ');
-                c.chemin.push_str(corps);
-                if suite.is_empty() {
-                    coupe = Some(c);
-                } else {
-                    l.push_str(&c.rendre(suite, maisons));
-                }
-                j = j.saturating_add(1);
-                continue;
-            }
-        }
-        if j > 0 {
-            l.push(' ');
-        }
-        j = j.saturating_add(1);
-        if let Some(c) = Coupe::lire(morceau) {
-            if suite.is_empty() {
-                coupe = Some(c);
-            } else {
-                l.push_str(&c.rendre(suite, maisons));
-            }
-            continue;
-        }
-        if tout {
-            l.push_str(&reduire_morceau(morceau, maisons));
-        } else {
-            l.push_str(morceau);
-        }
-    }
-    if let Some(c) = coupe {
-        l.push_str(&c.rendre("", maisons));
-    }
-    l
 }
 
 /// Un morceau sans espace : le chemin sous un dossier personnel qu'il contient, réduit.
@@ -459,12 +325,13 @@ pub(crate) fn masquer_prepare(
     anonymiser: &dyn Fn(&str) -> String,
 ) -> (String, Decompte) {
     let mut d = Decompte::default();
-    // L'ordre compte (relecture 0.97, hauts d, e et f) : les adresses web entières d'abord, même collées ; puis les
-    // chemins coupés à gauche, avant le masquage, qui prenait sinon leur fin (« …ob Exemple\Downloads\x.exe ») et
-    // laissait leur début (les autres chemins restent au masquage, qui les prend entiers, espaces comprises) ; puis le masquage avant `anonymiser`, qui pose ses
-    // marqueurs au début d'un secret, et encore après ; enfin les chemins, pour ce qu'`anonymiser` aurait découvert.
-    let reduit = reduire_coupes_dans(&crate::amelioration::texte::sans_urls(texte), maisons);
-    let premier = crate::amelioration::texte::masquer(&reduit);
+    // L'ordre compte (relecture 0.97, hauts d, e et f ; ronde 4, haut) : les adresses web entières d'abord, même
+    // collées ; puis les dossiers personnels remplacés par « ~ » (un compte à espaces, « C:\Users\Zoé d'Alice », était
+    // sinon coupé à l'espace par le masquage, qui laissait « Martin ») ; puis le masquage avant `anonymiser`, qui pose
+    // ses marqueurs au début d'un secret, et encore après ; enfin les chemins, pour ce qu'`anonymiser` aurait
+    // découvert. Les chemins coupés à gauche par « … » sont retirés par le masquage, jusqu'à la fin de la ligne.
+    let sans_maisons = crate::journal::sans_maisons_avec(&crate::amelioration::texte::sans_urls(texte), maisons);
+    let premier = crate::amelioration::texte::masquer(&sans_maisons);
     let masque = crate::amelioration::texte::masquer(&anonymiser(&premier));
     let fin = reduire_chemins_dans(&masque, maisons);
     compter(texte, &fin, &mut d);
@@ -547,6 +414,31 @@ pub(crate) fn controle_final(texte: &str, connues: &[(String, Sorte)]) -> Result
 mod tests {
     use super::*;
 
+    /// Relecture 0.97, ronde 4, haut 2 : le dossier personnel est remplacé en entier par « ~ » avant le masquage, qui
+    /// en faisait sinon un marqueur partiel (« `<chemin>` Martin », « `<chemin .roy>` ») ; moyen 4 : après un chemin
+    /// coupé à gauche, rien ne reste de la ligne (valeurs inventées).
+    #[test]
+    fn dossier_personnel_entier_et_coupes() {
+        let m = vec!["/home/alice.pdf".to_string(), r"C:\Users\Zoé d'Alice".to_string()];
+        let anonymiser = |t: &str| crate::journal::anonymiser_avec(t, &m, &[]);
+        for (brut, attendu) in [
+            (r"erreur: C:\Users\Zoé d'Alice: accès refusé", "erreur: ~: accès refusé"),
+            ("erreur: /home/alice.pdf: accès refusé", "erreur: ~: accès refusé"),
+            (
+                r"erreur: C:\Users\Zoé d'Alice\Documents\Impôts.pdf: absent",
+                "erreur: <chemin .pdf>: absent",
+            ),
+            (
+                r"lancé …oé Martin\Downloads\Facture de Bob Exemple du mois de mai.exe hier",
+                "lancé <chemin>",
+            ),
+            (r"lancé …\Facture, Bob Exemple.exe", "lancé <chemin>"),
+            (r"vu …ments\Impôts Zoé Martin hier", "vu <chemin>"),
+        ] {
+            assert_eq!(masquer_avec(brut, &m, &anonymiser).0, attendu, "{brut:?}");
+        }
+    }
+
     /// Une adresse web part entière, même collée à une option ou à un mot (valeurs inventées).
     #[test]
     fn adresses_web_sans_requete_ni_jeton() {
@@ -595,15 +487,16 @@ mod tests {
         let m: Vec<String> = vec!["/home/alice".into()];
         assert_eq!(
             reduire_chemins_dans("lancé (…échargements/Facture-Bob-Exemple/x.exe) hier", &m),
-            "lancé (<chemin .exe>) hier"
+            "lancé (<chemin>"
         );
         let w = reduire_chemins_dans(r"lancé (…ob Exemple\Downloads\x.exe) hier", &m);
-        assert_eq!(w, r"lancé (<chemin .exe>) hier");
+        assert_eq!(w, r"lancé (<chemin>");
         assert!(!w.contains("ob") && !w.contains("Exemple"), "{w}");
-        // Sans parenthèse : le chemin s'arrête au premier morceau sans barre.
+        // Rien ne dit où finit un nom à espaces après une coupe : tout part, jusqu'à la fin de la ligne (relecture
+        // 0.97, ronde 4).
         assert_eq!(
-            reduire_chemins_dans("vu …ce/Bob-Exemple/x.sh puis rien", &m),
-            "vu <chemin .sh> puis rien"
+            reduire_chemins_dans("vu …ce/Bob-Exemple/x.sh puis rien\nligne 2", &m),
+            "vu <chemin>\nligne 2"
         );
         // Un « … » qui ne coupe pas de chemin ne change rien.
         for t in [
@@ -681,7 +574,7 @@ mod tests {
         let w = masque("curl -u alice:Lune2Verte9 --url=https://exemple.test/a?session=abc");
         assert_eq!(w, "curl -u <secret> --url=<url>");
         let w = masque(r"lancé (…ob Exemple\Downloads\x.exe) hier");
-        assert_eq!(w, "lancé (<chemin .exe>) hier");
+        assert_eq!(w, "lancé (<chemin>");
     }
 
     /// Relecture 0.97, ronde 3 : un chemin à espaces sous un dossier personnel part entier, dans un texte libre ; un
@@ -708,7 +601,7 @@ mod tests {
         );
         assert_eq!(
             masque(r"lancé …oé Martin\Downloads\Facture Bob Exemple.exe hier"),
-            "lancé <chemin .exe> hier"
+            "lancé <chemin>"
         );
     }
 

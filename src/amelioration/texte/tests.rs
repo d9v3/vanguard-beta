@@ -167,10 +167,7 @@ fn chemins_reduits() {
             r"Impossible d'ouvrir C:\Users\alice\Documents\Rapport annuel.docx",
             "Impossible d'ouvrir <chemin .docx>",
         ),
-        (
-            "lecture de /home/alice/.ssh/id_ed25519 refusée",
-            "lecture de <chemin> refusée",
-        ),
+        ("lecture de /home/alice/.ssh/id_ed25519 refusée", "lecture de <chemin>"),
         (
             r"C:\Program Files (x86)\Vanguard\vanguard.exe introuvable",
             "<chemin .exe> introuvable",
@@ -190,10 +187,7 @@ fn chemins_reduits() {
             r"\Device\HarddiskVolume3\Windows\pilote.sys bloqué",
             "<chemin .sys> bloqué",
         ),
-        (
-            "le module (/usr/lib/libssl.so.3) manque",
-            "le module (<chemin .3>) manque",
-        ),
+        ("le module (/usr/lib/libssl.so.3) manque", "le module (<chemin>) manque"),
     ];
     for (brut, attendu) in cas {
         assert_eq!(propre(brut), attendu, "{brut:?}");
@@ -1645,7 +1639,7 @@ fn masques_chemins_relatifs_de_la_relecture() {
                 "ouvrir rapports/paie.pdf_backup maintenant",
                 "ouvrir <chemin .pdf> maintenant",
             ),
-            ("le fichier marie/src/x.rs est lu", "le fichier <chemin .rs> est lu"),
+            ("le fichier marie/src/x.rs est lu", "le fichier <chemin> est lu"),
             ("lancer ../Marie/notes maintenant", "lancer <chemin> maintenant"),
         ],
         &["id_ed25519", "marie", "compta", "paie", "Feuille1", "Marie", "notes/"],
@@ -1773,7 +1767,7 @@ fn masques_fuites_de_la_ronde_4() {
             ),
             (
                 "net use Z: \"\\\\srv\\mon partage\" Lune2Verte /user:alice",
-                "net use Z: <chemin> partage <secret> <chemin>:alice",
+                "net use Z: <chemin> <secret> <chemin>:alice",
             ),
             (
                 "C:\\Windows\\System32\\net.exe use Z: \\\\srv\\partage Lune2Verte /user:alice",
@@ -1864,4 +1858,103 @@ fn masques_defauts_de_la_ronde_2() {
         assert_eq!(propre(t), t);
         assert_eq!(par_texte(t), t);
     }
+}
+
+/// Relecture 0.97, ronde 4, haut 1 : une « extension » qui n'est pas dans la liste fermée, ou le dernier élément d'un
+/// dossier de compte, ne sort pas dans le marqueur (valeurs inventées).
+#[test]
+fn marqueur_de_chemin_sans_extension_inventee() {
+    for (brut, attendu) in [
+        ("cd /home/alice.pdf: accès refusé", "cd <chemin>: accès refusé"),
+        (r"C:\Users\alice.pdf", "<chemin>"),
+        (r"C:\\Users\\alice.pdf", "<chemin>"),
+        ("/srv/partage/Rapport.morin", "<chemin>"),
+        ("Documents/lettre.morin", "<chemin>"),
+        ("./Marie.Roy", "<chemin>"),
+        ("/srv/partage/Rapport.PDF", "<chemin .pdf>"),
+        ("/home/alice.pdf", "<chemin>"),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Ronde 4, moyen 3 : un nom à espaces sous un dossier personnel, entre guillemets ou devant « : » / la fin de la
+/// ligne, est pris jusqu'à l'arrêt (valeurs inventées).
+#[test]
+fn chemins_a_espaces_jusqu_a_l_arret() {
+    for (brut, attendu) in [
+        ("/home/bob/Documents/Impôts Zoé Martin hier", "<chemin>"),
+        (
+            "dossier \"/home/bob/Documents/Impôts Zoé Martin\" absent",
+            "dossier \"<chemin>\" absent",
+        ),
+        (
+            "dossier (/home/bob/Documents/Impôts Zoé Martin) absent",
+            "dossier (<chemin>) absent",
+        ),
+        ("/run/media/bob/DISQUE DE ZOE: introuvable", "<chemin>: introuvable"),
+        (
+            "/home/bob/Rapport annuel.docx introuvable",
+            "<chemin .docx> introuvable",
+        ),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Ronde 4, moyen 4 : après un chemin coupé à gauche (« … »), rien ne reste jusqu'à la fin de la ligne
+/// (valeurs inventées).
+#[test]
+fn chemin_coupe_a_gauche_retire_jusqu_a_la_fin() {
+    for (brut, attendu) in [
+        (
+            r"lancé …oé Martin\Downloads\Facture de Bob Exemple du mois de mai.exe hier",
+            "lancé <chemin>",
+        ),
+        (r"lancé …\Facture, Bob Exemple.exe", "lancé <chemin>"),
+        (r"vu …ments\Impôts Zoé Martin hier", "vu <chemin>"),
+        ("vu …ce/Bob-Exemple/x.sh puis rien\nligne 2", "vu <chemin>\nligne 2"),
+        ("et …et 3 autres", "et …et 3 autres"),
+        ("Chargement… /usr/bin/x", "Chargement… <chemin>"),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Ronde 4, bas 5 : adresses web à guillemet dans la requête, chevron, « // » en tête, une seule barre, et une
+/// requête collée à un marqueur (valeurs inventées).
+#[test]
+fn adresses_web_de_la_ronde_4() {
+    for (brut, attendu) in [
+        ("'https://exemple.com/wiki/L'Avare?lecteur=zoe-martin'", "'<url>'"),
+        ("<https://exemple.com/?q=a>b&lecteur=zoe-martin>", "<<url>>"),
+        (
+            "vu //cdn.exemple.com/u/zoe-martin/profil?session=abc123 hier",
+            "vu <url> hier",
+        ),
+        ("vu https:/exemple.com/p?session=abc hier", "vu <url> hier"),
+        ("C:/Users ok", "C:/Users ok"),
+    ] {
+        assert_eq!(sans_urls(brut), attendu, "{brut:?}");
+    }
+    assert_eq!(masquer("vu /srv/x/a.pdf?session=abc123 hier"), "vu <chemin .pdf> hier");
+}
+
+/// Ronde 4, bas 7 : extensions de plus dans la liste fermée ; celles de plus de `EXTENSION_MAX` caractères
+/// reconnaissent un nom sans jamais être montrées (valeurs inventées).
+#[test]
+fn extensions_de_la_ronde_4() {
+    for (brut, attendu) in [
+        ("lu Zoe-Martin.md", "lu <chemin .md>"),
+        ("lu Zoe-Martin.json", "lu <chemin .json>"),
+        ("lu Zoe-Martin.ovpn", "lu <chemin .ovpn>"),
+        ("lu Zoe-Martin.p12", "lu <chemin .p12>"),
+        ("lu Zoe-Martin.sqlite", "lu <chemin>"),
+        ("lu Zoe-Martin.db", "lu <chemin .db>"),
+        ("lu Zoe-Martin.numbers", "lu <chemin>"),
+        ("lu README.md", "lu README.md"),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut:?}");
+    }
+    assert!(!extension_connue("numbers") && !extension_connue("crdownload") && extension_connue("pem"));
 }

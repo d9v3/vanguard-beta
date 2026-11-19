@@ -900,3 +900,22 @@ fn porte_de_la_voie_ouverte_dans_l_ordre() {
     let t = texte("erreur --url=https://exemple.test/x?session=abc123def ici").map(|t| t.as_str().to_string());
     assert_eq!(t, Ok("erreur --url=<url> ici".to_string()));
 }
+
+/// Relecture 0.97, ronde 4, haut : un dossier personnel à espaces est remplacé par « ~ » avant le premier masquage,
+/// qui le coupait sinon à l'espace et laissait la fin du nom (valeurs inventées).
+#[test]
+fn masquer_dossier_personnel_a_espaces() {
+    let maisons = [r"C:\Users\Zoé d'Alice".to_string(), "/home/alice.pdf".to_string()];
+    let anonymiser = |t: &str| crate::journal::anonymiser_avec(t, &maisons, &[]);
+    for (brut, attendu) in [
+        (r"erreur: C:\Users\Zoé d'Alice: accès refusé", "erreur: ~: accès refusé"),
+        ("erreur: /home/alice.pdf: accès refusé", "erreur: ~: accès refusé"),
+        (
+            r"erreur: C:\Users\Zoé d'Alice\Documents\Impôts.pdf: absent",
+            "erreur: <chemin .pdf>: absent",
+        ),
+        ("curl -u alice:Lune2Verte9 ok", "curl -u <secret> ok"),
+    ] {
+        assert_eq!(super::masquer_pour(brut, &maisons, &anonymiser), attendu, "{brut}");
+    }
+}

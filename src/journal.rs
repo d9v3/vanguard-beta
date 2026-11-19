@@ -243,14 +243,34 @@ pub(crate) fn noms_a_retirer() -> Vec<(String, &'static str)> {
 
 /// Retire ce qui identifie une personne ou une machine.
 pub(crate) fn anonymiser(texte: &str) -> String {
-    let maisons: Vec<String> = ["HOME", "USERPROFILE"]
-        .iter()
-        .filter_map(|v| std::env::var(v).ok())
-        .collect();
-    anonymiser_avec(texte, &maisons, &noms_a_retirer())
+    anonymiser_avec(texte, &maisons(), &noms_a_retirer())
 }
 
-fn anonymiser_avec(texte: &str, maisons: &[String], noms: &[(String, &str)]) -> String {
+/// Les dossiers personnels de cette session (HOME, USERPROFILE).
+pub(crate) fn maisons() -> Vec<String> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .collect()
+}
+
+pub(crate) fn anonymiser_avec(texte: &str, maisons: &[String], noms: &[(String, &str)]) -> String {
+    let t = sans_maisons_avec(texte, maisons);
+    let t = sans_noms_avec(&t, noms);
+    let t = masquer_comptes(&t);
+    let t = masquer_courriels(&t);
+    let t = masquer_sid(&t);
+    let t: String = t.split_inclusive('\n').map(masquer_ligne).collect();
+    let t = masquer_noms_locaux(&t);
+    let t = masquer_mac(&t);
+    let t = masquer_ipv6(&t);
+    masquer_ipv4(&t)
+}
+
+/// Le texte, chaque dossier personnel remplacé par « ~ ». Fait aussi AVANT le masquage commun : un dossier de compte
+/// à espaces (« C:\Users\Zoé d'Alice ») y serait sinon coupé à l'espace, et la fin du nom resterait (relecture 0.97,
+/// ronde 4, haut).
+pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
     let mut t = texte.to_string();
     for maison in maisons.iter().filter(|m| m.len() > 3) {
         // Aussi écrit avec des barres obliques (« C:/Users/… ») ou doublées (JSON, PowerShell : « C:\\Users\\… »).
@@ -264,15 +284,7 @@ fn anonymiser_avec(texte: &str, maisons: &[String], noms: &[(String, &str)]) -> 
             );
         }
     }
-    let t = sans_noms_avec(&t, noms);
-    let t = masquer_comptes(&t);
-    let t = masquer_courriels(&t);
-    let t = masquer_sid(&t);
-    let t: String = t.split_inclusive('\n').map(masquer_ligne).collect();
-    let t = masquer_noms_locaux(&t);
-    let t = masquer_mac(&t);
-    let t = masquer_ipv6(&t);
-    masquer_ipv4(&t)
+    t
 }
 
 /// Le texte sans ces noms (personne, machine, réseaux et appareils de la base, voir `noms_a_retirer`), en mots
@@ -1066,20 +1078,10 @@ fn valeur_reduite(valeur: &str, option: Option<&clap::Arg>, mots: &std::collecti
     if valeur.bytes().all(|b| b.is_ascii_hexdigit() || b".:/-".contains(&b)) {
         return "<valeur>".into();
     }
-    // L'extension ne reste que si elle est connue (liste fermée) et que le nom n'est pas un dossier de compte : une
-    // « extension » quelconque peut être un nom de famille (« prenom.nom », dossier de compte compris) (relecture
-    // 0.97, haut).
-    let elements: Vec<&str> = valeur.split(['/', '\\']).filter(|e| !e.is_empty()).collect();
-    let dossier_de_compte = elements.len() >= 2
-        && elements
-            .get(elements.len().saturating_sub(2))
-            .is_some_and(|parent| ["home", "users"].contains(&parent.to_ascii_lowercase().as_str()));
-    let extension = valeur
-        .rsplit_once('.')
-        .filter(|(nom, ext)| !nom.is_empty() && !dossier_de_compte && crate::amelioration::texte::extension_connue(ext))
-        .map(|(_, ext)| ext);
-    match extension {
-        Some(ext) => format!("<chemin .{}>", ext.to_ascii_lowercase()),
+    // Le même marqueur que le masquage commun (`texte::extension_montree`) : l'extension ne reste que si elle est
+    // connue et que le nom n'est pas un dossier de compte (relecture 0.97, ronde 4, haut).
+    match crate::amelioration::texte::extension_montree(valeur) {
+        Some(ext) => format!("<chemin .{ext}>"),
         None if valeur.contains(['/', '\\']) => "<chemin>".into(),
         None => "<valeur>".into(),
     }
@@ -1654,7 +1656,7 @@ mod tests {
     #[test]
     fn dossiers_des_autres_comptes() {
         let t = anonyme(
-            r"C:\Users\Jean Dupont\Documents\x.ps1 | C:\Users\Public\Desktop | /home/bob/.config | /run/media/bob/VANGUARD | /Users/Shared/a | %USERPROFILE%\x | C:\Users\Zoé est introuvable",
+            r"C:\Users\Zoé d'Alice\Documents\x.ps1 | C:\Users\Public\Desktop | /home/bob/.config | /run/media/bob/VANGUARD | /Users/Shared/a | %USERPROFILE%\x | C:\Users\Zoé est introuvable",
         );
         assert_eq!(
             t,
@@ -1924,6 +1926,54 @@ mod tests {
     /// Chaque argument est réduit avant d'être recollé (relecture 0.97, hauts a, b et f) : un nom de fichier nu, même
     /// à espaces, un lien collé à une option, des mots libres et une option inconnue ne laissent que leur sorte ;
     /// les sous-commandes, options connues et mots de l'aide restent (valeurs inventées).
+    /// Relecture 0.97, ronde 4, bas 6 : le filet (masquer, anonymiser, masquer) ne change rien à une commande déjà
+    /// réduite. Chaque option à valeur de l'arbre de clap, sous chaque sous-commande, collée (« --image=… ») ou
+    /// séparée, avec un nom de fichier, un chemin et une adresse : 0 écart (valeurs inventées).
+    #[test]
+    fn filet_sans_ecart_sur_l_arbre_de_clap() {
+        use clap::CommandFactory;
+        fn balayer(cmd: &clap::Command, chemin: &[String], ecarts: &mut Vec<String>, formes: &mut usize) {
+            for option in cmd.get_arguments() {
+                let Some(long) = option.get_long() else { continue };
+                if !option.get_action().takes_values() {
+                    continue;
+                }
+                for valeur in [
+                    "CV-Zoe-Martin.pdf",
+                    "/srv/partage/Rapport.morin",
+                    "https://exemple.test/?a=b",
+                ] {
+                    for forme in [
+                        vec![format!("--{long}={valeur}")],
+                        vec![format!("--{long}"), valeur.to_string()],
+                    ] {
+                        let mut a = chemin.to_vec();
+                        a.extend(forme);
+                        *formes = formes.saturating_add(1);
+                        let (reduite, ecrite) = (commande_anonyme(&a), commande_ecrite(&a));
+                        if reduite != ecrite {
+                            ecarts.push(format!("{a:?} : {reduite:?} devient {ecrite:?}"));
+                        }
+                    }
+                }
+            }
+            for sous in cmd.get_subcommands() {
+                let mut c = chemin.to_vec();
+                c.push(sous.get_name().to_string());
+                balayer(sous, &c, ecarts, formes);
+            }
+        }
+        let (mut ecarts, mut formes) = (Vec::new(), 0usize);
+        balayer(
+            &crate::demarrage::arguments::Args::command(),
+            &[],
+            &mut ecarts,
+            &mut formes,
+        );
+        assert!(formes > 100, "{formes} formes seulement");
+        assert_eq!(ecarts, Vec::<String>::new());
+    }
+
     #[test]
     fn commande_ecrite_masquee() {
         let args = |a: &[&str]| a.iter().map(|x| String::from(*x)).collect::<Vec<_>>();

@@ -436,10 +436,15 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
             Some('`') => Some('`'),
             _ => None,
         };
-        let fin = url
+        // Jusqu'à une espace ; un fermant ne ferme qu'au dernier de ce morceau : « 'https://…/L'Avare?lecteur=…' »
+        // ou « <https://…?q=a>b&lecteur=…> » laissaient sinon la requête (relecture 0.97, ronde 4, bas).
+        let blanc = url
             .get(corps..)
-            .and_then(|reste| reste.find(|c: char| c.is_whitespace() || Some(c) == fermant))
+            .and_then(|reste| reste.find(char::is_whitespace))
             .map_or(url.len(), |k| k.saturating_add(corps));
+        let fin = fermant
+            .and_then(|f| url.get(corps..blanc)?.rfind(f))
+            .map_or(blanc, |k| k.saturating_add(corps));
         let garde = url[..fin].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!']);
         sortie.push_str("<url>");
         sortie.push_str(&url[garde.len()..fin]);
@@ -452,7 +457,67 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
 /// La prochaine adresse web à partir de `pos` dans le texte en minuscules : son début et la longueur de son schéma
 /// (« wss:// », « www. »), qui n'est jamais coupée. Un schéma a au moins deux caractères, dont une lettre en tête :
 /// « C://x » n'en est pas un.
-fn prochaine_url(bas: &str, mut pos: usize) -> Option<(usize, usize)> {
+fn prochaine_url(bas: &str, pos: usize) -> Option<(usize, usize)> {
+    [
+        url_a_schema(bas, pos),
+        url_a_une_barre(bas, pos),
+        url_sans_schema(bas, pos),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+/// Les schémas du web qui restent une adresse avec une seule barre (« https:/exemple.com/… », une barre perdue en
+/// route) ; un autre mot devant « :/ » (« erreur:/home/… ») est un chemin, pris par le masquage.
+const SCHEMAS_A_UNE_BARRE: [&str; 8] = ["http", "https", "hxxp", "hxxps", "ftp", "ftps", "ws", "wss"];
+
+/// La prochaine adresse « schéma:/hôte… » à une seule barre, schéma de `SCHEMAS_A_UNE_BARRE` (relecture 0.97,
+/// ronde 4, bas).
+fn url_a_une_barre(bas: &str, pos: usize) -> Option<(usize, usize)> {
+    bas.get(pos..)?.match_indices(":/").find_map(|(k, _)| {
+        let k = pos.saturating_add(k);
+        if !bas
+            .as_bytes()
+            .get(k.saturating_add(2))
+            .is_some_and(u8::is_ascii_alphanumeric)
+        {
+            return None;
+        }
+        let debut = k.saturating_sub(bas[..k].bytes().rev().take_while(u8::is_ascii_alphabetic).count());
+        let avant_ok = !bas[..debut]
+            .bytes()
+            .next_back()
+            .is_some_and(|b| b.is_ascii_alphanumeric());
+        (avant_ok && SCHEMAS_A_UNE_BARRE.contains(&&bas[debut..k]))
+            .then(|| (debut, k.saturating_add(2).saturating_sub(debut)))
+    })
+}
+
+/// La prochaine adresse sans schéma à « // » en tête (« //cdn.exemple.com/… ») : rien de collé devant, et un hôte à
+/// point juste après (relecture 0.97, ronde 4, bas).
+fn url_sans_schema(bas: &str, pos: usize) -> Option<(usize, usize)> {
+    bas.get(pos..)?.match_indices("//").find_map(|(k, _)| {
+        let k = pos.saturating_add(k);
+        let avant_ok = bas[..k]
+            .bytes()
+            .next_back()
+            .is_none_or(|b| b.is_ascii_whitespace() || b"\"'(<=[,;`".contains(&b));
+        let hote: &str = bas
+            .get(k.saturating_add(2)..)?
+            .split(|x: char| !(x.is_ascii_alphanumeric() || x == '.' || x == '-'))
+            .next()?;
+        let a_point = hote.split('.').filter(|e| !e.is_empty()).count() >= 2
+            && hote
+                .rsplit('.')
+                .next()
+                .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic()));
+        (avant_ok && a_point).then_some((k, 2))
+    })
+}
+
+/// La prochaine adresse « schéma:// » ou « www. ».
+fn url_a_schema(bas: &str, mut pos: usize) -> Option<(usize, usize)> {
     let de_schema = |b: u8| b.is_ascii_alphanumeric() || b"+.-".contains(&b);
     loop {
         let reste = bas.get(pos..)?;
@@ -1339,7 +1404,25 @@ fn masquer_arobases(c: &[char]) -> Vec<char> {
 fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
     // Les positions où aucune IPv6 ne peut commencer (`Ip6::RienJusqua`) : chaque suite n'est lue qu'une fois.
     let mut sans_ipv6_avant = 0;
+    // Une requête collée à un marqueur (« `<chemin .pdf>`?session=… ») part avec lui (relecture 0.97, ronde 4, bas).
+    let avec_requete = |c: &[char], (fin, par): (usize, String)| {
+        if car(c, fin) == Some('?') {
+            (fin_tant_que(c, fin, |x| !fin_d_adresse(x)), par)
+        } else {
+            (fin, par)
+        }
+    };
     remplacer(c, |c, i| {
+        forme(c, i, ip, &mut sans_ipv6_avant).map(|f| avec_requete(c, f))
+    })
+}
+
+/// La forme à masquer qui commence en `i`, sa fin et son remplacement.
+fn forme(c: &[char], i: usize, ip: bool, sans_ipv6_avant: &mut usize) -> Option<(usize, String)> {
+    {
+        if let Some(fin) = coupe_a_gauche(c, i) {
+            return Some((fin, "<chemin>".to_string()));
+        }
         if let Some(fin) = adresse_web(c, i) {
             return Some((fin, "<url>".to_string()));
         }
@@ -1352,11 +1435,8 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         if ip && let Some(fin) = ipv6_a_tirets(c, i) {
             return Some((fin, "<ip>".to_string()));
         }
-        if let Some((fin, extension)) = chemin(c, i) {
-            return Some((
-                fin,
-                extension.map_or_else(|| "<chemin>".to_string(), |e| format!("<chemin .{e}>")),
-            ));
+        if let Some((fin, nom)) = chemin(c, i) {
+            return Some((fin, marqueur_de_chemin(&chaine(c, i, nom))));
         }
         if let Some(fin) = guid(c, i) {
             return Some((fin, "<guid>".to_string()));
@@ -1370,10 +1450,10 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         if let Some(fin) = mac_a_points(c, i) {
             return Some((fin, "<mac>".to_string()));
         }
-        if ip && i >= sans_ipv6_avant {
+        if ip && i >= *sans_ipv6_avant {
             match ipv6(c, i) {
                 Ip6::Adresse(fin) => return Some((fin, "<ip>".to_string())),
-                Ip6::RienJusqua(fin) => sans_ipv6_avant = fin,
+                Ip6::RienJusqua(fin) => *sans_ipv6_avant = fin,
                 Ip6::Heure(fin) => return Some((fin, morceau(c, i, fin).iter().collect())),
                 Ip6::Rien => {}
             }
@@ -1384,17 +1464,44 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         if ip && let Some(fin) = ipv4_a_tirets(c, i) {
             return Some((fin, "<ip>".to_string()));
         }
-        if let Some((fin, extension)) = chemin_relatif(c, i) {
-            return Some((
-                fin,
-                extension.map_or_else(|| "<chemin>".to_string(), |e| format!("<chemin .{e}>")),
-            ));
+        if let Some(fin) = chemin_relatif(c, i) {
+            return Some((fin, marqueur_de_chemin(&chaine(c, i, fin))));
         }
         if let Some(fin) = groupes_de_chiffres(c, i) {
             return Some((fin, "<numéro>".to_string()));
         }
         hexa(c, i).map(|fin| (fin, "<hex>".to_string()))
-    })
+    }
+}
+
+/// Un chemin coupé à gauche par « … » (un extrait, `chasse::extrait`) : « …oé Martin\Downloads\Facture.exe ». Son
+/// début est perdu, rien ne dit où finit le nom ni s'il est sous un dossier personnel : tout part, jusqu'à la fin
+/// de la ligne ou de l'extrait (« … » suivant). Reconnu à un « … » collé à ce qui suit, sans lettre ni chiffre
+/// devant, et à une barre entre deux caractères non blancs dans les `SEGMENT_MAX` caractères qui suivent ;
+/// « …et 3 autres » ou « Chargement… /usr/bin » restent (relecture 0.97, ronde 4, moyen).
+fn coupe_a_gauche(c: &[char], i: usize) -> Option<usize> {
+    if car(c, i) != Some('…')
+        || avant(c, i).is_some_and(char::is_alphanumeric)
+        || car(c, suivant(i)).is_none_or(char::is_whitespace)
+    {
+        return None;
+    }
+    let fin = fin_tant_que(c, suivant(i), |x| x != '\n' && x != '…');
+    let barre = (suivant(i)..fin.min(plus(i, SEGMENT_MAX))).any(|k| {
+        car(c, k).is_some_and(|x| x == '/' || x == '\\')
+            && avant(c, k).is_some_and(|x| !x.is_whitespace())
+            && car(c, suivant(k)).is_some_and(|x| !x.is_whitespace())
+    });
+    barre.then_some(fin)
+}
+
+/// Le texte sans les chemins coupés à gauche (`coupe_a_gauche`), pour une réduction qui ne passe pas par
+/// `masquer`. Sans `normaliser` : le reste du texte est rendu tel quel (« «…» » ne devient pas « "…" »).
+pub(crate) fn sans_coupes(texte: &str) -> String {
+    let c: Vec<char> = texte.chars().collect();
+    remplacer(&c, |c, i| coupe_a_gauche(c, i).map(|f| (f, "<chemin>".to_string())))
+        .into_iter()
+        .collect()
 }
 
 /// Trois groupes ou plus de 2 à 8 chiffres séparés par une espace ou un tiret, 12 chiffres ou plus en tout : une clé
@@ -1498,9 +1605,9 @@ fn caractere_de_chemin(x: char) -> bool {
     x.is_alphanumeric() || "._-~$%".contains(x)
 }
 
-/// Un chemin absolu qui commence en `i` : sa fin, et l'extension de son dernier élément. Windows (« C:\ », « \\nas\ »,
+/// Un chemin absolu qui commence en `i` : sa fin, et la fin de son nom, d'où vient l'extension montrée. Windows (« C:\ », « \\nas\ »,
 /// « \\?\C:\ », « %APPDATA%\ », « \Device\… »), Unix (« /… », « ~/… », « $HOME/… »).
-fn chemin(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
+fn chemin(c: &[char], i: usize) -> Option<(usize, usize)> {
     if !avant_chemin(avant(c, i)) {
         return None;
     }
@@ -1562,23 +1669,72 @@ fn chemin(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
             pos = suivant(bout);
             continue;
         }
-        let fin = fin_du_dernier(c, pos, bout, espace);
-        if separateurs < exiges || (fin == pos && separateurs == 0 && pos == debut && pos == suivant(i)) {
+        let (nom, a_extension) = fin_du_dernier(c, pos, bout, espace);
+        if separateurs < exiges || (nom == pos && separateurs == 0 && pos == debut && pos == suivant(i)) {
             return None;
         }
-        let fin = if fin == pos && entre(i, pos) <= 1 {
+        if nom == pos && entre(i, pos) <= 1 {
             return None;
+        }
+        let fin = if espace.is_some() {
+            jusqu_a_l_arret(c, i, pos, bout, nom, a_extension)
         } else {
-            fin
+            nom
         };
-        let dernier = morceau(c, pos, fin);
-        let extension = dernier.iter().rposition(|y| *y == '.').and_then(|p| {
-            let ext: String = dernier.get(suivant(p)..)?.iter().collect();
-            ((1..=EXTENSION_MAX).contains(&ext.len()) && ext.chars().all(|y| y.is_ascii_alphanumeric()))
-                .then(|| ext.to_ascii_lowercase())
-        });
-        return Some((fin, extension));
+        return Some((fin, nom));
     }
+}
+
+/// La fin d'un chemin dont le dernier élément porte des espaces, nom lu jusqu'à `nom` : entre guillemets ou
+/// parenthèses, jusqu'au fermant ; sinon, sans mot à extension (« Rapport annuel.docx » finit le nom), jusqu'à
+/// l'arrêt (`bout`) quand c'est « : » ou la fin de la ligne, ou sous un dossier personnel (« /home/ », « Users\ »,
+/// « /run/media/ », « ~/ », `DOSSIERS_PERSONNELS`) ; jamais plus de `2 × SEGMENT_MAX` caractères après la dernière
+/// barre. La fin d'un nom à espaces (« Impôts Zoé Martin ») sortait sinon après le marqueur (relecture 0.97, ronde 4,
+/// moyen). Des mots de la phrase peuvent partir avec lui : un masque de trop, jamais un nom qui reste.
+fn jusqu_a_l_arret(c: &[char], i: usize, pos: usize, bout: usize, nom: usize, a_extension: bool) -> usize {
+    let borne = SEGMENT_MAX.saturating_mul(2);
+    let fermant = match avant(c, i) {
+        Some('"') => Some('"'),
+        Some('\'') => Some('\''),
+        Some('(') => Some(')'),
+        _ => None,
+    };
+    if let Some(f) = fermant {
+        let mut k = nom;
+        while let Some(y) = car(c, k) {
+            if y == f {
+                return k;
+            }
+            if y == '\n' || entre(pos, k) > borne {
+                break;
+            }
+            k = suivant(k);
+        }
+    }
+    if a_extension {
+        return nom;
+    }
+    let tete = chaine(c, i, pos).to_lowercase();
+    let personnel = tete.starts_with('~')
+        || tete.starts_with("$home")
+        || tete.starts_with("%userprofile%")
+        || tete.contains("/run/media/")
+        || tete.split(['/', '\\']).any(|e| DOSSIERS_PERSONNELS.contains(&e));
+    // Hors d'un dossier personnel, seul « chemin: message » arrête : la fin de ligne y laisserait avaler un mot de
+    // passe (« net use \\\\srv\\partage Lune2Verte ») dans le marqueur, alors que le masquage le voit à part.
+    let arret = if personnel {
+        car(c, bout).is_none_or(|y| y == ':' || y == '\n')
+    } else {
+        car(c, bout) == Some(':') && car(c, suivant(bout)).is_none_or(char::is_whitespace)
+    };
+    if !arret || entre(pos, bout) > borne {
+        return nom;
+    }
+    let mut fin = bout;
+    while fin > nom && avant(c, fin).is_some_and(|y| y.is_whitespace() || y == '.') {
+        fin = fin.saturating_sub(1);
+    }
+    fin
 }
 
 /// Un chemin relatif plus long que cela n'est pas lu : le coût d'une lecture reste borné.
@@ -1629,7 +1785,7 @@ const DOSSIERS_PERSONNELS: [&str; 17] = [
 /// images, sons, vidéos, archives, et les suffixes de copie, de chiffrement ou de téléchargement (« .pdf.gpg »,
 /// « .pdf.part », « .pdf.crdownload »), qu'un nom ait l'un ou l'autre en bout de chaîne (relecture 0.97, moyen).
 /// Les programmes (« net.exe », « setup.msi ») n'y sont pas : leur nom est celui d'un outil, rarement d'une personne.
-const EXTENSIONS_NUES: [&str; 71] = [
+const EXTENSIONS_NUES: [&str; 82] = [
     "pdf",
     "doc",
     "docx",
@@ -1701,6 +1857,18 @@ const EXTENSIONS_NUES: [&str; 71] = [
     "tmp",
     "part",
     "crdownload",
+    // Notes, données, journaux, certificats, profils VPN, bases (relecture 0.97, ronde 4, bas).
+    "md",
+    "json",
+    "xml",
+    "svg",
+    "log",
+    "pem",
+    "p12",
+    "pfx",
+    "ovpn",
+    "sqlite",
+    "db",
 ];
 
 /// Les extensions de programmes et de scripts : la sorte d'un fichier lancé, gardée dans « `<chemin .exe>` ».
@@ -1723,20 +1891,58 @@ const NOMS_BANALS: [&str; 10] = [
     "copying",
 ];
 
-/// Une extension connue (liste fermée), seule à pouvoir rester dans un marqueur « `<chemin .ext>` » : une
-/// « extension » quelconque peut être un nom (« zoe.martin », « Rapport.alice ») ; elle ne garde pas non plus plus de
-/// `EXTENSION_MAX` caractères, la règle du marqueur.
+/// Une extension montrable : dans la liste fermée et d'au plus `EXTENSION_MAX` caractères, la règle du marqueur
+/// « `<chemin .ext>` » (et du relais, `outils/relais-schema.py`). Une « extension » quelconque peut être un nom
+/// (« zoe.martin », « Rapport.alice »). Les extensions plus longues de la liste (« numbers », « crdownload »,
+/// « sqlite ») servent seulement à reconnaître un nom nu : jamais montrées (relecture 0.97, ronde 4, bas).
 pub(crate) fn extension_connue(ext: &str) -> bool {
     let e = ext.to_ascii_lowercase();
     e.len() <= EXTENSION_MAX && (EXTENSIONS_NUES.contains(&e.as_str()) || EXTENSIONS_DE_PROGRAMME.contains(&e.as_str()))
 }
 
+/// Les dossiers dont chaque enfant direct est un compte (« /home/alice.pdf », « C:\Users\alice.pdf ») : son
+/// « extension » est la fin d'un nom.
+const PARENTS_DE_COMPTE: [&str; 3] = ["home", "users", "homes"];
+
+/// L'extension montrée d'un chemin ou d'un nom de fichier : la dernière extension connue de son dernier élément
+/// (« CV.pdf.crdownload » → pdf, « CV.pdf.zoe » → pdf), jamais une inconnue, ni pour un dossier de compte. Le seul
+/// juge de ce qui sort dans un marqueur (`marqueur_de_chemin`) : chemins absolus et relatifs, noms nus, brouillon de
+/// `vanguard signaler`, commande du journal (relecture 0.97, ronde 4, haut).
+pub(crate) fn extension_montree(chemin: &str) -> Option<String> {
+    let elements: Vec<&str> = chemin.split(['/', '\\']).filter(|e| !e.is_empty()).collect();
+    let (dernier, parents) = elements.split_last()?;
+    if parents
+        .last()
+        .is_some_and(|p| PARENTS_DE_COMPTE.contains(&p.to_lowercase().as_str()))
+    {
+        return None;
+    }
+    // Un point en tête (fichier caché) n'ouvre pas d'extension : « .bashrc » n'en a pas, « .Zoe-Martin.pdf » si.
+    let morceaux: Vec<&str> = dernier.strip_prefix('.').unwrap_or(dernier).split('.').collect();
+    if morceaux.first().is_none_or(|n| n.is_empty()) {
+        return None;
+    }
+    morceaux.get(1..)?.iter().rev().find_map(|m| {
+        let ext: String = m.chars().take_while(char::is_ascii_alphanumeric).collect();
+        extension_connue(&ext).then(|| ext.to_ascii_lowercase())
+    })
+}
+
+/// Le marqueur d'un chemin ou d'un nom de fichier : « `<chemin .pdf>` » ou « `<chemin>` » (`extension_montree`).
+pub(crate) fn marqueur_de_chemin(chemin: &str) -> String {
+    extension_montree(chemin).map_or_else(|| "<chemin>".to_string(), |e| format!("<chemin .{e}>"))
+}
+
 /// Un nom de fichier nu (« CV-Zoe-Martin.pdf ») : pris si une des extensions de sa chaîne est dans la liste fermée
 /// (« .pdf.gpg », « .tar.gz », « .pdf.crdownload ») et si ce qui la précède porte une lettre, n'importe où
 /// (« 2026.Zoe-Martin.pdf », « .Zoe-Martin.pdf ») ; « v1.2 », « 192.168.1.5 » ou « main.rs » restent (relecture 0.97,
-/// moyens). Rend sa fin et l'extension montrée : la dernière si elle est connue, sinon la dernière connue de la chaîne, jamais
-/// une inconnue (« CV.pdf.zoe »).
-fn nom_nu(nom: &[char], derniere: Option<&str>, fin: usize) -> Option<(usize, Option<String>)> {
+/// moyens). Un nom nu ne commence pas avant un « = » (« --image=CV.pdf » : seul « CV.pdf » en est un), et un marqueur
+/// déjà posé n'en fait pas partie (« --image=`<chemin .pdf>` » restait sinon un nom à extension, avalé avec le nom
+/// de l'option : relecture 0.97, ronde 4, bas). L'extension montrée est celle de `extension_montree`.
+fn nom_nu(nom: &[char]) -> bool {
+    if nom.iter().any(|y| *y == '=' || *y == '<') {
+        return false;
+    }
     let texte: String = nom.iter().collect();
     let elements: Vec<&str> = texte.split('.').collect();
     let ext = |e: &str| -> String {
@@ -1745,34 +1951,21 @@ fn nom_nu(nom: &[char], derniere: Option<&str>, fin: usize) -> Option<(usize, Op
             .collect::<String>()
             .to_ascii_lowercase()
     };
-    let connue = (1..elements.len()).rev().find(|&k| {
+    let Some(connue) = (1..elements.len()).rev().find(|&k| {
         elements
             .get(k)
             .is_some_and(|e| EXTENSIONS_NUES.contains(&ext(e).as_str()))
-    })?;
+    }) else {
+        return false;
+    };
     let lettre = elements
-        .get(..connue)?
-        .iter()
-        .any(|e| e.chars().any(char::is_alphabetic));
+        .get(..connue)
+        .is_some_and(|avant| avant.iter().any(|e| e.chars().any(char::is_alphabetic)));
     let banal = elements.len() == 2
         && elements
             .first()
             .is_some_and(|e| NOMS_BANALS.contains(&e.to_ascii_lowercase().as_str()));
-    if !lettre || banal {
-        return None;
-    }
-    let montree = derniere
-        .filter(|e| extension_connue(e))
-        .map(str::to_string)
-        .or_else(|| {
-            elements
-                .get(1..=connue)?
-                .iter()
-                .rev()
-                .map(|e| ext(e))
-                .find(|e| e.len() <= EXTENSION_MAX && EXTENSIONS_NUES.contains(&e.as_str()))
-        });
-    Some((fin, montree))
+    lettre && !banal
 }
 
 /// Un chemin relatif : des éléments séparés par « / » ou « \ » (« Documents/impots-2026.pdf », « Bureau\paie.xlsx »,
@@ -1784,7 +1977,7 @@ fn nom_nu(nom: &[char], derniere: Option<&str>, fin: usize) -> Option<(usize, Op
 /// point), un élément caché n'importe où (« projet/.ssh/… »), un dossier personnel (`DOSSIERS_PERSONNELS`), ou
 /// « . »/« .. » devant au moins deux éléments (« ../Marie/notes »). Un chemin du dépôt (`DOSSIERS_DU_DEPOT`) reste
 /// lisible, sauf s'il passe par un dossier personnel ; « ./vanguard » aussi.
-fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
+fn chemin_relatif(c: &[char], i: usize) -> Option<usize> {
     if !avant_chemin(avant(c, i)) || !car(c, i).is_some_and(caractere_de_chemin) {
         return None;
     }
@@ -1857,7 +2050,7 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
     // document, d'une image, d'une archive ou d'un programme (liste fermée), et son nom porte une lettre ; « main.rs »,
     // « exemple.com » ou « v1.2 » restent (relecture 0.97, haut b).
     if seul {
-        return nom_nu(nom, extension.as_deref(), fin);
+        return nom_nu(nom).then_some(fin);
     }
     let textes: Vec<String> = elements.iter().map(|(a, b)| chaine(c, *a, *b).to_lowercase()).collect();
     let point = |e: &str| e == "." || e == "..";
@@ -1868,16 +2061,16 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
         .iter()
         .find(|e| !point(e))
         .is_some_and(|e| DOSSIERS_DU_DEPOT.contains(&e.as_str()));
-    ((a_lettre || cache || relatif || personnel) && (!depot || personnel))
-        .then(|| (fin, extension.filter(|_| a_lettre)))
+    ((a_lettre || cache || relatif || personnel) && (!depot || personnel)).then_some(fin)
 }
 
-/// La fin du dernier élément d'un chemin, qui va de `pos` à `k` (arrêt ou fin) : jusqu'à la première espace, sauf si
-/// un mot proche finit par une extension (« Rapport annuel.docx introuvable »). Les points de fin de phrase n'en
-/// font pas partie.
-fn fin_du_dernier(c: &[char], pos: usize, k: usize, espace: Option<usize>) -> usize {
+/// La fin du nom du dernier élément d'un chemin, qui va de `pos` à `k` (arrêt ou fin) : jusqu'à la première espace,
+/// sauf si un mot proche finit par une extension (« Rapport annuel.docx introuvable »), et si un tel mot a été trouvé.
+/// Les points de fin de phrase n'en font pas partie.
+fn fin_du_dernier(c: &[char], pos: usize, k: usize, espace: Option<usize>) -> (usize, bool) {
     let premiere = espace.map_or(k, |e| plus(pos, e));
     let mut fin = premiere;
+    let mut trouve = false;
     if espace.is_some() {
         let mut debut_mot = pos;
         while debut_mot < k && entre(pos, debut_mot) <= SEGMENT_MAX {
@@ -1904,6 +2097,7 @@ fn fin_du_dernier(c: &[char], pos: usize, k: usize, espace: Option<usize>) -> us
             });
             if a_extension {
                 fin = plus(debut_mot, net);
+                trouve = true;
                 break;
             }
             debut_mot = fin_tant_que(c, fin_mot, char::is_whitespace);
@@ -1912,7 +2106,7 @@ fn fin_du_dernier(c: &[char], pos: usize, k: usize, espace: Option<usize>) -> us
     while fin > pos && avant(c, fin) == Some('.') {
         fin = fin.saturating_sub(1);
     }
-    fin
+    (fin, trouve)
 }
 
 fn hexadecimaux(c: &[char], i: usize, n: usize) -> Option<usize> {

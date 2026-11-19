@@ -993,7 +993,11 @@ pub(crate) fn texte(brut: &str) -> Result<TexteNettoye, Rejet> {
 /// « -u `<utilisateur>`:Lune2Verte9 »), et le nettoyage qui suit ne le voyait plus : le même ordre que `masquer`
 /// (relecture 0.97, haut e, resté dans ces portes).
 fn avant_anonymiser(brut: &str) -> String {
-    texte::masquer(&texte::sans_urls(&texte::sans_chevrons(brut)))
+    let sans_urls = texte::sans_urls(&texte::sans_chevrons(brut));
+    texte::masquer(&crate::journal::sans_maisons_avec(
+        &sans_urls,
+        &crate::journal::maisons(),
+    ))
 }
 
 /// Un texte long qui sort de la machine sans passer par la voie ouverte : le détail et la commande du journal des
@@ -1005,8 +1009,17 @@ pub(crate) fn masquer(brut: &str) -> String {
     // Masqué avant `anonymiser` puis encore après : `anonymiser` pose ses marqueurs au début d'un secret
     // (« -u alice:Lune2Verte9 » → « -u <utilisateur>:Lune2Verte9 »), et le masquage ne le voyait plus (relecture
     // 0.97, haut e) ; après, pour ce qu'`anonymiser` aurait découvert. Les adresses web d'abord, entières.
-    let premier = texte::masquer(&texte::desarme(brut));
-    texte::masquer(&crate::journal::anonymiser(&premier))
+    masquer_pour(brut, &crate::journal::maisons(), &crate::journal::anonymiser)
+}
+
+/// `masquer`, avec ces dossiers personnels et cette anonymisation (les essais en donnent d'inventés). Les dossiers
+/// personnels sont remplacés par « ~ » avant le premier masquage : un dossier de compte à espaces
+/// (« C:\Users\Zoé d'Alice ») y était coupé à l'espace, et la fin du nom restait (relecture 0.97, ronde 4, haut).
+/// Les noms de la base, eux, restent à `anonymiser` : posés avant, ils cacheraient le début d'un secret collé
+/// (« -u alice:… ») au premier masquage.
+pub(crate) fn masquer_pour(brut: &str, maisons: &[String], anonymiser: &dyn Fn(&str) -> String) -> String {
+    let premier = texte::masquer(&crate::journal::sans_maisons_avec(&texte::desarme(brut), maisons));
+    texte::masquer(&anonymiser(&premier))
 }
 
 /// Le nom d'un logiciel, d'un service ou d'un pilote, nettoyé de la même façon.
