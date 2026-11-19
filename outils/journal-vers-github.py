@@ -128,8 +128,13 @@ def entrees(texte):
 def avant_masque_commun(entree):
     """Vrai pour une entrée d'une version d'avant MASQUE_COMMUN_DEPUIS, ou de version illisible (forgée) : son détail
     et sa commande n'ont pas eu le masquage commun, et peuvent nommer un fichier, une adresse web ou un secret."""
-    m = re.match(r"(\d+)\.(\d+)\.", en_tete(entree)[0])
-    return not m or (int(m[1]), int(m[2])) < MASQUE_COMMUN_DEPUIS
+    # Chiffres bornés : une version de milliers de chiffres faisait planter int() (limite de 4300), et le script
+    # replantait à chaque déploiement ; elle est illisible, donc retenue (relecture 0.97, moyen).
+    m = re.match(r"(\d{1,4})\.(\d{1,4})\.", en_tete(entree)[0], re.ASCII)
+    # Un autre en-tête collé dans l'entrée (journal sans saut de ligne final suivi d'un autre) : l'entrée d'avant
+    # partirait avec celle-ci ; retenue entière (relecture 0.97, moyen).
+    collee = re.search(r"== [^\n]*· vanguard ", entree[3:])
+    return not m or collee is not None or (int(m[1]), int(m[2])) < MASQUE_COMMUN_DEPUIS
 
 
 def champs(entree):
@@ -300,7 +305,9 @@ def main():
     accord = "--accord" in arguments
     arguments = [a for a in arguments if a != "--accord"]
     chemin = arguments[0]
-    with open(chemin, encoding="utf-8") as f:
+    # newline="" : un retour chariot seul dans un détail reste ce qu'il est ; lu comme un saut de ligne, il fabriquait un
+    # en-tête « 0.97 » au milieu d'une vieille entrée, dont la fin partait sans --accord (relecture 0.97, moyen).
+    with open(chemin, encoding="utf-8", newline="") as f:
         liste = entrees(f.read())
     if not liste:
         return

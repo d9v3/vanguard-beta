@@ -8636,7 +8636,7 @@ fn tickets_du_journal_regroupes() {
     std::fs::set_permissions(faux.join("gh"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let entree = |contexte: &str, detail: &str| {
         format!(
-            "== 2026-10-23 10:00 UTC · vanguard 0.86.0 · Arch Linux 7.2 · fr · autotest\n[{contexte}]\n  {detail}\n\n"
+            "== 2026-10-23 10:00 UTC · vanguard 0.97.0 · Arch Linux 7.2 · fr · autotest\n[{contexte}]\n  {detail}\n\n"
         )
     };
     let mut texte = String::new();
@@ -8719,8 +8719,10 @@ fn tickets_du_journal_regroupes() {
     std::fs::write(&fichier, &texte).unwrap();
     std::fs::remove_file(&appels).unwrap();
     let chemin = format!("{}:{}", faux.display(), std::env::var("PATH").unwrap_or_default());
+    // Des entrées d'avant la 0.97 : sans --accord, elles seraient retenues (voir `journal_d_avant_la_097_retenu`).
     let s = Command::new("python3")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("outils/journal-vers-github.py"))
+        .arg("--accord")
         .arg(&fichier)
         .env("PATH", chemin)
         .env("HOME", &*d)
@@ -8747,6 +8749,49 @@ fn tickets_du_journal_regroupes() {
         "{journal}"
     );
     assert_eq!(std::fs::read_to_string(&fichier).unwrap().trim(), "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Une entrée d'une version d'avant la 0.97 (sans le masquage commun) ne part pas sans --accord : gh n'est pas
+/// appelé et l'entrée reste dans le fichier (valeurs inventées).
+#[cfg(unix)]
+#[test]
+fn journal_d_avant_la_097_retenu() {
+    if Command::new("python3").arg("-V").output().is_err() {
+        return essais::saute("python3 absent");
+    }
+    let d = maison_jetable();
+    let faux = d.join("bin");
+    std::fs::create_dir_all(&faux).unwrap();
+    let appels = d.join("appels.txt");
+    std::fs::write(
+        faux.join("gh"),
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 0\n", appels.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(faux.join("gh"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // La retenue est dite par une notification : un faux notify-send, pour n'en montrer aucune sur le bureau.
+    std::fs::write(faux.join("notify-send"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        faux.join("notify-send"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let entree = "== 2026-10-23 10:00 UTC · vanguard 0.86.0 · Arch Linux 7.2 · fr · autotest\n[autotest AUT-LNX-001]\n  [absent-natif] 1 en plus, 0 en moins\n\n";
+    let fichier = d.join("journal-a-envoyer.txt");
+    std::fs::write(&fichier, entree).unwrap();
+    let chemin = format!("{}:{}", faux.display(), std::env::var("PATH").unwrap_or_default());
+    let s = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("outils/journal-vers-github.py"))
+        .arg(&fichier)
+        .env("PATH", chemin)
+        .env("HOME", &*d)
+        .env("VANGUARD_ESSAI_MAISON_DU_COMPTE", &*d)
+        .output()
+        .unwrap();
+    assert!(s.status.success(), "{}", String::from_utf8_lossy(&s.stderr));
+    assert!(!appels.exists(), "gh appelé");
+    assert_eq!(std::fs::read_to_string(&fichier).unwrap(), entree);
     let _ = std::fs::remove_dir_all(&d);
 }
 

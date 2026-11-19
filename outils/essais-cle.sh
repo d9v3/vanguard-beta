@@ -1452,6 +1452,29 @@ voir "entrée d'avant la 0.97 : gardée sans --accord et dite, la neuve part" \
 envoyer --accord
 voir "--accord : l'entrée d'avant la 0.97 part" \
   eval '[[ $(tickets) == 1 && ! -s $BANC/retours/a-envoyer-github.txt ]]' || montrer "$BANC/sortie"
+# Les contournements de la retenue (relecture 0.97) : un retour chariot seul qui fabrique un en-tête 0.97, un en-tête
+# 0.96 collé sans saut de ligne à une entrée 0.97, une version de milliers de chiffres (plantage de int()).
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"
+printf '== 2026-10-24 · vanguard 0.96.0 · linux · fr · x\n[lecture]\n  a\r== 2026-10-24 · vanguard 0.97.0 · linux · fr · x\r[lecture]\r jeton-invente-du-banc\n\n' \
+  >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "retour chariot seul dans une entrée 0.96 : rien ne part, l'entrée reste entière" \
+  eval '[[ $(tickets) == 0 ]] && dit "$BANC/retours/a-envoyer-github.txt" "jeton-invente-du-banc"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+printf '== 2026-10-24 · vanguard 0.97.0 · linux · fr · bilan\n[a]\n  coup== 2026-10-24 · vanguard 0.96.0 · linux · fr · x\n[x]\n  vieille-du-banc\n\n' \
+  >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "entrée 0.96 collée à une 0.97 sans saut de ligne : retenue avec elle" \
+  eval '[[ $(tickets) == 0 ]] && dit "$BANC/retours/a-envoyer-github.txt" "vieille-du-banc"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+{
+  printf '== 2026-10-24 · vanguard 0.97.0 · linux · fr · bilan\n[a]\n  vraie erreur\n\n'
+  printf '== 2026-10-24 · vanguard %s.1.0 · linux · fr · bilan\n[b]\n  x\n\n' "$(printf '9%.0s' {1..5000})"
+} >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "version de 5000 chiffres : retenue sans planter, la vraie erreur part" \
+  eval '[[ $(tickets) == 1 && $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 1 ]]' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
 # Vérifications impossibles : l'état de l'ordinateur n'est pas un défaut du code (filet `attendue`), et une même règle
 # fait un seul ticket par code de raison.
 rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"

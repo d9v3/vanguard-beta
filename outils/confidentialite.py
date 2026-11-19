@@ -481,7 +481,9 @@ COMPTES_COMMUNS = {"public", "default", "default user", "all users", "defaultuse
 COMPTES_INVENTES = {"alice", "bob", "zoé", "jean dupont", "moi", "x", "a", "a&b", "root", "runner", "capture", "user",
                     "utilisateur", "compte", "account", "username", "nom", "name", "test", "zoé d'alice",
                     # Et sa forme dans une chaîne PowerShell, l'apostrophe doublée.
-                    "zoé o'brien", "zoé o''brien"}
+                    "zoé o'brien", "zoé o''brien",
+                    # Un dossier de compte à point, dont la fin ressemble à une extension (essais du masquage).
+                    "alice.pdf"}
 DEBUT_COMPTE_UNIX = re.compile(r"(?:/var/home|/run/media|/home|/Users|/media)/", re.IGNORECASE)
 # Avec ou sans lecteur (« \\Device\\HarddiskVolume3\\Users\\… », « %SystemDrive%\\Users\\… », partage réseau), une à
 # quatre barres inverses (un chemin échappé, puis échappé encore dans du JSON), barres mêlées.

@@ -16,15 +16,16 @@ example, finds it, to rebuild it if needed.
   "<mac>" and "<ip>"), paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written and then
   sent; a fake marker written in a message ("<ip>" inside a token) is disarmed. The command written to the log is
   reduced argument by argument: only subcommands, known options and words from the help remain; a file becomes
-  "<chemin .pdf>", a link "<url>", a free word "<valeur>". A bare document file name ("CV-Bob-Exemple.pdf") is masked;
-  a web address is removed whole even when glued to an option ("--url=https://…"); a secret is masked before and after
+  "<chemin .pdf>", a link "<url>", a free word "<valeur>". A bare file name ("CV-Bob-Exemple.pdf", "Zoé.Tremblay.docm") is masked from a closed list of extensions
+  (documents, archives, sounds, programs…); the extension shown is always a known one, never the rest of a name
+  ("jean.tremblay"); a web address is removed whole, whatever its scheme or when it starts with "www.", even when glued
+  to an option ("--url=https://…"); a secret is masked before and after
   anonymization, which could hide its start ("-u alice:…"); a file or program field of the draft is replaced whole; a
   value that is too long is cut at a space before masking; only the kernel version is kept, without its suffix.
   Entries written before 0.97 are no longer sent to GitHub on their own: they wait for the author's approval
   (`--accord`), and this is said. Limits: diagnostics lose the MAC vendor prefix, paths and IPs; error tickets already
   open may come back under a new signature; a secret made only of common words ("-p 'red house'") or with no keyword
-  before it may remain; in free text, a file name with spaces may keep its beginning, and a web address without
-  "http://" remains; the detail is cut at 3000 bytes (a draft value at 4000 characters) before masking, whose cost
+  before it may remain; in free text, a file name with spaces may keep its beginning, and a web address with no scheme or "www." ("example.com/page") remains; the detail is cut at 3000 bytes (a draft value at 4000 characters) before masking, whose cost
   grows quickly with length; a text the masker cannot stabilise is replaced whole by "[texte retiré : masquage
   instable]".
 - **The system journal is read in full, like `journalctl`.** After a reboot, the journal can give a new entry the

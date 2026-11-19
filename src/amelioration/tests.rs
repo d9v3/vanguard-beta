@@ -841,3 +841,62 @@ fn masquer_un_nom_de_fichier_nu() {
     );
     assert_eq!(masquer("vu sur https://exemple.test/?s=1."), "vu sur <url>.");
 }
+
+/// Relecture 0.97, ronde 3 : noms nus à double extension, à préfixe de chiffres ou caché, extensions de bureautique à
+/// macros ; un nom banal de projet reste (valeurs inventées).
+#[test]
+fn noms_nus_de_la_ronde_3() {
+    for (brut, attendu) in [
+        ("CV-Zoe-Martin.pdf.gpg introuvable", "<chemin .gpg> introuvable"),
+        ("CV-Zoe-Martin.tar.gz introuvable", "<chemin .gz> introuvable"),
+        ("CV-Zoe-Martin.pdf.crdownload introuvable", "<chemin .pdf> introuvable"),
+        ("CV-Zoe-Martin.pdf.zoe introuvable", "<chemin .pdf> introuvable"),
+        ("2026.Zoe-Martin.pdf introuvable", "<chemin .pdf> introuvable"),
+        ("1.CV-Zoe-Martin.pdf introuvable", "<chemin .pdf> introuvable"),
+        ("vu .Zoe-Martin.pdf introuvable", "vu <chemin .pdf> introuvable"),
+        ("CV-Zoe-Martin.xlsm introuvable", "<chemin .xlsm> introuvable"),
+        (
+            "README.txt et requirements.txt restent",
+            "README.txt et requirements.txt restent",
+        ),
+        ("v1.2 et 1.0.zip restent", "v1.2 et 1.0.zip restent"),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut}");
+    }
+}
+
+/// Relecture 0.97, ronde 3 : toute adresse web part entière, collée, d'un autre schéma, à barres échappées, avec une
+/// apostrophe, un chevron ou un faux marqueur dedans (valeurs inventées).
+#[test]
+fn adresses_web_de_la_ronde_3() {
+    for (brut, attendu) in [
+        ("--url=wss://exemple.test/ws?session=abc123def", "--url=<url>"),
+        ("--url=hxxps://exemple.test/x?session=abc123def", "--url=<url>"),
+        ("--url=rtsp://192.0.2.50/flux?session=abc123def", "--url=<url>"),
+        ("lien=www.exemple.test/x?session=abc123def", "lien=<url>"),
+        ("--url=https://exemple.test/l'avis?session=abc123def", "--url=<url>"),
+        ("voir https://exemple.test/q=<script>&session=abc123def", "voir <url>"),
+        ("--url=https://exemple.test/a`b?session=abc123def", "--url=<url>"),
+        ("--url=https://exemple.test/<ip>/x?session=abc123def", "--url=<url>"),
+        (
+            r#"{"url":"https:\/\/exemple.test\/x?session=abc123def"}"#,
+            r#"{"url":"<url>"}"#,
+        ),
+        ("voir https:\\/\\/exemple.test\\/x?session=abc123def", "voir <url>"),
+        ("lien 'https://exemple.test/a' ici", "lien '<url>' ici"),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut}");
+    }
+}
+
+/// Relecture 0.97, ronde 3 : la porte de la voie ouverte suit le même ordre que `masquer` : le secret est masqué
+/// avant `anonymiser` (qui y aurait posé « `<utilisateur>` » devant), l'adresse web part entière (valeurs inventées).
+#[test]
+fn porte_de_la_voie_ouverte_dans_l_ordre() {
+    assert_eq!(
+        avant_anonymiser("curl -u alice:Lune2Verte9 exemple"),
+        "curl -u <secret> exemple"
+    );
+    let t = texte("erreur --url=https://exemple.test/x?session=abc123def ici").map(|t| t.as_str().to_string());
+    assert_eq!(t, Ok("erreur --url=<url> ici".to_string()));
+}

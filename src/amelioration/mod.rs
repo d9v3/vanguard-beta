@@ -985,25 +985,33 @@ pub(crate) fn lot_du_jour(
 /// chevrons du brut sont retirés avant : seuls l'anonymisation et le nettoyage posent des marqueurs. C'est la porte
 /// d'entrée à prendre ; `TexteNettoye::nettoyer` seul laisserait passer un faux marqueur écrit dans le brut.
 pub(crate) fn texte(brut: &str) -> Result<TexteNettoye, Rejet> {
-    TexteNettoye::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))
+    TexteNettoye::nettoyer(&crate::journal::anonymiser(&avant_anonymiser(brut)))
+}
+
+/// Ce que les portes de la voie ouverte font avant `anonymiser` : chevrons retirés, adresses web entières, puis le
+/// masquage. `anonymiser` pose ses marqueurs au début d'un secret (« -u alice:Lune2Verte9 » →
+/// « -u `<utilisateur>`:Lune2Verte9 »), et le nettoyage qui suit ne le voyait plus : le même ordre que `masquer`
+/// (relecture 0.97, haut e, resté dans ces portes).
+fn avant_anonymiser(brut: &str) -> String {
+    texte::masquer(&texte::sans_urls(&texte::sans_chevrons(brut)))
 }
 
 /// Un texte long qui sort de la machine sans passer par la voie ouverte : le détail et la commande du journal des
 /// erreurs (rapatrié, puis en ticket sur GitHub), chaque valeur du brouillon de `vanguard signaler` (montré, puis
-/// copié dans un rapport). Les mêmes étapes que `texte`, dans le même ordre (faux marqueurs, noms, masques), sans la
-/// borne de 300 octets ni les refus (`texte::masquer`). Seuls les faux marqueurs perdent leur chevron, pas tous les
-/// chevrons : une preuve de concept en HTML reste lisible.
+/// copié dans un rapport). Les mêmes étapes que `texte`, dans le même ordre (adresses web, masques, noms, masques),
+/// sans la borne de 300 octets ni les refus (`texte::masquer`). Seuls les faux marqueurs perdent leur chevron, pas
+/// tous les chevrons : une preuve de concept en HTML reste lisible.
 pub(crate) fn masquer(brut: &str) -> String {
     // Masqué avant `anonymiser` puis encore après : `anonymiser` pose ses marqueurs au début d'un secret
     // (« -u alice:Lune2Verte9 » → « -u <utilisateur>:Lune2Verte9 »), et le masquage ne le voyait plus (relecture
     // 0.97, haut e) ; après, pour ce qu'`anonymiser` aurait découvert. Les adresses web d'abord, entières.
-    let premier = texte::masquer(&texte::sans_urls(&texte::sans_faux_marqueurs(brut)));
+    let premier = texte::masquer(&texte::desarme(brut));
     texte::masquer(&crate::journal::anonymiser(&premier))
 }
 
 /// Le nom d'un logiciel, d'un service ou d'un pilote, nettoyé de la même façon.
 pub(crate) fn nom(brut: &str) -> Result<NomLogiciel, Rejet> {
-    NomLogiciel::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))
+    NomLogiciel::nettoyer(&crate::journal::anonymiser(&avant_anonymiser(brut)))
 }
 
 /// La version d'un logiciel tiers. Une version que l'anonymisation changerait porte autre chose qu'une version (un

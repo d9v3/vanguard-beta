@@ -1207,10 +1207,9 @@ fn masques_ipv6_en_nom_inverse() {
         ],
         &["f.e.d.c", "8.b.d", "4.3.2.1", "2.1.d.f"],
     );
-    // Ici, le premier groupe est une IPv4 pour l'anonymiseur, qui l'invente (203.0.113.x) ; le masqueur prend
-    // l'adresse inventée, puis le reste des chiffres. Par le masqueur seul, tout part d'un bloc.
+    // La porte masque avant l'anonymiseur (relecture 0.97) : tout part d'un bloc, comme par le masqueur seul.
     let brut = "requête 3.2.1.0.f.e.d.c.b.a.9.8.7.6.5.4.3.2.1.0.0.0.0.0.8.b.d.0.1.0.0.2.IP6.ARPA ok";
-    assert_eq!(par_texte(brut), "requête <ip>.<ip>.IP6.ARPA ok");
+    assert_eq!(par_texte(brut), "requête <ip>.IP6.ARPA ok");
     assert_eq!(propre(brut), "requête <ip>.IP6.ARPA ok");
     // Une suite de numéros sans « ip6.arpa » reste lisible.
     assert_eq!(propre("section 5.1.2.3.4.6 du guide"), "section 5.1.2.3.4.6 du guide");

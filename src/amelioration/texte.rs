@@ -401,32 +401,95 @@ pub(crate) fn masquer(brut: &str) -> String {
     sortie
 }
 
-/// Toute adresse « http(s):// » devient « `<url>` », où qu'elle soit, même collée à ce qui la précède
-/// (« --url=https://… », « voir:https://… », « xhttps://… ») : le masquage, qui veut une frontière de mot devant,
-/// laissait sinon « https:<chemin>?session=… », la requête lisible (relecture 0.97, haut f). Elle va jusqu'à une
-/// espace ou un guillemet ; la ponctuation qui la ferme (« . », « , », « ) ») reste derrière.
+/// Toute adresse web devient « `<url>` », où qu'elle soit, même collée à ce qui la précède (« --url=https://… »,
+/// « voir:wss://… », « lien=www.… ») : le masquage, qui veut une frontière de mot devant, laissait sinon
+/// « https:`<chemin>`?session=… », la requête lisible (relecture 0.97, haut f). Tout schéma « lettres:// » compte
+/// (wss, ftp, rtsp, l'écriture désarmée hxxps), et aussi ses barres échappées à la JSON (« https:\/\/… »).
+/// L'adresse va jusqu'à une espace ; un guillemet, un chevron ou un accent grave ne la ferme que s'il ouvrait juste
+/// devant elle (« "https://…" », « `<https://…>` ») : permis dans une adresse (« /wiki/L'Avare », « q=`<script>` »),
+/// ils laissaient sinon la suite de la requête en clair. La ponctuation qui la ferme (« . », « , », « ) ») reste
+/// derrière.
 pub(crate) fn sans_urls(texte: &str) -> String {
+    sans_urls_avec(texte, str::to_string)
+}
+
+/// Le texte désarmé pour le masquage : normalisé, adresses web retirées entières (`sans_urls`), puis faux marqueurs
+/// désarmés entre elles seulement (`sans_faux_marqueurs`). Dans l'autre ordre, le chevron d'un faux marqueur écrit
+/// dans une adresse (« https://x/`<ip>`/y?session=… ») devenait une espace qui la coupait (relecture 0.97, moyen).
+pub(crate) fn desarme(brut: &str) -> String {
+    let t = normalise(&brut.replace("\r\n", "\n"));
+    sans_urls_avec(&t, sans_faux_marqueurs)
+}
+
+/// `sans_urls`, en passant `autour` sur chaque morceau de texte entre deux adresses.
+fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
     let bas = texte.to_ascii_lowercase();
     let mut sortie = String::with_capacity(texte.len());
     let mut pos = 0;
-    while let Some(i) = [bas[pos..].find("https://"), bas[pos..].find("http://")]
-        .into_iter()
-        .flatten()
-        .min()
-        .map(|i| pos.saturating_add(i))
-    {
-        sortie.push_str(&texte[pos..i]);
+    while let Some((i, corps)) = prochaine_url(&bas, pos) {
+        sortie.push_str(&autour(&texte[pos..i]));
         let url = &texte[i..];
+        let fermant = match texte[..i].chars().next_back() {
+            Some('"') => Some('"'),
+            Some('\'') => Some('\''),
+            Some('<') => Some('>'),
+            Some('`') => Some('`'),
+            _ => None,
+        };
         let fin = url
-            .find(|c: char| c.is_whitespace() || "\"'<>`«»".contains(c))
-            .unwrap_or(url.len());
-        let corps = url[..fin].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!']);
+            .get(corps..)
+            .and_then(|reste| reste.find(|c: char| c.is_whitespace() || Some(c) == fermant))
+            .map_or(url.len(), |k| k.saturating_add(corps));
+        let garde = url[..fin].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!']);
         sortie.push_str("<url>");
-        sortie.push_str(&url[corps.len()..fin]);
+        sortie.push_str(&url[garde.len()..fin]);
         pos = i.saturating_add(fin);
     }
-    sortie.push_str(&texte[pos..]);
+    sortie.push_str(&autour(&texte[pos..]));
     sortie
+}
+
+/// La prochaine adresse web à partir de `pos` dans le texte en minuscules : son début et la longueur de son schéma
+/// (« wss:// », « www. »), qui n'est jamais coupée. Un schéma a au moins deux caractères, dont une lettre en tête :
+/// « C://x » n'en est pas un.
+fn prochaine_url(bas: &str, mut pos: usize) -> Option<(usize, usize)> {
+    let de_schema = |b: u8| b.is_ascii_alphanumeric() || b"+.-".contains(&b);
+    loop {
+        let reste = bas.get(pos..)?;
+        let separateur = ["://", ":\\/\\/"]
+            .iter()
+            .filter_map(|s| reste.find(s).map(|k| (pos.saturating_add(k), s.len())))
+            .min();
+        let www = reste
+            .match_indices("www.")
+            .map(|(k, _)| pos.saturating_add(k))
+            .find(|&k| {
+                !bas[..k]
+                    .bytes()
+                    .next_back()
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'.')
+                    && bas
+                        .as_bytes()
+                        .get(k.saturating_add(4))
+                        .is_some_and(u8::is_ascii_alphanumeric)
+            });
+        let schema = separateur.map(|(k, n)| {
+            let debut = bas[..k].bytes().rev().take_while(|b| de_schema(*b)).count();
+            let mut d = k.saturating_sub(debut);
+            // Le schéma commence à sa première lettre (« --url=… » s'arrête au « = », « -wss:// » au « w »).
+            while d < k && !bas.as_bytes().get(d).is_some_and(u8::is_ascii_alphabetic) {
+                d = d.saturating_add(1);
+            }
+            (d, k, k.saturating_add(n))
+        });
+        match (schema, www) {
+            (Some((d, _, _)), Some(w)) if w < d => return Some((w, 4)),
+            (None, Some(w)) => return Some((w, 4)),
+            (Some((d, k, apres)), _) if k.saturating_sub(d) >= 2 => return Some((d, apres.saturating_sub(d))),
+            (Some((_, _, apres)), _) => pos = apres,
+            (None, None) => return None,
+        }
+    }
 }
 
 /// Le brut sans faux marqueurs : un « `<ip>` » ou un « `<chemin .pdf>` » écrit dans le texte (pleine chasse et
@@ -1562,13 +1625,155 @@ const DOSSIERS_PERSONNELS: [&str; 17] = [
     "appdata",
 ];
 
-/// Les extensions qui font d'un mot seul un nom de fichier à masquer (`chemin_relatif`).
+/// Les extensions qui font d'un mot seul un nom de fichier à masquer (`chemin_relatif`) : documents, courriels,
+/// images, sons, vidéos, archives, et les suffixes de copie, de chiffrement ou de téléchargement (« .pdf.gpg »,
+/// « .pdf.part », « .pdf.crdownload »), qu'un nom ait l'un ou l'autre en bout de chaîne (relecture 0.97, moyen).
 /// Les programmes (« net.exe », « setup.msi ») n'y sont pas : leur nom est celui d'un outil, rarement d'une personne.
-const EXTENSIONS_NUES: [&str; 38] = [
-    "pdf", "doc", "docx", "odt", "rtf", "txt", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp", "eml", "msg", "vcf",
-    "ics", "jpg", "jpeg", "png", "gif", "heic", "webp", "bmp", "tif", "tiff", "mp3", "mp4", "mov", "mkv", "avi", "wav",
-    "zip", "7z", "rar", "iso", "kdbx", "epub",
+const EXTENSIONS_NUES: [&str; 71] = [
+    "pdf",
+    "doc",
+    "docx",
+    "docm",
+    "dotx",
+    "dotm",
+    "odt",
+    "rtf",
+    "txt",
+    "pages",
+    "xls",
+    "xlsx",
+    "xlsm",
+    "xlsb",
+    "xltx",
+    "ods",
+    "numbers",
+    "csv",
+    "ppt",
+    "pptx",
+    "pptm",
+    "potx",
+    "odp",
+    "key",
+    "eml",
+    "msg",
+    "pst",
+    "ost",
+    "mbox",
+    "vcf",
+    "ics",
+    "htm",
+    "html",
+    "jpg",
+    "jpeg",
+    "jfif",
+    "png",
+    "gif",
+    "heic",
+    "webp",
+    "avif",
+    "bmp",
+    "tif",
+    "tiff",
+    "mp3",
+    "m4a",
+    "wav",
+    "flac",
+    "ogg",
+    "mp4",
+    "m4v",
+    "mov",
+    "mkv",
+    "avi",
+    "webm",
+    "wmv",
+    "zip",
+    "7z",
+    "rar",
+    "gz",
+    "tgz",
+    "tar",
+    "iso",
+    "kdbx",
+    "epub",
+    "gpg",
+    "asc",
+    "bak",
+    "tmp",
+    "part",
+    "crdownload",
 ];
+
+/// Les extensions de programmes et de scripts : la sorte d'un fichier lancé, gardée dans « `<chemin .exe>` ».
+const EXTENSIONS_DE_PROGRAMME: [&str; 17] = [
+    "exe", "msi", "dll", "sys", "bat", "cmd", "ps1", "vbs", "js", "sh", "py", "jar", "scr", "lnk", "deb", "rpm", "app",
+];
+
+/// Les noms de fichiers banals d'un projet (« README.txt », « requirements.txt ») : ils ne nomment personne et
+/// aident à comprendre une erreur ; gardés (relecture 0.97, bas).
+const NOMS_BANALS: [&str; 10] = [
+    "readme",
+    "license",
+    "licence",
+    "changelog",
+    "requirements",
+    "robots",
+    "cmakelists",
+    "contributing",
+    "authors",
+    "copying",
+];
+
+/// Une extension connue (liste fermée), seule à pouvoir rester dans un marqueur « `<chemin .ext>` » : une
+/// « extension » quelconque peut être un nom (« zoe.martin », « Rapport.alice ») ; elle ne garde pas non plus plus de
+/// `EXTENSION_MAX` caractères, la règle du marqueur.
+pub(crate) fn extension_connue(ext: &str) -> bool {
+    let e = ext.to_ascii_lowercase();
+    e.len() <= EXTENSION_MAX && (EXTENSIONS_NUES.contains(&e.as_str()) || EXTENSIONS_DE_PROGRAMME.contains(&e.as_str()))
+}
+
+/// Un nom de fichier nu (« CV-Zoe-Martin.pdf ») : pris si une des extensions de sa chaîne est dans la liste fermée
+/// (« .pdf.gpg », « .tar.gz », « .pdf.crdownload ») et si ce qui la précède porte une lettre, n'importe où
+/// (« 2026.Zoe-Martin.pdf », « .Zoe-Martin.pdf ») ; « v1.2 », « 192.168.1.5 » ou « main.rs » restent (relecture 0.97,
+/// moyens). Rend sa fin et l'extension montrée : la dernière si elle est connue, sinon la dernière connue de la chaîne, jamais
+/// une inconnue (« CV.pdf.zoe »).
+fn nom_nu(nom: &[char], derniere: Option<&str>, fin: usize) -> Option<(usize, Option<String>)> {
+    let texte: String = nom.iter().collect();
+    let elements: Vec<&str> = texte.split('.').collect();
+    let ext = |e: &str| -> String {
+        e.chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let connue = (1..elements.len()).rev().find(|&k| {
+        elements
+            .get(k)
+            .is_some_and(|e| EXTENSIONS_NUES.contains(&ext(e).as_str()))
+    })?;
+    let lettre = elements
+        .get(..connue)?
+        .iter()
+        .any(|e| e.chars().any(char::is_alphabetic));
+    let banal = elements.len() == 2
+        && elements
+            .first()
+            .is_some_and(|e| NOMS_BANALS.contains(&e.to_ascii_lowercase().as_str()));
+    if !lettre || banal {
+        return None;
+    }
+    let montree = derniere
+        .filter(|e| extension_connue(e))
+        .map(str::to_string)
+        .or_else(|| {
+            elements
+                .get(1..=connue)?
+                .iter()
+                .rev()
+                .map(|e| ext(e))
+                .find(|e| e.len() <= EXTENSION_MAX && EXTENSIONS_NUES.contains(&e.as_str()))
+        });
+    Some((fin, montree))
+}
 
 /// Un chemin relatif : des éléments séparés par « / » ou « \ » (« Documents/impots-2026.pdf », « Bureau\paie.xlsx »,
 /// « .ssh/id_ed25519 », « ../Marie Tremblay/notes.txt »). Rend sa fin et l'extension de son dernier élément. Les
@@ -1652,10 +1857,7 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
     // document, d'une image, d'une archive ou d'un programme (liste fermée), et son nom porte une lettre ; « main.rs »,
     // « exemple.com » ou « v1.2 » restent (relecture 0.97, haut b).
     if seul {
-        let nom_porte_lettre = nom.iter().take_while(|y| **y != '.').any(|y| y.is_alphabetic());
-        return extension
-            .filter(|e| nom_porte_lettre && EXTENSIONS_NUES.contains(&e.as_str()))
-            .map(|e| (fin, Some(e)));
+        return nom_nu(nom, extension.as_deref(), fin);
     }
     let textes: Vec<String> = elements.iter().map(|(a, b)| chaine(c, *a, *b).to_lowercase()).collect();
     let point = |e: &str| e == "." || e == "..";

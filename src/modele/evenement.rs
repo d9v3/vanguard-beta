@@ -191,6 +191,15 @@ pub(crate) fn borne(texte: &str, max: usize) -> String {
     }
 }
 
+/// Les `max` premiers caractères, coupés net : pour la clé, qui reconnaît une alerte déjà vue et n'est pas un texte
+/// montré. Coupée à une espace, deux longues clés sans espace devenaient toutes deux « … » et se confondaient
+/// (relecture 0.97, bas).
+fn borne_cle(cle: &str, max: usize) -> String {
+    cle.char_indices()
+        .nth(max)
+        .map_or_else(|| cle.to_string(), |(i, _)| cle[..i].to_string())
+}
+
 /// Un identifiant neuf : l'heure, le processus et un compteur suffisent dans un processus ; les quatre octets tirés au
 /// hasard séparent deux Vanguard lancés dans la même seconde avec le même numéro (un conteneur, une autre machine
 /// qui partage le dossier).
@@ -235,7 +244,7 @@ impl Evenement {
     }
 
     pub(crate) fn cle(mut self, cle: Option<&str>) -> Evenement {
-        self.cle = cle.map(|c| borne(c, TEXTE_MAX));
+        self.cle = cle.map(|c| borne_cle(c, TEXTE_MAX));
         self
     }
 
@@ -340,6 +349,18 @@ mod tests {
         assert_eq!(borne("ab ghp_aB3dE5fG7hJ9kL1m fin", 10), "ab…");
         assert_eq!(borne("sans_espace_du_tout", 5), "…");
         assert_eq!(borne("court", 10), "court");
+    }
+
+    /// Deux longues clés sans espace restent distinctes (valeurs inventées).
+    #[test]
+    fn longues_cles_distinctes() {
+        let a = Evenement::le(Source::Vanguard, Genre::NormaleOubliee, quand())
+            .cle(Some(&format!("blocage|/a{}", "x".repeat(2000))));
+        let b = Evenement::le(Source::Vanguard, Genre::NormaleOubliee, quand())
+            .cle(Some(&format!("blocage|/b{}", "x".repeat(2000))));
+        assert_eq!(a.cle.as_deref().map(|c| c.chars().count()), Some(TEXTE_MAX));
+        assert_ne!(a.cle, b.cle);
+        assert_eq!(borne_cle("abcdef", 3), "abc");
     }
     use proptest::prelude::*;
 

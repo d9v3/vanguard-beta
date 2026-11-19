@@ -1066,17 +1066,20 @@ fn valeur_reduite(valeur: &str, option: Option<&clap::Arg>, mots: &std::collecti
     if valeur.bytes().all(|b| b.is_ascii_hexdigit() || b".:/-".contains(&b)) {
         return "<valeur>".into();
     }
+    // L'extension ne reste que si elle est connue (liste fermée) et que le nom n'est pas un dossier de compte : une
+    // « extension » quelconque peut être un nom de famille (« prenom.nom », dossier de compte compris) (relecture
+    // 0.97, haut).
+    let elements: Vec<&str> = valeur.split(['/', '\\']).filter(|e| !e.is_empty()).collect();
+    let dossier_de_compte = elements.len() >= 2
+        && elements
+            .get(elements.len().saturating_sub(2))
+            .is_some_and(|parent| ["home", "users"].contains(&parent.to_ascii_lowercase().as_str()));
     let extension = valeur
         .rsplit_once('.')
-        .filter(|(nom, _)| !nom.is_empty())
-        .map(|(_, ext)| ext)
-        .filter(|ext| {
-            (1..=10).contains(&ext.chars().count())
-                && ext.chars().all(char::is_alphanumeric)
-                && ext.chars().any(char::is_alphabetic)
-        });
+        .filter(|(nom, ext)| !nom.is_empty() && !dossier_de_compte && crate::amelioration::texte::extension_connue(ext))
+        .map(|(_, ext)| ext);
     match extension {
-        Some(ext) => format!("<chemin .{}>", ext.to_lowercase()),
+        Some(ext) => format!("<chemin .{}>", ext.to_ascii_lowercase()),
         None if valeur.contains(['/', '\\']) => "<chemin>".into(),
         None => "<valeur>".into(),
     }
@@ -1192,11 +1195,17 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     }
 }
 
-/// La commande écrite au journal, réduite argument par argument (`commande_anonyme`) : il n'en reste que des mots de
-/// la liste fermée et des marqueurs, que le masquage commun n'a plus rien à prendre ; « menu » quand il n'y en a pas.
+/// La commande écrite au journal, réduite argument par argument (`commande_anonyme`), puis passée encore par le
+/// masquage commun et `anonymiser`, en filet (relecture 0.97, haut) : un mot gardé par la liste fermée ne devrait
+/// rien porter de personnel, mais rien ne le prouve pour chaque mot de l'aide. Les marqueurs posés par la réduction
+/// sont les vrais : pas de désarmement ici, qui les casserait. « menu » quand il n'y a pas d'argument.
 fn commande_ecrite(arguments: &[String]) -> String {
     let commande = commande_anonyme(arguments);
-    if commande.is_empty() { "menu".into() } else { commande }
+    if commande.is_empty() {
+        return "menu".into();
+    }
+    let masquer = crate::amelioration::texte::masquer;
+    masquer(&anonymiser(&masquer(&commande)))
 }
 
 /// Le détail tel qu'il est écrit : coupé à `DETAIL_MAX` octets à une espace (un jeton ou un chemin à cheval sur la
@@ -1947,6 +1956,37 @@ mod tests {
             commande_ecrite(&args(&["protection", "non", "--pendant", "1h"])),
             "protection non --pendant 1h"
         );
+        // Relecture 0.97, ronde 3 : une « extension » inconnue (« prenom.nom ») ou celle d'un dossier de compte ne
+        // reste pas ; seule une extension de la liste fermée reste (valeurs inventées).
+        for (a, attendu) in [
+            (
+                &["verifier-fichier", r"C:\Users\alice.pdf"][..],
+                "verifier-fichier <chemin>",
+            ),
+            (
+                &["verifier-fichier", "/srv/partage/alice.exemple"][..],
+                "verifier-fichier <chemin>",
+            ),
+            (
+                &["verifier-fichier", "/home/alice.pdf"][..],
+                "verifier-fichier <chemin>",
+            ),
+            (
+                &["nommer", "192.168.1.20", "alice.exemple"][..],
+                "nommer <valeur> <valeur>",
+            ),
+            (
+                &["appareils", "--ports=alice.exemple"][..],
+                "appareils --ports=<valeur>",
+            ),
+            (&["verifier-fichier", "CV.Zoé"][..], "verifier-fichier <valeur>"),
+            (
+                &["verifier-fichier", "Facture.Tremblay.PDF"][..],
+                "verifier-fichier <chemin .pdf>",
+            ),
+        ] {
+            assert_eq!(commande_ecrite(&args(a)), attendu, "{a:?}");
+        }
     }
 
     #[cfg(unix)]
