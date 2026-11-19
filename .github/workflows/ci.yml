@@ -301,7 +301,8 @@ jobs:
     # 26.04 : son éditeur de liens MinGW (binutils 2.41 sur 24.04, trop vieux) remplit le répertoire « Load Config »
     # depuis _load_config_used ; sans lui, le .exe n'a pas la garde des DLL et verifier-binaire le refuse à raison.
     runs-on: ubuntu-26.04
-    timeout-minutes: 40
+    # 60 : la tâche prend déjà 37-40 min sans cache (deux constructions complètes, Linux et Windows).
+    timeout-minutes: 60
     # zig et cargo-zigbuild posés à chaque exécution dans le dossier temporaire du runner (jamais de cache entre deux
     # exécutions : l'archive de zig et le paquet de cargo-zigbuild sont revérifiés à chaque fois), d'abord depuis les
     # miroirs de la communauté de zig, comme ziglang.org le demande aux CI ; un miroir ne peut rien glisser (empreinte
