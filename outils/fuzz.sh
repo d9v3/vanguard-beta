@@ -89,10 +89,14 @@ for c in "${liste[@]}"; do
   journal=$FUZZ/$c.log
   mkdir -p "$corpus" "$plantages"
   echo "▶ $c, $DUREE s"
+  # Un dictionnaire (fuzz/dictionnaires/<cible>.dict, s'il existe) : les mots que le fuzzer ne trouverait pas seul en
+  # changeant des octets au hasard (« serial-number », « pass-phrase », « net use »), pour qu'il les combine.
+  dict=()
+  [[ -f fuzz/dictionnaires/$c.dict ]] && dict=(-dict="fuzz/dictionnaires/$c.dict")
   # Le premier dossier reçoit ce que le fuzzer découvre ; les graines ne sont que lues. Compilé hors du dépôt, avec
   # les vérifications de débordement (comme la version publiée) et AddressSanitizer, par défaut chez cargo-fuzz.
   if cargo +nightly fuzz run --target "$HOTE" --fuzz-dir fuzz --target-dir "$CIBLE_FUZZ" "$c" "$corpus" "fuzz/graines/$c" -- \
-    -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 ${MAX_LEN[$c]:+-max_len="${MAX_LEN[$c]}"} \
+    -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 ${MAX_LEN[$c]:+-max_len="${MAX_LEN[$c]}"} "${dict[@]}" \
     >"$journal" 2>&1; then
     # -a : le journal recopie parfois des octets d'une entrée ; grep le disait binaire (« Binary file matches »), et
     # le nombre d'exécutions manquait (« ? »).

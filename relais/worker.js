@@ -1193,8 +1193,8 @@ const SCHEMA = {
 // Chaque fonction porte le nom de son modèle en Rust ; les indices comptent des caractères (points de code).
 
 // ==== DÉBUT DES MOTIFS DU DÉTECTEUR =============================================================================
-// Recopiés de texte.rs (PREFIXES, CLES, CLES_COURTES, CLES_FORTES, CLES_LIGNE, SCHEMAS, CLES_SANS_SEPARATEUR,
-// MARQUEURS, les formes de « mot de passe », ENTROPIE_LONGUEUR, ENTROPIE_SEUIL, TEXTE_MAX, NOM_MAX, VERSION_MAX, la
+// Recopiés de texte.rs (PREFIXES, CLES, CLES_COURTES, CLES_FORTES, CLES_LIGNE, CLES_PHRASE, SCHEMAS,
+// CLES_PHRASE_DANS, CLES_SANS_SEPARATEUR, MOTS_DE_PASSE, MARQUEURS, ENTROPIE_LONGUEUR, ENTROPIE_SEUIL, TEXTE_MAX, NOM_MAX, VERSION_MAX, la
 // ponctuation permise et les invisibles) : outils/relais-schema.py vérifie qu'ils sont identiques. JSON strict.
 const DETECTEUR = {
   "prefixes": [
@@ -1206,16 +1206,23 @@ const DETECTEUR = {
   ],
   "cles": [
     "password", "passwd", "passphrase", "pwd", "secret", "token", "jeton", "apikey", "api_key", "api-key",
-    "authorization", "bearer", "cookie", "credential", "private_key", "privatekey", "private-key", "access_key"
+    "authorization", "bearer", "cookie", "credential", "private_key", "privatekey", "private-key", "access_key",
+    "passwort", "kennwort", "schlüssel"
   ],
-  "cles_courtes": ["pass", "pw", "psk", "mdp", "cle", "clé", "key", "passe", "pin"],
-  "cles_fortes": ["passe", "clé", "cle", "password", "passwd", "passphrase", "mdp", "psk"],
+  "cles_courtes": ["pass", "pw", "psk", "mdp", "cle", "clé", "clef", "key", "passe", "pin"],
+  "cles_fortes": ["passe", "clé", "cle", "clef", "password", "passwd", "passphrase", "mdp", "psk", "passwort", "kennwort"],
   "cles_ligne": ["authorization", "cookie"],
+  "cles_phrase": ["passe", "password", "passwd", "passphrase", "mdp", "psk", "pwd", "pass", "secret", "clé", "cle", "clef", "pw"],
+  "cles_phrase_dans": ["password", "passwd", "passphrase", "motdepasse", "passwort", "kennwort", "schlüssel"],
   "schemas": ["bearer", "basic", "token", "digest", "negotiate"],
   "cles_sans_separateur": [
-    "password", "passwd", "passphrase", "pwd", "pass", "mdp", "passe", "psk", "secret", "token", "jeton", "apikey", "p"
+    "password", "passwd", "passphrase", "pwd", "pass", "mdp", "passe", "psk", "secret", "token", "jeton", "apikey", "passwort", "kennwort",
+    "p"
   ],
-  "mots_de_passe": ["mot de passe", "mot-de-passe", "mot_de_passe", "motdepasse"],
+  "mots_de_passe": [
+    "mot de passe", "mot-de-passe", "mot_de_passe", "motdepasse", "pass phrase", "phrase secrète", "phrase secrete",
+    "code d'accès", "code d'acces", "code d’accès", "key content"
+  ],
   "marqueurs": [
     "<chemin>", "<numéro>", "<url>", "<ip>", "<mac>", "<guid>", "<hex>", "<jeton>", "<secret>", "<clé>",
     "<adresse>", "<utilisateur>", "<machine>", "<réseau>", "<appareil>", "<compte>", "<courriel>", "<numéro>",
@@ -1421,10 +1428,18 @@ function prefixeConnu(c, i) {
 
 const motDeCle = (x) => alnum(x) || x === "_" || x === "-";
 const entreCleEtValeur = (x) => x === " " || x === "\t" || x === '"' || x === "'";
+/// texte.rs, `separe_cle_et_valeur`.
+const separeCleEtValeur = (c, k) =>
+  entreCleEtValeur(avant(c, k)) || (avant(c, k) === "\\" && (car(c, k) === '"' || car(c, k) === "'"));
+/// texte.rs, `compact`.
+const compact = (mot) => mot.replace(/[_-]/g, "");
 
 function motAnnonceUnSecret(mot) {
+  const tasse = compact(mot);
+  // Sans accents : « secrète » contient alors « secret » (texte.rs, `sans_accent`).
+  const plat = tasse.toLowerCase().replace(/[éèêë]/g, "e");
   return (
-    DETECTEUR.cles.some((cle) => mot.includes(cle)) ||
+    DETECTEUR.cles.some((cle) => mot.includes(cle) || tasse.includes(cle) || plat.includes(cle)) ||
     DETECTEUR.cles_courtes.some((cle) => {
       if (mot === cle) {
         return true;
@@ -1468,11 +1483,12 @@ function motDeLaLangue(v) {
 /// texte.rs, `valeur_de_cle`.
 function valeurDeCle(c, i) {
   const premier = car(c, i);
-  if (premier === undefined || blanc(premier) || "\"'=:".includes(premier)) {
+  const echappe = premier === "\\" && (car(c, i + 1) === '"' || car(c, i + 1) === "'");
+  if (premier === undefined || blanc(premier) || "\"'=:".includes(premier) || echappe) {
     return null;
   }
   let j = i;
-  while (entreCleEtValeur(avant(c, j))) {
+  while (separeCleEtValeur(c, j)) {
     j -= 1;
   }
   if (j === 0) {
@@ -1486,13 +1502,18 @@ function valeurDeCle(c, i) {
   let k = separateur;
   for (;;) {
     const y = avant(c, k);
-    if (!(entreCleEtValeur(y) || y === "=" || y === ":")) {
+    if (!(separeCleEtValeur(c, k) || y === "=" || y === ":")) {
       break;
     }
     k -= 1;
   }
   const mots = motsAvant(c, k);
   const dernier = mots[0] ?? "";
+  // « -p=Lune2Verte » : la même règle que la valeur collée à « -p ».
+  if (sep === "=" && dernier.startsWith("-") && dernier.replace(/^-+/, "") === "p") {
+    const fin = finTantQue(c, i, (y) => !blanc(y) && y !== '"' && y !== "'");
+    return fin > i && motDePasseColle(morceau(c, i, fin)) ? fin : null;
+  }
   const devant = chaine(c, Math.max(0, k - 48), k).toLowerCase();
   const annonce =
     motAnnonceUnSecret(dernier) ||
@@ -1501,6 +1522,12 @@ function valeurDeCle(c, i) {
   if (!annonce) {
     return null;
   }
+  const phrase =
+    mots.some((m) =>
+      DETECTEUR.cles_phrase.some(
+        (cle) => m === cle || (m.endsWith(cle) && (m.slice(0, -cle.length).endsWith("_") || m.slice(0, -cle.length).endsWith("-")))
+      ) || DETECTEUR.cles_phrase_dans.some((cle) => compact(m).includes(cle))
+    ) || DETECTEUR.mots_de_passe.some((m) => devant.includes(m));
   const milieu = morceau(c, separateur + 1, i);
   let guillemet;
   for (let q = milieu.length - 1; q >= 0; q -= 1) {
@@ -1514,17 +1541,37 @@ function valeurDeCle(c, i) {
     fin = finTantQue(c, i, (y) => y !== guillemet && y !== "\n");
   } else if (DETECTEUR.cles_ligne.some((cle) => dernier.includes(cle))) {
     fin = finTantQue(c, i, (y) => y !== "\n");
+  } else if (phrase) {
+    fin = finDePhrase(c, i);
   } else {
     fin = apresSchema(c, i, finTantQue(c, i, (y) => !blanc(y)));
   }
   return fin > i ? fin : null;
 }
 
+/// texte.rs, `fin_de_phrase`.
+function finDePhrase(c, i) {
+  let j = i;
+  while (j < c.length) {
+    const y = c[j];
+    if (y === "\n" || (".;!?".includes(y) && (j + 1 >= c.length || blanc(c[j + 1])))) {
+      break;
+    }
+    j += 1;
+  }
+  return j;
+}
+
 /// texte.rs, `apres_option`.
 function apresOption(c, i, j) {
-  if (j === i || morceau(c, j, i).some((y) => y === '"' || y === "'")) {
-    return null;
+  if (j === i) {
+    return optionCollee(c, i);
   }
+  const netUse = apresNetUse(c, i, j);
+  if (netUse !== null) {
+    return netUse;
+  }
+  const guillemet = dernierGuillemet(morceau(c, j, i));
   let debut = j;
   while (motDeCle(avant(c, debut)) || avant(c, debut) === "/") {
     debut -= 1;
@@ -1532,11 +1579,82 @@ function apresOption(c, i, j) {
   const brut = chaine(c, debut, j).toLowerCase();
   const option = brut.startsWith("-") || brut.startsWith("/");
   const mot = brut.replace(/^[-/]+/, "");
-  const fin = finTantQue(c, i, (y) => !blanc(y));
+  const fin = finTantQue(c, i, (y) => !blanc(y) && y !== guillemet);
   const valeur = morceau(c, i, fin);
   const utilisateur = option && (mot === "u" || mot === "user") && valeur.some((y) => y === ":" || y === "%");
   const cle = DETECTEUR.cles_sans_separateur.includes(mot) && (option || mot.length > 1);
   return (cle && !motDeLaLangue(valeur)) || utilisateur ? fin : null;
+}
+
+/// texte.rs, `option_collee`.
+function optionCollee(c, i) {
+  const lettre = avant(c, i);
+  const devant = i < 3 ? undefined : c[i - 3];
+  const debutDeMot = devant === undefined || blanc(devant) || "\"'[(,".includes(devant);
+  if (i < 2 || c[i - 2] !== "-" || !debutDeMot || !(lettre === "p" || lettre === "u")) {
+    return null;
+  }
+  const guillemet = devant === '"' || devant === "'" ? devant : undefined;
+  const fin = finTantQue(c, i, (y) => !blanc(y) && y !== guillemet);
+  const valeur = morceau(c, i, fin);
+  const pris = lettre === "u" ? valeur.some((y) => y === ":" || y === "%") : motDePasseColle(valeur);
+  return pris && fin > i ? fin : null;
+}
+
+/// texte.rs, `mot_de_passe_colle`.
+function motDePasseColle(valeur) {
+  return (
+    !motDeLaLangue(valeur) &&
+    valeur.some(alnum) &&
+    !valeur.every((y) => minuscule(y) || y === "-" || y === "_") &&
+    !valeur.every((y) => asciiChiffre(y) || ":.-/".includes(y))
+  );
+}
+
+/// Le dernier guillemet (droit ou apostrophe) d'un morceau, s'il y en a un.
+function dernierGuillemet(m) {
+  for (let q = m.length - 1; q >= 0; q -= 1) {
+    if (m[q] === '"' || m[q] === "'") {
+      return m[q];
+    }
+  }
+  return undefined;
+}
+
+/// texte.rs, `apres_net_use`.
+function apresNetUse(c, i, j) {
+  if (car(c, i) === "/") {
+    return null;
+  }
+  const mots = [];
+  let k = j;
+  while (mots.length < 8) {
+    while (avant(c, k) === " " || avant(c, k) === "\t") {
+      k -= 1;
+    }
+    let debut = k;
+    while (avant(c, debut) !== undefined && !blanc(avant(c, debut))) {
+      debut -= 1;
+    }
+    if (debut === k) {
+      break;
+    }
+    mots.push(chaine(c, debut, k).toLowerCase().replace(/^["']+|["']+$/g, ""));
+    k = debut;
+  }
+  const unc = mots.slice(0, 5).findIndex((m) => m.startsWith("\\\\") || m.startsWith("//"));
+  if (unc < 0 || !mots.slice(0, unc).every((m) => m.startsWith("/"))) {
+    return null;
+  }
+  let reste = mots.slice(unc + 1);
+  const lecteur = reste.length > 0 && (reste[0] === "*" || (Array.from(reste[0]).length === 2 && reste[0].endsWith(":")));
+  if (lecteur) {
+    reste = reste.slice(1);
+  }
+  const commande = reste.length >= 2 && reste[0] === "use" && (reste[1] === "net" || reste[1] === "net.exe");
+  const guillemet = dernierGuillemet(morceau(c, j, i));
+  const fin = finTantQue(c, i, (y) => !blanc(y) && y !== guillemet);
+  return commande && fin > i ? fin : null;
 }
 
 function apresSchema(c, debut, fin) {

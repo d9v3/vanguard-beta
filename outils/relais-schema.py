@@ -98,23 +98,24 @@ def corps_de_fonction(texte, signature):
 
 def detecteur_de_texte_rs(texte):
     chaines = lambda nom: re.findall(CHAINE, tableau_rust(texte, nom))
-    mots = re.search(r'\[("mot de passe"[^\]]*)\]', texte)
     permis = re.search(r'"([^"]*)"\.contains\(x\)', corps_de_fonction(texte, "pub(crate) fn permis("))
     invisibles = [
         [int(a, 16), int(b or a, 16)]
         for a, b in re.findall(r"0x([0-9A-Fa-f]+)(?:\.\.=0x([0-9A-Fa-f]+))?", corps_de_fonction(texte, "fn invisible("))
     ]
-    if not mots or not permis or not invisibles:
-        raise SystemExit("texte.rs : les formes de « mot de passe », `permis` ou `invisible` introuvables")
+    if not permis or not invisibles:
+        raise SystemExit("texte.rs : `permis` ou `invisible` introuvables")
     return {
         "prefixes": [[p, int(n)] for p, n in re.findall(r'\("([^"]*)",\s*(\d+)\)', tableau_rust(texte, "PREFIXES"))],
         "cles": chaines("CLES"),
         "cles_courtes": chaines("CLES_COURTES"),
         "cles_fortes": chaines("CLES_FORTES"),
         "cles_ligne": chaines("CLES_LIGNE"),
+        "cles_phrase": chaines("CLES_PHRASE"),
+        "cles_phrase_dans": chaines("CLES_PHRASE_DANS"),
         "schemas": chaines("SCHEMAS"),
         "cles_sans_separateur": chaines("CLES_SANS_SEPARATEUR"),
-        "mots_de_passe": re.findall(CHAINE, mots.group(1)),
+        "mots_de_passe": chaines("MOTS_DE_PASSE"),
         "marqueurs": chaines("MARQUEURS"),
         "extension_max": scalaire_rust(texte, "EXTENSION_MAX"),
         "entropie_longueur": scalaire_rust(texte, "ENTROPIE_LONGUEUR"),

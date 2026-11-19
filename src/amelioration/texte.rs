@@ -701,7 +701,7 @@ fn prefixe_connu(c: &[char], i: usize) -> Option<usize> {
 
 /// Mots qui annoncent un secret devant `:` ou `=` (plan, couche 2), cherchés dans le mot qui précède : `db_password=`,
 /// `client_secret:`, `X-Auth-Token:`, `"api_key": "…"`.
-const CLES: [&str; 18] = [
+const CLES: [&str; 21] = [
     "password",
     "passwd",
     "passphrase",
@@ -720,25 +720,91 @@ const CLES: [&str; 18] = [
     "privatekey",
     "private-key",
     "access_key",
+    // L'allemand colle ses mots : « Netzwerksicherheitsschlüssel », « Schlüsselinhalt » (netsh wlan … key=clear).
+    "passwort",
+    "kennwort",
+    "schlüssel",
 ];
 
 /// Mots courts qui annoncent un secret seulement comme mot entier ou comme dernier morceau d'un nom (`DB_PASS`,
 /// `wifi-psk`, « Clé : ») : cherchés dans un mot, ils sonneraient partout (« compass », « keyboard »).
-const CLES_COURTES: [&str; 9] = ["pass", "pw", "psk", "mdp", "cle", "clé", "key", "passe", "pin"];
+const CLES_COURTES: [&str; 10] = ["pass", "pw", "psk", "mdp", "cle", "clé", "clef", "key", "passe", "pin"];
 
 /// Mots qui annoncent un secret même quelques mots avant le séparateur : « Mot de passe Wi-Fi : … », « Clé de
 /// sécurité réseau : … », « Invalid API key: … ».
-const CLES_FORTES: [&str; 8] = ["passe", "clé", "cle", "password", "passwd", "passphrase", "mdp", "psk"];
+const CLES_FORTES: [&str; 11] = [
+    "passe",
+    "clé",
+    "cle",
+    "clef",
+    "password",
+    "passwd",
+    "passphrase",
+    "mdp",
+    "psk",
+    "passwort",
+    "kennwort",
+];
 
 /// Clés dont la valeur court jusqu'à la fin de la ligne : « Authorization: Basic … », « Cookie: a=1; b=2 ».
 const CLES_LIGNE: [&str; 2] = ["authorization", "cookie"];
+
+/// Mots qui annoncent un mot de passe, souvent une phrase de passe de plusieurs mots (« phrase de passe : lune verte
+/// soupe orange ») : la valeur court jusqu'à la fin de la phrase, pas seulement jusqu'à la première espace.
+/// Aussi « secret », « clé », « pw » : un secret de plusieurs mots (« client_secret=lune verte ») ne sort pas plus que
+/// la phrase de passe.
+const CLES_PHRASE: [&str; 13] = [
+    "passe",
+    "password",
+    "passwd",
+    "passphrase",
+    "mdp",
+    "psk",
+    "pwd",
+    "pass",
+    "secret",
+    "clé",
+    "cle",
+    "clef",
+    "pw",
+];
+
+/// Ce qui, n'importe où dans un nom écrit sans « _ » ni « - » (« PGPASSWORD », « userPassword », « pass-phrase »),
+/// annonce aussi une phrase de passe ; de même en allemand (« Kennwort », « Netzwerksicherheitsschlüssel » : une clé
+/// de Wi-Fi peut porter des espaces).
+const CLES_PHRASE_DANS: [&str; 7] = [
+    "password",
+    "passwd",
+    "passphrase",
+    "motdepasse",
+    "passwort",
+    "kennwort",
+    "schlüssel",
+];
+
+/// Les formes de « mot de passe » (et « pass phrase ») qui, dans les 48 caractères avant le séparateur, annoncent un
+/// secret à quelques mots de distance. Aussi « phrase secrète » (GnuPG en français), « code d'accès » et « Key
+/// Content » (la clé du Wi-Fi que montre « netsh wlan show profile key=clear » : « content » seul n'annonce rien).
+const MOTS_DE_PASSE: [&str; 11] = [
+    "mot de passe",
+    "mot-de-passe",
+    "mot_de_passe",
+    "motdepasse",
+    "pass phrase",
+    "phrase secrète",
+    "phrase secrete",
+    "code d'accès",
+    "code d'acces",
+    "code d’accès",
+    "key content",
+];
 
 /// Les mots qui annoncent un jeton à la suite (« Bearer abc… »).
 const SCHEMAS: [&str; 5] = ["bearer", "basic", "token", "digest", "negotiate"];
 
 /// Les options de ligne de commande et les mots suivis du secret après une simple espace : `--password x`,
 /// `-Password x`, `/pass x`, `-p x`, « mot de passe x », `sshpass -p x`. Sans `-`, « p » et « u » ne comptent pas.
-const CLES_SANS_SEPARATEUR: [&str; 13] = [
+const CLES_SANS_SEPARATEUR: [&str; 15] = [
     "password",
     "passwd",
     "passphrase",
@@ -751,6 +817,8 @@ const CLES_SANS_SEPARATEUR: [&str; 13] = [
     "token",
     "jeton",
     "apikey",
+    "passwort",
+    "kennwort",
     "p",
 ];
 
@@ -762,9 +830,26 @@ fn entre_cle_et_valeur(x: char) -> bool {
     x == ' ' || x == '\t' || x == '"' || x == '\''
 }
 
+/// Si le caractère juste avant `k` sépare une clé de sa valeur : `entre_cle_et_valeur`, ou la barre d'un guillemet
+/// échappé (« \\"password\\": \\"lune verte\\" », du JSON dans du JSON). Pas une barre seule : « dossier\\pass\\x »
+/// est un chemin.
+fn separe_cle_et_valeur(c: &[char], k: usize) -> bool {
+    avant(c, k)
+        .is_some_and(|y| entre_cle_et_valeur(y) || (y == '\\' && car(c, k).is_some_and(|q| q == '"' || q == '\'')))
+}
+
+/// Un nom sans « _ » ni « - » : « pass-phrase » et « pass_phrase » se lisent « passphrase ».
+fn compact(mot: &str) -> String {
+    mot.chars().filter(|y| *y != '_' && *y != '-').collect()
+}
+
 /// Si ce mot (en minuscules) annonce un secret : un mot-clé dedans, ou un mot court entier ou en dernier morceau.
 fn mot_annonce_un_secret(mot: &str) -> bool {
-    CLES.iter().any(|cle| mot.contains(cle))
+    let tasse = compact(mot);
+    // Sans accents : « secrète » contient alors « secret ».
+    let plat: String = tasse.chars().map(sans_accent).collect();
+    CLES.iter()
+        .any(|cle| mot.contains(cle) || tasse.contains(cle) || plat.contains(cle))
         || CLES_COURTES.iter().any(|cle| {
             mot == *cle
                 || mot
@@ -808,11 +893,12 @@ fn mot_de_la_langue(v: &[char]) -> bool {
 /// une option connue (`-p`, `--password`) suffit.
 fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
     let premier = car(c, i)?;
-    if premier.is_whitespace() || "\"'=:".contains(premier) {
+    let echappe = premier == '\\' && car(c, suivant(i)).is_some_and(|q| q == '"' || q == '\'');
+    if premier.is_whitespace() || "\"'=:".contains(premier) || echappe {
         return None;
     }
     let mut j = i;
-    while avant(c, j).is_some_and(entre_cle_et_valeur) {
+    while separe_cle_et_valeur(c, j) {
         j = j.checked_sub(1)?;
     }
     let separateur = j.checked_sub(1)?;
@@ -821,20 +907,30 @@ fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
         return apres_option(c, i, j);
     }
     let mut k = separateur;
-    while avant(c, k).is_some_and(|y| entre_cle_et_valeur(y) || y == '=' || y == ':') {
+    while separe_cle_et_valeur(c, k) || avant(c, k).is_some_and(|y| y == '=' || y == ':') {
         k = k.checked_sub(1)?;
     }
     let mots = mots_avant(c, k);
     let dernier = mots.first().map_or("", String::as_str);
+    // « -p=Lune2Verte » : la même règle que la valeur collée à « -p ».
+    if sep == '=' && dernier.starts_with('-') && dernier.trim_start_matches('-') == "p" {
+        let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && y != '"' && y != '\'');
+        return (fin > i && mot_de_passe_colle(morceau(c, i, fin))).then_some(fin);
+    }
     let devant = chaine(c, k.saturating_sub(48), k).to_lowercase();
     let annonce = mot_annonce_un_secret(dernier)
         || mots.iter().any(|m| CLES_FORTES.contains(&m.as_str()))
-        || ["mot de passe", "mot-de-passe", "mot_de_passe", "motdepasse"]
-            .iter()
-            .any(|m| devant.contains(m));
+        || MOTS_DE_PASSE.iter().any(|m| devant.contains(m));
     if !annonce {
         return None;
     }
+    let phrase = mots.iter().any(|m| {
+        CLES_PHRASE.iter().any(|cle| {
+            m == cle
+                || m.strip_suffix(cle)
+                    .is_some_and(|tete| tete.ends_with('_') || tete.ends_with('-'))
+        }) || CLES_PHRASE_DANS.iter().any(|cle| compact(m).contains(cle))
+    }) || MOTS_DE_PASSE.iter().any(|m| devant.contains(m));
     // Entre guillemets si un guillemet sépare la clé de la valeur : jusqu'au même guillemet, espaces comprises.
     let guillemet = morceau(c, suivant(separateur), i)
         .iter()
@@ -845,6 +941,8 @@ fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
         fin_tant_que(c, i, |y| y != q && y != '\n')
     } else if CLES_LIGNE.iter().any(|cle| dernier.contains(cle)) {
         fin_tant_que(c, i, |y| y != '\n')
+    } else if phrase {
+        fin_de_phrase(c, i)
     } else {
         // Jusqu'à une espace seulement : un mot de passe peut contenir `(`, `,`, `;`, `&` ou commencer par eux.
         let fin = fin_tant_que(c, i, |y| !y.is_whitespace());
@@ -853,12 +951,34 @@ fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
     (fin > i).then_some(fin)
 }
 
+/// La fin de la phrase qui commence en `i` : un saut de ligne, ou un « . ; ! ? » suivi d'une espace ou de la fin
+/// du texte (ce signe n'en fait pas partie). « Wi-Fi.Maison » ou « a.b » ne la coupent pas.
+fn fin_de_phrase(c: &[char], i: usize) -> usize {
+    let mut j = i;
+    while let Some(y) = car(c, j) {
+        if y == '\n' || (".;!?".contains(y) && car(c, suivant(j)).is_none_or(char::is_whitespace)) {
+            break;
+        }
+        j = suivant(j);
+    }
+    j
+}
+
 /// La valeur qui suit une option ou un mot connu après une simple espace (`j` : début des espaces) : `-p x`,
 /// `--password x`, « mot de passe x », `-u alice:x`. Un mot de la langue n'est pas pris.
 fn apres_option(c: &[char], i: usize, j: usize) -> Option<usize> {
-    if j == i || morceau(c, j, i).iter().any(|y| *y == '"' || *y == '\'') {
-        return None;
+    if j == i {
+        return option_collee(c, i);
     }
+    if let Some(fin) = apres_net_use(c, i, j) {
+        return Some(fin);
+    }
+    // Entre guillemets (« -p 'Lune2Verte' », « -p'Lune2Verte' », « Kennwort "Lune2Verte" ») : jusqu'au même guillemet.
+    let guillemet = morceau(c, j, i)
+        .iter()
+        .rev()
+        .find(|y| **y == '"' || **y == '\'')
+        .copied();
     let mut debut = j;
     while avant(c, debut).is_some_and(|y| mot_de_cle(y) || y == '/') {
         debut = debut.checked_sub(1)?;
@@ -866,11 +986,97 @@ fn apres_option(c: &[char], i: usize, j: usize) -> Option<usize> {
     let brut = chaine(c, debut, j).to_lowercase();
     let option = brut.starts_with(['-', '/']);
     let mot = brut.trim_start_matches(['-', '/']);
-    let fin = fin_tant_que(c, i, |y| !y.is_whitespace());
+    let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && Some(y) != guillemet);
     let valeur = morceau(c, i, fin);
     let utilisateur = option && matches!(mot, "u" | "user") && valeur.iter().any(|y| *y == ':' || *y == '%');
     let cle = CLES_SANS_SEPARATEUR.contains(&mot) && (option || mot.len() > 1);
     ((cle && !mot_de_la_langue(valeur)) || utilisateur).then_some(fin)
+}
+
+/// La valeur collée à une option courte, au début d'un mot : « mysql -pLune2Verte », « -ualice:Lune2Verte ». Pour
+/// « -p », ni un mot de la langue ou des minuscules et tirets (« -pthread », « -pedantic-errors »), ni un port
+/// (« docker -p8080:80 ») ; pour « -u », seulement avec « : » ou « % » (utilisateur et mot de passe). L'option peut
+/// être entre guillemets ou dans une liste (« '-pLune2Verte', », l'erreur de subprocess de Python) : la valeur s'arrête
+/// alors au même guillemet.
+fn option_collee(c: &[char], i: usize) -> Option<usize> {
+    let lettre = avant(c, i)?;
+    let tiret = i.checked_sub(2).and_then(|k| car(c, k))?;
+    let devant = i.checked_sub(3).and_then(|k| car(c, k));
+    let debut_de_mot = devant.is_none_or(|y| y.is_whitespace() || "\"'[(,".contains(y));
+    if tiret != '-' || !debut_de_mot || !matches!(lettre, 'p' | 'u') {
+        return None;
+    }
+    let guillemet = devant.filter(|y| *y == '"' || *y == '\'');
+    let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && Some(y) != guillemet);
+    let valeur = morceau(c, i, fin);
+    let pris = if lettre == 'u' {
+        valeur.iter().any(|y| *y == ':' || *y == '%')
+    } else {
+        mot_de_passe_colle(valeur)
+    };
+    (pris && fin > i).then_some(fin)
+}
+
+/// Si la valeur collée à « -p » (« -pLune2Verte », « -p=Lune2Verte ») est un mot de passe : ni un mot de la langue ou
+/// des minuscules et tirets (« -pthread », « -pedantic-errors »), ni un port (« -p8080:80 »), ni un signe seul (« -p$ »
+/// devant une espace : le vrai mot de passe suit, pris à la passe suivante quand le filtre a ôté le signe).
+fn mot_de_passe_colle(valeur: &[char]) -> bool {
+    !mot_de_la_langue(valeur)
+        && valeur.iter().any(|y| y.is_alphanumeric())
+        && !valeur.iter().all(|y| y.is_lowercase() || *y == '-' || *y == '_')
+        && !valeur.iter().all(|y| y.is_ascii_digit() || ":.-/".contains(*y))
+}
+
+/// « net use Z: \\\\serveur\\partage Lune2Verte /user:alice » : le mot de passe de Windows suit le chemin UNC (« \\\\ »
+/// ou « // », entre guillemets ou non ; après une lettre de lecteur ou « * », et au plus quatre options « /… » entre
+/// le chemin et lui). « net.exe » aussi. Entre guillemets, la valeur va jusqu'au même guillemet. `j` : début des
+/// espaces et guillemets avant la valeur.
+fn apres_net_use(c: &[char], i: usize, j: usize) -> Option<usize> {
+    if car(c, i) == Some('/') {
+        return None;
+    }
+    // Les mots avant la valeur, du plus proche au plus loin.
+    let mut mots = Vec::new();
+    let mut curseur = j;
+    while mots.len() < 8 {
+        while avant(c, curseur).is_some_and(|y| y == ' ' || y == '\t') {
+            curseur = curseur.saturating_sub(1);
+        }
+        let mut debut = curseur;
+        while avant(c, debut).is_some_and(|y| !y.is_whitespace()) {
+            debut = debut.saturating_sub(1);
+        }
+        if debut == curseur {
+            break;
+        }
+        mots.push(
+            chaine(c, debut, curseur)
+                .to_lowercase()
+                .trim_matches(['"', '\''])
+                .to_string(),
+        );
+        curseur = debut;
+    }
+    let unc = mots
+        .iter()
+        .take(5)
+        .position(|mot| mot.starts_with("\\\\") || mot.starts_with("//"))?;
+    if !mots.iter().take(unc).all(|mot| mot.starts_with('/')) {
+        return None;
+    }
+    let reste = mots.get(suivant(unc)..).unwrap_or(&[]);
+    let lecteur = reste
+        .first()
+        .is_some_and(|mot| mot == "*" || (mot.chars().count() == 2 && mot.ends_with(':')));
+    let reste = if lecteur { reste.get(1..).unwrap_or(&[]) } else { reste };
+    let commande = matches!(reste, [verbe, net, ..] if verbe == "use" && (net == "net" || net == "net.exe"));
+    let guillemet = morceau(c, j, i)
+        .iter()
+        .rev()
+        .find(|y| **y == '"' || **y == '\'')
+        .copied();
+    let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && Some(y) != guillemet);
+    (commande && fin > i).then_some(fin)
 }
 
 /// Une valeur qui n'est qu'un schéma (« Bearer », « Basic ») : le jeton qui le suit en fait partie.
@@ -929,13 +1135,24 @@ fn masquer_arobases(c: &[char]) -> Vec<char> {
 }
 
 /// Les étapes 2 et 3, en une lecture et dans cet ordre de priorité : adresse web (avant le chemin : « https://h/x »
-/// n'est pas le chemin « //h/x »), chemin absolu, GUID, adresse MAC, adresse IP, longue suite hexadécimale.
+/// n'est pas le chemin « //h/x »), numéro de série annoncé, IPv6 en nom inverse ou à tirets, chemin absolu, GUID,
+/// adresse MAC (à deux-points, à tirets, à points, dans un nom d'interface), adresse IP (à points, puis à tirets dans
+/// un nom d'hôte), chemin relatif, groupes de chiffres, longue suite hexadécimale.
 fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
     // Les positions où aucune IPv6 ne peut commencer (`Ip6::RienJusqua`) : chaque suite n'est lue qu'une fois.
     let mut sans_ipv6_avant = 0;
     remplacer(c, |c, i| {
         if let Some(fin) = adresse_web(c, i) {
             return Some((fin, "<url>".to_string()));
+        }
+        if let Some((debut, fin)) = serie(c, i) {
+            return Some((fin, format!("{}<numéro>", chaine(c, i, debut))));
+        }
+        if ip && let Some(fin) = nom_inverse_ipv6(c, i) {
+            return Some((fin, "<ip>".to_string()));
+        }
+        if ip && let Some(fin) = ipv6_a_tirets(c, i) {
+            return Some((fin, "<ip>".to_string()));
         }
         if let Some((fin, extension)) = chemin(c, i) {
             return Some((
@@ -949,6 +1166,12 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         if let Some(fin) = mac(c, i) {
             return Some((fin, "<mac>".to_string()));
         }
+        if let Some(fin) = interface_a_mac(c, i) {
+            return Some((fin, format!("{}<mac>", chaine(c, i, plus(i, 3)))));
+        }
+        if let Some(fin) = mac_a_points(c, i) {
+            return Some((fin, "<mac>".to_string()));
+        }
         if ip && i >= sans_ipv6_avant {
             match ipv6(c, i) {
                 Ip6::Adresse(fin) => return Some((fin, "<ip>".to_string())),
@@ -959,6 +1182,15 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         }
         if ip && let Some(fin) = ipv4(c, i) {
             return Some((fin, "<ip>".to_string()));
+        }
+        if ip && let Some(fin) = ipv4_a_tirets(c, i) {
+            return Some((fin, "<ip>".to_string()));
+        }
+        if let Some((fin, extension)) = chemin_relatif(c, i) {
+            return Some((
+                fin,
+                extension.map_or_else(|| "<chemin>".to_string(), |e| format!("<chemin .{e}>")),
+            ));
         }
         if let Some(fin) = groupes_de_chiffres(c, i) {
             return Some((fin, "<numéro>".to_string()));
@@ -1151,6 +1383,143 @@ fn chemin(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
     }
 }
 
+/// Un chemin relatif plus long que cela n'est pas lu : le coût d'une lecture reste borné.
+const RELATIF_MAX: usize = 256;
+
+/// Les dossiers de premier niveau du dépôt de Vanguard (et « library », la bibliothèque standard de Rust) : un
+/// chemin qui commence par l'un d'eux (« src/journal.rs », « outils/verifier.sh », « ./relais/worker.js ») est le lieu
+/// d'une panique ou un fichier du projet, pas un fichier de la personne.
+const DOSSIERS_DU_DEPOT: [&str; 13] = [
+    "src",
+    "outils",
+    "relais",
+    "fuzz",
+    "fenetre",
+    "docs",
+    "tests",
+    "assets",
+    "extensions",
+    "supply-chain",
+    "target",
+    "library",
+    "proptest-regressions",
+];
+
+/// Les dossiers personnels (sans casse) : un chemin qui en passe par un est masqué même sans extension
+/// (« Users\\marie\\Documents », « Bureau/projets »).
+const DOSSIERS_PERSONNELS: [&str; 17] = [
+    "users",
+    "home",
+    "documents",
+    "desktop",
+    "bureau",
+    "downloads",
+    "téléchargements",
+    "pictures",
+    "images",
+    "photos",
+    "music",
+    "musique",
+    "videos",
+    "vidéos",
+    "onedrive",
+    "dropbox",
+    "appdata",
+];
+
+/// Un chemin relatif : des éléments séparés par « / » ou « \ » (« Documents/impots-2026.pdf », « Bureau\paie.xlsx »,
+/// « .ssh/id_ed25519 », « ../Marie Tremblay/notes.txt »). Rend sa fin et l'extension de son dernier élément. Les
+/// éléments du milieu peuvent porter des espaces (« Bureau/Marie Tremblay/paie.xlsx »), pas le premier ni le
+/// dernier. N'est pris que ce qui ne peut pas être un mot à barre de la langue ou du métier (« read/write »,
+/// « TCP/IP », « HTTP/1.1 », « o/N », « 8080/tcp », une clé de registre) : un dernier élément à extension qui porte
+/// une lettre (« notes.db-journal », « paie.xlsx#Feuille1 » : l'extension est le début de ce qui suit le dernier
+/// point), un élément caché n'importe où (« projet/.ssh/… »), un dossier personnel (`DOSSIERS_PERSONNELS`), ou
+/// « . »/« .. » devant au moins deux éléments (« ../Marie/notes »). Un chemin du dépôt (`DOSSIERS_DU_DEPOT`) reste
+/// lisible, sauf s'il passe par un dossier personnel ; « ./vanguard » aussi.
+fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
+    if !avant_chemin(avant(c, i)) || !car(c, i).is_some_and(caractere_de_chemin) {
+        return None;
+    }
+    let separateur = |y: char| y == '/' || y == '\\';
+    let arret = |y: char| separateur(y) || arret_de_chemin(y);
+    let mut elements: Vec<(usize, usize)> = Vec::new();
+    let mut pos = i;
+    loop {
+        // L'élément qui commence en `pos`, sans espace ; un marqueur de l'anonymisation en fait partie. La borne
+        // compte depuis le début du chemin : chaque position de départ coûte au plus RELATIF_MAX caractères lus.
+        let mut bout = pos;
+        while let Some(y) = car(c, bout) {
+            if entre(i, bout) > RELATIF_MAX {
+                return None;
+            }
+            if let Some(fin) = marqueur(c, bout) {
+                bout = fin;
+            } else if arret(y) || y.is_whitespace() {
+                break;
+            } else {
+                bout = suivant(bout);
+            }
+        }
+        // Au milieu, un élément peut continuer après une espace s'il finit par un séparateur, sous SEGMENT_MAX et sans
+        // point : un nom de fichier suivi de la phrase (« impots.pdf et Bureau/… ») n'est pas un dossier à espaces.
+        if !elements.is_empty()
+            && car(c, bout).is_some_and(char::is_whitespace)
+            && !morceau(c, pos, bout).contains(&'.')
+        {
+            let mut k = bout;
+            while car(c, k).is_some_and(|y| !arret(y) && y != '.') && entre(pos, k) <= SEGMENT_MAX {
+                k = marqueur(c, k).unwrap_or(suivant(k));
+            }
+            if car(c, k).is_some_and(separateur) && !avant(c, k).is_some_and(char::is_whitespace) {
+                bout = k;
+            }
+        }
+        if bout == pos {
+            return None;
+        }
+        elements.push((pos, bout));
+        if car(c, bout).is_some_and(separateur) && car(c, suivant(bout)).is_some_and(|y| !y.is_whitespace()) {
+            pos = suivant(bout);
+            continue;
+        }
+        break;
+    }
+    let dernier = *elements.last()?;
+    if elements.len() < 2 {
+        return None;
+    }
+    // La ponctuation de fin de phrase (« . », « ) », « ! »…) ne fait pas partie du dernier élément ; « .. » oui.
+    let mut fin = dernier.1;
+    while fin > dernier.0
+        && avant(c, fin).is_some_and(|y| ".)]}!".contains(y))
+        && !morceau(c, dernier.0, fin).iter().all(|y| *y == '.')
+    {
+        fin = fin.saturating_sub(1);
+    }
+    let nom = morceau(c, dernier.0, fin);
+    // L'extension : les lettres et chiffres qui suivent le dernier point, jusqu'au premier autre caractère.
+    let extension: Option<String> = nom.iter().rposition(|y| *y == '.').and_then(|p| {
+        let reste = nom.get(suivant(p)..)?;
+        let n = reste.iter().take_while(|y| y.is_ascii_alphanumeric()).count();
+        let ext: String = reste.get(..n)?.iter().collect();
+        (1..=EXTENSION_MAX).contains(&n).then(|| ext.to_ascii_lowercase())
+    });
+    let a_lettre = extension
+        .as_ref()
+        .is_some_and(|e| e.chars().any(|y| y.is_ascii_alphabetic()));
+    let textes: Vec<String> = elements.iter().map(|(a, b)| chaine(c, *a, *b).to_lowercase()).collect();
+    let point = |e: &str| e == "." || e == "..";
+    let cache = textes.iter().any(|e| e.starts_with('.') && !point(e));
+    let relatif = textes.iter().any(|e| point(e)) && textes.iter().filter(|e| !point(e)).count() >= 2;
+    let personnel = textes.iter().any(|e| DOSSIERS_PERSONNELS.contains(&e.as_str()));
+    let depot = textes
+        .iter()
+        .find(|e| !point(e))
+        .is_some_and(|e| DOSSIERS_DU_DEPOT.contains(&e.as_str()));
+    ((a_lettre || cache || relatif || personnel) && (!depot || personnel))
+        .then(|| (fin, extension.filter(|_| a_lettre)))
+}
+
 /// La fin du dernier élément d'un chemin, qui va de `pos` à `k` (arrêt ou fin) : jusqu'à la première espace, sauf si
 /// un mot proche finit par une extension (« Rapport annuel.docx introuvable »). Les points de fin de phrase n'en
 /// font pas partie.
@@ -1224,11 +1593,16 @@ fn guid(c: &[char], i: usize) -> Option<usize> {
     (!car(c, j).is_some_and(jeton)).then_some(j)
 }
 
+/// Une adresse MAC, à deux-points ou à tirets. À deux-points, ses bornes l'isolent d'une IPv6 (« fe80::1:2:3:4:5:6 »
+/// n'en contient pas une). À tirets (la forme de Windows), aucune IPv6 n'est en jeu : ce qui la touche, avant comme
+/// après (« MAC:00-1A-… », « id-00-1a-… », « 00-1A-…: link up »), ne la garde pas lisible, et la suite de jeton
+/// collée derrière (« 00-1A-…_x », « 00-1A-…=… ») part avec elle plutôt que d'en laisser deviner la fin. À soulignés
+/// (« bluez_card.00_1A_… », « dev_00_1A_… » de BlueZ et PipeWire), la même règle qu'à tirets.
 fn mac(c: &[char], i: usize) -> Option<usize> {
-    if avant(c, i).is_some_and(|p| jeton(p) || p == ':') {
+    let s = car(c, plus(i, 2)).filter(|s| matches!(s, ':' | '-' | '_'))?;
+    if s == ':' && avant(c, i).is_some_and(|p| jeton(p) || p == ':') {
         return None;
     }
-    let s = car(c, plus(i, 2)).filter(|s| *s == ':' || *s == '-')?;
     let mut j = i;
     for rang in 0..6 {
         if rang > 0 {
@@ -1239,11 +1613,491 @@ fn mac(c: &[char], i: usize) -> Option<usize> {
         }
         j = hexadecimaux(c, j, 2)?;
     }
+    if s != ':' {
+        return Some(fin_tant_que(c, j, jeton));
+    }
     (!car(c, j).is_some_and(|y| jeton(y) || y == ':')).then_some(j)
 }
 
+/// Les préfixes des noms d'interface Linux qui portent l'adresse MAC de la carte (noms prévisibles de systemd : cartes
+/// USB, partage de connexion, InfiniBand, liaison série).
+const INTERFACES_A_MAC: [&str; 5] = ["enx", "wlx", "wwx", "ibx", "slx"];
+
+/// « enx001a2b3c4d5e » : un préfixe d'interface puis exactement 12 chiffres hexadécimaux. Rend la fin ; le préfixe
+/// reste lisible. Seul un chiffre hexadécimal de plus l'empêche après (« enx…p1 » garde son port) ; avant, seule une
+/// lettre ou un chiffre ASCII : une lettre accentuée collée (« éenx… ») ne la désarme pas.
+fn interface_a_mac(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric())
+        || !INTERFACES_A_MAC.iter().any(|p| commence_par_sans_casse(c, i, p))
+    {
+        return None;
+    }
+    let fin = hexadecimaux(c, plus(i, 3), 12)?;
+    (!car(c, fin).is_some_and(|y| y.is_ascii_hexdigit())).then_some(fin)
+}
+
+/// La forme de Cisco, « 001a.2b3c.4d5e » : trois groupes de 4 chiffres hexadécimaux séparés par des points. Une suite
+/// qui continue par un point et un caractère de jeton part avec elle. Seuls une lettre, un chiffre ou un point collés
+/// l'empêchent : « mac=001a.… », « vlan-001a.… », « 001a.…/24 » sont des adresses. Trois groupes de chiffres
+/// décimaux seuls (« 2026.1118.1504 », une version) n'en sont pas une.
+fn mac_a_points(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(|p| p.is_alphanumeric() || p == '.') {
+        return None;
+    }
+    let mut j = i;
+    for rang in 0..3 {
+        if rang > 0 {
+            if car(c, j) != Some('.') {
+                return None;
+            }
+            j = suivant(j);
+        }
+        j = hexadecimaux(c, j, 4)?;
+    }
+    if morceau(c, i, j).iter().all(|y| y.is_ascii_digit() || *y == '.') {
+        return None;
+    }
+    if car(c, j) == Some('.') && car(c, suivant(j)).is_some_and(jeton) {
+        return Some(fin_tant_que(c, j, jeton_etendu));
+    }
+    (!car(c, j).is_some_and(char::is_alphanumeric)).then_some(j)
+}
+
+/// Le nombre d'étiquettes d'un nom inverse IPv6 : 32 pour une adresse entière, moins pour un préfixe de zone.
+const NOM_INVERSE_MAX: usize = 32;
+
+/// « 7.0.0.0.….d.f.ip6.arpa » (requêtes PTR des journaux de dnsmasq, resolved, avahi) : de 1 à 32 chiffres
+/// hexadécimaux, chacun suivi d'un point, puis « ip6.arpa ». Rend la fin des chiffres ; « .ip6.arpa » reste lisible.
+/// L'adresse se relirait en retournant les chiffres.
+fn nom_inverse_ipv6(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(char::is_alphanumeric) {
+        return None;
+    }
+    let mut j = i;
+    for _ in 0..NOM_INVERSE_MAX {
+        if !car(c, j).is_some_and(|x| x.is_ascii_hexdigit()) || car(c, suivant(j)) != Some('.') {
+            break;
+        }
+        j = plus(j, 2);
+    }
+    let apres = plus(j, "ip6.arpa".len());
+    (j > i && commence_par_sans_casse(c, j, "ip6.arpa") && !car(c, apres).is_some_and(char::is_alphanumeric))
+        .then(|| j.saturating_sub(1))
+}
+
+/// La longueur d'une IPv6 à tirets, zone comprise (« fe80--1ff-fe23-4567-890as3 ») : 39 caractères pour l'adresse
+/// la plus longue, plus la zone.
+const IPV6_A_TIRETS_MAX: usize = 64;
+
+/// Le nom UNC de Windows qui porte une IPv6, « 2001-db8-…-7348.ipv6-literal.net » (les « : » y deviennent des
+/// tirets, une IPv4 finale garde ses points : « --ffff-198.51.100.23.ipv6-literal.net ») : ce qui précède
+/// « .ipv6-literal.net » est masqué, le suffixe reste. Sans ce suffixe, la forme stricte d'une IPv6 écrite avec des
+/// tirets (`ipv6_a_tirets_seule`).
+fn ipv6_a_tirets(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || p == '-') {
+        return None;
+    }
+    let mut fin = fin_tant_que(c, i, |x| x.is_ascii_alphanumeric() || x == '-');
+    let adresse = morceau(c, i, fin);
+    if !adresse.contains(&'-') || !adresse.iter().any(char::is_ascii_hexdigit) {
+        return None;
+    }
+    // Les trois points d'une IPv4 finale, au plus.
+    for _ in 0..4 {
+        if commence_par_sans_casse(c, fin, ".ipv6-literal.net") {
+            return (entre(i, fin) <= IPV6_A_TIRETS_MAX).then_some(fin);
+        }
+        if car(c, fin) != Some('.') || !car(c, suivant(fin)).is_some_and(|y| y.is_ascii_digit()) {
+            break;
+        }
+        fin = fin_tant_que(c, suivant(fin), |y| y.is_ascii_digit());
+    }
+    ipv6_a_tirets_seule(c, i)
+}
+
+/// Une IPv6 écrite avec des tirets hors d'un nom UNC (« 2001-db8-85a3-0-0-8a2e-370-7334 », « fe80--1ff:… »
+/// recopiée d'un nom d'hôte). Pour ne pas prendre une date ou un numéro de téléphone : huit groupes de 1 à 4
+/// chiffres hexadécimaux dont un de 3 ou 4 et un chiffre ; ou un seul « -- » (les zéros sautés), au moins deux
+/// groupes, un groupe de 4, un chiffre et une lettre hexadécimale (« 2026--11 » reste). Ni lettre, ni chiffre, ni
+/// tiret collé autour ; un « .domaine » peut suivre.
+fn ipv6_a_tirets_seule(c: &[char], i: usize) -> Option<usize> {
+    let fin = fin_tant_que(c, i, |y| y.is_ascii_hexdigit() || y == '-');
+    if entre(i, fin) > IPV6_A_TIRETS_MAX || car(c, fin).is_some_and(char::is_alphanumeric) {
+        return None;
+    }
+    let texte = chaine(c, i, fin);
+    // Des groupes de 1 à 4 chiffres hexadécimaux, séparés par un seul tiret.
+    let groupes = |partie: &str| -> Option<Vec<usize>> {
+        if partie.is_empty() {
+            return Some(Vec::new());
+        }
+        let tailles: Vec<usize> = partie.split('-').map(str::len).collect();
+        tailles.iter().all(|n| (1..=4).contains(n)).then_some(tailles)
+    };
+    let (tailles, double) = match texte.split_once("--") {
+        Some((gauche, droite)) => {
+            let (g, d) = (groupes(gauche)?, groupes(droite)?);
+            ([g, d].concat(), true)
+        }
+        None => (groupes(&texte)?, false),
+    };
+    let chiffre = texte.chars().any(|y| y.is_ascii_digit());
+    let lettre = texte.chars().any(|y| y.is_ascii_alphabetic());
+    let pris = if double {
+        (2..=7).contains(&tailles.len()) && tailles.contains(&4) && chiffre && lettre
+    } else {
+        tailles.len() == 8 && tailles.iter().any(|n| *n >= 3) && chiffre
+    };
+    pris.then_some(fin)
+}
+
+/// Une IPv4 écrite avec des tirets dans un nom d'hôte, la forme que les fournisseurs d'accès et les nuages donnent à
+/// l'adresse publique d'un abonné : « ip-198-51-100-23 », « ec2-198-51-100-23 », « 198-51-100-23.example.net », et la
+/// forme inverse « modemcable023.100-51-198 » (un point, puis deux tirets). Quatre nombres de 0 à 255.
+///
+/// Il faut un contexte de nom d'hôte, sinon « ports 10-20-30-40 » ou « 1.2-3-4 » seraient pris : une étiquette avec
+/// une lettre juste avant (« ec2- », « dsl2- », « modemcable ») ou après (« .example.net », « -static »), au
+/// plus une étiquette de chiffres seuls entre les deux (« node-7- »). Pas un chiffre collé devant, ni une étiquette
+/// de quatre chiffres ou plus : une date (« 2026-11-18-… ») n'en est pas une, ni une version de noyau
+/// (« 6.1.0-28-amd64 » : deux points). Limite : quatre nombres seuls, sans nom d'hôte autour, restent lisibles.
+fn ipv4_a_tirets(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(|p| p.is_ascii_digit()) {
+        return None;
+    }
+    let mut j = i;
+    let mut separateurs = Vec::with_capacity(3);
+    for rang in 0..4 {
+        if rang > 0 {
+            separateurs.push(car(c, j).filter(|x| *x == '-' || *x == '.')?);
+            j = suivant(j);
+        }
+        let fin = fin_tant_que(c, j, |y| y.is_ascii_digit());
+        if !(1..=3).contains(&entre(j, fin)) || chaine(c, j, fin).parse::<u16>().ok()? > 255 {
+            return None;
+        }
+        j = fin;
+    }
+    if separateurs != ['-'; 3] && separateurs != ['.', '-', '-'] {
+        return None;
+    }
+    let suite = |k: usize| car(c, k).is_some_and(|y| y.is_ascii_digit());
+    let apres = car(c, j);
+    if suite(j) || (matches!(apres, Some('-' | '.')) && suite(suivant(j))) {
+        return None;
+    }
+    (etiquette_avant(c, i) || etiquette_apres(c, j)).then_some(j)
+}
+
+/// L'étiquette de nom d'hôte qui finit juste avant `i` : (début, fin), lettres et chiffres ASCII.
+fn etiquette_finissant(c: &[char], i: usize) -> (usize, usize) {
+    let mut k = i;
+    while k > 0 && avant(c, k).is_some_and(|y| y.is_ascii_alphanumeric()) {
+        k = k.saturating_sub(1);
+    }
+    (k, i)
+}
+
+/// Si un nom d'hôte précède l'adresse à tirets qui commence en `i` : des lettres collées (« modemcable », « ip »),
+/// ou, avant un « - » ou un « . », une étiquette qui porte une lettre (« ec2- », « dsl2- »), au plus une étiquette
+/// de un à trois chiffres entre les deux (« node-7- »).
+fn etiquette_avant(c: &[char], i: usize) -> bool {
+    let a_lettre = |m: &[char]| m.iter().any(char::is_ascii_alphabetic);
+    match avant(c, i) {
+        Some(p) if p.is_ascii_alphabetic() => true,
+        Some('-' | '.') => {
+            let (debut, fin) = etiquette_finissant(c, i.saturating_sub(1));
+            let m = morceau(c, debut, fin);
+            if a_lettre(m) {
+                return true;
+            }
+            if !(1..=3).contains(&m.len()) || !matches!(avant(c, debut), Some('-' | '.')) {
+                return false;
+            }
+            let (d2, f2) = etiquette_finissant(c, debut.saturating_sub(1));
+            a_lettre(morceau(c, d2, f2))
+        }
+        _ => false,
+    }
+}
+
+/// Si un nom d'hôte suit l'adresse à tirets qui finit en `j` : après un « . » ou un « - », une étiquette qui
+/// commence par une lettre (« .example.net », « -static »).
+fn etiquette_apres(c: &[char], j: usize) -> bool {
+    matches!(car(c, j), Some('-' | '.')) && car(c, suivant(j)).is_some_and(|y| y.is_ascii_alphabetic())
+}
+
+/// Les racines d'un mot qui annonce un numéro de série, sans casse ni accents : « serial », « série »,
+/// « Seriennummer ». Une famille plutôt qu'une liste : chaque ronde de relecture trouvait une écriture de plus
+/// (« serial-number », « serialno », « serial_short », « iSerial », « ID_SERIAL »).
+const RACINES_DE_SERIE: [&str; 3] = ["serien", "serial", "serie"];
+/// Ce qui peut suivre la racine dans le même mot, « _ » et « - » retirés : « serial_number », « serialno »,
+/// « ID_SERIAL_SHORT », « Seriennummer ». Pas « s » : « series » (une suite, un feuilleton) n'annonce rien.
+const SUFFIXES_DE_SERIE: [&str; 7] = ["", "number", "nummer", "num", "no", "nr", "short"];
+/// Ce qui peut précéder la racine, collé sans « _ » ni « - » : « iSerial » (lsusb), « IDSERIAL ». Avec « _ » ou
+/// « - » (« disk_serial », « ID_SERIAL »), tout préfixe est permis.
+const PREFIXES_DE_SERIE: [&str; 3] = ["", "i", "id"];
+/// Les annonces courtes : « SN » (anglais) et « NS » (numéro de série). Seulement suivies de « : », « = » ou « # »,
+/// ou d'une valeur longue qui a la forme d'un numéro (lettres capitales et chiffres).
+const SERIES_COURTES: [&str; 2] = ["sn", "ns"];
+/// Les mots de liaison entre l'annonce et la valeur (« Serial number: », « numéro de série n° », « serial number is »,
+/// « le numéro de série est »).
+const LIAISONS_DE_SERIE: [&str; 14] = [
+    "number", "nummer", "no", "nr", "n°", "nº", "num", "numéro", "numero", "de", "is", "est", "ist", "was",
+];
+/// Le nombre de mots qui peuvent séparer l'annonce de son « : » (« numéro de série du disque : », « Serial Number
+/// (system): »).
+const MOTS_AVANT_SEPARATEUR: usize = 3;
+/// Le nombre de morceaux d'une valeur écrite avec des espaces (« WX 12A 34B »).
+const MORCEAUX_DE_SERIE: usize = 4;
+/// Une valeur plus longue que cela n'est lue que si un chiffre paraît avant : le coût d'un refus reste borné.
+const SERIE_LECTURE: usize = 128;
+
+/// Si `motif` (en minuscules) est écrit en `i`, quelle que soit la casse (« SÉRIE » compris) : sa fin.
+fn mot_sans_casse(c: &[char], i: usize, motif: &str) -> Option<usize> {
+    let mut j = i;
+    for m in motif.chars() {
+        if car(c, j).is_none_or(|x| x.to_lowercase().ne(std::iter::once(m))) {
+            return None;
+        }
+        j = suivant(j);
+    }
+    Some(j)
+}
+
+/// Une lettre en minuscule et sans accent, pour reconnaître « SÉRIE » comme « serie ».
+fn sans_accent(x: char) -> char {
+    match x.to_lowercase().next().unwrap_or(x) {
+        'é' | 'è' | 'ê' | 'ë' => 'e',
+        autre => autre,
+    }
+}
+
+/// La force d'une annonce de numéro de série.
+#[derive(Clone, Copy, PartialEq)]
+enum Annonce {
+    /// « serial », « série », « S/N » et leur famille.
+    Forte,
+    /// « SN », « NS » : trop courts pour annoncer seuls.
+    Courte,
+}
+
+/// Si le mot `mot` (en minuscules, sans accents, « _ » et « - » gardés) annonce un numéro de série.
+fn mot_de_serie(mot: &[char]) -> Option<Annonce> {
+    let compact: String = mot.iter().filter(|y| **y != '_' && **y != '-').collect();
+    if SERIES_COURTES.contains(&compact.as_str()) && !mot.contains(&'_') {
+        return Some(Annonce::Courte);
+    }
+    for racine in RACINES_DE_SERIE {
+        let r: Vec<char> = racine.chars().collect();
+        for k in 0..=mot.len().saturating_sub(r.len()) {
+            if mot.get(k..plus(k, r.len())) != Some(r.as_slice()) {
+                continue;
+            }
+            let tete: String = mot.get(..k).unwrap_or(&[]).iter().collect();
+            let queue: String = mot
+                .get(plus(k, r.len())..)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|y| **y != '_' && **y != '-')
+                .collect();
+            // Devant « number » ou « nummer », le mot composé est sans ambiguïté : toute tête de lettres est permise
+            // (« DiskSerialNumber », « SystemSerialNumber », « Volumeseriennummer »).
+            let compose = matches!(queue.as_str(), "number" | "nummer") && tete.chars().all(char::is_alphabetic);
+            let tete_permise = compose || PREFIXES_DE_SERIE.contains(&tete.as_str()) || tete.ends_with(['_', '-']);
+            if tete_permise && SUFFIXES_DE_SERIE.contains(&queue.as_str()) {
+                return Some(Annonce::Forte);
+            }
+        }
+    }
+    None
+}
+
+/// Un séparateur explicite entre l'annonce et la valeur, qui commence en `j` : « : », « = », « # », « -> », un
+/// tiret seul, des points de conduite (« Serial Number.......: »). Rend sa fin.
+fn separateur_de_serie(c: &[char], j: usize) -> Option<usize> {
+    let x = car(c, j)?;
+    if matches!(x, ':' | '=' | '#') {
+        return Some(suivant(j));
+    }
+    if commence_par(c, j, "->") {
+        return Some(plus(j, 2));
+    }
+    if x == '-' && car(c, suivant(j)).is_none_or(char::is_whitespace) {
+        return Some(suivant(j));
+    }
+    let points = fin_tant_que(c, j, |y| y == '.' || y == '…');
+    (entre(j, points) >= 2 || x == '…').then_some(points)
+}
+
+/// Un morceau de valeur qui suit un premier morceau après une espace (« WX 12A 34B ») : lettres capitales, chiffres
+/// et tirets seulement, de 2 à 16 caractères ; un mot en minuscules (« fin ») arrête la valeur.
+fn morceau_de_serie(m: &[char]) -> bool {
+    (2..=16).contains(&m.len())
+        && m.iter()
+            .all(|y| y.is_ascii_uppercase() || y.is_ascii_digit() || *y == '-')
+}
+
+/// Un numéro de série annoncé : « sn=PF2ABCDE9 », « S/N:WD1234XYZ », « Serial number: ABC123 », « numéro de série
+/// du disque : WX 12A 34B », « iSerial 3 PF2ABCDE9 » (lsusb). Rend le début et la fin de la valeur ; l'annonce reste
+/// lisible. La valeur porte un chiffre. Sans séparateur (« : », « = », « # », « n° »…), elle porte aussi une lettre
+/// et a au moins 6 caractères : « une série de 123456 essais » reste. Faite de chiffres seuls, elle n'est prise
+/// qu'après un séparateur et à partir de 6 chiffres : « sn: 4 segments », « série n° 2 » restent.
+fn serie(c: &[char], i: usize) -> Option<(usize, usize)> {
+    if avant(c, i).is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '-' || p == '/') {
+        return None;
+    }
+    // Le mot de l'annonce : lettres, chiffres, « _ », « - » ; ou « S/N ».
+    let (annonce, mut pos) = if let Some(fin) = mot_sans_casse(c, i, "s/n") {
+        (Annonce::Forte, fin)
+    } else {
+        let fin = fin_tant_que(c, i, |y| y.is_alphanumeric() || y == '_' || y == '-');
+        if entre(i, fin) > 32 {
+            return None;
+        }
+        let mot: Vec<char> = morceau(c, i, fin).iter().map(|y| sans_accent(*y)).collect();
+        let annonce = mot_de_serie(&mot)?;
+        // Une abréviation finie par un point (« Serien-Nr.: », « Seriennr. ») : le point fait partie de l'annonce.
+        let abrege = ["nr", "no", "num"]
+            .iter()
+            .any(|a| mot.ends_with(&a.chars().collect::<Vec<_>>()));
+        (
+            annonce,
+            if abrege && car(c, fin) == Some('.') {
+                suivant(fin)
+            } else {
+                fin
+            },
+        )
+    };
+    if car(c, pos).is_some_and(char::is_alphanumeric) {
+        return None;
+    }
+    let mut explicite = false;
+    let mut liaisons = 0;
+    loop {
+        let mot = fin_tant_que(c, pos, |y| y == ' ' || y == '\t');
+        if let Some(fin) = separateur_de_serie(c, mot) {
+            explicite = true;
+            pos = fin;
+            continue;
+        }
+        let liaison = LIAISONS_DE_SERIE
+            .iter()
+            .filter(|_| liaisons < 3)
+            // Le filtre est dans la recherche : « is » ne doit pas cacher « ist », ni « num » cacher « numéro ».
+            .find_map(|l| {
+                mot_sans_casse(c, mot, l)
+                    .filter(|fin| l.ends_with(['°', 'º']) || !car(c, *fin).is_some_and(char::is_alphanumeric))
+                    .map(|fin| (*l, fin))
+            });
+        if let Some((lien, fin)) = liaison {
+            explicite |= lien.ends_with(['°', 'º']);
+            liaisons = suivant(liaisons);
+            pos = if car(c, fin) == Some('.') { suivant(fin) } else { fin };
+            continue;
+        }
+        // Quelques mots puis un séparateur : « numéro de série du disque : », « Serial Number (system): ».
+        if !explicite && let Some(fin) = mots_puis_separateur(c, mot) {
+            explicite = true;
+            pos = fin;
+            continue;
+        }
+        pos = mot;
+        break;
+    }
+    // Le numéro d'ordre de lsusb (« iSerial 3 PF2ABCDE9 ») : un petit nombre suivi d'une valeur à lettres et chiffres.
+    let index = fin_tant_que(c, pos, |y| y.is_ascii_digit());
+    if (1..=3).contains(&entre(pos, index)) && car(c, index).is_some_and(|y| y == ' ' || y == '\t') {
+        let suite = fin_tant_que(c, index, |y| y == ' ' || y == '\t');
+        let bout = fin_tant_que(c, suite, |y| !y.is_whitespace());
+        let valeur = morceau(c, suite, bout);
+        if valeur.iter().any(char::is_ascii_digit) && valeur.iter().any(char::is_ascii_alphabetic) {
+            pos = suite;
+        }
+    }
+    if car(c, pos).is_none_or(char::is_whitespace) {
+        return None;
+    }
+    // Le premier morceau, puis, après un séparateur, les morceaux qui ont la forme d'un numéro (« WX 12A 34B »). Un
+    // marqueur déjà posé (« <numéro> ») en fait partie.
+    let (mut fin, mut morceaux, mut debut) = (pos, 0usize, pos);
+    let (mut chiffre, mut lettre, mut longueur) = (false, false, 0usize);
+    loop {
+        let (net, bout) = if let Some(f) = marqueur(c, debut) {
+            (f, f)
+        } else {
+            let mut bout_lu = debut;
+            let mut vu = chiffre;
+            while let Some(y) = car(c, bout_lu).filter(|y| !y.is_whitespace()) {
+                if !vu && entre(pos, bout_lu) >= SERIE_LECTURE {
+                    return None;
+                }
+                vu |= y.is_ascii_digit();
+                bout_lu = suivant(bout_lu);
+            }
+            // La ponctuation qui suit la valeur (« ABC123, » « (WX12) ») n'en fait pas partie.
+            let mut net = bout_lu;
+            while net > debut && avant(c, net).is_some_and(|y| ",;.)".contains(y)) {
+                net = net.saturating_sub(1);
+            }
+            let m = morceau(c, debut, net);
+            if morceaux > 0 && !morceau_de_serie(m) {
+                break;
+            }
+            chiffre |= m.iter().any(char::is_ascii_digit);
+            lettre |= m.iter().any(|y| y.is_alphabetic());
+            longueur = longueur.saturating_add(m.iter().filter(|y| y.is_alphanumeric()).count());
+            (net, bout_lu)
+        };
+        fin = net;
+        morceaux = suivant(morceaux);
+        let suite = fin_tant_que(c, bout, |y| y == ' ' || y == '\t');
+        if net < bout || !explicite || morceaux >= MORCEAUX_DE_SERIE || suite == bout || car(c, suite).is_none() {
+            break;
+        }
+        debut = suite;
+    }
+    if !chiffre {
+        return None;
+    }
+    let pris = match (explicite, lettre) {
+        (true, true) => true,
+        (true, false) => longueur >= 6,
+        (false, _) => lettre && longueur >= if annonce == Annonce::Courte { 8 } else { 6 },
+    };
+    let courte_permise = annonce == Annonce::Forte
+        || explicite
+        || morceau(c, pos, fin)
+            .iter()
+            .all(|y| y.is_ascii_uppercase() || y.is_ascii_digit());
+    (pris && courte_permise && fin > pos).then_some((pos, fin))
+}
+
+/// Jusqu'à `MOTS_AVANT_SEPARATEUR` mots sans chiffre (« du disque », « (system) ») puis un séparateur explicite :
+/// sa fin.
+fn mots_puis_separateur(c: &[char], j: usize) -> Option<usize> {
+    let mut k = j;
+    for _ in 0..MOTS_AVANT_SEPARATEUR {
+        let bout = fin_tant_que(c, k, |y| y.is_alphabetic() || "()[]'".contains(y));
+        if bout == k || entre(k, bout) > 24 {
+            return None;
+        }
+        let blanc = fin_tant_que(c, bout, |y| y == ' ' || y == '\t');
+        if let Some(fin) = separateur_de_serie(c, blanc).filter(|_| car(c, blanc) != Some('-')) {
+            return Some(fin);
+        }
+        if blanc == bout {
+            return None;
+        }
+        k = blanc;
+    }
+    None
+}
+
 fn ipv4(c: &[char], i: usize) -> Option<usize> {
-    if avant(c, i).is_some_and(|p| p.is_ascii_alphanumeric() || (p == '.' && !point_de_phrase(c, i))) {
+    // Une lettre collée devant n'empêche rien (« host198.51.100.23 », « v1.198.51.100.23 ») : seul un chiffre ou un
+    // point d'un nombre plus long le fait. Le prix : « python3.11.2.1 » devient « python<ip> ».
+    if avant(c, i).is_some_and(|p| p.is_ascii_digit() || (p == '.' && !point_de_phrase(c, i))) {
         return None;
     }
     let mut j = i;
@@ -1289,10 +2143,11 @@ fn ipv4(c: &[char], i: usize) -> Option<usize> {
         return (!suffixe_de_version(&chaine(c, j, fin))).then_some(fin);
     }
     // Port et préfixe : « 10.0.0.1:8080 », « 10.0.0.0/8 ».
+    // Pas si un point suit le nombre : c'est une seconde adresse (« 198.51.100.23/198.51.100.24 »), lue à son tour.
     for marque in [':', '/'] {
         if car(c, j) == Some(marque) {
             let fin = fin_tant_que(c, suivant(j), |y| y.is_ascii_digit());
-            if (1..=5).contains(&entre(suivant(j), fin)) {
+            if (1..=5).contains(&entre(suivant(j), fin)) && car(c, fin) != Some('.') {
                 j = fin;
             }
         }

@@ -1,6 +1,7 @@
 //! La voie ouverte de l'auto-amélioration (src/amelioration/texte.rs) : quoi qu'on lui donne, un texte gardé est
 //! borné, n'a que des caractères permis, ne fait plus sonner le détecteur de secrets et sort tel quel d'un second
-//! nettoyage. Un jeton connu glissé n'importe où n'en ressort jamais. Module pur, inclus sans cale.
+//! nettoyage. Un jeton connu glissé n'importe où n'en ressort jamais, ni une forme annoncée (numéro de série, phrase
+//! de passe, adresse dans un nom d'hôte) posée devant l'entrée. Module pur, inclus sans cale.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -70,6 +71,26 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         // Le corps du jeton ne figure pas dans l'entrée d'origine : s'il ressort, c'est qu'il a passé.
         if !brut.contains("InventePourLe") {
             assert!(!sortie.contains("InventePourLe"), "jeton passé : {sortie:?}");
+        }
+    }
+    // Des formes annoncées (valeurs inventées), chacune sur sa ligne devant l'entrée : quoi qui suive, la valeur
+    // disparaît. Sans cette vérification, le fuzz ne voyait que le jeton, pas les masques ajoutés par lot.
+    let temoins = [
+        ("serial-number: ", "PF2QZ8X71K"),
+        ("Passwort: ", "QuartzLune7Ecume"),
+        ("pass-phrase: ", "ZinniaBrume4Kayak"),
+        ("Key Content : ", "OrchideeVent9Gravier"),
+        ("hote ec2-", "198-51-100-23.example.net"),
+    ];
+    let tete: String = temoins.iter().map(|(annonce, valeur)| format!("{annonce}{valeur}\n")).collect();
+    let annonce = format!("{tete}{brut}");
+    essayer(&annonce);
+    if let Ok(sortie) = TexteNettoye::nettoyer(&annonce) {
+        for (_, valeur) in temoins {
+            let coeur = valeur.get(..10).unwrap_or(valeur);
+            if !brut.contains(coeur) {
+                assert!(!sortie.as_str().contains(coeur), "{coeur:?} annoncé mais passé : {sortie:?}");
+            }
         }
     }
 });

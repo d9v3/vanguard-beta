@@ -614,17 +614,72 @@ fn hasard(graine: &[u8]) -> u64 {
 }
 
 /// Adresses MAC : le préfixe du fabricant (trois premiers octets) reste, le reste est inventé. Une adresse aléatoire
-/// (téléphones : bit « local » du premier octet) est inventée en entier, sorte gardée.
+/// (téléphones : bit « local » du premier octet) est inventée en entier, sorte gardée. Aussi celle que porte un nom
+/// d'interface Linux (« enx001a2b3c4d5e », « wlx… » : cartes USB, partage de connexion).
 fn masquer_mac(texte: &str) -> String {
     remplacer_passages(texte, |b, i| {
-        let libre = precedent(b, i).is_none_or(|c| !(c.is_ascii_alphanumeric() || c == b':' || c == b'-'));
+        if let Some(trouve) = interface_a_mac(b, i) {
+            return Some(trouve);
+        }
+        let (fin, octets, separateur) = lire_mac(b, i)?;
+        // À deux-points, ce qui touche l'adresse peut en faire un morceau d'IPv6. À tirets (Windows), seul un chiffre
+        // hexadécimal juste avant, ou un groupe de deux devant un tiret, la ferait partie d'une suite plus longue :
+        // « MAC:00-1A-… », « id-00-1a-… » sont des adresses, « …-6F-00-1A-… » non. À soulignés (« bluez_card.00_1A_… »,
+        // « dev_00_1A_… » de BlueZ et PipeWire), la même règle.
+        let libre = precedent(b, i).is_none_or(|c| {
+            if separateur == b'-' || separateur == b'_' {
+                let groupe = i
+                    .checked_sub(3)
+                    .and_then(|k| b.get(k..i.saturating_sub(1)))
+                    .is_some_and(|g| {
+                        g.iter().all(u8::is_ascii_hexdigit)
+                            && precedent(b, i.saturating_sub(3)).is_none_or(|p| !p.is_ascii_alphanumeric())
+                    });
+                // L'identifiant de client DHCP de Windows (« 01-00-1A-2B-3C-4D-5E ») : le type « 01 » (Ethernet) devant
+                // l'adresse, seul en tête. L'adresse qui suit est bien une MAC.
+                let dhcp = b.get(i.saturating_sub(3)..i.saturating_sub(1)) == Some(b"01".as_slice())
+                    && i.checked_sub(4)
+                        .and_then(|k| b.get(k))
+                        .is_none_or(|p| !p.is_ascii_alphanumeric() && *p != separateur);
+                !(c.is_ascii_hexdigit() || (c == separateur && groupe && !dhcp))
+            } else {
+                !(c.is_ascii_alphanumeric() || c == b':' || c == b'-')
+            }
+        });
         if !libre {
             return None;
         }
-        let (fin, octets, separateur) = lire_mac(b, i)?;
         let majuscules = b.iter().take(fin).skip(i).any(u8::is_ascii_uppercase);
         Some((fin, mac_inventee(octets, separateur, majuscules)))
     })
+}
+
+/// Les préfixes des noms d'interface Linux qui portent l'adresse MAC de la carte (systemd, noms prévisibles).
+const INTERFACES_A_MAC: [&[u8]; 5] = [b"enx", b"wlx", b"wwx", b"ibx", b"slx"];
+
+/// Un nom d'interface « enx » + 12 chiffres hexadécimaux, seul : le préfixe gardé, l'adresse inventée comme une autre.
+fn interface_a_mac(b: &[u8], i: usize) -> Option<(usize, String)> {
+    if precedent(b, i).is_some_and(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let tete = b.get(i..i.checked_add(3)?)?;
+    if !INTERFACES_A_MAC.iter().any(|p| tete.eq_ignore_ascii_case(p)) {
+        return None;
+    }
+    let debut = i.checked_add(3)?;
+    let fin = debut.checked_add(12)?;
+    let chiffres = b.get(debut..fin)?;
+    // Un chiffre hexadécimal de plus en ferait autre chose ; une lettre (« enx…p1 », un port) n'y change rien.
+    if !chiffres.iter().all(u8::is_ascii_hexdigit) || b.get(fin).is_some_and(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut octets = [0u8; 6];
+    for (octet, paire) in octets.iter_mut().zip(chiffres.chunks(2)) {
+        *octet = u8::from_str_radix(std::str::from_utf8(paire).ok()?, 16).ok()?;
+    }
+    let majuscules = chiffres.iter().any(u8::is_ascii_uppercase);
+    let inventee = mac_inventee(octets, b':', majuscules).replace(':', "");
+    Some((fin, format!("{}{inventee}", std::str::from_utf8(tete).ok()?)))
 }
 
 /// L'octet juste avant `i`, s'il y en a un.
@@ -653,14 +708,14 @@ fn remplacer_passages(texte: &str, trouver: impl Fn(&[u8], usize) -> Option<(usi
 }
 
 /// Adresse MAC qui commence à `i` : six octets séparés par « : » (un ou deux chiffres, macOS écrit « 3c:8d:a:… »)
-/// ou par « - » (deux chiffres, Windows). Rend sa fin, ses octets et le séparateur.
+/// ou par « - » (deux chiffres, Windows) ou « _ » (BlueZ, PipeWire). Rend sa fin, ses octets et le séparateur.
 fn lire_mac(b: &[u8], i: usize) -> Option<(usize, [u8; 6], u8)> {
     let mut octets = [0u8; 6];
     let (mut j, mut separateur, mut courts) = (i, 0, false);
     for (k, octet) in octets.iter_mut().enumerate() {
         if k > 0 {
             let s = *b.get(j)?;
-            if (k == 1 && s != b':' && s != b'-') || (k > 1 && s != separateur) {
+            if (k == 1 && !b":-_".contains(&s)) || (k > 1 && s != separateur) {
                 return None;
             }
             separateur = s;
@@ -674,8 +729,16 @@ fn lire_mac(b: &[u8], i: usize) -> Option<(usize, [u8; 6], u8)> {
         *octet = u8::from_str_radix(std::str::from_utf8(b.get(j..j.saturating_add(chiffres))?).ok()?, 16).ok()?;
         j = j.saturating_add(chiffres);
     }
-    // Suivie d'un autre chiffre ou séparateur : un morceau d'autre chose (adresse IPv6…).
-    if (separateur == b'-' && courts) || b.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || b":-".contains(c)) {
+    // Suivie d'un autre chiffre ou séparateur : un morceau d'autre chose (adresse IPv6…). À tirets, seule une suite
+    // hexadécimale qui continue (« …-5E6 », « …-5E-6F ») en fait autre chose ; « 00-1A-…: link up » est une adresse.
+    let tirets = separateur == b'-' || separateur == b'_';
+    let suite = if tirets {
+        b.get(j).is_some_and(u8::is_ascii_hexdigit)
+            || (b.get(j) == Some(&separateur) && b.get(j.saturating_add(1)).is_some_and(u8::is_ascii_hexdigit))
+    } else {
+        b.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || b":-".contains(c))
+    };
+    if (tirets && courts) || suite {
         return None;
     }
     Some((j, octets, separateur))
@@ -1449,6 +1512,72 @@ mod tests {
             "{aleatoire}"
         );
         assert_ne!(aleatoire, "da:a1:19:12:34:56");
+    }
+
+    /// MASQUEUR-1 et 2 (lot des masques) : une MAC à tirets collée à « : », « = », « - », et celle d'un nom
+    /// d'interface (« enx… »), inventées comme les autres, préfixe du fabricant gardé.
+    #[test]
+    fn adresses_mac_collees_et_interfaces() {
+        for (brut, tete, vraie) in [
+            ("montre 00-1A-2B-3C-4D-5E: link up", "montre 00-1A-2B-", "3C-4D-5E"),
+            ("MAC:00-1A-2B-3C-4D-5E puis", "MAC:00-1A-2B-", "3C-4D-5E"),
+            ("a=00-1a-2b-3c-4d-5e puis", "a=00-1a-2b-", "3c-4d-5e"),
+            ("id-00-1a-2b-3c-4d-5e puis", "id-00-1a-2b-", "3c-4d-5e"),
+            ("montre enx001a2b3c4d5e: renamed", "montre enx001a2b", "3c4d5e"),
+            ("montre wlx001A2B3C4D5E: up", "montre wlx001A2B", "3C4D5E"),
+        ] {
+            let t = masquer_mac(brut);
+            assert!(t.starts_with(tete) && !t.contains(vraie), "{brut:?} donne {t:?}");
+            assert_eq!(t.len(), brut.len(), "{brut:?} donne {t:?}");
+        }
+        // Une suite hexadécimale plus longue n'est pas une adresse ; un nom d'interface sans les 12 chiffres non plus.
+        for t in [
+            "aa00-1A-2B-3C-4D-5E",
+            "00-1A-2B-3C-4D-5E-6F",
+            "00-1A-2B-3C-4D-5E7",
+            "enx001a2b3c4d",
+            "xenx001a2b3c4d5e",
+        ] {
+            assert_eq!(masquer_mac(t), t);
+        }
+    }
+
+    /// Relecture adverse du lot des masques : une MAC à soulignés (BlueZ, PipeWire), un nom d'interface « ibx »,
+    /// « slx », « wwx », suivi d'une lettre (« enx…p1 ») ou précédé d'une lettre accentuée ; l'identifiant de client DHCP
+    /// de Windows (« 01- » devant l'adresse).
+    #[test]
+    fn adresses_mac_soulignes_et_interfaces_suivies() {
+        for (brut, tete, vraie) in [
+            ("bluez_card.00_1A_2B_3C_4D_5E puis", "bluez_card.00_1A_2B_", "3C_4D_5E"),
+            ("dev_00_1a_2b_3c_4d_5e puis", "dev_00_1a_2b_", "3c_4d_5e"),
+            ("montre enx001a2b3c4d5ep1 up", "montre enx001a2b", "3c4d5e"),
+            ("montre ibx001a2b3c4d5e up", "montre ibx001a2b", "3c4d5e"),
+            ("montre slx001a2b3c4d5e up", "montre slx001a2b", "3c4d5e"),
+            ("montre éenx001a2b3c4d5e up", "montre éenx001a2b", "3c4d5e"),
+            ("modem wwx001a2b3c4d5e up", "modem wwx001a2b", "3c4d5e"),
+            ("carte wlx001a2b3c4d5e up", "carte wlx001a2b", "3c4d5e"),
+            (
+                "Client-ID 01-00-1A-2B-3C-4D-5E prêt",
+                "Client-ID 01-00-1A-2B-",
+                "3C-4D-5E",
+            ),
+            ("01-00-1a-2b-3c-4d-5e prêt", "01-00-1a-2b-", "3c-4d-5e"),
+        ] {
+            let t = masquer_mac(brut);
+            assert!(t.starts_with(tete) && !t.contains(vraie), "{brut:?} donne {t:?}");
+            assert_eq!(t.len(), brut.len(), "{brut:?} donne {t:?}");
+        }
+        // Une suite plus longue, à soulignés comme à tirets, n'est pas une adresse.
+        for t in [
+            "00_1A_2B_3C_4D_5E_6F",
+            "00_1A_2B_3C_4D_5E7",
+            "a_b_c_d_e_f",
+            "enx001a2b3c4d5e6",
+            "id 00-1a-2b-3c-4d-5e-6f non",
+            "7f-01-00-1a-2b-3c-4d-5e",
+        ] {
+            assert_eq!(masquer_mac(t), t);
+        }
     }
 
     #[test]

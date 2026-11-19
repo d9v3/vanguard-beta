@@ -1104,3 +1104,705 @@ fn accents_du_bloc_meme_regle_au_filtre_et_a_la_relecture() {
         assert!(sortie_permise(&format!("mot{x}{x}")), "U+{n:04X}");
     }
 }
+
+// --- Petit lot des masques (0.97) : formes que le nettoyeur commun laissait sortir -----------------------------------
+
+/// Le texte par la vraie porte d'entrée (`journal::anonymiser` puis le masqueur), tel qu'il partirait.
+fn par_texte(brut: &str) -> String {
+    crate::amelioration::texte(brut)
+        .unwrap_or_else(|r| panic!("{brut:?} rejeté : {r:?}"))
+        .as_str()
+        .to_string()
+}
+
+/// Chaque cas, par `texte()` et par le masqueur seul : la sortie attendue, et aucun des morceaux interdits.
+fn masques(cas: &[(&str, &str)], interdits: &[&str]) {
+    for (brut, attendu) in cas {
+        for (vu, voie) in [(par_texte(brut), "texte()"), (propre(brut), "passer")] {
+            for morceau in interdits {
+                assert!(
+                    !vu.contains(morceau),
+                    "{morceau:?} sort de {vu:?} par {voie} ({brut:?})"
+                );
+            }
+            assert_eq!(vu, *attendu, "par {voie} ({brut:?})");
+        }
+    }
+}
+
+/// Par `texte()`, aucun des morceaux interdits ne sort (l'anonymiseur peut déjà avoir masqué autrement).
+fn sans_fuite(brut: &str, interdits: &[&str]) -> String {
+    let vu = par_texte(brut);
+    for morceau in interdits {
+        assert!(!vu.contains(morceau), "{morceau:?} sort de {vu:?} ({brut:?})");
+    }
+    vu
+}
+
+/// MASQUEUR-1 : une MAC à tirets collée à « : », à « = », à « - » ou suivie d'un caractère de jeton sortait entière.
+#[test]
+fn masques_mac_a_tirets_collee() {
+    masques(
+        &[
+            (
+                "le service montre 00-1A-2B-3C-4D-5E: link up puis",
+                "le service montre <mac>: link up puis",
+            ),
+            ("montre MAC:00-1A-2B-3C-4D-5E puis", "montre MAC:<mac> puis"),
+            ("montre station 00-1a-2b-3c-4d-5e: puis", "montre station <mac>: puis"),
+            ("montre a=00-1A-2B-3C-4D-5E puis", "montre a=<mac> puis"),
+            ("montre id-00-1a-2b-3c-4d-5e puis", "montre id-<mac> puis"),
+            (
+                "montre 00-1A-2B-3C-4D-5E/x et 00-1A-2B-3C-4D-5E=y",
+                "montre <mac> et <mac>",
+            ),
+            (
+                "montre 00-1A-2B-3C-4D-5E+z et 00-1A-2B-3C-4D-5E_x",
+                "montre <mac> et <mac>",
+            ),
+            ("montre 00-1A-2B-3C-4D-5E-6F puis", "montre <mac> puis"),
+        ],
+        &["3C-4D", "3c-4d", "4D-5E", "4d-5e", "5E", "5e"],
+    );
+    // La forme à deux-points garde ses bornes : collée à « : », c'est un morceau d'IPv6, masqué comme tel.
+    assert_eq!(propre("montre fe80::00:1a:2b:3c:4d:5e puis"), "montre <ip> puis");
+}
+
+/// MASQUEUR-2 : la MAC portée par un nom d'interface Linux (« enx… », « wlx… ») sortait entière.
+#[test]
+fn masques_mac_dans_un_nom_d_interface() {
+    masques(
+        &[
+            (
+                "montre enx001a2b3c4d5e: renamed from eth0 puis",
+                "montre enx<mac>: renamed from eth0 puis",
+            ),
+            (
+                "montre wlx001A2B3C4D5E: associated puis",
+                "montre wlx<mac>: associated puis",
+            ),
+            ("modem wwx001a2b3c4d5e up", "modem wwx<mac> up"),
+        ],
+        &["3c4d5e", "3C4D5E"],
+    );
+    // Un nom d'interface sans adresse, ou un mot qui n'en est pas un, reste lisible.
+    for t in [
+        "carte enp3s0 et wlan0 et enx12 prêtes",
+        "le mot xenx001a2b3c4d5ez reste un mot",
+    ] {
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// MASQUEUR-3 : une IPv6 en nom inverse « ip6.arpa » sortait entière (ou aux trois quarts).
+#[test]
+fn masques_ipv6_en_nom_inverse() {
+    masques(
+        &[
+            (
+                "query[PTR] 7.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.4.3.2.1.0.0.0.0.2.1.d.f.ip6.arpa from 1",
+                "query[PTR] <ip>.ip6.arpa from 1",
+            ),
+            ("zone 8.b.d.0.1.0.0.2.ip6.arpa. servie", "zone <ip>.ip6.arpa. servie"),
+        ],
+        &["f.e.d.c", "8.b.d", "4.3.2.1", "2.1.d.f"],
+    );
+    // Ici, le premier groupe est une IPv4 pour l'anonymiseur, qui l'invente (203.0.113.x) ; le masqueur prend
+    // l'adresse inventée, puis le reste des chiffres. Par le masqueur seul, tout part d'un bloc.
+    let brut = "requête 3.2.1.0.f.e.d.c.b.a.9.8.7.6.5.4.3.2.1.0.0.0.0.0.8.b.d.0.1.0.0.2.IP6.ARPA ok";
+    assert_eq!(par_texte(brut), "requête <ip>.<ip>.IP6.ARPA ok");
+    assert_eq!(propre(brut), "requête <ip>.IP6.ARPA ok");
+    // Une suite de numéros sans « ip6.arpa » reste lisible.
+    assert_eq!(propre("section 5.1.2.3.4.6 du guide"), "section 5.1.2.3.4.6 du guide");
+}
+
+/// MASQUEUR-5 : une IPv6 à tirets (nom UNC « ….ipv6-literal.net ») sortait entière.
+#[test]
+fn masques_ipv6_a_tirets() {
+    masques(
+        &[
+            (
+                "montre 2001-db8-85a3-8d3-1319-8a2e-370-7348.ipv6-literal.net puis",
+                "montre <ip>.ipv6-literal.net puis",
+            ),
+            (
+                "hôte fd12-3456--7.IPV6-LITERAL.NET injoignable",
+                "hôte <ip>.IPV6-LITERAL.NET injoignable",
+            ),
+            (
+                "montre fe80--1ff-fe23-4567-890as3.ipv6-literal.net puis",
+                "montre <ip>.ipv6-literal.net puis",
+            ),
+        ],
+        &["8a2e", "7348", "fd12", "fe23", "890a"],
+    );
+}
+
+/// MASQUEUR-6 : une IPv4 à tirets dans un nom d'hôte sortait en clair.
+#[test]
+fn masques_ipv4_a_tirets() {
+    masques(
+        &[
+            (
+                "montre modemcable023.100-51-198.mc.example.ca puis",
+                "montre modemcable<ip>.mc.example.ca puis",
+            ),
+            ("montre 198-51-100-23.example.net puis", "montre <ip>.example.net puis"),
+        ],
+        &["198", "100-51", "51-100", "023"],
+    );
+    // Par le masqueur seul (l'anonymiseur fait déjà de ce nom un « <appareil> »).
+    assert_eq!(
+        propre("montre ip-198-51-100-23.ec2.internal puis"),
+        "montre ip-<ip>.ec2.internal puis"
+    );
+    // Ce qui n'en est pas une reste lisible : une version de noyau, une date, un nombre hors borne, une suite trop
+    // longue.
+    for t in [
+        "noyau 6.1.0-28-amd64 chargé",
+        "publié le 2026-11-18 après la revue",
+        "plage 10-20-300-4 refusée",
+        "suite 1-2-3-4-5 refusée",
+    ] {
+        assert_eq!(propre(t), t);
+    }
+}
+
+/// FUITE-6 (porte MCP), porté au nettoyeur commun : le numéro de série annoncé, y compris collé.
+#[test]
+fn masques_numero_de_serie() {
+    masques(
+        &[
+            (
+                "disque sn=PF2ABCDE9 et S/N:WD1234XYZ fin",
+                "disque sn=<numéro> et S/N:<numéro> fin",
+            ),
+            ("num de serie ABC123XYZ789 fin", "num de serie <numéro> fin"),
+            ("serial number: ABC123XYZ789, puis", "serial number: <numéro>, puis"),
+            ("Serial No.: ABC123XYZ789 puis", "Serial No.: <numéro> puis"),
+        ],
+        &["PF2ABCDE9", "WD1234XYZ", "ABC123XYZ789", "AB12CD", "C02XK1ABJG5H"],
+    );
+    // « ° » n'est pas un caractère permis à la sortie : le filtre final le retire.
+    assert_eq!(propre("SÉRIE n°AB12CD puis"), "SÉRIE n <numéro> puis");
+    sans_fuite("SÉRIE n°AB12CD puis", &["AB12CD"]);
+    assert_eq!(propre("(SerialNumber=C02XK1ABJG5H)"), "(SerialNumber=<numéro>)");
+    sans_fuite("(SerialNumber=C02XK1ABJG5H)", &["C02XK1ABJG5H"]);
+    // Sans séparateur, une valeur courte ou sans chiffre reste : ce n'est pas un numéro de série.
+    for t in [
+        "une série de 3 erreurs",
+        "le port serial COM3 est pris",
+        "une série de tests 2026",
+        "le sn ok du texte",
+    ] {
+        assert_eq!(propre(t), t);
+    }
+}
+
+/// Relecture adverse du lot des masques : les annonces de série sont une famille (« serial-number », « serialno »,
+/// « ID_SERIAL_SHORT », « iSerial » de lsusb, « NS », « Seriennummer »), avec des mots entre l'annonce et le « : »
+/// et une valeur écrite en morceaux.
+#[test]
+fn masques_serie_en_famille() {
+    masques(
+        &[
+            ("serial-number: PF2ABCDE9 fin", "serial-number: <numéro> fin"),
+            ("serialno=PF2ABCDE9 fin", "serialno=<numéro> fin"),
+            ("ID_SERIAL_SHORT=WX12A34B5678", "ID_SERIAL_SHORT=<numéro>"),
+            ("  iSerial                 3 PF2ABCDE9", "iSerial 3 <numéro>"),
+            ("NS: QX7781234 fin", "NS: <numéro> fin"),
+            ("Seriennummer: QX7781234 fin", "Seriennummer: <numéro> fin"),
+            ("le sn XY12345678 du texte", "le sn <numéro> du texte"),
+            (
+                "numéro de série du disque : WX12A34B5678 fin",
+                "numéro de série du disque : <numéro> fin",
+            ),
+            ("Serial Number (system): PF2ABCDE9", "Serial Number (system): <numéro>"),
+            ("Serial Number.......: PF2ABCDE9", "Serial Number.......: <numéro>"),
+            ("serial - PF2ABCDE9 fin", "serial - <numéro> fin"),
+            ("Serial Number: WD WX12A34B5678", "Serial Number: <numéro>"),
+            ("numéro de série : WX 12A 34B fin", "numéro de série : <numéro> fin"),
+            ("numéro de série : 12345678 fin", "numéro de série : <numéro> fin"),
+            ("serial number is ABC12345 fin", "serial number is <numéro> fin"),
+        ],
+        &[
+            "PF2ABCDE9",
+            "WX12A34B5678",
+            "QX7781234",
+            "XY12345678",
+            "12A",
+            "34B",
+            "12345678",
+            "ABC12345",
+        ],
+    );
+    // Témoins : une série au sens de suite, un petit nombre, une console série restent lisibles.
+    for t in [
+        "une série de 123456 essais",
+        "sn: 4 segments",
+        "Liaison série n 2 perdue",
+        "serial console ttyS0 at 0x3f8",
+        "the series 2024 edition",
+        "sn ok",
+    ] {
+        assert_eq!(propre(t), t);
+    }
+}
+
+/// FUITE-6 (porte MCP), point 7 : une phrase de passe annoncée par « : » ou « = » ne sort plus après son premier mot.
+#[test]
+fn masques_phrase_de_passe() {
+    masques(
+        &[
+            (
+                "phrase de passe : correct cheval batterie agrafe. Fin",
+                "phrase de passe : <secret>. Fin",
+            ),
+            ("passphrase = lune verte soupe", "passphrase = <secret>"),
+            ("wifi_psk=lune verte soupe\nsuite", "wifi_psk=<secret> suite"),
+        ],
+        &["cheval", "batterie", "agrafe", "verte", "soupe"],
+    );
+    let vu = sans_fuite(
+        "Mot de passe Wi-Fi : lune verte soupe orange. Fin",
+        &["lune", "verte", "soupe", "orange"],
+    );
+    assert!(vu.ends_with(": <secret>. Fin"), "{vu:?}");
+    // « pass phrase » : « pass » suivi d'un mot y fait déjà sonner l'option ; la phrase entière part quand même.
+    let vu = sans_fuite("pass phrase: lune verte soupe; puis", &["lune", "verte", "soupe"]);
+    assert!(vu.ends_with("<secret>; puis"), "{vu:?}");
+    // Un jeton annoncé (« token: ») garde sa fin à la première espace : la suite de la phrase reste lisible.
+    assert_eq!(
+        propre("token: abc123 refusé par le serveur"),
+        "token: <secret> refusé par le serveur"
+    );
+}
+
+/// FUITE-6 (porte MCP) : la MAC à points, forme de Cisco.
+#[test]
+fn masques_mac_a_points() {
+    masques(
+        &[
+            ("carte a483.e712.3456 perdue", "carte <mac> perdue"),
+            ("arp 001A.2B3C.4D5E, vu", "arp <mac>, vu"),
+        ],
+        &["a483", "e712", "3456", "2B3C", "4D5E"],
+    );
+    for t in ["version 2024.11.18 publiée", "la cote 12.3456.78 est lue"] {
+        assert_eq!(propre(t), t);
+    }
+}
+
+/// FUITE-6 (porte MCP) : un chemin relatif qui nomme un fichier de la personne.
+#[test]
+fn masques_chemin_relatif() {
+    masques(
+        &[
+            (
+                "Fichier Documents/impots-2026.pdf et Bureau/Marie Tremblay/paie.xlsx et Bureau\\paie.xlsx",
+                "Fichier <chemin .pdf> et <chemin .xlsx> et <chemin .xlsx>",
+            ),
+            ("clé .ssh/id_ed25519 lue", "clé <chemin> lue"),
+            ("note ../projets/plan introuvable.", "note <chemin> introuvable."),
+            ("(Photos/2026/vacances.jpg)", "(<chemin .jpg>)"),
+        ],
+        &[
+            "impots",
+            "Marie",
+            "Tremblay",
+            "paie",
+            "id_ed25519",
+            "projets",
+            "vacances",
+        ],
+    );
+    // Les mots à barre de la langue et du métier, et le lieu d'une panique de Vanguard, restent lisibles.
+    for t in [
+        "Continuer o/N, y/N",
+        "HTTP/1.1 et TCP/IP, N/A, 8080/tcp, image/svg+xml",
+        "le service systemd/user, garde/poser, a/b",
+        "panique à src/nettoyer/mod.rs:110:17 et library/std/src/io/stdio.rs",
+        "la tentative 3/5 échoue le 18/11/2026 encore",
+    ] {
+        assert_eq!(propre(t), t);
+    }
+}
+
+/// Les exemples promis par le CHANGELOG de la 0.97 sont vraiment masqués : la note publiée ne doit pas promettre plus
+/// que le code (valeurs inventées).
+#[test]
+fn masques_exemples_du_changelog() {
+    for (brut, interdits) in [
+        ("le disque N° de série : ZX4417QW est lu", &["ZX4417QW"][..]),
+        (
+            "le réseau mot de passe : lune verte soupe. Fin du message",
+            &["lune", "verte", "soupe"],
+        ),
+        ("la carte abcd.ef12.3456 répond encore", &["abcd.ef12"]),
+        ("le nom ip-10-1-2-3.example.net répond encore", &["10-1-2-3"]),
+        ("le fichier Documents/impots.pdf est ouvert", &["impots"]),
+        ("le fichier ../Marie/notes est introuvable", &["Marie", "notes"]),
+        ("le fichier projet/.ssh/id_ed25519 est lu", &["id_ed25519"]),
+        ("la sonde serial-number: PF2ABCDE9 répond", &["PF2ABCDE9"]),
+        (
+            "la base pass-phrase: lune verte soupe. Fin du message",
+            &["lune", "verte", "soupe"],
+        ),
+        (
+            "la base PGPASSWORD=lune verte soupe. Fin du message",
+            &["lune", "verte", "soupe"],
+        ),
+        ("la commande mysql -pLune2Verte base échoue", &["Lune2Verte"]),
+        ("la commande mysql -ualice:Lune2Verte base échoue", &["Lune2Verte"]),
+        (
+            "la commande net use Z: \\\\srv\\partage Lune2Verte /user:alice échoue",
+            &["Lune2Verte"],
+        ),
+        ("la carte dev_00_1A_2B_3C_4D_5E répond encore", &["2B_3C", "4D_5E"]),
+        (
+            "le nom 2001-db8-85a3-0-0-8a2e-370-7334 répond encore",
+            &["8a2e", "85a3"],
+        ),
+        ("le nom host198.51.100.23 répond encore", &["198.51", "100.23"]),
+        (
+            "le nom ec2-198-51-100-23.example.net répond encore",
+            &["198-51", "100-23"],
+        ),
+        ("le fichier .config/outil/reglages.toml est lu", &["outil", "reglages"]),
+    ] {
+        sans_fuite(brut, interdits);
+    }
+}
+
+/// Relecture adverse du lot des masques : une IPv4 à tirets après un mot qui finit par un chiffre (« ec2- »,
+/// « dsl2- », « node-7- ») ; une IPv4 à points collée à une lettre ; deux IPv4 séparées par « / » ou « : ».
+#[test]
+fn masques_ipv4_dans_les_noms() {
+    masques(
+        &[
+            (
+                "le nom ec2-198-51-100-23.example.net répond",
+                "le nom ec2-<ip>.example.net répond",
+            ),
+            ("le nom ip4-198-51-100-23 répond", "le nom ip4-<ip> répond"),
+            ("le nom dsl2-198-51-100-23 répond", "le nom dsl2-<ip> répond"),
+            ("le nom node-7-198-51-100-23 répond", "le nom node-7-<ip> répond"),
+            (
+                "le nom 198-51-100-23.example.net répond",
+                "le nom <ip>.example.net répond",
+            ),
+            ("le nom host198.51.100.23 répond", "le nom host<ip> répond"),
+            ("le nom v1.198.51.100.23 répond", "le nom v<ip> répond"),
+            (
+                "les deux 198.51.100.23:198.51.100.24 répondent",
+                "les deux <ip>:<ip> répondent",
+            ),
+        ],
+        &["198-51", "100-23", "198.51", "100.2", "51.100"],
+    );
+    sans_fuite("les deux 198.51.100.23/198.51.100.24 répondent", &["198.51", "100.24"]);
+    // Témoins : sans nom d'hôte, des nombres à tirets restent lisibles, comme une date et une version de noyau.
+    for t in [
+        "les ports 10-20-30-40 sont ouverts",
+        "la version 1.2-3-4 est sortie",
+        "le rapport du 2026-11-18-10 au matin",
+        "le noyau 6.1.0-28-amd64 est actif",
+        "le build-2026-11-18-1 est fini",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// Relecture adverse du lot des masques : une MAC à soulignés (« bluez_card.00_1A_… »), à points collée à « = »,
+/// « - » ou suivie de « / », dans un nom d'interface « ibx », « slx », suivi d'une lettre ou précédé d'un accent.
+#[test]
+fn masques_mac_soulignes_points_interfaces() {
+    masques(
+        &[
+            (
+                "la carte bluez_card.00_1A_2B_3C_4D_5E répond",
+                "la carte bluez_card.<mac> répond",
+            ),
+            ("la carte dev_00_1A_2B_3C_4D_5E répond", "la carte dev_<mac> répond"),
+            ("la carte mac=001a.2b3c.4d5e répond", "la carte mac=<mac> répond"),
+            ("la carte vlan-001a.2b3c.4d5e répond", "la carte vlan-<mac> répond"),
+            ("la carte enx001a2b3c4d5ep1 répond", "la carte enx<mac>p1 répond"),
+            ("la carte ibx001a2b3c4d5e répond", "la carte ibx<mac> répond"),
+            ("la carte slx001a2b3c4d5e répond", "la carte slx<mac> répond"),
+            ("la carte éenx001a2b3c4d5e répond", "la carte éenx<mac> répond"),
+        ],
+        &["3C_4D", "4D_5E", "2b3c", "4d5e", "3c4d5e"],
+    );
+    sans_fuite("la carte 001a.2b3c.4d5e/24 répond", &["2b3c", "4d5e"]);
+    // Témoins : une version en trois groupes de chiffres n'est pas une MAC.
+    for t in [
+        "la version 2026.1118.1504 est installée",
+        "le code 0000.0000.0000 est vide pour cette carte réseau",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// Relecture adverse du lot des masques : une IPv6 écrite avec des tirets sans « .ipv6-literal.net », ou avec une
+/// IPv4 finale.
+#[test]
+fn masques_ipv6_a_tirets_seule() {
+    masques(
+        &[
+            ("le nom 2001-db8-85a3-0-0-8a2e-370-7334 répond", "le nom <ip> répond"),
+            ("le nom fe80--1ff-fe23-4567 répond", "le nom <ip> répond"),
+            (
+                "le nom 2001-db8--1.example.net répond",
+                "le nom <ip>.example.net répond",
+            ),
+            (
+                "le nom 2001-db8--ffff-198.51.100.23.ipv6-literal.net répond",
+                "le nom <ip>.ipv6-literal.net répond",
+            ),
+        ],
+        &["85a3", "8a2e", "fe23", "4567", "db8", "198.51"],
+    );
+    for t in [
+        "dans le rapport numéro 2026--11 de la semaine passée",
+        "appelez le numéro 514-555-1234 pour avoir du soutien",
+        "la date 2026-11-18 et le code abcd-ef01-2345 du lot",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// Relecture adverse du lot des masques : « pass-phrase: », une phrase de plusieurs mots après « secret », « clé »,
+/// « pw », « PGPASSWORD », « userPassword », un guillemet échappé, une option collée (« -pXXX », « -uNOM:XXX ») et
+/// le mot de passe de « net use ».
+#[test]
+fn masques_secrets_de_la_relecture() {
+    masques(
+        &[
+            ("pass-phrase: lune verte soupe. Fin", "pass-phrase: <secret>. Fin"),
+            ("la pass_phrase=lune verte soupe. Fin", "la pass_phrase=<secret>. Fin"),
+            ("PGPASSWORD=lune verte soupe. Fin", "PGPASSWORD=<secret>. Fin"),
+            ("userPassword: lune verte soupe. Fin", "userPassword: <secret>. Fin"),
+            ("client_secret=lune verte soupe. Fin", "client_secret=<secret>. Fin"),
+            ("db_pw = lune verte soupe. Fin", "db_pw = <secret>. Fin"),
+            ("la clé : lune verte soupe. Fin", "la clé : <secret>. Fin"),
+            ("mysql -uroot -pLune2Verte base", "mysql -uroot -p<secret> base"),
+            ("mysql -ualice:Lune2Verte base", "mysql -u<secret> base"),
+            (
+                "net use Z: \\\\srv\\partage Lune2Verte /user:alice",
+                "net use Z: <chemin> <secret> <chemin>:alice",
+            ),
+            (
+                "net use * \\\\srv\\partage /user:alice Lune2Verte",
+                "net use <chemin> <chemin>:alice <secret>",
+            ),
+        ],
+        &["lune", "verte", "soupe", "Lune2Verte"],
+    );
+    masques(
+        &[(
+            "{\\\"password\\\": \\\"lune verte soupe\\\", \\\"user\\\": \\\"x\\\"}",
+            "password : <secret> , user : x",
+        )],
+        &["lune", "verte", "soupe"],
+    );
+    // Témoins : une option de compilateur, un port, un chemin qui passe par « pass », un message d'erreur.
+    for t in [
+        "gcc -pthread -pedantic-errors x.c",
+        "docker run -p8080:80 image",
+        "le mot de passe incorrect est refusé",
+        "net use \\\\srv\\partage /persistent:no",
+    ] {
+        assert!(!propre(t).contains("<secret>"), "{t:?} donne {:?}", propre(t));
+    }
+    assert_eq!(
+        propre("gcc -pthread -pedantic-errors pour tout"),
+        "gcc -pthread -pedantic-errors pour tout"
+    );
+}
+
+/// Relecture adverse du lot des masques : un dossier caché au milieu, un dossier personnel sans extension, une
+/// extension suivie d'un caractère collé ; les fichiers du dépôt et « ./vanguard » restent lisibles.
+#[test]
+fn masques_chemins_relatifs_de_la_relecture() {
+    masques(
+        &[
+            ("le fichier projet/.ssh/id_ed25519 est lu", "le fichier <chemin> est lu"),
+            (
+                "voir Users\\marie\\Documents pour la suite",
+                "voir <chemin> pour la suite",
+            ),
+            (
+                "le journal notes/compta.db-journal est là",
+                "le journal <chemin .db> est là",
+            ),
+            (
+                "ouvrir rapports/paie.xlsx#Feuille1 maintenant",
+                "ouvrir <chemin .xlsx> maintenant",
+            ),
+            (
+                "ouvrir rapports/paie.pdf_backup maintenant",
+                "ouvrir <chemin .pdf> maintenant",
+            ),
+            ("le fichier marie/src/x.rs est lu", "le fichier <chemin .rs> est lu"),
+            ("lancer ../Marie/notes maintenant", "lancer <chemin> maintenant"),
+        ],
+        &["id_ed25519", "marie", "compta", "paie", "Feuille1", "Marie", "notes/"],
+    );
+    for t in [
+        "erreur dans outils/verifier.sh ligne 3",
+        "lancer ./outils/verifier.sh tout de suite",
+        "panique src/bin/Outil-Test.rs ligne 3",
+        "panique library/std/src/panicking.rs ligne 3",
+        "lancer ./vanguard maintenant",
+        "le protocole TCP/IP et read/write et HTTP/1.1 marchent",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// Ronde 3 du lot des masques : le mot de passe Wi-Fi de netsh (anglais, allemand), les mots de secret allemands et
+/// français, la valeur entre apostrophes ou après « -p= », net use dans toutes ses écritures. Sortie exacte.
+#[test]
+fn masques_secrets_de_la_ronde_3() {
+    masques(
+        &[
+            ("Key Content : lune verte soupe. Fin", "Key Content : <secret>. Fin"),
+            ("Key Content            : Lune2Verte42", "Key Content : <secret>"),
+            ("Schlüsselinhalt : Lune2Verte42", "Schlüsselinhalt : <secret>"),
+            (
+                "Schlüsselinhalt : lune verte soupe. Fin",
+                "Schlüsselinhalt : <secret>. Fin",
+            ),
+            ("Passwort: Lune2Verte42", "Passwort: <secret>"),
+            ("Kennwort = lune verte soupe. Ende", "Kennwort = <secret>. Ende"),
+            ("Schlüssel: Lune2Verte42", "Schlüssel: <secret>"),
+            (
+                "la phrase secrète : lune verte soupe. Fin",
+                "la phrase secrète : <secret>. Fin",
+            ),
+            ("la clef : lune verte soupe. Fin", "la clef : <secret>. Fin"),
+            (
+                "le code d'accès : lune verte soupe. Fin",
+                "le code d'accès : <secret>. Fin",
+            ),
+            ("mdp: lune verte soupe. Fin", "mdp: <secret>. Fin"),
+            ("mysql -u root -p 'Lune2Verte' base", "mysql -u root -p '<secret>' base"),
+            (
+                "mysql -u root --password 'Lune2Verte' base",
+                "mysql -u root --password '<secret>' base",
+            ),
+            ("mysql -u root -p'Lune2Verte' base", "mysql -u root -p'<secret>' base"),
+            ("mysql -u root -p=Lune2Verte base", "mysql -u root -p=<secret> base"),
+            (
+                "args ['mysql', '-pLune2Verte', 'base'] ensuite",
+                "args ['mysql', '-p<secret>', 'base'] ensuite",
+            ),
+            ("mysql -p$ Lune2Verte base", "mysql -p <secret> base"),
+            (
+                "net.exe use Z: \\\\srv\\partage Lune2Verte /user:alice",
+                "net.exe use Z: <chemin> <secret> <chemin>:alice",
+            ),
+            (
+                "net use Z: \"\\\\srv\\partage\" \"Lune2Verte\" /user:alice",
+                "net use Z: <chemin> <secret> <chemin>:alice",
+            ),
+            (
+                "net use Z: //srv/partage Lune2Verte ensuite",
+                "net use Z: <chemin> <secret> ensuite",
+            ),
+            (
+                "net use Z: \\\\srv\\partage /user:alice /persistent:no Lune2Verte",
+                "net use Z: <chemin> <chemin>:alice <chemin>:no <secret>",
+            ),
+            ("net use \\\\srv\\partage Lune2Verte", "net use <chemin> <secret>"),
+            (
+                "net use Z: \\\\srv\\partage /user:alice /persistent:no /savecred Lune2Verte",
+                "net use Z: <chemin> <chemin>:alice <chemin>:no <chemin> <secret>",
+            ),
+            // Un mot accentué collé (« secrète » lu « secrete ») et « clef » en fin de nom.
+            ("la valeur_secrète=soupe42 ici", "la valeur_secrète=<secret> ici"),
+            ("SSID wifi_clef=soupe42 ici", "SSID wifi_clef=<secret>"),
+        ],
+        &["lune", "verte", "soupe", "Lune2Verte"],
+    );
+    // Témoins : une option de compilateur, un port collé, un mot de la langue entre apostrophes, -p= sans valeur.
+    for t in [
+        "gcc -pthread -pedantic-errors pour tout",
+        "docker run -p8080:80 image ici",
+        "dir -p 'mon dossier' ici et là",
+        "make -p=debug pour tout le reste",
+        "le Schlüsseldienst ist geschlossen heute",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
+/// Relecture adverse de la ronde 2 : dix défauts remis exprès que la suite ne voyait pas (elle comparait par
+/// `contains`). Chacun a ici sa sortie exacte ; `muter` prouve que chacun fait échouer cet essai.
+#[test]
+fn masques_defauts_de_la_ronde_2() {
+    masques(
+        &[
+            ("le dossier docs/Bureau/Tremblay est lu", "le dossier <chemin> est lu"),
+            ("net use \\\\srv\\partage Lune2Verte", "net use <chemin> <secret>"),
+            (
+                "198-51-100-23-static.example.net est vu",
+                "<ip>-static.example.net est vu",
+            ),
+            ("host.198-51-100-23 est vu", "host.<ip> est vu"),
+            ("serial# 471188 ok", "serial# <numéro> ok"),
+            ("mdp: lune verte soupe. Fin", "mdp: <secret>. Fin"),
+            ("pwd: lune verte soupe. Fin", "pwd: <secret>. Fin"),
+            ("cle: lune verte soupe. Fin", "cle: <secret>. Fin"),
+            (
+                "le numéro de série est PF2QZ8X71K fin",
+                "le numéro de série est <numéro> fin",
+            ),
+            (
+                "die Seriennummer ist PF2QZ8X71K fertig",
+                "die Seriennummer ist <numéro> fertig",
+            ),
+            ("the serial was PF2QZ8X71K ok", "the serial was <numéro> ok"),
+            (
+                "le numéro de série numéro PF2QZ8X71K fin",
+                "le numéro de série numéro <numéro> fin",
+            ),
+            ("voir Desktop\\marie pour la suite", "voir <chemin> pour la suite"),
+            ("voir Downloads/facture pour la suite", "voir <chemin> pour la suite"),
+            ("voir home/marie/projets pour la suite", "voir <chemin> pour la suite"),
+            ("serialnr PF2QZ8X71K ok", "serialnr <numéro> ok"),
+            ("serial_num PF2QZ8X71K ok", "serial_num <numéro> ok"),
+            ("IDSERIAL=PF2QZ8X71K ok", "IDSERIAL=<numéro> ok"),
+            ("DiskSerialNumber: PF2QZ8X71K ok", "DiskSerialNumber: <numéro> ok"),
+            ("SystemSerialNumber = PF2QZ8X71K ok", "SystemSerialNumber = <numéro> ok"),
+            ("Volumeseriennummer: 4A3B-91C2 ok", "Volumeseriennummer: <numéro> ok"),
+            ("Serien-Nr.: PF2QZ8X71K fertig", "Serien-Nr.: <numéro> fertig"),
+            ("Seriennr. PF2QZ8X71K fertig", "Seriennr. <numéro> fertig"),
+        ],
+        &[
+            "Tremblay",
+            "Lune2Verte",
+            "198-51",
+            "471188",
+            "lune",
+            "PF2QZ8X71K",
+            "marie",
+            "facture",
+            "4A3B",
+        ],
+    );
+    // Témoins : « series », « serialization », un mot composé qui ne finit pas par « number ».
+    for t in [
+        "series of tests and serialization done",
+        "the miserial story is long and sad",
+        "le numéro de version est 2 seulement",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}

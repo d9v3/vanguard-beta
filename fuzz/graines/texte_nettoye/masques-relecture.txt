@@ -1,0 +1,7 @@
+serial-number: WX12A34B serialno=ZK9QF7781 serial_short WD-WX12A34B iSerial 3 PF2ABCDE9 NS: 7XQ2K94B Seriennummer: 4711AB9
+numéro de série du disque : WX 12A 34B ; sn: ok ; une série de 12 essais ; série n° 4
+ec2-198-51-100-23.compute-1.amazonaws.com node-7-198-51-100-23 host198.51.100.23 v2-1-3-4 version 1-2-3-4
+dev_00_1A_2B_3C_4D_5E mac=001a.2b3c.4d5e ibx001a2b3c4d5e 2026.1118.1504 2001-db8-85a3-0-0-8a2e-370-7334 fe80--1ff
+pass-phrase: lune verte du matin userPassword: deux mots ici PGPASSWORD=Lune2Verte mysql -pLune2Verte -ualice:Lune2Verte
+net use Z: \\serveur\partage Lune2Verte /user:alice cle=\"Lune2Verte\" ../Marie/notes projets/.ssh/id_ed25519 ./src/main.rs
+198.51.100.23/198.51.100.24 198.51.100.23:198.51.100.24 dossier\pass\Lune

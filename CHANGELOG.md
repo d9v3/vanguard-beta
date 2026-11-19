@@ -101,6 +101,22 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   le programme, chaque correction attend toujours votre accord. Le modèle de menace gagne une section « Mode
   autonome » qui dit ce qui est prévu et ses freins (liste fermée de gestes, plafond et disjoncteur, interrupteur
   scellé, rien d'automatique sur le réseau ni la prise en main à distance).
+- **Les textes envoyés pour améliorer Vanguard masquent plus de formes.** Le nettoyeur commun prend maintenant : un
+  numéro de série annoncé, dans ses écritures courantes (« Serial Number: », « serial-number », « iSerial » de lsusb,
+  « S/N », « N° de série », « Seriennummer », « DiskSerialNumber »…), même écrit en plusieurs morceaux ; une phrase de
+  passe ou un secret annoncés par `:` ou `=`, en français, en anglais ou en allemand (« password: », « pass-phrase: »,
+  « wifi_psk= », « PGPASSWORD= », « mot de passe : », « phrase secrète : », « Passwort: », la clé Wi-Fi que montre
+  `netsh wlan show profile key=clear`), jusqu'à la fin de leur phrase, même avec des espaces ; un mot de passe donné à
+  son option, collé ou entre apostrophes (`-pXXX`, `-p 'XXX'`, `-p=XXX`, `-uNOM:XXX`) ou à `net use` ; une adresse MAC
+  à tirets ou à soulignés collée à un mot, à points (`abcd.ef12.3456`) ou cachée dans un nom d'interface (`enx…`,
+  `wlx…`) ; une IPv6 écrite en nom inverse (`….ip6.arpa`) ou à tirets ; une IPv4 collée à un mot (`host198.51.100.23`)
+  ou à tirets dans un nom d'hôte (`ip-10-1-2-3`, `ec2-…`) ; un chemin relatif vers un fichier ou par un dossier
+  personnel (`Documents/impots.pdf`, `../Marie/notes`, `projet/.ssh/…`). Le relais, qui refuse un texte où il reste un
+  secret, reconnaît les mêmes annonces de secrets ; les autres formes sont masquées par Vanguard avant l'envoi. Les
+  versions, les heures, les dates et les fichiers du dépôt de Vanguard (`src/…/mod.rs`, `outils/verifier.sh`) restent
+  lisibles. Limites : un chemin relatif sans extension, sans point ni dossier personnel (`projets/Marie`) reste
+  lisible, comme quatre nombres à tirets sans nom d'hôte autour ; une phrase de passe emporte tout le reste de sa
+  phrase.
 
 ## 15 novembre 2026 : version 0.96.0
 

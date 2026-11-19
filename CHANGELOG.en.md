@@ -94,6 +94,20 @@ example, finds it, to rebuild it if needed.
   changes in the program yet, every fix still waits for your consent. The threat model gains an “Autonomous mode”
   section that says what is planned and its brakes (a closed list of actions, a ceiling and a circuit breaker, a
   sealed switch, nothing automatic on the network or remote control).
+- **Texts sent to improve Vanguard mask more forms.** The common cleaner now catches: an announced serial number, in
+  its usual spellings ("Serial Number:", "serial-number", lsusb's "iSerial", "S/N", "N° de série", "Seriennummer",
+  "DiskSerialNumber"…), even written in several pieces; a passphrase or a secret announced by `:` or `=`, in French,
+  English or German ("password:", "pass-phrase:", "wifi_psk=", "PGPASSWORD=", "mot de passe :", "Passwort:", the Wi-Fi
+  key shown by `netsh wlan show profile key=clear`), up to the end of its sentence, even with spaces; a password given
+  to its option, stuck or in quotes (`-pXXX`, `-p 'XXX'`, `-p=XXX`, `-uNAME:XXX`) or to `net use`; a MAC address with
+  dashes or underscores stuck to a word, with dots (`abcd.ef12.3456`) or hidden in an interface name (`enx…`, `wlx…`);
+  an IPv6 written as a reverse name (`….ip6.arpa`) or with dashes; an IPv4 stuck to a word (`host198.51.100.23`) or
+  with dashes in a host name (`ip-10-1-2-3`, `ec2-…`); a relative path to a file or through a personal folder
+  (`Documents/taxes.pdf`, `../Marie/notes`, `project/.ssh/…`). The relay, which refuses a text where a secret remains,
+  recognizes the same secret announcements; the other forms are masked by Vanguard before sending. Versions, times,
+  dates and the files of Vanguard's repository (`src/…/mod.rs`, `outils/verifier.sh`) stay readable. Limits: a
+  relative path without an extension, a dot or a personal folder (`projects/Marie`) stays readable, as do four
+  dash-separated numbers with no host name around them; a passphrase takes the rest of its sentence with it.
 
 ## November 15, 2026: version 0.96.0
 
