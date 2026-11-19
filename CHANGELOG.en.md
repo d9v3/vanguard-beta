@@ -19,17 +19,20 @@ example, finds it, to rebuild it if needed.
   "<chemin .pdf>", a link "<url>", a free word "<valeur>"; the log, the gate and the draft use the same marker. A bare file name ("CV-Bob-Exemple.pdf", "Zoé.Tremblay.docm") is masked from a closed list of extensions
   (documents, archives, sounds, programs…); the extension shown is always a known one, never the rest of a name
   ("jean.tremblay") nor that of an account folder ("first.last" under /home); a personal folder is replaced by "~" before
-  masking, even with a space; a name with spaces is taken up to the closing quote or parenthesis, up to ":", and under
-  a personal folder up to the end of the line; a path cut on the left by "…" is removed up to the end of the line; a
-  web address is removed whole, whatever its scheme, when it starts with "www." or "//", or with a single slash
-  ("https:/…"), a query glued to a path leaving with it, even when glued
+  masking, even with a space; a path under a personal folder (home, "~", "Users\x", "/run/media/x", "Documents/…",
+  a "file://" address in a home) is removed up to the end of the line, or up to the quote that closes it; elsewhere, a
+  name with spaces is taken up to the closing quote or parenthesis, or up to ":"; a path cut on the left by "…" is
+  removed up to the end of the line, and a cut excerpt starts with "…" and then at the start of a word; "//host/…" is
+  a web address only right after `"` `'` `=` `(`, elsewhere it is a network share; a web address is removed whole,
+  whatever its scheme, when it starts with "www." or "//", or with a single slash ("https:/…"), a query glued to a
+  path leaving with it up to the end of the line, even when glued
   to an option ("--url=https://…"); a secret is masked before and after
   anonymization, which could hide its start ("-u alice:…"); a file or program field of the draft is replaced whole; a
   value that is too long is cut at a space before masking; only the kernel version is kept, without its suffix.
   Entries written before 0.97 are no longer sent to GitHub on their own: they wait for the author's approval
   (`--accord`), and this is said. Limits: diagnostics lose the MAC vendor prefix, paths and IPs; error tickets already
   open may come back under a new signature; a secret made only of common words ("-p 'red house'") or with no keyword
-  before it may remain; in free text, an unquoted file name with spaces outside a personal folder may keep its end, and a web address with no scheme, "www." or "//" ("example.com/page") remains; the detail is cut at 3000 bytes (a draft value at 4000 characters) before masking, whose cost
+  before it may remain; in free text, an unquoted file name with spaces outside a personal folder may keep its end, and a web address with no scheme, "www." or "//" ("example.com/page") remains; after a personal path, the rest of the line is lost; the detail is cut at 3000 bytes (a draft value at 4000 characters) before masking, whose cost
   grows quickly with length; a text the masker cannot stabilise is replaced whole by "[texte retiré : masquage
   instable]".
 - **The system journal is read in full, like `journalctl`.** After a reboot, the journal can give a new entry the

@@ -280,7 +280,9 @@ pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
                 &variante,
                 "~",
                 |_| true,
-                |c| c.is_none_or(|c| !(c.is_alphanumeric() || "._-".contains(c))),
+                // Suivie d'une barre, d'une espace, de « : », d'un guillemet ou de la fin seulement : « alice+bob »
+                // ou « alice's » sont un autre nom, que le masquage du chemin prend entier (relecture 0.97, ronde 5).
+                |c| c.is_none_or(|c| c == '/' || c == '\\' || c.is_whitespace() || c == ':' || c == '"'),
             );
         }
     }
@@ -1408,6 +1410,19 @@ fn lieu_de(l: &std::panic::Location<'_>) -> Option<Lieu> {
 mod tests {
     use super::*;
 
+    /// Ronde 5, bas : une maison n'est remplacée que suivie d'une barre, d'une espace, de « : », d'un guillemet ou
+    /// de la fin ; « alice+bob » ou « alice's » sont un autre nom (valeurs inventées).
+    #[test]
+    fn maison_a_sa_frontiere() {
+        let m = ["/home/alice".to_string()];
+        assert_eq!(sans_maisons_avec("/home/alice+bob/x", &m), "/home/alice+bob/x");
+        assert_eq!(sans_maisons_avec("/home/alice's dossier", &m), "/home/alice's dossier");
+        assert_eq!(
+            sans_maisons_avec("/home/alice/x et /home/alice: et \"/home/alice\"", &m),
+            "~/x et ~: et \"~\""
+        );
+    }
+
     /// Relecture : le journal de la clé retirée ne s'écrit plus ; l'entrée va dans le dossier local, jamais perdue
     /// sans un mot. Un journal qui est un lien n'est jamais suivi, ni remplacé ailleurs.
     #[test]
@@ -2071,7 +2086,7 @@ mod tests {
         DOSSIER_ESSAI.set(Some(dossier.to_path_buf()));
         erreur(
             Contexte::Autotest,
-            "échec MAC 3c:22:fb:12:34:56 série 5CG1234XYZ\r\nmysql -p 'Lune2 Verte9' /home/alice/notes.txt 81.12.34.56",
+            "échec MAC 3c:22:fb:12:34:56 série 5CG1234XYZ\r\nmysql -p 'Lune2 Verte9' 81.12.34.56 /home/alice/notes.txt",
         );
         let lu = std::fs::read_to_string(dossier.join(FICHIER)).unwrap_or_default();
         DOSSIER_ESSAI.set(None);
@@ -2080,7 +2095,7 @@ mod tests {
             detail,
             [
                 "  échec MAC <mac> série <numéro>",
-                "  mysql -p '<secret>' <chemin .txt> <ip>"
+                "  mysql -p '<secret>' <ip> <chemin .txt>"
             ],
             "{lu}"
         );

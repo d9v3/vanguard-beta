@@ -802,14 +802,14 @@ fn un_non_sur_le_disque_arrete_le_releve() {
 
 /// Le masquage seul, sans borne de 300 octets ni refus : celui du journal des erreurs et du brouillon de signalement.
 /// Valeurs inventées : une MAC sous ses deux écritures, une série, un mot de passe entre apostrophes après `-p`, un
-/// chemin personnel, une IP publique et une IP locale.
+/// IP publique, une IP locale et un chemin personnel, en dernier : après lui, le reste de la ligne part.
 #[test]
 fn masquer_ce_qui_sort() {
     let brut = "MAC 3c:22:fb:12:34:56 et 3c22.fb12.3456, série 5CG1234XYZ, mysql -p 'Lune2 Verte9' base, \
-                /home/alice/Documents/rapport.pdf, IP 81.12.34.56 et 192.168.1.10";
+                IP 81.12.34.56 et 192.168.1.10, /home/alice/Documents/rapport.pdf, fin";
     assert_eq!(
         masquer(brut),
-        "MAC <mac> et <mac>, série <numéro>, mysql -p '<secret>' base, <chemin .pdf>, IP <ip> et <ip>"
+        "MAC <mac> et <mac>, série <numéro>, mysql -p '<secret>' base, IP <ip> et <ip>, <chemin .pdf>"
     );
 }
 
@@ -912,7 +912,7 @@ fn masquer_dossier_personnel_a_espaces() {
         ("erreur: /home/alice.pdf: accès refusé", "erreur: ~: accès refusé"),
         (
             r"erreur: C:\Users\Zoé d'Alice\Documents\Impôts.pdf: absent",
-            "erreur: <chemin .pdf>: absent",
+            "erreur: <chemin .pdf>",
         ),
         ("curl -u alice:Lune2Verte9 ok", "curl -u <secret> ok"),
     ] {

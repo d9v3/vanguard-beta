@@ -911,12 +911,12 @@ fn le_choix_reste_dans_le_fil_coupe() {
 fn brouillon_masque_par_le_masquage_commun() {
     let fil = vec![une_alerte(
         "Lien",
-        "MAC 3c:22:fb:12:34:56 série 5CG1234XYZ mysql -p 'Lune2 Verte9' /home/alice/notes.txt 81.12.34.56",
+        "MAC 3c:22:fb:12:34:56 série 5CG1234XYZ mysql -p 'Lune2 Verte9' 81.12.34.56 /home/alice/notes.txt",
     )];
     let md = markdown(&incident(fil), &reponses(), None, Programme::Mozilla);
     let ligne = md.lines().find(|l| l.starts_with("MAC ")).unwrap_or_default();
     assert_eq!(
-        ligne, "MAC <mac> série <numéro> mysql -p '<secret>' <chemin .txt> <ip>",
+        ligne, "MAC <mac> série <numéro> mysql -p '<secret>' <ip> <chemin .txt>",
         "{md}"
     );
 }

@@ -177,12 +177,12 @@ fn chemins_reduits() {
             "accès à <chemin .txt> refusé.",
         ),
         (r"échec de %APPDATA%\Vanguard\etat.json", "échec de <chemin .json>"),
-        ("fichier ~/Projets/secret.kdbx absent", "fichier <chemin .kdbx> absent"),
+        ("fichier ~/Projets/secret.kdbx absent", "fichier <chemin .kdbx>"),
         (
             "ouverture de /Users/alice/Library/Mes Notes/liste.TXT",
             "ouverture de <chemin .txt>",
         ),
-        (r"\\?\C:\Users\alice\x.dll manquante", "<chemin .dll> manquante"),
+        (r"\\?\C:\Users\alice\x.dll manquante", "<chemin .dll>"),
         (
             r"\Device\HarddiskVolume3\Windows\pilote.sys bloqué",
             "<chemin .sys> bloqué",
@@ -1393,11 +1393,11 @@ fn masques_chemin_relatif() {
         &[
             (
                 "Fichier Documents/impots-2026.pdf et Bureau/Marie Tremblay/paie.xlsx et Bureau\\paie.xlsx",
-                "Fichier <chemin .pdf> et <chemin .xlsx> et <chemin .xlsx>",
+                "Fichier <chemin .pdf>",
             ),
             ("clé .ssh/id_ed25519 lue", "clé <chemin> lue"),
             ("note ../projets/plan introuvable.", "note <chemin> introuvable."),
-            ("(Photos/2026/vacances.jpg)", "(<chemin .jpg>)"),
+            ("(Photos/2026/vacances.jpg)", "(<chemin .jpg>"),
         ],
         &[
             "impots",
@@ -1623,10 +1623,7 @@ fn masques_chemins_relatifs_de_la_relecture() {
     masques(
         &[
             ("le fichier projet/.ssh/id_ed25519 est lu", "le fichier <chemin> est lu"),
-            (
-                "voir Users\\marie\\Documents pour la suite",
-                "voir <chemin> pour la suite",
-            ),
+            ("voir Users\\marie\\Documents pour la suite", "voir <chemin>"),
             (
                 "le journal notes/compta.db-journal est là",
                 "le journal <chemin .db> est là",
@@ -1801,7 +1798,7 @@ fn masques_fuites_de_la_ronde_4() {
 fn masques_defauts_de_la_ronde_2() {
     masques(
         &[
-            ("le dossier docs/Bureau/Tremblay est lu", "le dossier <chemin> est lu"),
+            ("le dossier docs/Bureau/Tremblay est lu", "le dossier <chemin>"),
             ("net use \\\\srv\\partage Lune2Verte", "net use <chemin> <secret>"),
             (
                 "198-51-100-23-static.example.net est vu",
@@ -1825,9 +1822,9 @@ fn masques_defauts_de_la_ronde_2() {
                 "le numéro de série numéro PF2QZ8X71K fin",
                 "le numéro de série numéro <numéro> fin",
             ),
-            ("voir Desktop\\marie pour la suite", "voir <chemin> pour la suite"),
-            ("voir Downloads/facture pour la suite", "voir <chemin> pour la suite"),
-            ("voir home/marie/projets pour la suite", "voir <chemin> pour la suite"),
+            ("voir Desktop\\marie pour la suite", "voir <chemin>"),
+            ("voir Downloads/facture pour la suite", "voir <chemin>"),
+            ("voir home/marie/projets pour la suite", "voir <chemin>"),
             ("serialnr PF2QZ8X71K ok", "serialnr <numéro> ok"),
             ("serial_num PF2QZ8X71K ok", "serial_num <numéro> ok"),
             ("IDSERIAL=PF2QZ8X71K ok", "IDSERIAL=<numéro> ok"),
@@ -1865,7 +1862,7 @@ fn masques_defauts_de_la_ronde_2() {
 #[test]
 fn marqueur_de_chemin_sans_extension_inventee() {
     for (brut, attendu) in [
-        ("cd /home/alice.pdf: accès refusé", "cd <chemin>: accès refusé"),
+        ("cd /home/alice.pdf: accès refusé", "cd <chemin>"),
         (r"C:\Users\alice.pdf", "<chemin>"),
         (r"C:\\Users\\alice.pdf", "<chemin>"),
         ("/srv/partage/Rapport.morin", "<chemin>"),
@@ -1890,13 +1887,10 @@ fn chemins_a_espaces_jusqu_a_l_arret() {
         ),
         (
             "dossier (/home/bob/Documents/Impôts Zoé Martin) absent",
-            "dossier (<chemin>) absent",
+            "dossier (<chemin>",
         ),
-        ("/run/media/bob/DISQUE DE ZOE: introuvable", "<chemin>: introuvable"),
-        (
-            "/home/bob/Rapport annuel.docx introuvable",
-            "<chemin .docx> introuvable",
-        ),
+        ("/run/media/bob/DISQUE DE ZOE: introuvable", "<chemin>"),
+        ("/home/bob/Rapport annuel.docx introuvable", "<chemin .docx>"),
     ] {
         assert_eq!(masquer(brut), attendu, "{brut:?}");
     }
@@ -1929,15 +1923,21 @@ fn adresses_web_de_la_ronde_4() {
         ("'https://exemple.com/wiki/L'Avare?lecteur=zoe-martin'", "'<url>'"),
         ("<https://exemple.com/?q=a>b&lecteur=zoe-martin>", "<<url>>"),
         (
-            "vu //cdn.exemple.com/u/zoe-martin/profil?session=abc123 hier",
-            "vu <url> hier",
+            "vu src=//cdn.exemple.com/u/zoe-martin/profil?session=abc123 hier",
+            "vu src=<url> hier",
         ),
         ("vu https:/exemple.com/p?session=abc hier", "vu <url> hier"),
         ("C:/Users ok", "C:/Users ok"),
     ] {
         assert_eq!(sans_urls(brut), attendu, "{brut:?}");
     }
-    assert_eq!(masquer("vu /srv/x/a.pdf?session=abc123 hier"), "vu <chemin .pdf> hier");
+    // Hors de « src= », « //hôte/… » est un partage réseau (ronde 5) ; sa requête part avec lui jusqu'à la fin de la
+    // ligne.
+    assert_eq!(
+        masquer("vu //cdn.exemple.com/u/zoe-martin/profil?session=abc123 hier"),
+        "vu <chemin>"
+    );
+    assert_eq!(masquer("vu /srv/x/a.pdf?session=abc123 hier"), "vu <chemin .pdf>");
 }
 
 /// Ronde 4, bas 7 : extensions de plus dans la liste fermée ; celles de plus de `EXTENSION_MAX` caractères
@@ -1957,4 +1957,87 @@ fn extensions_de_la_ronde_4() {
         assert_eq!(masquer(brut), attendu, "{brut:?}");
     }
     assert!(!extension_connue("numbers") && !extension_connue("crdownload") && extension_connue("pem"));
+}
+
+/// Ronde 5, haut : sous un dossier personnel, tout part jusqu'à la fin de la ligne, quel que soit l'arrêt ; seul un
+/// guillemet fermant qui répond à un ouvrant devant le chemin l'arrête, jamais une apostrophe entre deux lettres
+/// (valeurs inventées).
+#[test]
+fn chemin_personnel_jusqu_a_la_fin_de_la_ligne() {
+    let masque = crate::amelioration::masquer;
+    for (brut, attendu) in [
+        ("erreur: /home/alice/Impôts Zoé Martin, refusé", "erreur: <chemin>"),
+        (
+            "erreur: /home/alice/Documents/Avis d'imposition Zoé Martin.pdf: absent",
+            "erreur: <chemin>",
+        ),
+        ("vu /home/alice/Documents/Lettre à l'avocat Martin", "vu <chemin>"),
+        (
+            "copie de /home/alice/Lettre Zoé Martin vers /srv/x",
+            "copie de <chemin>",
+        ),
+        ("vu /home/alice/Martin, Zoé - contrat signé", "vu <chemin>"),
+        ("voir '/home/alice/Lettre d'Alice Roy' ici", "voir '<chemin>' ici"),
+        ("voir \"/home/alice/Lettre Zoé Martin\" ici", "voir \"<chemin>\" ici"),
+        ("vu /home/alice/Lettre Zoé; Martin", "vu <chemin>"),
+        ("vu /home/alice/Lettre Zoé| Martin", "vu <chemin>"),
+        ("vu /home/alice/Lettre Zoé? Martin", "vu <chemin>"),
+        ("erreur: Documents/Impôts Zoé Martin: introuvable", "erreur: <chemin>"),
+        ("cat \"Documents/Impôts Zoé Martin\"", "cat \"<chemin>\""),
+        (
+            "xdg-open file:///home/alice/Mes Documents/Impôts Zoé Martin",
+            "xdg-open <url>",
+        ),
+        (
+            "ligne /home/alice/x Zoé\nligne 2 reste",
+            "ligne <chemin>\nligne 2 reste",
+        ),
+        ("lecture de /usr/lib/x.so refusée", "lecture de <chemin> refusée"),
+    ] {
+        assert_eq!(masque(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Ronde 5, moyen : « //hôte/… » n'est une adresse web que collé derrière « " ' = ( » ; ailleurs, c'est un partage
+/// réseau, un chemin (valeurs inventées).
+#[test]
+fn partage_reseau_n_est_pas_une_adresse() {
+    let masque = crate::amelioration::masquer;
+    let w = masque("ouvert //nas.local/partage/Zoé Martin/Lettre Roy");
+    assert!(!w.contains("Martin") && !w.contains("Roy"), "{w}");
+    assert_eq!(sans_urls("src=//cdn.exemple.com/u/zoe?x=1 ok"), "src=<url> ok");
+}
+
+/// Ronde 5, moyen : un « … » de tête collé à une lettre, ou suivi d'une espace puis d'une lettre, coupe un chemin ou
+/// un nom à extension : tout part jusqu'à la fin de la ligne (valeurs inventées).
+#[test]
+fn coupes_de_la_ronde_5() {
+    for (brut, attendu) in [
+        (
+            r"lancé … Martin\Downloads\Facture de Bob Exemple.exe hier",
+            "lancé <chemin>",
+        ),
+        ("vu …oé Martin - Déclaration Bob Exemple.pdf", "vu <chemin>"),
+        ("vu …ration de Zoé Martin.exe", "vu <chemin>"),
+        (
+            "(…) panique dans src/journal.rs:12 : index hors bornes",
+            "(…) panique dans src/journal.rs:12 : index hors bornes",
+        ),
+        ("liste […] vide", "liste […] vide"),
+        ("…et 3 autres.", "…et 3 autres."),
+    ] {
+        assert_eq!(masquer(brut), attendu, "{brut:?}");
+    }
+}
+
+/// Ronde 5, bas : un fermant d'adresse n'est le dernier que derrière une requête ; une requête collée ne part
+/// qu'après un marqueur de chemin ou d'adresse, et jusqu'à la fin de la ligne (valeurs inventées).
+#[test]
+fn requetes_et_fermants_de_la_ronde_5() {
+    assert_eq!(
+        sans_urls(r#"{"url":"https://a.test/x","detail":"introuvable","code":5}"#),
+        r#"{"url":"<url>","detail":"introuvable","code":5}"#
+    );
+    assert_eq!(masquer("à 12:30:45?vraiment oui"), "à 12:30:45?vraiment oui");
+    assert_eq!(masquer("vu /srv/x/a.pdf?nom=Zoé Martin\nfin"), "vu <chemin .pdf>\nfin");
 }

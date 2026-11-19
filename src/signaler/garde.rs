@@ -426,7 +426,7 @@ mod tests {
             ("erreur: /home/alice.pdf: accès refusé", "erreur: ~: accès refusé"),
             (
                 r"erreur: C:\Users\Zoé d'Alice\Documents\Impôts.pdf: absent",
-                "erreur: <chemin .pdf>: absent",
+                "erreur: <chemin .pdf>",
             ),
             (
                 r"lancé …oé Martin\Downloads\Facture de Bob Exemple du mois de mai.exe hier",
@@ -589,11 +589,11 @@ mod tests {
         );
         assert_eq!(
             masque("isolé : /home/alice/Documents/CV de Zoé Martin.pdf hier"),
-            "isolé : <chemin .pdf> hier"
+            "isolé : <chemin .pdf>"
         );
         assert_eq!(
             masque(r"isolé : C:\Users\alice\Documents\CV de Zoé Martin.pdf hier"),
-            "isolé : <chemin .pdf> hier"
+            "isolé : <chemin .pdf>"
         );
         assert_eq!(
             masque("ouvert \"/home/alice/Mes documents/Impôts Zoé Martin 2025.pdf\" par x"),

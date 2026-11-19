@@ -651,17 +651,33 @@ pub(crate) fn passe_a_un_shell(ligne: &str) -> Option<Motif> {
 }
 
 /// Le bout d'un texte montré : inoffensif, et pas plus de `LONGUEUR_EXTRAIT` caractères. Trop long, c'est le début qui
-/// tombe : la fin d'un extrait de ligne de commande est le motif, la fin d'un chemin le programme. `suite` : le texte
-/// continuait, coupé exprès.
+/// tombe : la fin d'un extrait de ligne de commande est le motif, la fin d'un chemin le programme. La coupe se fait
+/// au début d'un mot et le reste suit « … » et une espace : un bout de nom (« …oé Martin\… ») ne passe plus pour un
+/// mot entier, et le masquage reconnaît la coupe (relecture 0.97, ronde 5, moyen). `suite` : le texte continuait,
+/// coupé exprès.
 fn extrait(texte: &str, suite: bool) -> String {
     let texte = affichable(texte.trim());
     let caracteres: Vec<char> = texte.chars().collect();
     let mut montre = if caracteres.len() > LONGUEUR_EXTRAIT {
-        let garde: String = caracteres
+        let garde = caracteres
+            .get(caracteres.len().saturating_sub(LONGUEUR_EXTRAIT.saturating_sub(2))..)
+            .unwrap_or_default();
+        // Après la première espace s'il en reste un mot ; sinon, un seul long mot coupé tel quel.
+        let mot = garde
             .iter()
-            .skip(caracteres.len().saturating_sub(LONGUEUR_EXTRAIT - 1))
-            .collect();
-        format!("…{garde}")
+            .position(|x| x.is_whitespace())
+            .map(|p| {
+                garde
+                    .iter()
+                    .skip(p)
+                    .take_while(|x| x.is_whitespace())
+                    .count()
+                    .saturating_add(p)
+            })
+            .filter(|&d| d < garde.len())
+            .unwrap_or(0);
+        let reste: String = garde.get(mot..).unwrap_or_default().iter().collect();
+        format!("… {reste}")
     } else {
         texte
     };
@@ -1937,9 +1953,25 @@ mod tests {
         let s = juger_programme(&programme(5, "outil.exe", Some(&long), None), Os::Windows).unwrap();
         let e = s.extrait.unwrap();
         assert!(
-            e.starts_with('…') && e.ends_with("outil.exe") && e.chars().count() == LONGUEUR_EXTRAIT,
+            e.starts_with("… ") && e.ends_with("outil.exe") && e.chars().count() <= LONGUEUR_EXTRAIT,
             "{e}"
         );
+    }
+
+    /// Relecture 0.97, ronde 5 : un extrait coupé à gauche commence par « … » suivi d'une espace, puis au début d'un
+    /// mot, jamais au milieu d'un nom (« …oé Martin ») : le masquage sait alors que le début est perdu (valeurs
+    /// inventées).
+    #[test]
+    fn extrait_coupe_au_debut_d_un_mot() {
+        let t = format!(
+            r"C:\Users\alice\Documents\Impôts de {}Zoé Martin\Déclaration.exe",
+            "mots ".repeat(10)
+        );
+        let e = extrait(&t, false);
+        let reste = e.strip_prefix("… ").unwrap_or_else(|| panic!("{e}"));
+        assert!(t.ends_with(reste), "{e}");
+        assert!(t[..t.len().saturating_sub(reste.len())].ends_with(' '), "{e}");
+        assert!(e.chars().count() <= LONGUEUR_EXTRAIT, "{e}");
     }
 
     /// Vanguard, une autre copie de lui-même et tout ce qu'ils lancent sont écartés, petits-enfants compris.
