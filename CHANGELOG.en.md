@@ -117,6 +117,8 @@ example, finds it, to rebuild it if needed.
   `deny.toml` or any `.cargo/` folder, wherever they are: the window's was missing. It is also refused if it adds a
   symbolic link, or moves a protected file out of its path (a rename used to hide the original path). An unreadable
   `deny.toml` no longer stops the audit of the other crates: only its own advisories all count.
+- **Dependency security.** wasmtime 48.0.9 (advisories RUSTSEC-2026-0566 to RUSTSEC-2026-0573: unbounded memory
+  growth in wasi, aborts on missing features, stale garbage-collector pointer, panics), brought in by YARA-X.
 
 ## November 15, 2026: version 0.96.0
 

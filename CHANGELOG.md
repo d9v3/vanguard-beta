@@ -126,6 +126,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   Elle est aussi refusée si elle ajoute un lien symbolique, ou si elle déplace un fichier protégé hors de son chemin
   (un renommage cachait jusque-là le chemin de départ). Un `deny.toml` illisible ne coupe plus l'audit des autres
   crates : seuls ses avis comptent tous.
+- **Sécurité des dépendances.** wasmtime 48.0.9 (avis RUSTSEC-2026-0566 à RUSTSEC-2026-0573 : mémoire qui
+  grossit sans borne dans wasi, arrêts sur des fonctions absentes, pointeur périmé du ramasse-miettes, paniques), amené
+  par YARA-X.
 
 ## 15 novembre 2026 : version 0.96.0
 
