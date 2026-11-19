@@ -1207,13 +1207,15 @@ const DETECTEUR = {
   "cles": [
     "password", "passwd", "passphrase", "pwd", "secret", "token", "jeton", "apikey", "api_key", "api-key",
     "authorization", "bearer", "cookie", "credential", "private_key", "privatekey", "private-key", "access_key",
-    "passwort", "kennwort", "schlüssel"
+    "passwort", "kennwort", "schlüssel", "schluessel", "schlussel"
   ],
   "cles_courtes": ["pass", "pw", "psk", "mdp", "cle", "clé", "clef", "key", "passe", "pin"],
   "cles_fortes": ["passe", "clé", "cle", "clef", "password", "passwd", "passphrase", "mdp", "psk", "passwort", "kennwort"],
   "cles_ligne": ["authorization", "cookie"],
   "cles_phrase": ["passe", "password", "passwd", "passphrase", "mdp", "psk", "pwd", "pass", "secret", "clé", "cle", "clef", "pw"],
-  "cles_phrase_dans": ["password", "passwd", "passphrase", "motdepasse", "passwort", "kennwort", "schlüssel"],
+  "cles_phrase_dans": [
+    "password", "passwd", "passphrase", "motdepasse", "passwort", "kennwort", "schlüssel", "schluessel", "schlussel"
+  ],
   "schemas": ["bearer", "basic", "token", "digest", "negotiate"],
   "cles_sans_separateur": [
     "password", "passwd", "passphrase", "pwd", "pass", "mdp", "passe", "psk", "secret", "token", "jeton", "apikey", "passwort", "kennwort",
@@ -1567,30 +1569,66 @@ function apresOption(c, i, j) {
   if (j === i) {
     return optionCollee(c, i);
   }
-  const netUse = apresNetUse(c, i, j);
+  const netUse = apresNetUse(c, i);
   if (netUse !== null) {
     return netUse;
   }
-  const guillemet = dernierGuillemet(morceau(c, j, i));
-  let debut = j;
+  const guillemet = guillemetOuvrant(c, i);
+  let finOption = j;
+  if (guillemet !== undefined && avant(c, finOption) === ",") {
+    if (avant(c, finOption - 1) === '"' || avant(c, finOption - 1) === "'") {
+      finOption -= 2;
+    }
+  }
+  let debut = finOption;
   while (motDeCle(avant(c, debut)) || avant(c, debut) === "/") {
     debut -= 1;
   }
-  const brut = chaine(c, debut, j).toLowerCase();
+  if (finOption === j && guillemet !== undefined && avant(c, debut) === guillemet && car(c, i) === ",") {
+    return null;
+  }
+  const brut = chaine(c, debut, finOption).toLowerCase();
   const option = brut.startsWith("-") || brut.startsWith("/");
   const mot = brut.replace(/^[-/]+/, "");
-  const fin = finTantQue(c, i, (y) => !blanc(y) && y !== guillemet);
+  const fin = finDeValeur(c, i, guillemet);
   const valeur = morceau(c, i, fin);
   const utilisateur = option && (mot === "u" || mot === "user") && valeur.some((y) => y === ":" || y === "%");
   const cle = DETECTEUR.cles_sans_separateur.includes(mot) && (option || mot.length > 1);
-  return (cle && !motDeLaLangue(valeur)) || utilisateur ? fin : null;
+  const langue = decouperAuxBlancs(valeur).every(motDeLaLangue);
+  return (cle && !langue) || utilisateur ? fin : null;
+}
+
+/// texte.rs, `guillemet_ouvrant`.
+function guillemetOuvrant(c, i) {
+  const y = avant(c, i);
+  return y === '"' || y === "'" ? y : undefined;
+}
+
+/// texte.rs, `fin_de_valeur`.
+function finDeValeur(c, i, guillemet) {
+  return guillemet === undefined
+    ? finTantQue(c, i, (y) => !blanc(y))
+    : finTantQue(c, i, (y) => y !== guillemet && y !== "\n");
+}
+
+/// `split(char::is_whitespace)` de Rust : les morceaux entre deux blancs, vides compris.
+function decouperAuxBlancs(v) {
+  const morceaux = [[]];
+  for (const y of v) {
+    if (blanc(y)) {
+      morceaux.push([]);
+    } else {
+      morceaux[morceaux.length - 1].push(y);
+    }
+  }
+  return morceaux;
 }
 
 /// texte.rs, `option_collee`.
 function optionCollee(c, i) {
   const lettre = avant(c, i);
   const devant = i < 3 ? undefined : c[i - 3];
-  const debutDeMot = devant === undefined || blanc(devant) || "\"'[(,".includes(devant);
+  const debutDeMot = devant === undefined || blanc(devant) || "\"'[(,=".includes(devant);
   if (i < 2 || c[i - 2] !== "-" || !debutDeMot || !(lettre === "p" || lettre === "u")) {
     return null;
   }
@@ -1605,45 +1643,49 @@ function optionCollee(c, i) {
 function motDePasseColle(valeur) {
   return (
     !motDeLaLangue(valeur) &&
-    valeur.some(alnum) &&
+    (valeur.some(alnum) || valeur.length >= 4) &&
     !valeur.every((y) => minuscule(y) || y === "-" || y === "_") &&
     !valeur.every((y) => asciiChiffre(y) || ":.-/".includes(y))
   );
 }
 
-/// Le dernier guillemet (droit ou apostrophe) d'un morceau, s'il y en a un.
-function dernierGuillemet(m) {
-  for (let q = m.length - 1; q >= 0; q -= 1) {
-    if (m[q] === '"' || m[q] === "'") {
-      return m[q];
-    }
-  }
-  return undefined;
-}
-
 /// texte.rs, `apres_net_use`.
-function apresNetUse(c, i, j) {
+function apresNetUse(c, i) {
   if (car(c, i) === "/") {
     return null;
   }
   const mots = [];
-  let k = j;
+  const ouverts = [];
+  let k = guillemetOuvrant(c, i) === undefined ? i : i - 1;
   while (mots.length < 8) {
     while (avant(c, k) === " " || avant(c, k) === "\t") {
       k -= 1;
     }
     let debut = k;
+    const q = avant(c, debut);
+    if (q === '"' || q === "'") {
+      let m = debut - 1;
+      while (avant(c, m) !== undefined && avant(c, m) !== q && avant(c, m) !== "\n") {
+        m -= 1;
+      }
+      if (avant(c, m) === q) {
+        debut = m - 1;
+      }
+    }
     while (avant(c, debut) !== undefined && !blanc(avant(c, debut))) {
       debut -= 1;
     }
     if (debut === k) {
       break;
     }
-    mots.push(chaine(c, debut, k).toLowerCase().replace(/^["']+|["']+$/g, ""));
+    const brut = Array.from(chaine(c, debut, k).toLowerCase());
+    const premier = brut[0];
+    ouverts.push((premier === '"' || premier === "'") && (brut.length === 1 || brut[brut.length - 1] !== premier));
+    mots.push(brut.join("").replace(/^["']+|["']+$/g, ""));
     k = debut;
   }
   const unc = mots.slice(0, 5).findIndex((m) => m.startsWith("\\\\") || m.startsWith("//"));
-  if (unc < 0 || !mots.slice(0, unc).every((m) => m.startsWith("/"))) {
+  if (unc < 0 || !mots.slice(0, unc).every((m) => m.startsWith("/")) || ouverts.slice(0, unc + 1).some((o) => o)) {
     return null;
   }
   let reste = mots.slice(unc + 1);
@@ -1651,9 +1693,9 @@ function apresNetUse(c, i, j) {
   if (lecteur) {
     reste = reste.slice(1);
   }
-  const commande = reste.length >= 2 && reste[0] === "use" && (reste[1] === "net" || reste[1] === "net.exe");
-  const guillemet = dernierGuillemet(morceau(c, j, i));
-  const fin = finTantQue(c, i, (y) => !blanc(y) && y !== guillemet);
+  const nom = reste.length >= 2 ? reste[1].split(/[\\/]/).pop() : "";
+  const commande = reste[0] === "use" && (nom === "net" || nom === "net.exe");
+  const fin = finDeValeur(c, i, guillemetOuvrant(c, i));
   return commande && fin > i ? fin : null;
 }
 

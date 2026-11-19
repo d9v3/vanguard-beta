@@ -701,7 +701,7 @@ fn prefixe_connu(c: &[char], i: usize) -> Option<usize> {
 
 /// Mots qui annoncent un secret devant `:` ou `=` (plan, couche 2), cherchés dans le mot qui précède : `db_password=`,
 /// `client_secret:`, `X-Auth-Token:`, `"api_key": "…"`.
-const CLES: [&str; 21] = [
+const CLES: [&str; 23] = [
     "password",
     "passwd",
     "passphrase",
@@ -724,6 +724,9 @@ const CLES: [&str; 21] = [
     "passwort",
     "kennwort",
     "schlüssel",
+    // Sans tréma, comme on l'écrit sur un clavier sans « ü ».
+    "schluessel",
+    "schlussel",
 ];
 
 /// Mots courts qui annoncent un secret seulement comme mot entier ou comme dernier morceau d'un nom (`DB_PASS`,
@@ -772,7 +775,7 @@ const CLES_PHRASE: [&str; 13] = [
 /// Ce qui, n'importe où dans un nom écrit sans « _ » ni « - » (« PGPASSWORD », « userPassword », « pass-phrase »),
 /// annonce aussi une phrase de passe ; de même en allemand (« Kennwort », « Netzwerksicherheitsschlüssel » : une clé
 /// de Wi-Fi peut porter des espaces).
-const CLES_PHRASE_DANS: [&str; 7] = [
+const CLES_PHRASE_DANS: [&str; 9] = [
     "password",
     "passwd",
     "passphrase",
@@ -780,6 +783,8 @@ const CLES_PHRASE_DANS: [&str; 7] = [
     "passwort",
     "kennwort",
     "schlüssel",
+    "schluessel",
+    "schlussel",
 ];
 
 /// Les formes de « mot de passe » (et « pass phrase ») qui, dans les 48 caractères avant le séparateur, annoncent un
@@ -970,27 +975,39 @@ fn apres_option(c: &[char], i: usize, j: usize) -> Option<usize> {
     if j == i {
         return option_collee(c, i);
     }
-    if let Some(fin) = apres_net_use(c, i, j) {
+    if let Some(fin) = apres_net_use(c, i) {
         return Some(fin);
     }
-    // Entre guillemets (« -p 'Lune2Verte' », « -p'Lune2Verte' », « Kennwort "Lune2Verte" ») : jusqu'au même guillemet.
-    let guillemet = morceau(c, j, i)
-        .iter()
-        .rev()
-        .find(|y| **y == '"' || **y == '\'')
-        .copied();
-    let mut debut = j;
+    // Entre guillemets (« -p 'Lune2 Verte9' », « Kennwort "Lune2Verte" ») : jusqu'au même guillemet.
+    let guillemet = guillemet_ouvrant(c, i);
+    // Dans une liste de Python (« ['mysql', '-p', 'Lune2Verte'] ») : l'option est le mot entre guillemets avant la
+    // virgule ; sans ce saut, son guillemet fermant passerait pour l'ouvrant de la valeur.
+    let mut fin_option = j;
+    if guillemet.is_some() && avant(c, fin_option) == Some(',') {
+        let fermant = fin_option.checked_sub(1)?;
+        if avant(c, fermant).is_some_and(|y| y == '"' || y == '\'') {
+            fin_option = fermant.checked_sub(1)?;
+        }
+    }
+    let mut debut = fin_option;
     while avant(c, debut).is_some_and(|y| mot_de_cle(y) || y == '/') {
         debut = debut.checked_sub(1)?;
     }
-    let brut = chaine(c, debut, j).to_lowercase();
+    // « '-p', » : ce guillemet ferme l'option entre guillemets, la valeur n'est pas la virgule (elle la suit). Collée
+    // (« "-p"Lune2Verte », lu « -pLune2Verte » par le shell), elle reste prise.
+    if fin_option == j && guillemet.is_some() && avant(c, debut) == guillemet && car(c, i) == Some(',') {
+        return None;
+    }
+    let brut = chaine(c, debut, fin_option).to_lowercase();
     let option = brut.starts_with(['-', '/']);
     let mot = brut.trim_start_matches(['-', '/']);
-    let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && Some(y) != guillemet);
+    let fin = fin_de_valeur(c, i, guillemet);
     let valeur = morceau(c, i, fin);
     let utilisateur = option && matches!(mot, "u" | "user") && valeur.iter().any(|y| *y == ':' || *y == '%');
     let cle = CLES_SANS_SEPARATEUR.contains(&mot) && (option || mot.len() > 1);
-    ((cle && !mot_de_la_langue(valeur)) || utilisateur).then_some(fin)
+    // Entre guillemets, la valeur peut avoir plusieurs mots : « -p 'mon dossier' » reste, « -p 'Lune2 Verte9' » non.
+    let langue = valeur.split(|y| y.is_whitespace()).all(mot_de_la_langue);
+    ((cle && !langue) || utilisateur).then_some(fin)
 }
 
 /// La valeur collée à une option courte, au début d'un mot : « mysql -pLune2Verte », « -ualice:Lune2Verte ». Pour
@@ -1002,7 +1019,8 @@ fn option_collee(c: &[char], i: usize) -> Option<usize> {
     let lettre = avant(c, i)?;
     let tiret = i.checked_sub(2).and_then(|k| car(c, k))?;
     let devant = i.checked_sub(3).and_then(|k| car(c, k));
-    let debut_de_mot = devant.is_none_or(|y| y.is_whitespace() || "\"'[(,".contains(y));
+    // Aussi après « = » : « OPTS=-pLune2Verte ».
+    let debut_de_mot = devant.is_none_or(|y| y.is_whitespace() || "\"'[(,=".contains(y));
     if tiret != '-' || !debut_de_mot || !matches!(lettre, 'p' | 'u') {
         return None;
     }
@@ -1019,63 +1037,94 @@ fn option_collee(c: &[char], i: usize) -> Option<usize> {
 
 /// Si la valeur collée à « -p » (« -pLune2Verte », « -p=Lune2Verte ») est un mot de passe : ni un mot de la langue ou
 /// des minuscules et tirets (« -pthread », « -pedantic-errors »), ni un port (« -p8080:80 »), ni un signe seul (« -p$ »
-/// devant une espace : le vrai mot de passe suit, pris à la passe suivante quand le filtre a ôté le signe).
+/// devant une espace : le vrai mot de passe suit, pris à la passe suivante quand le filtre a ôté le signe). Quatre
+/// signes ou plus (« -p!!!! ») sont pris.
 fn mot_de_passe_colle(valeur: &[char]) -> bool {
     !mot_de_la_langue(valeur)
-        && valeur.iter().any(|y| y.is_alphanumeric())
+        && (valeur.iter().any(|y| y.is_alphanumeric()) || valeur.len() >= 4)
         && !valeur.iter().all(|y| y.is_lowercase() || *y == '-' || *y == '_')
         && !valeur.iter().all(|y| y.is_ascii_digit() || ":.-/".contains(*y))
 }
 
+/// Le guillemet collé devant la valeur en `i`, s'il y en a un : c'est lui qui l'ouvre. Pas un guillemet plus loin
+/// (« "-p" Lune2Verte » : celui-là ferme l'option).
+fn guillemet_ouvrant(c: &[char], i: usize) -> Option<char> {
+    avant(c, i).filter(|y| *y == '"' || *y == '\'')
+}
+
+/// La fin d'une valeur : ouverte par un guillemet, jusqu'au même guillemet ou à la fin de la ligne, espaces comprises
+/// (« -p 'Lune2 Verte9' ») ; sinon jusqu'à une espace.
+fn fin_de_valeur(c: &[char], i: usize, guillemet: Option<char>) -> usize {
+    match guillemet {
+        Some(q) => fin_tant_que(c, i, |y| y != q && y != '\n'),
+        None => fin_tant_que(c, i, |y| !y.is_whitespace()),
+    }
+}
+
 /// « net use Z: \\\\serveur\\partage Lune2Verte /user:alice » : le mot de passe de Windows suit le chemin UNC (« \\\\ »
 /// ou « // », entre guillemets ou non ; après une lettre de lecteur ou « * », et au plus quatre options « /… » entre
-/// le chemin et lui). « net.exe » aussi. Entre guillemets, la valeur va jusqu'au même guillemet. `j` : début des
-/// espaces et guillemets avant la valeur.
-fn apres_net_use(c: &[char], i: usize, j: usize) -> Option<usize> {
+/// le chemin et lui). « net.exe » aussi. Entre guillemets, la valeur va jusqu'au même guillemet.
+fn apres_net_use(c: &[char], i: usize) -> Option<usize> {
     if car(c, i) == Some('/') {
         return None;
     }
-    // Les mots avant la valeur, du plus proche au plus loin.
+    // Les mots avant la valeur, du plus proche au plus loin. On part de la valeur (sans son guillemet ouvrant), pas de
+    // `j` : le guillemet fermant d'un chemin (« "\\srv\mon partage" Lune2Verte ») appartient au mot d'avant.
     let mut mots = Vec::new();
-    let mut curseur = j;
+    let mut curseur = if guillemet_ouvrant(c, i).is_some() {
+        i.saturating_sub(1)
+    } else {
+        i
+    };
     while mots.len() < 8 {
         while avant(c, curseur).is_some_and(|y| y == ' ' || y == '\t') {
             curseur = curseur.saturating_sub(1);
         }
         let mut debut = curseur;
+        // Un mot entre guillemets (« "\\srv\mon partage" ») se prend en entier, espaces comprises.
+        if let Some(q) = avant(c, debut).filter(|y| *y == '"' || *y == '\'') {
+            let mut k = debut.saturating_sub(1);
+            while avant(c, k).is_some_and(|y| y != q && y != '\n') {
+                k = k.saturating_sub(1);
+            }
+            if avant(c, k) == Some(q) {
+                debut = k.saturating_sub(1);
+            }
+        }
         while avant(c, debut).is_some_and(|y| !y.is_whitespace()) {
             debut = debut.saturating_sub(1);
         }
         if debut == curseur {
             break;
         }
-        mots.push(
-            chaine(c, debut, curseur)
-                .to_lowercase()
-                .trim_matches(['"', '\''])
-                .to_string(),
-        );
+        let brut = chaine(c, debut, curseur).to_lowercase();
+        // Un guillemet ouvert et pas refermé : la valeur est dans ce mot (« "\\srv\mon partage" » vu depuis
+        // « partage" »), pas après lui.
+        let ouvert = brut
+            .chars()
+            .next()
+            .filter(|q| *q == '"' || *q == '\'')
+            .is_some_and(|q| brut.chars().count() == 1 || !brut.ends_with(q));
+        mots.push((brut.trim_matches(['"', '\'']).to_string(), ouvert));
         curseur = debut;
     }
     let unc = mots
         .iter()
         .take(5)
-        .position(|mot| mot.starts_with("\\\\") || mot.starts_with("//"))?;
-    if !mots.iter().take(unc).all(|mot| mot.starts_with('/')) {
+        .position(|(mot, _)| mot.starts_with("\\\\") || mot.starts_with("//"))?;
+    if !mots.iter().take(unc).all(|(mot, _)| mot.starts_with('/')) || mots.iter().take(suivant(unc)).any(|m| m.1) {
         return None;
     }
+    let mots: Vec<String> = mots.into_iter().map(|(mot, _)| mot).collect();
     let reste = mots.get(suivant(unc)..).unwrap_or(&[]);
     let lecteur = reste
         .first()
         .is_some_and(|mot| mot == "*" || (mot.chars().count() == 2 && mot.ends_with(':')));
     let reste = if lecteur { reste.get(1..).unwrap_or(&[]) } else { reste };
-    let commande = matches!(reste, [verbe, net, ..] if verbe == "use" && (net == "net" || net == "net.exe"));
-    let guillemet = morceau(c, j, i)
-        .iter()
-        .rev()
-        .find(|y| **y == '"' || **y == '\'')
-        .copied();
-    let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && Some(y) != guillemet);
+    // « C:\Windows\System32\net.exe » aussi : le dernier élément du chemin (les mots sont déjà en minuscules).
+    let commande = matches!(reste, [verbe, net, ..]
+        if verbe == "use" && matches!(net.rsplit(['\\', '/']).next(), Some("net" | "net.exe")));
+    let fin = fin_de_valeur(c, i, guillemet_ouvrant(c, i));
     (commande && fin > i).then_some(fin)
 }
 
@@ -1947,8 +1996,8 @@ fn serie(c: &[char], i: usize) -> Option<(usize, usize)> {
         return None;
     }
     // Le mot de l'annonce : lettres, chiffres, « _ », « - » ; ou « S/N ».
-    let (annonce, mut pos) = if let Some(fin) = mot_sans_casse(c, i, "s/n") {
-        (Annonce::Forte, fin)
+    let (annonce, mut pos, point) = if let Some(fin) = mot_sans_casse(c, i, "s/n") {
+        (Annonce::Forte, fin, false)
     } else {
         let fin = fin_tant_que(c, i, |y| y.is_alphanumeric() || y == '_' || y == '-');
         if entre(i, fin) > 32 {
@@ -1960,16 +2009,11 @@ fn serie(c: &[char], i: usize) -> Option<(usize, usize)> {
         let abrege = ["nr", "no", "num"]
             .iter()
             .any(|a| mot.ends_with(&a.chars().collect::<Vec<_>>()));
-        (
-            annonce,
-            if abrege && car(c, fin) == Some('.') {
-                suivant(fin)
-            } else {
-                fin
-            },
-        )
+        let point = abrege && car(c, fin) == Some('.');
+        (annonce, if point { suivant(fin) } else { fin }, point)
     };
-    if car(c, pos).is_some_and(char::is_alphanumeric) {
+    // Après le point d'une abréviation, la valeur peut être collée (« Serien-Nr.PF2QZ8X71K ») : le point sépare.
+    if !point && car(c, pos).is_some_and(char::is_alphanumeric) {
         return None;
     }
     let mut explicite = false;

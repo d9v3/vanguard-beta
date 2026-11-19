@@ -1742,6 +1742,66 @@ fn masques_secrets_de_la_ronde_3() {
     }
 }
 
+/// Relecture adverse de la ronde 3 : une valeur entre guillemets coupée à l'espace, l'option d'une liste de Python,
+/// un chemin UNC entre guillemets, « net.exe » avec son chemin, la valeur collée au point de « Serien-Nr. ». Sorties
+/// exactes ; `muter` prouve que chaque défaut remis fait échouer cet essai.
+#[test]
+fn masques_fuites_de_la_ronde_4() {
+    masques(
+        &[
+            ("Serien-Nr.PF2QZ8X71K fertig", "Serien-Nr.<numéro> fertig"),
+            ("SerialNo.PF2ABCDE9 fertig", "SerialNo.<numéro> fertig"),
+            ("Seriennr.PF2QZ8X71K fertig", "Seriennr.<numéro> fertig"),
+            (
+                "mysql -u root -p 'Lune2 Verte9' base",
+                "mysql -u root -p '<secret>' base",
+            ),
+            (
+                "mysql -u root --password \"Lune2 Verte9\" base",
+                "mysql -u root --password <secret> base",
+            ),
+            (
+                "net use Z: \\\\srv\\partage 'Lune2 Verte9' /user:alice",
+                "net use Z: <chemin> '<secret>' <chemin>:alice",
+            ),
+            (
+                "args ['mysql', '-p', 'Lune2Verte', 'base'] ensuite",
+                "args ['mysql', '-p', '<secret>', 'base'] ensuite",
+            ),
+            (
+                "args ['mysql', '--password', 'Lune2Verte', 'base'] ensuite",
+                "args ['mysql', '--password', '<secret>', 'base'] ensuite",
+            ),
+            (
+                "net use Z: \"\\\\srv\\mon partage\" Lune2Verte /user:alice",
+                "net use Z: <chemin> partage <secret> <chemin>:alice",
+            ),
+            (
+                "C:\\Windows\\System32\\net.exe use Z: \\\\srv\\partage Lune2Verte /user:alice",
+                "<chemin .exe> use Z: <chemin> <secret> <chemin>:alice",
+            ),
+            (
+                "\"C:\\Windows\\System32\\NET.EXE\" use Z: \\\\srv\\partage Lune2Verte /user:alice",
+                "<chemin .exe> use Z: <chemin> <secret> <chemin>:alice",
+            ),
+            ("Schluessel: Lune2Verte42", "Schluessel: <secret>"),
+            ("Schlussel: lune verte soupe. Ende", "Schlussel: <secret>. Ende"),
+            ("OPTS=-pLune2Verte ensuite", "OPTS=-p<secret> ensuite"),
+            ("mysql -p!!!! base", "mysql -p<secret> base"),
+        ],
+        &["lune", "verte", "soupe", "Lune2", "Verte9", "PF2", "!!!!"],
+    );
+    // Témoins : deux mots de la langue entre apostrophes, une option entre guillemets puis un mot, un signe seul.
+    for t in [
+        "dir -p 'mon dossier' ici et là",
+        "lancer '-p' debug ensuite pour voir",
+        "la note Serien-Nr. 4 Stück ist gut",
+    ] {
+        assert_eq!(propre(t), t);
+        assert_eq!(par_texte(t), t);
+    }
+}
+
 /// Relecture adverse de la ronde 2 : dix défauts remis exprès que la suite ne voyait pas (elle comparait par
 /// `contains`). Chacun a ici sa sortie exacte ; `muter` prouve que chacun fait échouer cet essai.
 #[test]
