@@ -123,6 +123,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   un dossier vide, et un avis n'est admis que par le `deny.toml` de sa propre crate (`outils/failles-programmes.sh
   --exceptions-depot`, la même correspondance que la vérification complète). Une correction proposée par l'IA de nuit
   ne peut plus toucher aucun `deny.toml` ni aucun dossier `.cargo/`, où qu'ils soient : celui de la fenêtre manquait.
+  Elle est aussi refusée si elle ajoute un lien symbolique, ou si elle déplace un fichier protégé hors de son chemin
+  (un renommage cachait jusque-là le chemin de départ). Un `deny.toml` illisible ne coupe plus l'audit des autres
+  crates : seuls ses avis comptent tous.
 
 ## 15 novembre 2026 : version 0.96.0
 

@@ -156,7 +156,8 @@ avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touch
 `CLAUDE.md`, tout `deny.toml` (fenêtre comprise), tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
 de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
 par un essai d'`outils/` n'appelle donc pas l'IA, elle est dite à l'auteur), un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
-retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test (une alerte `flotte` :
+retire un test, ajoute ou change un lien symbolique ou un sous-module, déplace un fichier protégé (un renommage se voit à
+son ancien chemin), change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test (une alerte `flotte` :
 un vrai `#[test]` ou proptest ajouté pour regression, couverture, fragile et cache ; elle ne peut pas non plus ôter
 une ligne de `tests/regles-connues.txt`, y marquer une règle « retire », ni supprimer ou renommer un fichier de
 `tests/`) ; refus aussi si le lien

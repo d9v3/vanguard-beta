@@ -261,17 +261,17 @@ def lire_fuzz(t, veille, arbre, fuzz):
 
 def lire_verrous(t):
     """Les Cargo.lock audités cette nuit, dans l'ordre des audit-<i>.json, chacun avec les exceptions de SON deny.toml
-    (verrous.tsv, écrit par outils/failles-programmes.sh --exceptions-depot). Un verrou de forme inconnue est sauté ;
-    une liste d'exceptions illisible ne donne aucune exception (tout avis compte), jamais celles d'une autre crate."""
+    (verrous.tsv, écrit par outils/failles-programmes.sh --exceptions-depot). Un verrou de forme inconnue garde ses
+    avis, sans aucune exception, sous le nom « (retiré) » (son texte n'entre pas dans le rapport) ; une liste
+    d'exceptions illisible ne donne aucune exception (tout avis compte), jamais celles d'une autre crate. Un
+    identifiant d'exception de forme inconnue n'est pas gardé."""
     verrous = []
     for ligne in lignes(t / "verrous.tsv"):
         champs = ligne.split("\t")
         lock, etat, ids = (champs + ["", "", ""])[:3]
-        if sur("lock", lock) is None:
-            verrous.append(None)
-            continue
-        etat = etat if etat in ETATS_VERROU else "illisible"
-        ids = {i for i in ids.split() if sur("rustsec", i)} if etat != "illisible" else set()
+        lock = sur("lock", lock)
+        etat = etat if etat in ETATS_VERROU and lock != RETIRE else "illisible"
+        ids = {i for i in ids.split() if sur("rustsec", i) != RETIRE} if etat != "illisible" else set()
         verrous.append({"lock": lock, "etat": etat, "exceptions": ids})
     return verrous
 
@@ -283,7 +283,7 @@ def lire_audit(t, veille):
     verrous = lire_verrous(t)
     for i, verrou in enumerate(verrous):
         sortie = lire_json(t / f"audit-{i}.json")
-        if sortie is None or verrou is None:
+        if sortie is None:
             continue
         trouves = [(v, "faille") for v in (sortie.get("vulnerabilities") or {}).get("list") or []]
         for genre, liste in (sortie.get("warnings") or {}).items():
@@ -707,7 +707,10 @@ def alertes_de(r):
                         **champs})
 
     for a in (r.get("rustsec") or {}).get("nouveaux", []):
-        ajouter("rustsec", f"{a['id']}:{a['crate']}", avis=a["id"], crate=a["crate"], version=a["version"],
+        # Le verrou est dans la clé (la même faille dans un autre Cargo.lock est une autre alerte), écrit dans la
+        # forme de signature qu'alerte.sh accepte ([A-Za-z0-9:._-]) : « fenetre/Cargo.lock » → « fenetre-Cargo.lock ».
+        verrou = re.sub(r"[^A-Za-z0-9._-]", "-", a["lock"])
+        ajouter("rustsec", f"{a['id']}:{a['crate']}:{verrou}", avis=a["id"], crate=a["crate"], version=a["version"],
                 lock=a["lock"])
     for p in (r.get("fuzz") or {}).get("nouveaux_plantages", []):
         ajouter("fuzz", f"{p['cible']}:{p['sha256']}", cible=p["cible"], sha256=p["sha256"])

@@ -213,7 +213,8 @@ fi
 # Seule exception : outils/liens.txt pour une alerte « lien ».
 # Chaque deny.toml et chaque .cargo/, où qu'ils soient (fenetre/deny.toml manquait : une proposition pouvait y
 # admettre un avis pour la fenêtre) : une crate ajoutée plus tard est couverte d'office.
-PROTEGES='^(\.github/|\.claude/|([^/]+/)*\.cargo/|outils/|CLAUDE\.md$|([^/]+/)*deny\.toml$|'
+# Un dossier protégé se voit aussi sans barre finale : remplacé par un lien ou un fichier, c'est le chemin nu qui change.
+PROTEGES='^((\.github|\.claude|([^/]+/)*\.cargo|outils)(/|$)|CLAUDE\.md$|([^/]+/)*deny\.toml$|'
 PROTEGES+='([^/]+/)*build\.rs$|rust-toolchain(\.toml)?$)'
 PERMIS_GENRE='^$'
 [[ $GENRE != lien ]] || PERMIS_GENRE='^outils/liens\.txt$'
@@ -221,8 +222,12 @@ garde_fous() {
   local diff fichiers ajoutes retires touches
   [[ -n $LIEN_OK ]] || { echo "lien .git du worktree réécrit : rien n'est relu"; return; }
   [[ $(git_trav symbolic-ref -q --short HEAD) == "$BRANCHE" ]] || { echo "HEAD a quitté $BRANCHE"; return; }
-  fichiers=$(git_trav diff --name-only "$TETE"..HEAD)
+  # --no-renames : un fichier protégé renommé hors de son chemin se voit comme une suppression là où il était.
+  fichiers=$(git_trav diff --name-only --no-renames "$TETE"..HEAD)
   [[ -z $fichiers ]] && { echo "aucun changement"; return; }
+  # Aucun lien symbolique ni sous-module ajouté ou changé : un lien ferait lire ou écrire ailleurs que le chemin relu.
+  git_trav diff --raw --no-renames "$TETE"..HEAD | grep -qE '^:[0-7]+ (120000|160000) ' &&
+    { echo "ajoute ou change un lien symbolique ou un sous-module"; return; }
   touches=$(grep -E "$PROTEGES" <<<"$fichiers" | grep -vE "$PERMIS_GENRE" | head -n3 | paste -sd' ')
   [[ -n $touches ]] && { echo "touche un fichier protégé : $touches"; return; }
   if [[ $GENRE != rustsec ]] && grep -qE '(^|/)Cargo\.(toml|lock)$' <<<"$fichiers"; then

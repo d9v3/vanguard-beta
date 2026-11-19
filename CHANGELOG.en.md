@@ -114,7 +114,9 @@ example, finds it, to rebuild it if needed.
   for every crate. It now reads each `Cargo.lock` of the repository, the window and the proofs included, from an empty
   folder, and an advisory is accepted only by the `deny.toml` of its own crate (`outils/failles-programmes.sh
   --exceptions-depot`, the same mapping as the full check). A fix proposed by the nightly AI can no longer touch any
-  `deny.toml` or any `.cargo/` folder, wherever they are: the window's was missing.
+  `deny.toml` or any `.cargo/` folder, wherever they are: the window's was missing. It is also refused if it adds a
+  symbolic link, or moves a protected file out of its path (a rename used to hide the original path). An unreadable
+  `deny.toml` no longer stops the audit of the other crates: only its own advisories all count.
 
 ## November 15, 2026: version 0.96.0
 

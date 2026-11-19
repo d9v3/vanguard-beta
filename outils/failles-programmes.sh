@@ -98,7 +98,8 @@ ajouter_exceptions() { # deny.toml (depuis la racine), puis le nom du tableau d'
 # deny, cible par cible, les refuse sinon) et, avec --fenetre, qu'aucune caisse retirée de la fenêtre ne se lit dans les
 # octets du programme audité (hors_cibles_absentes_des_octets).
 OPTIONS_FENETRE=("${OPTIONS[@]}")
-ajouter_exceptions fenetre/deny.toml OPTIONS_FENETRE
+# --exceptions-depot lit chaque deny.toml lui-même (plus bas) et dit « illisible » au lieu de s'arrêter ici.
+[[ $1 == --exceptions-depot ]] || ajouter_exceptions fenetre/deny.toml OPTIONS_FENETRE
 # Les crates à part, chacune avec son Cargo.lock et les exceptions de son deny.toml, rien de plus : le banc de
 # fuzzing (fuzz/deny.toml : chrono, comme Vanguard), la bibliothèque des extensions et l'exemple en Rust
 # (extensions/deny.toml : aucune), les preuves Kani (outils/preuves, sans deny.toml : aucune). Celles de Vanguard
@@ -118,16 +119,20 @@ HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-202
 # le programme. Seules ses exceptions (fenetre/deny.toml) et les HORS_CIBLES s'écartent, ces dernières par la même
 # preuve que pour --depot (plus bas), et seulement si aucune caisse retirée de la fenêtre ne se lit dans les octets du
 # programme audité.
-DENY=deny.toml
-[[ -z $FENETRE ]] || DENY=fenetre/deny.toml
-EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$DENY") ||
-  { echo "✖ exceptions de $DENY illisibles : rien n'est audité. Ces programmes ne partent nulle part."; exit 1; }
-for id in $EXCEPTIONS; do
-  OPTIONS+=(--ignore "$id")
-done
-if [[ $1 != --depot ]] && { [[ -n ${VANGUARD_HORS_LIGNE:-} ]] || ! curl -fsI --max-time 5 https://github.com >/dev/null 2>&1; }; then
-  OPTIONS+=(--no-fetch --stale)
-  echo "⚠ sans Internet : base RustSec du dernier téléchargement, qui ignore les failles publiées depuis"
+# --exceptions-depot ne lance pas cargo audit : ni ces exceptions-là, ni le test d'Internet (sa sortie standard est
+# la liste des verrous, une ligne de plus y serait prise pour un verrou).
+if [[ $1 != --exceptions-depot ]]; then
+  DENY=deny.toml
+  [[ -z $FENETRE ]] || DENY=fenetre/deny.toml
+  EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$DENY") ||
+    { echo "✖ exceptions de $DENY illisibles : rien n'est audité. Ces programmes ne partent nulle part."; exit 1; }
+  for id in $EXCEPTIONS; do
+    OPTIONS+=(--ignore "$id")
+  done
+  if [[ $1 != --depot ]] && { [[ -n ${VANGUARD_HORS_LIGNE:-} ]] || ! curl -fsI --max-time 5 https://github.com >/dev/null 2>&1; }; then
+    OPTIONS+=(--no-fetch --stale)
+    echo "⚠ sans Internet : base RustSec du dernier téléchargement, qui ignore les failles publiées depuis"
+  fi
 fi
 
 # Le dossier de cargo audit, retiré à la fin. cargo-audit y est lancé lui-même, sans passer par cargo, qui lirait la
