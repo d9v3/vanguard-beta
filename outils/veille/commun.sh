@@ -150,9 +150,13 @@ REFUS_CLAUDE=(
   "Bash(git fetch *)" "Bash(git pull *)" "Bash(cargo install *)" "Bash(cargo publish *)" "Bash(cargo login *)"
   "Bash(outils/deployer.sh *)" "Bash(outils/livrer-branche.sh *)" "Bash(outils/publier-version.sh *)"
   "Edit(./.github/**)" "Write(./.github/**)" "Edit(./outils/veille/**)" "Write(./outils/veille/**)"
-  "Edit(./.claude/**)" "Write(./.claude/**)" "Edit(./CLAUDE.md)" "Write(./CLAUDE.md)" "Edit(./deny.toml)"
-  "Write(./deny.toml)" "Edit(./fuzz/deny.toml)" "Edit(./extensions/deny.toml)" "Edit(./.cargo/**)"
-  "Write(./.cargo/**)" "Edit(./outils/exceptions-rustsec.py)" "Edit(./outils/hooks/**)" "Write(./outils/hooks/**)"
+  "Edit(./.claude/**)" "Write(./.claude/**)" "Edit(./CLAUDE.md)" "Write(./CLAUDE.md)"
+  # Les exceptions des dépendances : chaque deny.toml (fenetre/deny.toml manquait), chaque .cargo/, et les deux
+  # scripts qui en tirent les avis admis (failles-programmes.sh porte les HORS_CIBLES de la fenêtre).
+  "Edit(./**/deny.toml)" "Write(./**/deny.toml)" "Edit(./deny.toml)" "Write(./deny.toml)" "Edit(./**/.cargo/**)"
+  "Write(./**/.cargo/**)" "Edit(./.cargo/**)" "Write(./.cargo/**)" "Edit(./outils/exceptions-rustsec.py)"
+  "Write(./outils/exceptions-rustsec.py)" "Edit(./outils/failles-programmes.sh)"
+  "Write(./outils/failles-programmes.sh)" "Edit(./outils/hooks/**)" "Write(./outils/hooks/**)"
   # Ce qui tourne hors du bac à sable de l'IA (crochets de git, verifier.sh, vm-tester.sh) ou décide de la chaîne de
   # compilation, et le lien du worktree vers son dépôt (.git) : la veille relance git dessus hors bac à sable.
   "Edit(./outils/confidentialite.py)" "Write(./outils/confidentialite.py)" "Edit(./outils/verifier.sh)"

@@ -46,7 +46,9 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    autres nuits, l'étape n'apparaît pas. Mesuré le 30 octobre 2026 (Kani 0.68, CBMC 6.11) : la plus lourde des
    preuves, `nom_borne` (noms DNS), prend environ 5 min 15 s et 6,1 Go de mémoire de pointe (5,7 Gio) ; Kani en
    tout, environ 6 min ; Miri, moins d'une minute.
-5. `cargo audit --json` sur les quatre `Cargo.lock`, base RUSTSEC fraîche : avis nouveaux depuis la veille.
+5. `cargo audit --json` sur chaque `Cargo.lock` du dépôt (liste et exceptions de chacun : `outils/failles-programmes.sh
+   --exceptions-depot`), depuis un dossier vide, base RUSTSEC fraîche : avis nouveaux depuis la veille ; un avis
+   n'est admis que par le `deny.toml` de sa propre crate.
 6. **Canaris** (`src/canaris.rs`, essais `#[ignore]` lancés avec `VANGUARD_CANARIS`) : chaque source réelle
    (`sources::SOURCES`, KEV, Échap, LOLDrivers, Feodo) téléchargée par **la même demande que le programme** et relue
    par **son lecteur** ; une réponse 200 refusée = format changé (redemandée 10 min plus tard avant d'alerter). Puis
@@ -150,8 +152,8 @@ claude n'a rien pu faire (limite, erreur) rend son alerte, reprise la nuit suiva
 
 `alerte.sh` : worktree jetable `~/.cache/vanguard-dev/veille-arbres/<sujet>` sur une branche
 `veille/AAAA-MM-JJ-<sujet>` partie de la tête de master ; `claude -p` (consignes `consignes-correction.md`) corrige
-avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touche `.github/`, `.claude/`, `.cargo/`,
-`CLAUDE.md`, `deny.toml`, tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
+avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touche `.github/`, `.claude/`, tout `.cargo/`,
+`CLAUDE.md`, tout `deny.toml` (fenêtre comprise), tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
 de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
 par un essai d'`outils/` n'appelle donc pas l'IA, elle est dite à l'auteur), un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
 retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test (une alerte `flotte` :

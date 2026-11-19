@@ -2,7 +2,7 @@
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
 # master, verifier.sh complet, proptest à la graine du jour, l'autotest, le journal des erreurs rapatrié trié par le
 # programme, les envois des ordinateurs relevés au relais et comptés par le programme, fuzz de chaque cible (le corpus grandit : c'est l'adaptation), le jeudi Miri et Kani (outils/preuves.sh),
-# cargo audit sur les quatre Cargo.lock avec la base RUSTSEC fraîche, canaris des vraies sources lues par le
+# cargo audit sur chaque Cargo.lock (exceptions de son deny.toml) avec la base RUSTSEC fraîche, canaris des vraies sources lues par le
 # programme, liens.py, la VM par vm-tester.sh s'il existe.
 # Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le
 # budget, une correction proposée par alerte.sh.
@@ -244,25 +244,34 @@ if [[ -n $ARBRE_OK ]]; then
     fi
   fi
 
-  # ── 5. Failles des dépendances, base RUSTSEC fraîche (cargo audit la télécharge), les quatre Cargo.lock qui ont
-  # des dépendances (celui de outils/preuves/ n'en a aucune). ──
+  # ── 5. Failles des dépendances, base RUSTSEC fraîche (cargo audit la télécharge), chaque Cargo.lock du dépôt avec
+  # les exceptions de SON deny.toml (outils/failles-programmes.sh --exceptions-depot : la même correspondance que
+  # verifier.sh), jamais celles de Vanguard prêtées au banc de fuzzing ou à la fenêtre. cargo audit tourne dans un
+  # dossier vide à lui : lancé dans l'arbre, il y lirait .cargo/audit.toml et tairait les avis admis par Vanguard dans
+  # toutes les crates. Il voit donc tout ; le rapport dit lesquels sont admis, et par quel deny.toml. ──
   if [[ -n $SANS_RESEAU ]]; then
     sauter rustsec "--sans-reseau : base RUSTSEC pas à jour"
   elif ! command -v cargo-audit >/dev/null; then
     sauter rustsec "cargo-audit absent"
+  elif ! (cd "$ARBRE" && bash outils/failles-programmes.sh --exceptions-depot) >"$TRAVAIL/verrous.tsv" \
+    2>>"$TRAVAIL/audit.log" || [[ ! -s $TRAVAIL/verrous.tsv ]]; then
+    rm -f "$TRAVAIL/verrous.tsv"
+    noter rustsec echec "$SECONDS" 1 "liste des Cargo.lock et de leurs exceptions illisible (audit.log)"
   else
     debut=$SECONDS code=0 i=0
-    for lock in Cargo.lock fuzz/Cargo.lock extensions/sdk/Cargo.lock extensions/exemples/rust-exemple/Cargo.lock; do
+    VIDE=$TRAVAIL/audit-vide
+    mkdir -p "$VIDE/.cargo"
+    echo "# outils/veille/nuit.sh : aucune exception ici, chaque deny.toml est lu par le rapport." >"$VIDE/.cargo/audit.toml"
+    while IFS=$'\t' read -r lock _; do
       if [[ -f $ARBRE/$lock ]]; then
         # Code 1 quand une faille est trouvée : le JSON dit lesquelles ; seule une sortie illisible est un échec.
-        (cd "$ARBRE" && cargo audit --json --file "$lock") >"$TRAVAIL/audit-$i.json" 2>>"$TRAVAIL/audit.log"
+        (cd "$VIDE" && cargo audit --json --file "$ARBRE/$lock") >"$TRAVAIL/audit-$i.json" 2>>"$TRAVAIL/audit.log"
         jq -e .vulnerabilities "$TRAVAIL/audit-$i.json" >/dev/null 2>&1 || { code=1; rm -f "$TRAVAIL/audit-$i.json"; }
       fi
       i=$((i + 1))
-    done
+    done <"$TRAVAIL/verrous.tsv"
     if ((code)); then noter rustsec echec "$debut" 1 "cargo audit illisible (réseau ?)"; else noter rustsec ok "$debut" 0; fi
   fi
-  EXCEPTIONS=$(cd "$ARBRE" && python3 -I outils/exceptions-rustsec.py 2>/dev/null)
 
   # ── 6. Canaris : les vraies sources aux adresses du programme, relues par ses lecteurs (src/canaris.rs). ──
   CANARIS=$VEILLE/canaris/$JOUR
@@ -371,11 +380,10 @@ fi
 REFUS=""
 [[ -z $SANS_IA ]] && REFUS=$(refus_ia correction)
 mapfile -t PROPOSITIONS < <(propositions_en_attente)
-# shellcheck disable=SC2086 # EXCEPTIONS : identifiants RUSTSEC séparés par des blancs.
 python_rapport nuit --travail "$TRAVAIL" --veille "$VEILLE" --jour "$JOUR" --arbre "$ARBRE" --fuzz "$FUZZ" \
   --sortie "$VEILLE/$JOUR.json" --tete "$TETE" --base "$BASE" --copie "${COPIE:-dépôt}" --copie-a-jour "$COPIE_A_JOUR" \
   --duree "$((SECONDS - DEBUT))" --graine "${GRAINE:-}" --refus-ia "$REFUS" ${SANS_IA:+--sans-ia} \
-  --exceptions ${EXCEPTIONS:-} --propositions "${PROPOSITIONS[@]}" ||
+  --propositions "${PROPOSITIONS[@]}" ||
   { notifier "Vanguard veille" "Veille $JOUR : le rapport n'a pas pu être écrit (journal : $VEILLE/journal/$JOUR.log)"; exit 1; }
 journal "rapport : $VEILLE/$JOUR.md"
 # Quinze nuits de journaux de travail gardées.

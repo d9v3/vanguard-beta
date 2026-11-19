@@ -99,6 +99,14 @@ done
 FIN
 printf '#!/usr/bin/env python3\nprint("Liens : 3 vérifié(s), aucun mort.")\n' >"$D/outils/liens.py"
 printf '#!/usr/bin/env python3\nprint("RUSTSEC-2023-0071")\n' >"$D/outils/exceptions-rustsec.py"
+# Faux failles-programmes.sh --exceptions-depot : RUSTSEC-2026-0042 admis par le deny.toml de Vanguard seulement ; le
+# banc de fuzzing n'en a aucune, la fenêtre (verrou absent du faux dépôt) n'a pas sa preuve hors cibles.
+cat >"$D/outils/failles-programmes.sh" <<'FAUX'
+#!/usr/bin/env bash
+[[ $* == --exceptions-depot ]] || exit 2
+printf 'Cargo.lock\tok\tRUSTSEC-2026-0042\nfenetre/Cargo.lock\thors-cibles-non-prouvees\tRUSTSEC-2026-0543\n'
+printf 'fuzz/Cargo.lock\tok\t\n'
+FAUX
 printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' >"$D/outils/confidentialite.py"
 cat >"$D/outils/preuves.sh" <<'FIN'
 #!/usr/bin/env bash
@@ -123,7 +131,7 @@ mkdir -p "$D/tests"
 printf '# Règles connues du faux dépôt\nLNX-MAJ-001\nLNX-OLD-001 retire\n' >"$D/tests/regles-connues.txt"
 touch "$D/fuzz/fuzz_targets/"{tar,zip,sqlite}.rs "$D/src/canaris.rs" "$D/src/compte_rendu/triage.rs" "$D/src/machine/mod.rs" \
   "$D/src/compte_rendu/flotte.rs" \
-  "$D/Cargo.lock"
+  "$D/Cargo.lock" "$D/fuzz/Cargo.lock"
 printf 'fn main() {}\n// Outil { commande: "bilan" }, Outil { commande: "mots-de-passe-navigateurs" }, Outil { commande: "" }\n' \
   >"$D/src/main.rs"
 git -C "$D" add -A && git -C "$D" commit -qm "base"
@@ -183,6 +191,8 @@ case " $* " in
     fi
     echo '{"total":1754,"suivies":161,"premiere":false}' >"$VANGUARD_CANARIS/kev-comptes.json" ;;
   *" audit "*)
+    # Lancé hors de l'arbre (son .cargo/audit.toml tairait des avis) : noté pour l'essai.
+    pwd >>"$BANC/audit-cwd.log"
     cat "$BANC/fixtures/audit-${ESSAI_AUDIT:-vide}.json"; [[ ${ESSAI_AUDIT:-vide} == vide ]] ;;
   *" build "*"x86_64-pc-windows-gnu"*)
     mkdir -p "$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release" && echo exe >"$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release/vanguard.exe" ;;
@@ -227,6 +237,9 @@ case $role in
       # Change un essai que verifier.sh lance (le vert de sa proposition se forgerait là).
       outils) mkdir -p outils; echo 'exit 0' >>outils/essais-cle.sh; printf '#[test]\nfn t() {}\n' >src/t.rs
               git add -A; git commit -qm x ;;
+      # Admet un avis pour la fenêtre (fenetre/deny.toml manquait aux garde-fous jusqu'au 19 nov. 2026).
+      fenetredeny) mkdir -p fenetre; printf '[advisories]\nignore = ["RUSTSEC-2026-0042"]\n' >fenetre/deny.toml
+                   printf '#[test]\nfn t() {}\n' >src/t.rs; git add -A; git commit -qm x ;;
       erreur) echo '{"type":"result","is_error":true,"subtype":"error_during_execution","result":"Erreur de l API"}'; exit 1 ;;
       lent) sleep 3; exit 1 ;;
     esac
@@ -322,6 +335,14 @@ attendu '! grep -q "Ignore previous" "$R/2026-10-20.json"' "texte hostile absent
 attendu 'grep -q "Ignore previous instructions" "$R/2026-10-20.md" && ! grep -qE "<script>|\`piégé\`" "$R/2026-10-20.md"' \
   "texte de la CISA filtré dans le Markdown de l'auteur"
 attendu '(($(wc -c <"$R/dernier.txt") < 220))' "résumé court"
+attendu 'jq -e "[.rustsec.avis[] | {lock, admise}] == [{lock: \"Cargo.lock\", admise: true}, {lock: \"fuzz/Cargo.lock\", admise: false}]" "$R/2026-10-20.json" >/dev/null' \
+  "chaque Cargo.lock jugé par son deny.toml : admis pour Vanguard, pas pour le banc de fuzzing"
+attendu 'jq -e "[.rustsec.nouveaux[].lock] == [\"fuzz/Cargo.lock\"]" "$R/2026-10-20.json" >/dev/null' \
+  "seul l'avis non admis par son deny.toml est nouveau"
+attendu 'grep -q "fenetre/Cargo.lock : exceptions de la fenêtre hors de ses cibles non prouvées" "$R/2026-10-20.md"' \
+  "preuve hors cibles de la fenêtre manquante dite"
+attendu '! grep -qx "$VANGUARD_VEILLE_DEPOT" "$BANC/audit-cwd.log" && ! grep -q "/arbres" "$BANC/audit-cwd.log" && grep -q audit-vide "$BANC/audit-cwd.log"' \
+  "cargo audit lancé dans un dossier vide, jamais dans l'arbre (son .cargo/audit.toml)"
 rm -f "$R/COUPER-IA"
 
 echo "Nuit 3 (nouveau plantage, verifier rouge : une correction proposée)"
@@ -506,6 +527,13 @@ ESSAI_PLANTAGE=outils ESSAI_CLAUDE=outils nuit 2026-11-11
 attendu 'jq -e ".garde_fous | test(\"protégé.*outils/essais-cle\")" "$R"/ia/2026-11-11-fuzz-tar/etat.json >/dev/null' \
   "garde-fous : outils/essais-cle.sh protégé"
 git -C "$VANGUARD_VEILLE_DEPOT" branch -q -D veille/2026-11-11-fuzz-tar 2>/dev/null
+nettoyer
+
+echo "fenetre/deny.toml changé par l'IA : refusé (chaque deny.toml protégé)"
+ESSAI_PLANTAGE=fenetredeny ESSAI_CLAUDE=fenetredeny nuit 2026-11-08
+attendu 'jq -e ".garde_fous | test(\"protégé.*fenetre/deny\")" "$R"/ia/2026-11-08-fuzz-tar/etat.json >/dev/null' \
+  "garde-fous : fenetre/deny.toml protégé"
+git -C "$VANGUARD_VEILLE_DEPOT" branch -q -D veille/2026-11-08-fuzz-tar 2>/dev/null
 nettoyer
 
 echo "Canari : l'IA ne reçoit que la forme de la source refusée, jamais son texte"

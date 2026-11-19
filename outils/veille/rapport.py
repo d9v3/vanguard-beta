@@ -49,7 +49,8 @@ MOTIFS = {
     "url": r"https://[A-Za-z0-9.-]{1,100}(?:/[A-Za-z0-9._~%/+=-]{0,150})?",
     "produit": r"[A-Za-z0-9()]{1,40}",
     "chemin": r"[A-Za-z0-9._/-]{1,160}",
-    "lock": r"(?:Cargo\.lock|fuzz/Cargo\.lock|extensions/sdk/Cargo\.lock|extensions/exemples/rust-exemple/Cargo\.lock)",
+    "lock": r"(?:Cargo\.lock|fenetre/Cargo\.lock|fuzz/Cargo\.lock|extensions/sdk/Cargo\.lock"
+            r"|extensions/exemples/rust-exemple/Cargo\.lock|outils/preuves/Cargo\.lock)",
 }
 SCHEMA_CR = json.loads((Path(__file__).resolve().parent / "schema-compte-rendu.json").read_text(encoding="utf-8"))
 CR_CAUSE = SCHEMA_CR["$defs"]["cause"]["properties"]
@@ -108,7 +109,8 @@ MOTIFS.update({
 })
 NOMS_CONNUS = Path(__file__).resolve().parent / "noms-connus.txt"
 FLOTTE_SIGNAUX_MAX = 200
-LOCKS = ["Cargo.lock", "fuzz/Cargo.lock", "extensions/sdk/Cargo.lock", "extensions/exemples/rust-exemple/Cargo.lock"]
+# États d'une ligne de verrous.tsv (outils/failles-programmes.sh --exceptions-depot) ; un autre est lu « illisible ».
+ETATS_VERROU = {"ok", "illisible", "hors-cibles-non-prouvees"}
 MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
 
 
@@ -257,12 +259,31 @@ def lire_fuzz(t, veille, arbre, fuzz):
     }
 
 
-def lire_audit(t, veille, exceptions):
-    """Les avis RUSTSEC de cargo audit --json sur les quatre Cargo.lock, comparés à ceux de la veille."""
+def lire_verrous(t):
+    """Les Cargo.lock audités cette nuit, dans l'ordre des audit-<i>.json, chacun avec les exceptions de SON deny.toml
+    (verrous.tsv, écrit par outils/failles-programmes.sh --exceptions-depot). Un verrou de forme inconnue est sauté ;
+    une liste d'exceptions illisible ne donne aucune exception (tout avis compte), jamais celles d'une autre crate."""
+    verrous = []
+    for ligne in lignes(t / "verrous.tsv"):
+        champs = ligne.split("\t")
+        lock, etat, ids = (champs + ["", "", ""])[:3]
+        if sur("lock", lock) is None:
+            verrous.append(None)
+            continue
+        etat = etat if etat in ETATS_VERROU else "illisible"
+        ids = {i for i in ids.split() if sur("rustsec", i)} if etat != "illisible" else set()
+        verrous.append({"lock": lock, "etat": etat, "exceptions": ids})
+    return verrous
+
+
+def lire_audit(t, veille):
+    """Les avis RUSTSEC de cargo audit --json sur chaque Cargo.lock de verrous.tsv, comparés à ceux de la veille. Un
+    avis n'est « admis » que par le deny.toml de son propre Cargo.lock."""
     avis = []
-    for i, lock in enumerate(LOCKS):
+    verrous = lire_verrous(t)
+    for i, verrou in enumerate(verrous):
         sortie = lire_json(t / f"audit-{i}.json")
-        if sortie is None:
+        if sortie is None or verrou is None:
             continue
         trouves = [(v, "faille") for v in (sortie.get("vulnerabilities") or {}).get("list") or []]
         for genre, liste in (sortie.get("warnings") or {}).items():
@@ -276,18 +297,26 @@ def lire_audit(t, veille, exceptions):
                 "id": sur("rustsec", ident),
                 "crate": sur("crate", paquet.get("name")),
                 "version": sur("version", paquet.get("version")),
-                "lock": lock,
+                "lock": verrou["lock"],
                 "genre": sur("slug", genre),
-                "admise": ident in exceptions,
+                "admise": ident in verrou["exceptions"],
             })
+    # La clé porte le verrou : un avis admis dans Cargo.lock et apparu dans fenetre/Cargo.lock est nouveau là. Les
+    # clés d'avant (« id:crate », sans verrou) valent encore une nuit pour tous les verrous : pas d'alerte en masse
+    # au passage.
     etat_f = Path(veille) / "etat/rustsec-ids.txt"
     premiere = not etat_f.exists()
     connus = set(lignes(etat_f))
-    cles = {f"{a['id']}:{a['crate']}" for a in avis}
-    nouveaux = [] if premiere else [a for a in avis if f"{a['id']}:{a['crate']}" not in connus and not a["admise"]]
-    if any((t / f"audit-{i}.json").exists() for i in range(len(LOCKS))):
+    cles = {f"{a['id']}:{a['crate']}:{a['lock']}" for a in avis}
+    nouveaux = [] if premiere else [
+        a for a in avis
+        if f"{a['id']}:{a['crate']}:{a['lock']}" not in connus and f"{a['id']}:{a['crate']}" not in connus
+        and not a["admise"]
+    ]
+    if any((t / f"audit-{i}.json").exists() for i in range(len(verrous))):
         etat_f.write_text("".join(f"{c}\n" for c in sorted(cles)), encoding="utf-8")
-    return {"avis": avis, "nouveaux": nouveaux, "premiere_nuit": premiere}
+    return {"avis": avis, "nouveaux": nouveaux, "premiere_nuit": premiere,
+            "verrous": [{"lock": v["lock"], "etat": v["etat"]} for v in verrous if v]}
 
 
 def lire_liens(t, veille, jour):
@@ -748,7 +777,7 @@ def nuit(a):
         "verifier": lire_verifier(t / "verifier.log"),
         "proptest": None,
         "fuzz": lire_fuzz(t, veille, a.arbre, a.fuzz),
-        "rustsec": lire_audit(t, veille, set(a.exceptions or [])),
+        "rustsec": lire_audit(t, veille),
         "canaris": lire_canaris(veille, a.jour),
         "liens": lire_liens(t, veille, a.jour),
         "ci": lire_ci(t, a.jour),
@@ -998,12 +1027,17 @@ def markdown(chemin_json, kev_humain=None):
         for p in f["nouveaux_plantages"]:
             md.append(f"- {p['cible']} : `{p['fichier']}`")
     ru = r.get("rustsec")
-    if ru and ru["avis"]:
+    hors_ok = [v for v in (ru or {}).get("verrous", []) if v["etat"] != "ok"]
+    if ru and (ru["avis"] or hors_ok):
         md += ["", "### RUSTSEC", ""]
+        for v in hors_ok:
+            md.append(f"- {v['lock']} : exceptions "
+                      + ("illisibles, aucune admise" if v["etat"] == "illisible"
+                         else "de la fenêtre hors de ses cibles non prouvées, pas admises"))
         for av in ru["avis"]:
             nouveau = " **nouveau**" if av in ru["nouveaux"] else ""
             md.append(f"- {av['id']} {av['crate']} {av['version']} ({av['lock']}, {av['genre']}"
-                      f"{', admise par deny.toml' if av['admise'] else ''}){nouveau}")
+                      f"{', admise par son deny.toml' if av['admise'] else ''}){nouveau}")
     c = r.get("canaris")
     if c:
         md += ["", "### Canaris des sources", ""]
@@ -1228,7 +1262,7 @@ def hebdo_entree(a):
             kev[k["cve"]] = {"cve": sur("cve", k["cve"]), "couvert_par": sur("produit", k["couvert_par"]),
                              "rancongiciel": bool(k["rancongiciel"])}
         for av in (n.get("rustsec") or {}).get("avis", []):
-            rustsec[av["id"] + av["crate"]] = {k: av[k] for k in ("id", "crate", "version", "lock", "admise")}
+            rustsec[av["id"] + av["crate"] + av["lock"]] = {k: av[k] for k in ("id", "crate", "version", "lock", "admise")}
         for c in (n.get("canaris") or {}).get("canaris", []):
             if c["etat"] != "ok":
                 canaris[c["id"]] = {"id": sur("slug", c["id"]), "etat": c["etat"]}
@@ -1538,7 +1572,6 @@ def main():
     n.add_argument("--graine", default="")
     n.add_argument("--refus-ia", default="")
     n.add_argument("--sans-ia", action="store_true")
-    n.add_argument("--exceptions", nargs="*")
     n.add_argument("--propositions", nargs="*")
     al = sous.add_parser("alerte")
     al.add_argument("rapport")

@@ -117,6 +117,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   dates et les fichiers du dépôt de Vanguard (`src/…/mod.rs`, `outils/verifier.sh`) restent lisibles. Limites : un
   chemin relatif sans extension, sans point ni dossier personnel (`projets/Marie`) reste lisible, comme quatre nombres
   à tirets sans nom d'hôte autour ; une phrase de passe emporte tout le reste de sa phrase.
+- **La veille de nuit juge chaque crate par ses propres exceptions.** Elle passait `cargo audit` sur quatre
+  `Cargo.lock` avec la seule liste d'avis admis de Vanguard, et depuis l'arbre, où `.cargo/audit.toml` taisait ces
+  avis pour toutes les crates. Elle lit maintenant chaque `Cargo.lock` du dépôt, fenêtre et preuves comprises, depuis
+  un dossier vide, et un avis n'est admis que par le `deny.toml` de sa propre crate (`outils/failles-programmes.sh
+  --exceptions-depot`, la même correspondance que la vérification complète). Une correction proposée par l'IA de nuit
+  ne peut plus toucher aucun `deny.toml` ni aucun dossier `.cargo/`, où qu'ils soient : celui de la fenêtre manquait.
 
 ## 15 novembre 2026 : version 0.96.0
 

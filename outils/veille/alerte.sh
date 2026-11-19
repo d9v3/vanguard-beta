@@ -211,8 +211,10 @@ fi
 # publier-version.sh, signer-versions.sh, livrer-branche.sh, compiler-version.sh, images-cle.sh, cle-secours.sh,
 # maj-cle.sh) : l'IA y forgerait le vert de sa proposition, ou y glisserait ce que seul l'œil de l'auteur verrait.
 # Seule exception : outils/liens.txt pour une alerte « lien ».
-PROTEGES='^(\.github/|\.claude/|\.cargo/|outils/|CLAUDE\.md$|deny\.toml$|fuzz/deny\.toml$|'
-PROTEGES+='extensions/deny\.toml$|([^/]+/)*build\.rs$|rust-toolchain(\.toml)?$)'
+# Chaque deny.toml et chaque .cargo/, où qu'ils soient (fenetre/deny.toml manquait : une proposition pouvait y
+# admettre un avis pour la fenêtre) : une crate ajoutée plus tard est couverte d'office.
+PROTEGES='^(\.github/|\.claude/|([^/]+/)*\.cargo/|outils/|CLAUDE\.md$|([^/]+/)*deny\.toml$|'
+PROTEGES+='([^/]+/)*build\.rs$|rust-toolchain(\.toml)?$)'
 PERMIS_GENRE='^$'
 [[ $GENRE != lien ]] || PERMIS_GENRE='^outils/liens\.txt$'
 garde_fous() {

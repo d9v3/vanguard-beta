@@ -26,6 +26,11 @@
 #                                          (étape « failles connues » de outils/verifier.sh, que la CI lance aussi
 #                                          chaque nuit) : code 77 sans cargo-audit ou sans Internet, où une base pas
 #                                          à jour dirait vert à tort
+#   outils/failles-programmes.sh --exceptions-depot   pour la veille de nuit (outils/veille/nuit.sh) : les mêmes
+#                                          Cargo.lock que --depot, un par ligne, « verrou<TAB>état<TAB>identifiants »
+#                                          avec les exceptions de son deny.toml ; état « ok », « illisible » (aucune
+#                                          exception lue : tout compte) ou, pour la fenêtre, « hors-cibles-non-prouvees »
+#                                          (HORS_CIBLES pas ajoutées) ; rien n'est audité, cargo-audit pas demandé
 # Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les programmes qu'il
 # publie, et par la CI sur ceux qu'elle compile (ci.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
 set -euo pipefail
@@ -34,7 +39,7 @@ export CARGO_TERM_COLOR=never
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 
 if (($# == 0)); then
-  echo "outils/failles-programmes.sh <programme>... (ou --outil, --depot)" >&2
+  echo "outils/failles-programmes.sh <programme>... (ou --outil, --depot, --exceptions-depot)" >&2
   exit 2
 fi
 if [[ $1 == --depot ]]; then
@@ -48,16 +53,19 @@ if [[ $1 == --depot ]]; then
   fi
 fi
 # Une autre version de cargo-audit pourrait juger autrement que la CI : celle qu'elle pose (tool: …,cargo-audit@X).
-ATTENDUE=$(sed -n 's/.*cargo-audit@\([0-9][0-9.]*\).*/\1/p' "$RACINE/.github/workflows/ci.yml" | head -1)
-PRESENTE=$(cargo-audit --version 2>/dev/null | awk '{ print $2 }' || true)
-if [[ -z $ATTENDUE ]]; then
-  echo "✖ version de cargo-audit introuvable dans .github/workflows/ci.yml (tool: …,cargo-audit@X)" >&2
-  exit 1
-fi
-if [[ $PRESENTE != "$ATTENDUE" ]]; then
-  echo "✖ cargo-audit ${PRESENTE:-absent} ici, $ATTENDUE dans la CI (.github/workflows/ci.yml) : il faut le même." >&2
-  echo "  cargo install cargo-audit --locked --version $ATTENDUE" >&2
-  exit 1
+# --exceptions-depot ne lance pas cargo-audit (la veille le lance elle-même) : pas de version demandée.
+if [[ $1 != --exceptions-depot ]]; then
+  ATTENDUE=$(sed -n 's/.*cargo-audit@\([0-9][0-9.]*\).*/\1/p' "$RACINE/.github/workflows/ci.yml" | head -1)
+  PRESENTE=$(cargo-audit --version 2>/dev/null | awk '{ print $2 }' || true)
+  if [[ -z $ATTENDUE ]]; then
+    echo "✖ version de cargo-audit introuvable dans .github/workflows/ci.yml (tool: …,cargo-audit@X)" >&2
+    exit 1
+  fi
+  if [[ $PRESENTE != "$ATTENDUE" ]]; then
+    echo "✖ cargo-audit ${PRESENTE:-absent} ici, $ATTENDUE dans la CI (.github/workflows/ci.yml) : il faut le même." >&2
+    echo "  cargo install cargo-audit --locked --version $ATTENDUE" >&2
+    exit 1
+  fi
 fi
 if [[ $1 == --outil ]]; then
   exit 0
@@ -227,6 +235,34 @@ caisses_publiees() {
   esac
   return 1
 }
+
+# Les exceptions de chaque Cargo.lock de --depot, pour la veille de nuit : la même correspondance verrou → deny.toml,
+# écrite une seule fois ici, pour que la veille ne prête jamais à une crate les exceptions d'une autre (rsa et bincode
+# de YARA-X au banc de fuzzing, par exemple). Un deny.toml illisible donne « illisible » et aucune exception (tous les
+# avis comptent), jamais un arrêt muet ni un « aucune exception » qui aurait l'air sain ; les HORS_CIBLES de la
+# fenêtre n'y sont ajoutées qu'avec la preuve de cargo tree, comme pour --depot. Les erreurs de cargo tree vont sur la
+# sortie d'erreur.
+if [[ $1 == --exceptions-depot ]]; then
+  (($# == 1)) || { echo "outils/failles-programmes.sh --exceptions-depot (sans autre argument)" >&2; exit 2; }
+  for crate in Cargo.lock:deny.toml fenetre/Cargo.lock:fenetre/deny.toml "${A_PART[@]}"; do
+    verrou=${crate%%:*} deny=${crate#*:} etat=ok ids=""
+    if [[ -n $deny ]] && ! ids=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$deny" 2>&1); then
+      echo "$ids" >&2
+      etat=illisible ids=""
+    fi
+    if [[ $verrou == fenetre/Cargo.lock && $etat == ok ]]; then
+      OPTIONS_FENETRE=()
+      if hors_cibles_prouvees >&2; then
+        ids+=$'\n'$(printf '%s\n' "${HORS_CIBLES[@]%%:*}")
+      else
+        etat=hors-cibles-non-prouvees
+      fi
+    fi
+    printf '%s\t%s\t%s\n' "$verrou" "$etat" "$(xargs <<<"$ids")"
+  done
+  montrer_erreurs_arbre >&2
+  exit 0
+fi
 
 # Le Cargo.lock du dépôt, lu depuis ce dossier-là (son audit.toml vide) : même jugement que pour les programmes.
 if [[ $1 == --depot ]]; then
