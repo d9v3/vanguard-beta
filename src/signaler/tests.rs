@@ -124,6 +124,8 @@ fn liste_fermee_des_appels() {
         "crate::modele::resultat::AVEC_RESULTAT",
         "crate::modele::registre::OUTILS",
         "crate::journal::anonymiser",
+        "crate::amelioration::texte::masquer",
+        "crate::amelioration::texte::sans_faux_marqueurs",
         "crate::journal::noms_a_retirer",
         "crate::journal::systeme",
         "crate::protection::kev::catalogue_selon",
@@ -335,15 +337,25 @@ fn preuve_reduite() {
         une_alerte("Lien", "vu https://203.0.113.9/x?session=abc#k"),
     ];
     let md = markdown(&incident(fil), &reponses(), Some(Lecture::Intact), Programme::Mozilla);
-    for absent in ["SECRET", "bob", "Zoé-Martin", "session=abc", "#k", "PID 4242"] {
+    for absent in [
+        "SECRET",
+        "bob",
+        "Zoé-Martin",
+        "session=abc",
+        "#k",
+        "PID 4242",
+        "/home/alice",
+        "203.0.113.9",
+    ] {
         assert!(!md.contains(absent), "{absent} dans :\n{md}");
     }
+    // Le masquage commun prend les chemins entiers (« <chemin .ext> ») et les adresses web (« <url> »).
     for present in [
-        "<fichier>.pdf",
-        "/usr/bin/curl",
-        "<compte>",
+        "file: <chemin .pdf>",
+        "program: <chemin>",
+        "account: <compte>",
         "2 connection(s) ; ports 443",
-        "https://203.0.113.9/x",
+        "vu <url>",
     ] {
         assert!(md.contains(present), "{present} manque :\n{md}");
     }
@@ -622,10 +634,7 @@ fn chemins_windows_et_macos() {
     )];
     let md = markdown(&incident(fil), &reponses(), None, Programme::Apple);
     assert!(!md.contains("Zoé") && !md.contains("alice"), "{md}");
-    assert!(
-        md.contains(r"~\…\<fichier>.exe") && md.contains("~/…/<fichier>.app"),
-        "{md}"
-    );
+    assert!(md.contains("<chemin .exe>") && md.contains("<chemin .app>"), "{md}");
 }
 
 /// Une faille connue signalée quand même : c'est dit, avec ce qu'en dit le catalogue de la CISA, ou « non vérifié ».
@@ -805,7 +814,10 @@ fn diagnostic_et_sortantes_sans_inventaire() {
         ],
     );
     let md = markdown(&Sujet::Examen(Box::new(sortantes)), &reponses(), None, Programme::Msrc);
-    assert!(md.contains("203.0.113.7") && !md.contains("Signal"), "{md}");
+    assert!(
+        md.contains("<ip>") && !md.contains("203.0.113.7") && !md.contains("Signal"),
+        "{md}"
+    );
 }
 
 /// Sans CVE citée, le catalogue KEV n'a rien cherché : jamais « absente du catalogue », même avec une copie gardée.
@@ -883,5 +895,21 @@ fn le_choix_reste_dans_le_fil_coupe() {
         b.observations.last().unwrap().contenu.contains("alerte 60"),
         "{:?}",
         b.observations.last()
+    );
+}
+
+/// Le brouillon passe par le masquage commun : une alerte au texte plein de valeurs inventées (MAC, série, mot de
+/// passe après `-p`, chemin personnel, IP) n'en garde aucune, et le texte final est celui qui serait écrit.
+#[test]
+fn brouillon_masque_par_le_masquage_commun() {
+    let fil = vec![une_alerte(
+        "Lien",
+        "MAC 3c:22:fb:12:34:56 série 5CG1234XYZ mysql -p 'Lune2 Verte9' /home/alice/notes.txt 81.12.34.56",
+    )];
+    let md = markdown(&incident(fil), &reponses(), None, Programme::Mozilla);
+    let ligne = md.lines().find(|l| l.starts_with("MAC ")).unwrap_or_default();
+    assert_eq!(
+        ligne, "MAC <mac> série <numéro> mysql -p '<secret>' <chemin .txt> <ip>",
+        "{md}"
     );
 }

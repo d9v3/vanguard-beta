@@ -352,13 +352,71 @@ fn passer_sans_relecture(brut: &str, forme: Forme) -> Result<String, Rejet> {
 /// adresses et suites hexadécimales sont déjà des marqueurs (sinon un long chemin passerait pour un jeton).
 fn passe(c: &[char], forme: Forme) -> (Vec<char>, u32) {
     let mut alertes = 0;
-    let c = couche_precise(c, &mut alertes);
-    let c = masquer_arobases(&c);
-    let c = masquer_formes(&c, forme.ip);
-    let c = couche_precise(&c, &mut alertes);
-    let c = couche_entropie(&c, &mut alertes);
+    let c = masques(c, forme.ip, &mut alertes);
     let c = filtrer(&c);
     (couper(&c, forme.max), alertes)
+}
+
+/// Les masques d'une passe, sans le filtre de l'étape 5 ni la coupe : la part commune à `nettoyer` et à `masquer`.
+fn masques(c: &[char], ip: bool, alertes: &mut u32) -> Vec<char> {
+    let c = couche_precise(c, alertes);
+    let c = masquer_arobases(&c);
+    let c = masquer_formes(&c, ip);
+    let c = couche_precise(&c, alertes);
+    couche_entropie(&c, alertes)
+}
+
+/// Ce que rend `masquer` quand ses passes ne trouvent pas leur point fixe : le texte entier est retiré, plutôt que
+/// gardé à moitié masqué.
+pub(crate) const RETIRE: &str = "[texte retiré : masquage instable]";
+
+/// Le masquage seul, pour un texte long gardé pour l'auteur (le journal des erreurs) ou montré à la personne avant de
+/// partir (le brouillon de `vanguard signaler`) : les mêmes masques que `nettoyer` (séries, secrets, MAC, IP, chemins,
+/// jetons), jusqu'au point fixe, mais ni la borne de 300 octets, ni le filtre des caractères, ni les refus (une
+/// sortie de PowerShell a peu de lettres et doit rester lisible). Le texte rendu est normalisé (invisibles retirés,
+/// pleine chasse ramenée à l'ASCII, tabulations en espaces, fins de ligne en « \n ») : les masques ont jugé ce
+/// texte-là, pas le brut. Au-delà de `ENTREE_MAX` octets, le reste est coupé à une espace et « […] » le dit : le coût
+/// reste borné. Comme pour `nettoyer`, le retrait des noms (`journal::anonymiser`) et des faux marqueurs se fait
+/// avant, dans `amelioration::masquer`.
+pub(crate) fn masquer(brut: &str) -> String {
+    let borne = borne_entree(brut);
+    let mut t = normaliser(&borne.replace("\r\n", "\n"));
+    let mut stable = false;
+    for _ in 0..PASSES_MAX {
+        let mut alertes = 0;
+        let s = masques(&t, true, &mut alertes);
+        if s == t {
+            stable = true;
+            break;
+        }
+        t = s;
+    }
+    if !stable {
+        return RETIRE.to_string();
+    }
+    let mut sortie: String = t.into_iter().collect();
+    if borne.len() < brut.len() {
+        sortie.push_str(" […]");
+    }
+    sortie
+}
+
+/// Le brut sans faux marqueurs : un « `<ip>` » ou un « `<chemin .pdf>` » écrit dans le texte (pleine chasse et
+/// invisibles compris) perd son chevron ouvrant. Sans cela, les masques le sauteraient comme un marqueur déjà posé,
+/// et il pourrait couper un jeton en deux (« ghp_`<ip>`… »). Les autres chevrons restent (« a < b », une preuve de
+/// concept en HTML), à la différence de `sans_chevrons`. Rend le texte normalisé, comme `masquer`.
+pub(crate) fn sans_faux_marqueurs(brut: &str) -> String {
+    let mut c = normaliser(&brut.replace("\r\n", "\n"));
+    let mut i = 0;
+    while i < c.len() {
+        if marqueur(&c, i).is_some()
+            && let Some(x) = c.get_mut(i)
+        {
+            *x = ' ';
+        }
+        i = suivant(i);
+    }
+    c.into_iter().collect()
 }
 
 /// Un mot qui mêle des lettres latines à des lettres cyrilliques ou grecques : « pаssword » avec un а cyrillique

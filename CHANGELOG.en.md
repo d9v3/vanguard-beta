@@ -11,6 +11,14 @@ example, finds it, to rebuild it if needed.
 
 ## 0.97 (in preparation)
 
+- **The error log and the `vanguard signaler` draft go through the common masker**, the same as sent texts: serial
+  numbers, passwords after `-p` or `--password`, `net use`, Wi-Fi keys, tokens, MAC and IP addresses (all of them, as
+  "<mac>" and "<ip>"), absolute paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written
+  and then sent; a fake marker written in a message ("<ip>" inside a token) is disarmed. Limits: diagnostics lose the
+  MAC vendor prefix, paths and IPs; error tickets already open may come back under a new signature; a secret made only
+  of common words ("-p 'red house'") or with no keyword before it may remain; the detail is cut at 3000 bytes (a draft
+  value at 8192) before masking, whose cost grows quickly with length; a text the masker cannot stabilise is replaced
+  whole by "[texte retiré : masquage instable]".
 - **The system journal is read in full, like `journalctl`.** After a reboot, the journal can give a new entry the
   number of an older one. Vanguard took it for a copy and skipped it. An entry is now recognized by its whole header
   (number, time, boot, hash), and the files are merged in writing order, not by time alone, which can go backward when

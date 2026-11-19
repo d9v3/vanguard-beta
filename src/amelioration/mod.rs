@@ -988,6 +988,15 @@ pub(crate) fn texte(brut: &str) -> Result<TexteNettoye, Rejet> {
     TexteNettoye::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))
 }
 
+/// Un texte long qui sort de la machine sans passer par la voie ouverte : le détail et la commande du journal des
+/// erreurs (rapatrié, puis en ticket sur GitHub), chaque valeur du brouillon de `vanguard signaler` (montré, puis
+/// copié dans un rapport). Les mêmes étapes que `texte`, dans le même ordre (faux marqueurs, noms, masques), sans la
+/// borne de 300 octets ni les refus (`texte::masquer`). Seuls les faux marqueurs perdent leur chevron, pas tous les
+/// chevrons : une preuve de concept en HTML reste lisible.
+pub(crate) fn masquer(brut: &str) -> String {
+    texte::masquer(&crate::journal::anonymiser(&texte::sans_faux_marqueurs(brut)))
+}
+
 /// Le nom d'un logiciel, d'un service ou d'un pilote, nettoyé de la même façon.
 pub(crate) fn nom(brut: &str) -> Result<NomLogiciel, Rejet> {
     NomLogiciel::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))

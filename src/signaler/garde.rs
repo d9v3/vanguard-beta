@@ -1,8 +1,9 @@
 //! Le garde-fou de confidentialité du brouillon, en trois couches. 1. Ne pas prendre ce qui n'est pas utile à un
 //! éditeur : `reduire_chemin` (un nom de fichier personnel comme « CV-Prénom-Nom.pdf » porte un nom complet que
 //! `anonymiser` ne connaît pas) et `compte` (le compte d'un proche sur le même ordinateur passait en clair).
-//! 2. Masquer chaque valeur avec `journal::anonymiser`, et les adresses web avec `masquer_url` (code nouveau :
-//! `anonymiser` ne touche pas aux URL, dont la requête porte souvent un jeton de session). 3. Contrôle final : chercher
+//! 2. Masquer chaque valeur avec `journal::anonymiser`, puis avec le masquage commun de ce qui sort
+//! (`amelioration::texte::masquer` : séries, secrets, jetons, MAC, IP, chemins, adresses web), puis les adresses web
+//! qui resteraient avec `masquer_url` (leur requête porte souvent un jeton de session). 3. Contrôle final : chercher
 //! dans le texte entier chaque nom connu ; s'il en reste un, rien n'est écrit.
 //!
 //! Le contrôle final n'est pas une couche indépendante : il relit la même liste que celle qui a servi au masquage. Il
@@ -31,6 +32,9 @@ pub(crate) enum Sorte {
     Mac,
     Site,
     Fichier,
+    Secret,
+    Chemin,
+    Identifiant,
 }
 
 impl Sorte {
@@ -47,10 +51,16 @@ impl Sorte {
             Sorte::Sid => ("identifiant(s) Windows (SID)", "Windows identifier(s) (SID)"),
             Sorte::Numero => ("numéro(s) de série", "serial number(s)"),
             Sorte::Wifi => ("nom(s) de Wi-Fi", "Wi-Fi name(s)"),
-            Sorte::Ip => ("adresse(s) IP publique(s)", "public IP address(es)"),
+            Sorte::Ip => ("adresse(s) IP", "IP address(es)"),
             Sorte::Mac => ("adresse(s) MAC", "MAC address(es)"),
             Sorte::Site => ("site(s) web et requête(s)", "website(s) and query string(s)"),
             Sorte::Fichier => ("nom(s) de fichier personnel", "personal file name(s)"),
+            Sorte::Secret => ("secret(s) ou jeton(s)", "secret(s) or token(s)"),
+            Sorte::Chemin => ("chemin(s) de fichier", "file path(s)"),
+            Sorte::Identifiant => (
+                "identifiant(s) (GUID, hexadécimal)",
+                "identifier(s) (GUID, hexadecimal)",
+            ),
         };
         format!("{n} {}", if anglais { en } else { fr })
     }
@@ -98,7 +108,8 @@ impl Decompte {
     }
 }
 
-/// Les remplaçants posés par `anonymiser`, et la sorte qu'ils comptent.
+/// Les remplaçants posés par `anonymiser`, `masquer_url` et le masquage commun (`amelioration::texte::masquer`), et
+/// la sorte qu'ils comptent. Toute adresse MAC ou IP finit en « `<mac>` » ou « `<ip>` » : comptées par leur marqueur.
 const REMPLACANTS: &[(&str, Sorte)] = &[
     ("<utilisateur>", Sorte::Personne),
     ("<machine>", Sorte::Machine),
@@ -109,37 +120,21 @@ const REMPLACANTS: &[(&str, Sorte)] = &[
     ("S-1-5-21-0-0-0", Sorte::Sid),
     ("<numéro>", Sorte::Numero),
     ("<wifi>", Sorte::Wifi),
-    ("203.0.113.", Sorte::Ip),
+    ("<ip>", Sorte::Ip),
+    ("<mac>", Sorte::Mac),
     ("<site>", Sorte::Site),
+    ("<url>", Sorte::Site),
     ("<fichier>", Sorte::Fichier),
+    ("<adresse>", Sorte::Courriel),
+    ("<secret>", Sorte::Secret),
+    ("<jeton>", Sorte::Secret),
+    ("<clé>", Sorte::Secret),
+    ("<chemin", Sorte::Chemin),
+    ("<guid>", Sorte::Identifiant),
+    ("<hex>", Sorte::Identifiant),
 ];
 
-/// Les mots d'un texte, coupés aux espaces et à la ponctuation qui n'entre ni dans une adresse ni dans un chemin.
-fn mots(texte: &str) -> impl Iterator<Item = &str> {
-    texte
-        .split(|c: char| c.is_whitespace() || "\"'«»()[]<>,;`".contains(c))
-        .filter(|m| !m.is_empty())
-}
-
-/// Une adresse MAC (six paires d'hexadécimaux séparées par « : » ou « - »).
-fn forme_mac(m: &str) -> bool {
-    let groupes: Vec<&str> = m.split([':', '-']).collect();
-    groupes.len() == 6
-        && groupes
-            .iter()
-            .all(|g| g.len() == 2 && g.chars().all(|c| c.is_ascii_hexdigit()))
-}
-
-/// Une adresse IPv6 (au moins deux « : », des hexadécimaux), sans être une MAC.
-fn forme_ipv6(m: &str) -> bool {
-    let m = m.split('%').next().unwrap_or_default().trim_end_matches('.');
-    m.matches(':').count() >= 2
-        && m.chars().any(|c| c.is_ascii_hexdigit())
-        && m.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
-        && !forme_mac(m)
-}
-
-/// Le décompte entre un texte et son masquage : les remplaçants apparus, les adresses MAC et IPv6 disparues.
+/// Le décompte entre un texte et son masquage : les remplaçants apparus (dont « `<mac>` » et « `<ip>` »).
 fn compter(avant: &str, apres: &str, d: &mut Decompte) {
     let n = |t: &str, m: &str| u32::try_from(t.matches(m).count()).unwrap_or(u32::MAX);
     for (remplacant, sorte) in REMPLACANTS {
@@ -154,17 +149,6 @@ fn compter(avant: &str, apres: &str, d: &mut Decompte) {
         .unwrap_or(u32::MAX)
     };
     d.ajouter(Sorte::Dossier, tildes(apres).saturating_sub(tildes(avant)));
-    let restes: std::collections::BTreeSet<&str> = mots(apres).collect();
-    for m in mots(avant) {
-        let m = m.trim_end_matches(['.', ':']);
-        if !restes.contains(m) {
-            if forme_mac(m) {
-                d.ajouter(Sorte::Mac, 1);
-            } else if forme_ipv6(m) {
-                d.ajouter(Sorte::Ip, 1);
-            }
-        }
-    }
 }
 
 /// Une adresse web sans ce qui peut la rattacher à quelqu'un : la requête (« ?session=… ») et le fragment toujours
@@ -444,13 +428,33 @@ pub(crate) fn compte(nom: &str) -> String {
     }
 }
 
-/// Une valeur masquée avec une fonction d'anonymisation donnée, et son décompte : les adresses web d'abord (leur
-/// requête), puis `anonymiser`, puis les chemins personnels qui restent (« ~/Documents/CV-Zoé-Martin.pdf »).
+/// Une valeur masquée avec une fonction d'anonymisation donnée, et son décompte : les faux marqueurs d'abord, puis
+/// `anonymiser`, puis le masquage commun de ce qui sort (`amelioration::texte::masquer` : séries, secrets, jetons,
+/// MAC, IP, chemins, adresses web ; le même que le journal des erreurs), puis les adresses web qu'il n'aurait pas
+/// prises (leur requête) et les chemins personnels qui resteraient (« ~/Documents/CV-Zoé-Martin.pdf »).
+/// Le texte rendu est celui qui est montré puis écrit : rien de brut ne part à côté.
 pub(crate) fn masquer_avec(texte: &str, maisons: &[String], anonymiser: &dyn Fn(&str) -> String) -> (String, Decompte) {
+    masquer_prepare(
+        &crate::amelioration::texte::sans_faux_marqueurs(texte),
+        maisons,
+        anonymiser,
+    )
+}
+
+/// `masquer_avec` sans désarmer les faux repères : pour un texte déjà désarmé où Vanguard a posé les siens.
+pub(crate) fn masquer_prepare(
+    texte: &str,
+    maisons: &[String],
+    anonymiser: &dyn Fn(&str) -> String,
+) -> (String, Decompte) {
     let mut d = Decompte::default();
-    let sans_url = masquer_url(texte);
-    let anonyme = anonymiser(&sans_url);
-    let reduit = reduire_chemins_dans(&anonyme, maisons);
+    // Le masquage commun change déjà une adresse web entière en « <url> » ; `masquer_url` reste derrière pour une
+    // adresse qu'il n'aurait pas reconnue. Devant, il laissait « https://<site>/ », que le masquage commun coupait
+    // en « <url><site>/ ».
+    let anonyme = anonymiser(texte);
+    let masque = crate::amelioration::texte::masquer(&anonyme);
+    let sans_url = masquer_url(&masque);
+    let reduit = reduire_chemins_dans(&sans_url, maisons);
     compter(texte, &reduit, &mut d);
     (reduit, d)
 }
@@ -641,8 +645,10 @@ mod tests {
         );
         assert_eq!(d.0.get(&Sorte::Courriel), Some(&1));
         assert_eq!(d.0.get(&Sorte::Mac), Some(&1));
-        assert_eq!(d.0.get(&Sorte::Site), Some(&1));
-        assert_eq!(d.0.get(&Sorte::Fichier), Some(&1));
+        assert_eq!(d.0.get(&Sorte::Site), Some(&1), "{t}");
+        // Le chemin entier devient « <chemin .pdf> » par le masquage commun : compté comme chemin, une seule fois.
+        assert_eq!(t, "<courriel> <mac> <url> <chemin .pdf>");
+        assert_eq!(d.0.get(&Sorte::Chemin), Some(&1));
         assert_ne!(d.texte(), "rien");
     }
 

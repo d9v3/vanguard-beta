@@ -799,3 +799,34 @@ fn un_non_sur_le_disque_arrete_le_releve() {
     relever_dans(&d, date(2), &sans_mesures(), 2, &mut m, None).unwrap();
     assert!(d.join(nom_jour(date(2))).exists());
 }
+
+/// Le masquage seul, sans borne de 300 octets ni refus : celui du journal des erreurs et du brouillon de signalement.
+/// Valeurs inventées : une MAC sous ses deux écritures, une série, un mot de passe entre apostrophes après `-p`, un
+/// chemin personnel, une IP publique et une IP locale.
+#[test]
+fn masquer_ce_qui_sort() {
+    let brut = "MAC 3c:22:fb:12:34:56 et 3c22.fb12.3456, série 5CG1234XYZ, mysql -p 'Lune2 Verte9' base, \
+                /home/alice/Documents/rapport.pdf, IP 81.12.34.56 et 192.168.1.10";
+    assert_eq!(
+        masquer(brut),
+        "MAC <mac> et <mac>, série <numéro>, mysql -p '<secret>' base, <chemin .pdf>, IP <ip> et <ip>"
+    );
+}
+
+/// Un texte plus long que la borne d'entrée du masqueur est coupé à une espace et le dit, sans rien laisser de brut.
+#[test]
+fn masquer_un_long_texte() {
+    let long = format!("{} série 5CG1234XYZ", "mot ".repeat(3000));
+    let m = masquer(&long);
+    assert!(m.ends_with(" […]") && !m.contains("5CG1234XYZ"), "{}", m.len());
+}
+
+/// Un faux marqueur écrit dans le message (« <ip> » au milieu d'un jeton) est désarmé : sans cela, le masqueur le
+/// prenait pour un des siens et laissait les deux moitiés du jeton.
+#[test]
+fn masquer_un_faux_marqueur() {
+    assert_eq!(
+        masquer("jeton ghp_aB3dE5fG7hJ9kL1m<ip>N3pQ5rS7tU9vW1xY3z5A7b fin"),
+        "jeton <jeton> ip><jeton> fin"
+    );
+}

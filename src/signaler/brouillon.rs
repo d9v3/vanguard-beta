@@ -37,6 +37,7 @@ pub(crate) struct Masque<'a> {
 }
 
 impl Masque<'_> {
+    /// Une valeur brute, venue d'ailleurs : ses faux repères sont désarmés, puis elle est masquée.
     fn masquer(&self, texte: &str, d: &mut Decompte) -> String {
         let borne = crate::modele::evenement::borne(&sans_piege(texte, true), VALEUR_MAX);
         let (t, n) = garde::masquer_avec(&borne, self.maisons, self.anonymiser);
@@ -44,12 +45,28 @@ impl Masque<'_> {
         t
     }
 
+    /// Une valeur déjà désarmée, où Vanguard a pu poser ses propres repères (« `<compte>` », « `<fichier>` ») :
+    /// désarmer encore les casserait.
+    fn masquer_prepare(&self, texte: &str, d: &mut Decompte) -> String {
+        let borne = crate::modele::evenement::borne(&sans_piege(texte, true), VALEUR_MAX);
+        let (t, n) = garde::masquer_prepare(&borne, self.maisons, self.anonymiser);
+        d.fusionner(&n);
+        t
+    }
+
+    /// Un chemin : le masquage commun le remplace en entier par « `<chemin .ext>` ». Une forme qu'il ne reconnaît pas
+    /// comme chemin passe encore par `reduire_chemin` (un nom de fichier personnel garde au plus son extension).
     fn chemin(&self, chemin: &str, d: &mut Decompte) -> String {
-        let reduit = garde::reduire_chemin(chemin, self.maisons);
-        if reduit != chemin {
-            d.ajouter(garde::Sorte::Fichier, 1);
+        let brut = crate::amelioration::texte::sans_faux_marqueurs(chemin);
+        let reduit = garde::reduire_chemin(&brut, self.maisons);
+        let mut entier = Decompte::default();
+        let masque = self.masquer_prepare(&brut, &mut entier);
+        if masque.contains("<chemin") || reduit == brut {
+            d.fusionner(&entier);
+            return masque;
         }
-        self.masquer(&reduit, d)
+        d.ajouter(garde::Sorte::Fichier, 1);
+        self.masquer_prepare(&reduit, d)
     }
 }
 
@@ -181,17 +198,29 @@ fn contenu(e: &Evenement, m: &Masque, d: &mut Decompte, l: Langue) -> String {
                     lignes.push(format!("{} {}", l.t("programme :", "program:"), m.chemin(prog, d)));
                 }
                 if let Some(c) = &p.compte {
-                    let compte_garde = garde::compte(c);
-                    if compte_garde != c.trim() {
+                    let brut = crate::amelioration::texte::sans_faux_marqueurs(c);
+                    let compte_garde = garde::compte(&brut);
+                    if compte_garde != brut.trim() {
                         d.ajouter(garde::Sorte::Compte, 1);
                     }
-                    lignes.push(format!("{} {compte_garde}", l.t("compte :", "account:")));
+                    lignes.push(format!(
+                        "{} {}",
+                        l.t("compte :", "account:"),
+                        m.masquer_prepare(&compte_garde, d)
+                    ));
                 }
             }
             if let Some(f) = &releve.fichier {
                 lignes.push(format!("{} {}", l.t("fichier :", "file:"), m.chemin(&f.chemin, d)));
                 if let Some(h) = &f.sha256 {
-                    lignes.push(format!("SHA-256 {h}"));
+                    // Une empreinte de 64 hexadécimaux reste telle quelle : elle désigne le fichier, pas la personne,
+                    // et le masquage commun la changerait en « <hex> ». Toute autre forme est masquée.
+                    let empreinte = if h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()) {
+                        h.clone()
+                    } else {
+                        m.masquer(h, d)
+                    };
+                    lignes.push(format!("SHA-256 {empreinte}"));
                 }
                 if let Some(t) = f.taille {
                     lignes.push(format!("{t} {}", l.t("octets", "bytes")));
@@ -226,8 +255,9 @@ fn contenu(e: &Evenement, m: &Masque, d: &mut Decompte, l: Langue) -> String {
                     l.t("élément(s) non relevé(s)", "item(s) not recorded")
                 ));
             }
-            // Déjà masqué champ par champ : le masquage général suit quand même (un nom de programme).
-            return m.masquer(&lignes.join("\n"), d);
+            // Chaque valeur libre est déjà masquée champ par champ ; le reste (tailles, nombres, ports) est écrit par
+            // Vanguard. Un second masquage du tout changerait l'empreinte en « <hex> ».
+            return lignes.join("\n");
         }
         Genre::Action {
             quoi,
@@ -582,8 +612,8 @@ pub(crate) fn en_markdown(b: &Brouillon) -> String {
         "{}\n\n{}",
         neutraliser_markdown(&b.masques.texte_dans(l == Langue::En)),
         l.t(
-            "Limites : deux serveurs différents peuvent porter le même numéro 203.0.113.x ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué ; un nom de fichier avec des espaces peut garder sa fin ; les adresses web ont perdu leur requête et leur nom de site. Remettez ce qu'il faut pour reproduire, et relisez : vous seul savez ce qui est personnel.",
-            "Limits: two different servers may carry the same 203.0.113.x number; a name shorter than 3 characters (4 for a network or a device) is never masked; a file name with spaces may keep its end; web addresses lost their query string and site name. Put back what is needed to reproduce, and read it again: only you know what is personal."
+            "Limites : les adresses IP et MAC, les chemins de fichier, les adresses web et les longues suites hexadécimales sont remplacés par un repère (<ip>, <mac>, <chemin .ext>, <url>, <hex>) ; un secret fait seulement de mots courants, ou sans mot-clé devant lui, peut rester ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué. Remettez ce qu'il faut pour reproduire, et relisez : vous seul savez ce qui est personnel.",
+            "Limits: IP and MAC addresses, file paths, web addresses and long hexadecimal strings are replaced by a marker (<ip>, <mac>, <chemin .ext>, <url>, <hex>); a secret made only of common words, or with no keyword before it, may remain; a name shorter than 3 characters (4 for a network or a device) is never masked. Put back what is needed to reproduce, and read it again: only you know what is personal."
         )
     );
     s

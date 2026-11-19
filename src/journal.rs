@@ -9,8 +9,11 @@
 //! GitHub. Avant l'écriture, le dossier personnel devient « ~ » ; le nom du compte, celui de la machine et ce que la
 //! base des appareils garde (réseaux, appareils, surnoms) deviennent « `<utilisateur>` », « `<machine>` », « <réseau> »,
 //! « `<appareil>` » ; les dossiers des autres comptes, les courriels, les numéros de série, les SID de Windows, les noms
-//! du réseau local et du Wi-Fi sont masqués ; une adresse MAC ne garde que le préfixe du fabricant, une adresse IP
-//! publique devient une adresse de documentation.
+//! du réseau local et du Wi-Fi sont masqués (`anonymiser`). Puis le détail et la commande passent par le masquage
+//! commun de ce qui sort (`amelioration::masquer`, le même que la porte MCP et les textes envoyés) : numéros de série,
+//! secrets (`-p`, `--password`, `net use`, clés de Wi-Fi), jetons, adresses MAC et IP (toutes : « `<mac>` »,
+//! « `<ip>` »), chemins absolus et chemins relatifs personnels (« `<chemin .pdf>` »). `anonymiser` seul reste pour les
+//! textes qui ne sortent pas (`ordinateurs`).
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -1002,16 +1005,8 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     let Some(dossier) = essai.as_ref().or_else(|| dossier()) else {
         return;
     };
-    let commande = commande_anonyme(&arguments_lisibles(std::env::args_os().skip(1)));
-    let mut detail = anonymiser(detail.trim());
-    if detail.len() > DETAIL_MAX {
-        let coupe = (0..=DETAIL_MAX)
-            .rev()
-            .find(|&i| detail.is_char_boundary(i))
-            .unwrap_or(0);
-        detail.truncate(coupe);
-        detail.push_str(" […]");
-    }
+    let commande = commande_ecrite(&arguments_lisibles(std::env::args_os().skip(1)));
+    let detail = detail_ecrit(detail);
     #[cfg(test)]
     if let Some(crochet) = AVANT_SYSTEME.get() {
         crochet();
@@ -1021,11 +1016,7 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
         env!("CARGO_PKG_VERSION"),
         systeme(),
         if crate::langue::anglais() { "en" } else { "fr" },
-        &if commande.is_empty() {
-            "menu".into()
-        } else {
-            anonymiser(&commande)
-        },
+        &commande,
         champs,
         &detail,
     );
@@ -1044,6 +1035,51 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
             );
         }
     }
+}
+
+/// La commande écrite au journal : ses valeurs libres déjà réduites par `commande_anonyme`, puis le masquage commun
+/// (un mot de passe passé en argument, une série, une adresse) ; « menu » quand il n'y en a pas.
+fn commande_ecrite(arguments: &[String]) -> String {
+    let commande = commande_anonyme(arguments);
+    if commande.is_empty() {
+        "menu".into()
+    } else {
+        crate::amelioration::masquer(&commande)
+    }
+}
+
+/// Le détail tel qu'il est écrit : coupé à `DETAIL_MAX` octets à une espace (un jeton ou un chemin à cheval sur la
+/// coupe disparaît entier, au lieu de laisser son début échapper aux masques), puis passé par le masquage commun de
+/// ce qui sort (`amelioration::masquer` : noms, séries, secrets, MAC, IP, chemins), le même que la porte et les textes
+/// envoyés. Couper avant borne aussi le coût de l'anonymisation. Les marqueurs peuvent allonger le texte : recoupé
+/// après, ce qui ne laisse jamais qu'un bout de marqueur.
+fn detail_ecrit(brut: &str) -> String {
+    let brut = brut.trim();
+    let mut coupe_brute = false;
+    let brut = if brut.len() > DETAIL_MAX {
+        coupe_brute = true;
+        let mut fin = DETAIL_MAX;
+        while !brut.is_char_boundary(fin) {
+            fin = fin.saturating_sub(1);
+        }
+        let debut = &brut[..fin];
+        debut.rfind(char::is_whitespace).map_or("", |i| &debut[..i])
+    } else {
+        brut
+    };
+    let mut detail = crate::amelioration::masquer(brut);
+    if detail.len() > DETAIL_MAX {
+        let coupe = (0..=DETAIL_MAX)
+            .rev()
+            .find(|&i| detail.is_char_boundary(i))
+            .unwrap_or(0);
+        detail.truncate(coupe);
+        coupe_brute = true;
+    }
+    if coupe_brute {
+        detail.push_str(" […]");
+    }
+    detail
 }
 
 /// Où l'entrée du journal est allée.
@@ -1747,6 +1783,62 @@ mod tests {
         assert!(
             t.contains("3C-22-FB-") && t.contains("192.168.1.1") && t.contains("S-1-5-21-0-0-0-1001"),
             "{t}"
+        );
+    }
+
+    /// Bout en bout : une erreur au détail plein de valeurs inventées est écrite dans le journal masquée par le
+    /// masquage commun ; le fichier, celui qui part en ticket, ne garde aucune valeur brute.
+    #[test]
+    fn journal_ecrit_masque() {
+        let dossier = crate::essais::Jetable::nouveau("journal-masque");
+        DOSSIER_ESSAI.set(Some(dossier.to_path_buf()));
+        erreur(
+            Contexte::Autotest,
+            "échec MAC 3c:22:fb:12:34:56 série 5CG1234XYZ\r\nmysql -p 'Lune2 Verte9' /home/alice/notes.txt 81.12.34.56",
+        );
+        let lu = std::fs::read_to_string(dossier.join(FICHIER)).unwrap_or_default();
+        DOSSIER_ESSAI.set(None);
+        let detail: Vec<&str> = lu.lines().filter(|l| l.starts_with("  ")).collect();
+        assert_eq!(
+            detail,
+            [
+                "  échec MAC <mac> série <numéro>",
+                "  mysql -p '<secret>' <chemin .txt> <ip>"
+            ],
+            "{lu}"
+        );
+    }
+
+    /// Un détail trop long est coupé avant le masquage, et le dit ; rien de brut au-delà.
+    #[test]
+    fn detail_long_coupe_puis_masque() {
+        let brut = format!("{} série 5CG1234XYZ", "mot ".repeat(DETAIL_MAX));
+        let d = detail_ecrit(&brut);
+        assert!(
+            d.len() <= DETAIL_MAX.saturating_add(8) && d.ends_with(" […]"),
+            "{}",
+            d.len()
+        );
+        assert_eq!(
+            detail_ecrit("série 5CG1234XYZ, IP 81.12.34.56"),
+            "série <numéro>, IP <ip>"
+        );
+    }
+
+    /// La commande passe par le masquage commun : une option de mot de passe, une MAC et une IP données en argument
+    /// (valeurs inventées) ne sont pas écrites telles quelles.
+    #[test]
+    fn commande_ecrite_masquee() {
+        let args = |a: &[&str]| a.iter().map(|x| String::from(*x)).collect::<Vec<_>>();
+        assert_eq!(commande_ecrite(&[]), "menu");
+        assert_eq!(
+            commande_ecrite(&args(&[
+                "reseau",
+                "3c:22:fb:12:34:56",
+                "81.12.34.56",
+                "--password=Lune2Verte9"
+            ])),
+            "reseau <mac> <ip> --password=<secret>"
         );
     }
 }
