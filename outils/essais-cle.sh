@@ -1394,7 +1394,7 @@ chmod +x "$BANC/faux-gh/gh"
 journal_force() { # nombre d'erreurs distinctes, chacune deux fois, numéro de la première (0 par défaut)
   local i
   for ((i = ${2:-0}; i < $1 + ${2:-0}; i++)); do
-    for _ in 1 2; do printf '== 2026-10-24 · vanguard 0.86.0 · linux · fr · bilan\n[contexte %s]\nerreur inventée %s\n\n' \
+    for _ in 1 2; do printf '== 2026-10-24 · vanguard 0.97.0 · linux · fr · bilan\n[contexte %s]\nerreur inventée %s\n\n' \
       "$(printf '%s' "$i" | tr 0-9 a-j)" "$(printf '%s' "$i" | tr 0-9 k-t)"; done
   done >"$BANC/retours/a-envoyer-github.txt"
 }
@@ -1438,6 +1438,20 @@ ESSAI_GH_TUER=3 envoyer
 voir "passage arrêté en route (SIGTERM) : les deux tickets faits comptés et notés, le reste attend" \
   eval '[[ $(jq .tickets "$BANC/retours/envois-github.json") == 2 && $(jq length "$BANC/retours/tickets-github.json") == 2 &&
     $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 6 ]]' || montrer "$BANC/sortie"
+# Une entrée d'avant le masquage commun (0.97) ne part pas seule : gardée, dite ; --accord l'envoie.
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"
+{
+  printf '== 2026-10-24 · vanguard 0.96.0 · linux · fr · verifier-fichier CV-Bob-Exemple.pdf\n[x]\n  vieille\n\n'
+  printf '== 2026-10-24 · vanguard 0.97.0 · linux · fr · verifier-fichier <chemin .pdf>\n[y]\n  neuve\n\n'
+} >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "entrée d'avant la 0.97 : gardée sans --accord et dite, la neuve part" \
+  eval '[[ $(tickets) == 1 ]] && dit "$BANC/notifications.log" "sans le masquage commun" &&
+    [[ $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 1 ]] && dit "$BANC/retours/a-envoyer-github.txt" "0.96.0"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+envoyer --accord
+voir "--accord : l'entrée d'avant la 0.97 part" \
+  eval '[[ $(tickets) == 1 && ! -s $BANC/retours/a-envoyer-github.txt ]]' || montrer "$BANC/sortie"
 # Vérifications impossibles : l'état de l'ordinateur n'est pas un défaut du code (filet `attendue`), et une même règle
 # fait un seul ticket par code de raison.
 rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"
@@ -1452,24 +1466,24 @@ envoyer
 voir "0.88, « réservé à l'administrateur » seul : attendu, aucun ticket, retiré de l'envoi et dit" \
   eval '[[ $(tickets) == 0 && ! -s $BANC/retours/a-envoyer-github.txt ]] &&
     dit "$BANC/sortie" "1 vérification(s) impossible(s) attendue(s)"' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
-impossible 0.88.0 "${SECURITE/administrateur :/administrateur ; journal System illisible : accès refusé :}" \
+impossible 0.97.0 "${SECURITE/administrateur :/administrateur ; journal System illisible : accès refusé :}" \
   >"$BANC/retours/a-envoyer-github.txt"
 envoyer
 voir "la même avec « illisible » en plus : une raison n'est pas attendue, un ticket" \
   eval '[[ $(tickets) == 1 ]]' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
 for j in Application System Setup; do
-  impossible 0.92.0 "Journaux d'événements : Non vérifié — journal $j illisible : x : EVT-SRV-001 (service)." \
+  impossible 0.97.0 "Journaux d'événements : Non vérifié — journal $j illisible : x : EVT-SRV-001 (service)." \
     "§ genre=impossible contexte=verification-impossible regle=WIN-JRN-003 code=illisible lieu=-"
 done >"$BANC/retours/a-envoyer-github.txt"
 envoyer
 voir "trois entrées WIN-JRN-003 aux détails différents, même code : un seul ticket qui les réunit" \
   eval '[[ $(tickets) == 1 ]] && dit "$BANC/gh.log" "Vu 3 fois"' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
 {
-  impossible 0.92.0 "Paquets AUR : Impossible de vérifier (réservé à l'administrateur)." \
+  impossible 0.97.0 "Paquets AUR : Impossible de vérifier (réservé à l'administrateur)." \
     "§ genre=impossible contexte=verification-impossible regle=LNX-MAJ-006 code=panique lieu=-"
-  impossible 0.92.0 "SSH : Impossible de vérifier les droits de x (réservés à l'administrateur)." \
+  impossible 0.97.0 "SSH : Impossible de vérifier les droits de x (réservés à l'administrateur)." \
     "§ genre=impossible contexte=verification-impossible regle=WIN-SSH-001 code=droits lieu=-"
-  impossible 0.92.0 "Journaux d'événements : Non vérifié — n'importe quoi : EVT-PRC-001 (x)." \
+  impossible 0.97.0 "Journaux d'événements : Non vérifié — n'importe quoi : EVT-PRC-001 (x)." \
     "§ genre=impossible contexte=verification-impossible regle=WIN-JRN-003 code=audit-coupe lieu=-"
 } >"$BANC/retours/a-envoyer-github.txt"
 envoyer

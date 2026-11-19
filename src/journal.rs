@@ -142,8 +142,15 @@ pub(crate) fn systeme() -> &'static str {
         #[cfg(target_os = "linux")]
         {
             let nom = crate::socle::systeme::nom();
+            // Les chiffres de la version seulement (« 6.17.2 ») : la suite d'un noyau compilé chez soi
+            // (« 6.17.2-zoe-portable ») peut nommer quelqu'un ou sa machine (relecture 0.97, bas).
             let noyau = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
-            format!("{nom} {}", noyau.trim())
+            let noyau: String = noyau
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            format!("{nom} {noyau}")
         }
         #[cfg(windows)]
         {
@@ -908,26 +915,171 @@ fn ipv4_commune(ip: Ipv4Addr) -> bool {
     crate::socle::adresses::portee(ip.into()) != crate::socle::adresses::Portee::Internet || resolveur
 }
 
-/// La commande lancée, pour le journal : le surnom donné par « vanguard nommer » nomme souvent quelqu'un
-/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ». La valeur tapée dans la Console de la fenêtre (« `vanguard
-/// console <commande> -- <valeur>` » : un chemin, un lien, des mots) devient « `<valeur>` ».
+/// La commande lancée, pour le journal, réduite argument par argument AVANT d'être recollée : coller d'abord laissait
+/// au masquage un nom de fichier à espaces (« CV de Zoé Martin.pdf ») ou un lien collé à une option
+/// (« --url=https://…?session=… ») qu'il ne pouvait plus reconnaître entiers (relecture 0.97, hauts a, b et f).
+/// L'arbre de clap sert de liste fermée : une sous-commande, une option connue, une valeur possible, ou un mot de
+/// l'aide de la commande (texte fixe, écrit par l'auteur : « oui », « langue », « --pendant ») restent ; tout le
+/// reste devient `<url>`, `<chemin .ext>`, `<chemin>` ou `<valeur>`, et une option inconnue `<option>`. Après « -- »
+/// (la valeur tapée dans la Console de la fenêtre), il ne reste qu'un seul « `<valeur>` ».
 fn commande_anonyme(args: &[String]) -> String {
-    let mut args = args.to_vec();
-    if args.first().is_some_and(|a| a == "console") {
-        let garde = args.iter().position(|a| a == "--").map_or(2, |k| k.saturating_add(1));
-        if args.len() > garde {
-            args.truncate(garde);
-            args.push("<valeur>".into());
+    use clap::CommandFactory;
+    let racine = crate::demarrage::arguments::Args::command();
+    let mut cmd = &racine;
+    let mut mots = mots_de_l_aide(cmd);
+    let mut sortie: Vec<String> = Vec::new();
+    // Les valeurs encore attendues par l'option précédente (« --pendant 1h », « --choisir ID VALEUR »).
+    let mut attendues: Vec<&clap::Arg> = Vec::new();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        i = i.saturating_add(1);
+        if let Some(option) = attendues.pop() {
+            sortie.push(valeur_reduite(a, Some(option), &mots));
+            continue;
         }
-        return args.join(" ");
+        if a == "--" {
+            sortie.push("--".into());
+            if args.len() > i {
+                sortie.push("<valeur>".into());
+            }
+            break;
+        }
+        if let Some(reste) = a.strip_prefix("--") {
+            let (nom, valeur) = reste.split_once('=').map_or((reste, None), |(n, v)| (n, Some(v)));
+            match option_longue(cmd, &racine, nom) {
+                Some(option) => {
+                    if let Some(v) = valeur {
+                        sortie.push(format!("--{nom}={}", valeur_reduite(v, Some(option), &mots)));
+                    } else {
+                        attendues = vec![option; valeurs_attendues(option)];
+                        sortie.push(format!("--{nom}"));
+                    }
+                }
+                // « --help » et « --version », que clap n'ajoute qu'à la construction, ou un mot de l'aide.
+                None if nom == "help" || nom == "version" || mot_ferme(nom, &mots) => sortie.push(match valeur {
+                    Some(v) => format!("--{nom}={}", valeur_reduite(v, None, &mots)),
+                    None => format!("--{nom}"),
+                }),
+                None => sortie.push("<option>".into()),
+            }
+            continue;
+        }
+        let mut lettres = a.chars();
+        if lettres.next() == Some('-')
+            && let Some(lettre) = lettres.next()
+            && lettre.is_ascii_alphabetic()
+        {
+            let reste = lettres.as_str();
+            match option_courte(cmd, lettre) {
+                Some(option) if reste.is_empty() => {
+                    attendues = vec![option; valeurs_attendues(option)];
+                    sortie.push(format!("-{lettre}"));
+                }
+                Some(option) if option.get_action().takes_values() => {
+                    sortie.push(format!("-{lettre}{}", valeur_reduite(reste, Some(option), &mots)));
+                }
+                _ => sortie.push("<option>".into()),
+            }
+            continue;
+        }
+        if let Some(sous) = cmd.find_subcommand(a) {
+            cmd = sous;
+            mots = mots_de_l_aide(cmd);
+            sortie.push(a.clone());
+            continue;
+        }
+        let position = cmd
+            .get_positionals()
+            .find(|p| p.get_possible_values().iter().any(|v| v.matches(a, false)));
+        sortie.push(valeur_reduite(a, position, &mots));
     }
-    if let Some(k) = args.iter().position(|a| a == "nommer" || a == "name")
-        && args.len() > k.saturating_add(2)
-    {
-        args.truncate(k.saturating_add(2));
-        args.push("<surnom>".into());
+    sortie.join(" ")
+}
+
+/// Les mots de l'aide d'une commande et de ses arguments : la liste fermée des mots gardés tels quels. Seuls les mots
+/// faits de minuscules, de chiffres, de points et de traits, avec une lettre, y entrent.
+fn mots_de_l_aide(cmd: &clap::Command) -> std::collections::HashSet<String> {
+    let mut textes: Vec<String> = Vec::new();
+    textes.extend(cmd.get_about().map(ToString::to_string));
+    textes.extend(cmd.get_long_about().map(ToString::to_string));
+    for arg in cmd.get_arguments() {
+        textes.extend(arg.get_help().map(ToString::to_string));
+        textes.extend(arg.get_long_help().map(ToString::to_string));
     }
-    args.join(" ")
+    textes
+        .iter()
+        .flat_map(|t| t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.')))
+        .map(|m| m.trim_matches(|c| c == '-' || c == '.').to_lowercase())
+        .filter(|m| m.chars().any(|c| c.is_ascii_alphabetic()))
+        .collect()
+}
+
+/// Un mot de la liste fermée, comparé sans ses traits de tête (« --pendant » est le mot « pendant »).
+fn mot_ferme(mot: &str, mots: &std::collections::HashSet<String>) -> bool {
+    let mot = mot.trim_start_matches('-');
+    !mot.is_empty()
+        && mot
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
+        && mots.contains(mot)
+}
+
+/// L'option longue `nom` (ou un de ses alias) de la commande, sinon de la racine.
+fn option_longue<'a>(cmd: &'a clap::Command, racine: &'a clap::Command, nom: &str) -> Option<&'a clap::Arg> {
+    [cmd, racine].into_iter().find_map(|c| {
+        c.get_arguments()
+            .find(|arg| arg.get_long() == Some(nom) || arg.get_all_aliases().is_some_and(|alias| alias.contains(&nom)))
+    })
+}
+
+/// L'option courte « -lettre » de la commande (« -j 512 »).
+fn option_courte(cmd: &clap::Command, lettre: char) -> Option<&clap::Arg> {
+    cmd.get_arguments().find(|arg| arg.get_short() == Some(lettre))
+}
+
+/// Combien de valeurs suivent l'option : 0 pour un drapeau, son nombre fixe (« --choisir ID VALEUR »), sinon 1.
+fn valeurs_attendues(option: &clap::Arg) -> usize {
+    if !option.get_action().takes_values() {
+        return 0;
+    }
+    option.get_num_args().map_or(1, |n| {
+        if n.max_values() == usize::MAX {
+            1
+        } else {
+            n.max_values()
+        }
+    })
+}
+
+/// Une valeur de la commande : gardée si elle est dans la liste fermée (valeur possible de clap, mot de l'aide, petit
+/// nombre) ; sinon réduite à sa sorte, sans rien de ce qu'elle contenait.
+fn valeur_reduite(valeur: &str, option: Option<&clap::Arg>, mots: &std::collections::HashSet<String>) -> String {
+    let possible = option.is_some_and(|o| o.get_possible_values().iter().any(|v| v.matches(valeur, false)));
+    let petit_nombre = !valeur.is_empty() && valeur.len() <= 6 && valeur.bytes().all(|b| b.is_ascii_digit());
+    if possible || petit_nombre || mot_ferme(valeur, mots) && !valeur.starts_with('-') {
+        return valeur.to_string();
+    }
+    if valeur.contains("://") || valeur.to_lowercase().starts_with("www.") {
+        return "<url>".into();
+    }
+    // Une adresse, un réseau ou une plage (« 10.0.0.0/24 ») n'est pas un chemin.
+    if valeur.bytes().all(|b| b.is_ascii_hexdigit() || b".:/-".contains(&b)) {
+        return "<valeur>".into();
+    }
+    let extension = valeur
+        .rsplit_once('.')
+        .filter(|(nom, _)| !nom.is_empty())
+        .map(|(_, ext)| ext)
+        .filter(|ext| {
+            (1..=10).contains(&ext.chars().count())
+                && ext.chars().all(char::is_alphanumeric)
+                && ext.chars().any(char::is_alphabetic)
+        });
+    match extension {
+        Some(ext) => format!("<chemin .{}>", ext.to_lowercase()),
+        None if valeur.contains(['/', '\\']) => "<chemin>".into(),
+        None => "<valeur>".into(),
+    }
 }
 
 /// Les arguments en texte, les octets qui ne sont pas de l'UTF-8 remplacés par « � » : `std::env::args()` panique
@@ -983,6 +1135,9 @@ pub fn erreur(contexte: Contexte, detail: &str) {
     noter(&Champs::new(Genre::Erreur, contexte), detail);
 }
 
+/// La commande écrite au journal, calculée une fois : les arguments ne changent pas, et l'arbre de clap coûte à bâtir.
+static COMMANDE: OnceLock<String> = OnceLock::new();
+
 /// Ajoute une entrée au journal : l'en-tête, le libellé `[contexte]` d'avant, le détail anonymisé (pour l'auteur et
 /// les tickets), puis la ligne de champs (`compte_rendu::journal`), seule lue par le compte rendu pour Claude. La ligne
 /// de champs vient après le détail : la signature des tickets (`outils/journal-vers-github.py`) prend le libellé et la
@@ -1005,7 +1160,7 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     let Some(dossier) = essai.as_ref().or_else(|| dossier()) else {
         return;
     };
-    let commande = commande_ecrite(&arguments_lisibles(std::env::args_os().skip(1)));
+    let commande = COMMANDE.get_or_init(|| commande_ecrite(&arguments_lisibles(std::env::args_os().skip(1))));
     let detail = detail_ecrit(detail);
     #[cfg(test)]
     if let Some(crochet) = AVANT_SYSTEME.get() {
@@ -1016,7 +1171,7 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
         env!("CARGO_PKG_VERSION"),
         systeme(),
         if crate::langue::anglais() { "en" } else { "fr" },
-        &commande,
+        commande,
         champs,
         &detail,
     );
@@ -1037,15 +1192,11 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
     }
 }
 
-/// La commande écrite au journal : ses valeurs libres déjà réduites par `commande_anonyme`, puis le masquage commun
-/// (un mot de passe passé en argument, une série, une adresse) ; « menu » quand il n'y en a pas.
+/// La commande écrite au journal, réduite argument par argument (`commande_anonyme`) : il n'en reste que des mots de
+/// la liste fermée et des marqueurs, que le masquage commun n'a plus rien à prendre ; « menu » quand il n'y en a pas.
 fn commande_ecrite(arguments: &[String]) -> String {
     let commande = commande_anonyme(arguments);
-    if commande.is_empty() {
-        "menu".into()
-    } else {
-        crate::amelioration::masquer(&commande)
-    }
+    if commande.is_empty() { "menu".into() } else { commande }
 }
 
 /// Le détail tel qu'il est écrit : coupé à `DETAIL_MAX` octets à une espace (un jeton ou un chemin à cheval sur la
@@ -1721,12 +1872,11 @@ mod tests {
         let args = |a: &str| a.split(' ').map(String::from).collect::<Vec<_>>();
         assert_eq!(
             commande_anonyme(&args("nommer 192.168.1.20 tablette de Zoé")),
-            "nommer 192.168.1.20 <surnom>"
+            "nommer <valeur> <valeur> de <valeur>"
         );
-        assert_eq!(commande_anonyme(&args("nommer 192.168.1.20")), "nommer 192.168.1.20");
         assert_eq!(
-            commande_anonyme(&args("reseau 192.168.1.0/24")),
-            "reseau 192.168.1.0/24"
+            commande_anonyme(&args("appareils 192.168.1.0/24")),
+            "appareils <valeur>"
         );
     }
 
@@ -1756,10 +1906,47 @@ mod tests {
             "console lien -- <valeur>"
         );
         assert_eq!(
-            commande_anonyme(&args(&["console", "chercher", "mot de passe"])),
+            commande_anonyme(&args(&["console", "chercher", "Zoé Martin"])),
             "console chercher <valeur>"
         );
         assert_eq!(commande_anonyme(&args(&["console", "lien", "--"])), "console lien --");
+    }
+
+    /// Chaque argument est réduit avant d'être recollé (relecture 0.97, hauts a, b et f) : un nom de fichier nu, même
+    /// à espaces, un lien collé à une option, des mots libres et une option inconnue ne laissent que leur sorte ;
+    /// les sous-commandes, options connues et mots de l'aide restent (valeurs inventées).
+    #[test]
+    fn commande_ecrite_masquee() {
+        let args = |a: &[&str]| a.iter().map(|x| String::from(*x)).collect::<Vec<_>>();
+        assert_eq!(commande_ecrite(&[]), "menu");
+        assert_eq!(
+            commande_ecrite(&args(&["verifier-fichier", "CV de Zoé Martin.PDF"])),
+            "verifier-fichier <chemin .pdf>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["check-file", "CV-Zoe-Martin.pdf"])),
+            "check-file <chemin .pdf>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["verifier-fichier", "../Zoé Martin/notes"])),
+            "verifier-fichier <chemin>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["chercher", "imprimante", "Zoé", "Martin"])),
+            "chercher <valeur> <valeur> <valeur>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["bilan", "--html", "--url=https://exemple.test/a?session=abc"])),
+            "bilan --html <option>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["bilan", "--motdepasse", "Lune2Verte9"])),
+            "bilan <option> <valeur>"
+        );
+        assert_eq!(
+            commande_ecrite(&args(&["protection", "non", "--pendant", "1h"])),
+            "protection non --pendant 1h"
+        );
     }
 
     #[cfg(unix)]
@@ -1822,23 +2009,6 @@ mod tests {
         assert_eq!(
             detail_ecrit("série 5CG1234XYZ, IP 81.12.34.56"),
             "série <numéro>, IP <ip>"
-        );
-    }
-
-    /// La commande passe par le masquage commun : une option de mot de passe, une MAC et une IP données en argument
-    /// (valeurs inventées) ne sont pas écrites telles quelles.
-    #[test]
-    fn commande_ecrite_masquee() {
-        let args = |a: &[&str]| a.iter().map(|x| String::from(*x)).collect::<Vec<_>>();
-        assert_eq!(commande_ecrite(&[]), "menu");
-        assert_eq!(
-            commande_ecrite(&args(&[
-                "reseau",
-                "3c:22:fb:12:34:56",
-                "81.12.34.56",
-                "--password=Lune2Verte9"
-            ])),
-            "reseau <mac> <ip> --password=<secret>"
         );
     }
 }

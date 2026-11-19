@@ -24,9 +24,11 @@ commentaire qui les réunit (« vu N fois, systèmes…, versions… »), coupé
 
 Les entrées envoyées sont retirées du fichier ; celles qui n'ont pas pu partir (pas d'Internet) y restent pour le
 déploiement suivant. Le journal vient aussi des ordinateurs des autres (la clé l'écrit partout où elle passe) : Vanguard
-l'anonymise en l'écrivant (src/journal.rs), puis, avant l'envoi, deux filets (outils/confidentialite.py) : ce qu'il
+l'anonymise en l'écrivant (src/journal.rs, masquage commun depuis la 0.97), puis, avant l'envoi, deux filets (outils/confidentialite.py) : ce qu'il
 aurait laissé passer de cet ordinateur-ci, et ce qui pourrait nommer n'importe qui (comptes, courriels, SID, numéros
-de série, noms d'appareils et du Wi-Fi ; adresses MAC et IP remplacées, préfixe du fabricant gardé).
+de série, noms d'appareils et du Wi-Fi ; adresses MAC et IP remplacées, préfixe du fabricant gardé). Une entrée
+écrite avant la 0.97 n'a pas eu le masquage commun (secrets, chemins, noms de fichiers, adresses web) : elle attend
+l'œil de l'auteur (--accord), gardée dans le fichier, et c'est dit (`avant_masque_commun`).
 """
 
 import datetime
@@ -67,6 +69,8 @@ CORPS_MAX = 60_000
 PLAFOND_PASSAGE = {"tickets": 5, "commentaires": 20}
 PLAFOND_JOUR = {"tickets": 10, "commentaires": 40}
 SIGNATURES_MAX = 50
+# La première version qui écrit le journal par le masquage commun de src/amelioration/texte.rs.
+MASQUE_COMMUN_DEPUIS = (0, 97)
 ACCORD = 10
 COMPTEURS = "envois-github.json"
 # Un identifiant de règle ou de lecture (« LNX-PFE-001 », « AUT-LNX-002 ») : gardé tel quel dans la signature.
@@ -119,6 +123,13 @@ RAISONS_ATTENDUES = [re.compile(m) for m in (
 def entrees(texte):
     """Une entrée commence par « == date · vanguard x · système · langue · commande », puis « [contexte] »."""
     return [b.strip("\n") for b in re.split(r"(?m)^(?=== )", texte) if b.startswith("== ")]
+
+
+def avant_masque_commun(entree):
+    """Vrai pour une entrée d'une version d'avant MASQUE_COMMUN_DEPUIS, ou de version illisible (forgée) : son détail
+    et sa commande n'ont pas eu le masquage commun, et peuvent nommer un fichier, une adresse web ou un secret."""
+    m = re.match(r"(\d+)\.(\d+)\.", en_tete(entree)[0])
+    return not m or (int(m[1]), int(m[2])) < MASQUE_COMMUN_DEPUIS
 
 
 def champs(entree):
@@ -303,6 +314,17 @@ def main():
               "gardée(s) dans journal-erreurs.txt, pas envoyée(s).")
     if not liste:
         return
+    # Une entrée d'avant le masquage commun ne part pas seule : elle reste dans le fichier, l'auteur la regarde, puis
+    # l'envoie avec --accord (relecture 0.97).
+    anciennes = [] if accord else [e for e in liste if avant_masque_commun(e)]
+    if anciennes:
+        liste = [e for e in liste if not avant_masque_commun(e)]
+        dire("Vanguard : entrées d'une version d'avant à regarder",
+             f"{len(anciennes)} entrée(s) écrite(s) avant la {'.'.join(map(str, MASQUE_COMMUN_DEPUIS))}, sans le "
+             f"masquage commun : gardée(s), pas envoyée(s). À regarder : {chemin} ; pour les envoyer quand même : "
+             f"python3 -I outils/journal-vers-github.py --accord {chemin}")
+    if not liste:
+        return
     gh("label", "create", ETIQUETTE, "--color", "B60205",
        "--description", "Erreur rapportée par le journal de Vanguard", "--force")
     gh("label", "create", ETIQUETTE_AUTOTEST, "--color", "5319E7",
@@ -359,7 +381,7 @@ def main():
         les compteurs du jour : après chaque envoi et quand le passage est arrêté (SIGTERM du timeout de deployer.sh,
         panne), pour que le suivant ne refasse ni ne recompte rien."""
         reste = restantes + [e for s, (_, _, g) in groupes.items() if s not in faites for e in g]
-        remplacer(chemin, "".join(x + "\n\n" for x in reste))
+        remplacer(chemin, "".join(x + "\n\n" for x in anciennes + reste))
         remplacer(notes, json.dumps(ouverts, indent=1))
         remplacer(compteurs_chemin, json.dumps(compteurs))
         return reste

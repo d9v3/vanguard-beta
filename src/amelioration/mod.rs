@@ -994,7 +994,11 @@ pub(crate) fn texte(brut: &str) -> Result<TexteNettoye, Rejet> {
 /// borne de 300 octets ni les refus (`texte::masquer`). Seuls les faux marqueurs perdent leur chevron, pas tous les
 /// chevrons : une preuve de concept en HTML reste lisible.
 pub(crate) fn masquer(brut: &str) -> String {
-    texte::masquer(&crate::journal::anonymiser(&texte::sans_faux_marqueurs(brut)))
+    // Masqué avant `anonymiser` puis encore après : `anonymiser` pose ses marqueurs au début d'un secret
+    // (« -u alice:Lune2Verte9 » → « -u <utilisateur>:Lune2Verte9 »), et le masquage ne le voyait plus (relecture
+    // 0.97, haut e) ; après, pour ce qu'`anonymiser` aurait découvert. Les adresses web d'abord, entières.
+    let premier = texte::masquer(&texte::sans_urls(&texte::sans_faux_marqueurs(brut)));
+    texte::masquer(&crate::journal::anonymiser(&premier))
 }
 
 /// Le nom d'un logiciel, d'un service ou d'un pilote, nettoyé de la même façon.

@@ -401,6 +401,34 @@ pub(crate) fn masquer(brut: &str) -> String {
     sortie
 }
 
+/// Toute adresse « http(s):// » devient « `<url>` », où qu'elle soit, même collée à ce qui la précède
+/// (« --url=https://… », « voir:https://… », « xhttps://… ») : le masquage, qui veut une frontière de mot devant,
+/// laissait sinon « https:<chemin>?session=… », la requête lisible (relecture 0.97, haut f). Elle va jusqu'à une
+/// espace ou un guillemet ; la ponctuation qui la ferme (« . », « , », « ) ») reste derrière.
+pub(crate) fn sans_urls(texte: &str) -> String {
+    let bas = texte.to_ascii_lowercase();
+    let mut sortie = String::with_capacity(texte.len());
+    let mut pos = 0;
+    while let Some(i) = [bas[pos..].find("https://"), bas[pos..].find("http://")]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|i| pos.saturating_add(i))
+    {
+        sortie.push_str(&texte[pos..i]);
+        let url = &texte[i..];
+        let fin = url
+            .find(|c: char| c.is_whitespace() || "\"'<>`«»".contains(c))
+            .unwrap_or(url.len());
+        let corps = url[..fin].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!']);
+        sortie.push_str("<url>");
+        sortie.push_str(&url[corps.len()..fin]);
+        pos = i.saturating_add(fin);
+    }
+    sortie.push_str(&texte[pos..]);
+    sortie
+}
+
 /// Le brut sans faux marqueurs : un « `<ip>` » ou un « `<chemin .pdf>` » écrit dans le texte (pleine chasse et
 /// invisibles compris) perd son chevron ouvrant. Sans cela, les masques le sauteraient comme un marqueur déjà posé,
 /// et il pourrait couper un jeton en deux (« ghp_`<ip>`… »). Les autres chevrons restent (« a < b », une preuve de
@@ -1534,6 +1562,14 @@ const DOSSIERS_PERSONNELS: [&str; 17] = [
     "appdata",
 ];
 
+/// Les extensions qui font d'un mot seul un nom de fichier à masquer (`chemin_relatif`).
+/// Les programmes (« net.exe », « setup.msi ») n'y sont pas : leur nom est celui d'un outil, rarement d'une personne.
+const EXTENSIONS_NUES: [&str; 38] = [
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp", "eml", "msg", "vcf",
+    "ics", "jpg", "jpeg", "png", "gif", "heic", "webp", "bmp", "tif", "tiff", "mp3", "mp4", "mov", "mkv", "avi", "wav",
+    "zip", "7z", "rar", "iso", "kdbx", "epub",
+];
+
 /// Un chemin relatif : des éléments séparés par « / » ou « \ » (« Documents/impots-2026.pdf », « Bureau\paie.xlsx »,
 /// « .ssh/id_ed25519 », « ../Marie Tremblay/notes.txt »). Rend sa fin et l'extension de son dernier élément. Les
 /// éléments du milieu peuvent porter des espaces (« Bureau/Marie Tremblay/paie.xlsx »), pas le premier ni le
@@ -1592,9 +1628,7 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
         break;
     }
     let dernier = *elements.last()?;
-    if elements.len() < 2 {
-        return None;
-    }
+    let seul = elements.len() < 2;
     // La ponctuation de fin de phrase (« . », « ) », « ! »…) ne fait pas partie du dernier élément ; « .. » oui.
     let mut fin = dernier.1;
     while fin > dernier.0
@@ -1614,6 +1648,15 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, Option<String>)> {
     let a_lettre = extension
         .as_ref()
         .is_some_and(|e| e.chars().any(|y| y.is_ascii_alphabetic()));
+    // Un nom de fichier nu (« CV-Zoe-Martin.pdf ») nomme souvent quelqu'un : pris seulement si son extension est d'un
+    // document, d'une image, d'une archive ou d'un programme (liste fermée), et son nom porte une lettre ; « main.rs »,
+    // « exemple.com » ou « v1.2 » restent (relecture 0.97, haut b).
+    if seul {
+        let nom_porte_lettre = nom.iter().take_while(|y| **y != '.').any(|y| y.is_alphabetic());
+        return extension
+            .filter(|e| nom_porte_lettre && EXTENSIONS_NUES.contains(&e.as_str()))
+            .map(|e| (fin, Some(e)));
+    }
     let textes: Vec<String> = elements.iter().map(|(a, b)| chaine(c, *a, *b).to_lowercase()).collect();
     let point = |e: &str| e == "." || e == "..";
     let cache = textes.iter().any(|e| e.starts_with('.') && !point(e));

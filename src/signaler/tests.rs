@@ -126,6 +126,7 @@ fn liste_fermee_des_appels() {
         "crate::journal::anonymiser",
         "crate::amelioration::texte::masquer",
         "crate::amelioration::texte::sans_faux_marqueurs",
+        "crate::amelioration::texte::sans_urls",
         "crate::journal::noms_a_retirer",
         "crate::journal::systeme",
         "crate::protection::kev::catalogue_selon",
@@ -912,4 +913,38 @@ fn brouillon_masque_par_le_masquage_commun() {
         ligne, "MAC <mac> série <numéro> mysql -p '<secret>' <chemin .txt> <ip>",
         "{md}"
     );
+}
+
+/// Relecture 0.97, haut c : un champ fichier ou programme est remplacé en entier ; une apostrophe, une virgule ou une
+/// espace dans le nom ne laisse rien passer (valeurs inventées).
+#[test]
+fn chemin_a_apostrophe_et_espaces_remplace_en_entier() {
+    let fil = vec![preuve(
+        "/home/alice/Documents/L'avis de Zoé Martin.PDF",
+        r"C:\Users\alice\Zoé Martin, 2026.exe",
+        "root",
+        "x",
+    )];
+    let md = markdown(&incident(fil), &reponses(), Some(Lecture::Intact), Programme::Mozilla);
+    for absent in ["avis", "Zoé", "Martin", "2026.exe"] {
+        assert!(!md.contains(absent), "{absent} dans :\n{md}");
+    }
+    for present in ["file: <chemin .pdf>", "program: <chemin .exe>"] {
+        assert!(md.contains(present), "{present} manque :\n{md}");
+    }
+}
+
+/// Relecture 0.97 : une valeur trop longue est coupée à une espace avant le masquage ; un jeton à cheval sur la
+/// borne disparaît entier au lieu de laisser son début, trop court pour être reconnu (valeur inventée).
+#[test]
+fn coupe_a_une_espace_avant_le_masquage() {
+    let texte = format!("{}ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A7b fin", "ab ".repeat(1325));
+    let md = markdown(
+        &incident(vec![une_alerte("L", &texte)]),
+        &reponses(),
+        Some(Lecture::Intact),
+        Programme::Mozilla,
+    );
+    assert!(!md.contains("aB3dE5"), "{md}");
+    assert!(md.contains("ab ab…"), "{md}");
 }

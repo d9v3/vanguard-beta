@@ -2,8 +2,9 @@
 //! éditeur : `reduire_chemin` (un nom de fichier personnel comme « CV-Prénom-Nom.pdf » porte un nom complet que
 //! `anonymiser` ne connaît pas) et `compte` (le compte d'un proche sur le même ordinateur passait en clair).
 //! 2. Masquer chaque valeur avec `journal::anonymiser`, puis avec le masquage commun de ce qui sort
-//! (`amelioration::texte::masquer` : séries, secrets, jetons, MAC, IP, chemins, adresses web), puis les adresses web
-//! qui resteraient avec `masquer_url` (leur requête porte souvent un jeton de session). 3. Contrôle final : chercher
+//! (`amelioration::texte::masquer` : séries, secrets, jetons, MAC, IP, chemins), avant et après `anonymiser` ; les
+//! adresses web entières sont retirées avant tout (`texte::sans_urls` : leur requête porte souvent un jeton de
+//! session). 3. Contrôle final : chercher
 //! dans le texte entier chaque nom connu ; s'il en reste un, rien n'est écrit.
 //!
 //! Le contrôle final n'est pas une couche indépendante : il relit la même liste que celle qui a servi au masquage. Il
@@ -108,7 +109,7 @@ impl Decompte {
     }
 }
 
-/// Les remplaçants posés par `anonymiser`, `masquer_url` et le masquage commun (`amelioration::texte::masquer`), et
+/// Les remplaçants posés par `anonymiser`, `reduire_chemin` et le masquage commun (`amelioration::texte::masquer`), et
 /// la sorte qu'ils comptent. Toute adresse MAC ou IP finit en « `<mac>` » ou « `<ip>` » : comptées par leur marqueur.
 const REMPLACANTS: &[(&str, Sorte)] = &[
     ("<utilisateur>", Sorte::Personne),
@@ -149,58 +150,6 @@ fn compter(avant: &str, apres: &str, d: &mut Decompte) {
         .unwrap_or(u32::MAX)
     };
     d.ajouter(Sorte::Dossier, tildes(apres).saturating_sub(tildes(avant)));
-}
-
-/// Une adresse web sans ce qui peut la rattacher à quelqu'un : la requête (« ?session=… ») et le fragment toujours
-/// retirés (jetons de session), le nom et le mot de passe (« alice:secret@ ») aussi, et l'hôte remplacé par
-/// « `<site>` » quand c'est un nom : un site visité dit qui on est. Une adresse IP reste pour `anonymiser`, qui masque
-/// les publiques et garde les locales (les mêmes chez tout le monde). La personne remet ce qu'il faut pour
-/// reproduire dans le fichier, après l'avoir vu.
-pub(crate) fn masquer_url(texte: &str) -> String {
-    let mut sortie = String::with_capacity(texte.len());
-    let mut reste = texte;
-    while let Some(i) = debut_url(reste) {
-        sortie.push_str(&reste[..i]);
-        let url = &reste[i..];
-        let fin = url
-            .find(|c: char| c.is_whitespace() || "\"'<>`«»".contains(c))
-            .unwrap_or(url.len());
-        sortie.push_str(&url_reduite(&url[..fin]));
-        reste = &url[fin..];
-    }
-    sortie.push_str(reste);
-    sortie
-}
-
-/// La position de la prochaine adresse « http(s):// », à la casse près.
-fn debut_url(texte: &str) -> Option<usize> {
-    let bas = texte.to_ascii_lowercase();
-    [bas.find("https://"), bas.find("http://")].into_iter().flatten().min()
-}
-
-fn url_reduite(url: &str) -> String {
-    let Some((schema, apres)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    let sans_suite = apres.split(['?', '#']).next().unwrap_or_default();
-    let (autorite, chemin) = match sans_suite.find('/') {
-        Some(k) => sans_suite.split_at(k),
-        None => (sans_suite, ""),
-    };
-    let hote_port = autorite.rsplit('@').next().unwrap_or_default();
-    let (hote, port) = match hote_port.rsplit_once(':') {
-        Some((h, p)) if !h.contains(']') && p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
-        _ => (hote_port, None),
-    };
-    let est_ip = hote.starts_with('[') || hote.chars().all(|c| c.is_ascii_digit() || c == '.');
-    let local = hote.eq_ignore_ascii_case("localhost");
-    let hote = if est_ip || local || hote.is_empty() {
-        hote.to_string()
-    } else {
-        "<site>".to_string()
-    };
-    let port = port.map_or_default(|p| format!(":{p}"));
-    format!("{schema}://{hote}{port}{chemin}")
 }
 
 /// Le dossier personnel au début d'un chemin (« /home/alice/ », « C:\Users\Zoé\ », « ~/ »), et sa longueur.
@@ -247,19 +196,30 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
 
 /// Un chemin de fichier tel qu'il entre dans le brouillon : les dossiers du système restent (`/usr/bin/curl`,
 /// `C:\Windows\System32\…`, qui aident à reproduire) ; sous un dossier personnel, ni les dossiers ni le nom ne
-/// restent (« `~/…/<fichier>.pdf` »), seulement l'extension, qui dit la sorte de fichier.
+/// restent (« `<chemin .pdf>` »), seulement l'extension, qui dit la sorte de fichier.
 pub(crate) fn reduire_chemin(chemin: &str, maisons: &[String]) -> String {
     if dossier_personnel(chemin, maisons).is_none() {
         return chemin.to_string();
     }
+    marqueur_de_chemin(chemin)
+}
+
+/// Le marqueur du masquage commun pour un chemin entier : « `<chemin .pdf>` », ou « `<chemin>` » sans extension
+/// (1 à 10 lettres et chiffres ASCII, dont une lettre : « Rapport.Zoé » ne laisse pas « zoé »). Le même que pose `amelioration::texte::masquer`, qu'il reconnaît
+/// et laisse tel quel.
+pub(crate) fn marqueur_de_chemin(chemin: &str) -> String {
     let nom = chemin.rsplit(['/', '\\']).next().unwrap_or_default();
-    let extension = nom
-        .rsplit_once('.')
+    nom.rsplit_once('.')
         .map(|(_, e)| e)
-        .filter(|e| !e.is_empty() && e.len() <= 8 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-        .map_or_default(|e| format!(".{}", e.to_ascii_lowercase()));
-    let separateur = if chemin.contains('\\') { '\\' } else { '/' };
-    format!("~{separateur}…{separateur}<fichier>{extension}")
+        .filter(|e| {
+            (1..=10).contains(&e.chars().count())
+                && e.chars().all(|c| c.is_ascii_alphanumeric())
+                && e.chars().any(|c| c.is_ascii_alphabetic())
+        })
+        .map_or_else(
+            || "<chemin>".to_string(),
+            |e| format!("<chemin .{}>", e.to_ascii_lowercase()),
+        )
 }
 
 /// La ponctuation qui ferme un chemin cité (« (~/a/x.exe) », « ~/a/x.exe. »).
@@ -421,7 +381,13 @@ pub(crate) fn compte(nom: &str) -> String {
         "trustedinstaller",
     ];
     let bas = nom.trim().to_lowercase();
-    if SYSTEME.contains(&bas.as_str()) || bas.starts_with("nt service\\") || bas.starts_with('_') {
+    // Un compte de service (« NT SERVICE\\WinDefend », « _apt ») : seulement un nom d'un mot, sans espace ni
+    // accent ; « NT SERVICE\\Zoé Martin » ou « _Zoé Martin » nomment quelqu'un (relecture 0.97, bas).
+    let service =
+        |reste: &str| !reste.is_empty() && reste.chars().all(|c| c.is_ascii_alphanumeric() || "_.-$".contains(c));
+    let de_service =
+        bas.strip_prefix("nt service\\").is_some_and(service) || bas.strip_prefix('_').is_some_and(service);
+    if SYSTEME.contains(&bas.as_str()) || de_service {
         nom.trim().to_string()
     } else {
         "<compte>".to_string()
@@ -448,15 +414,16 @@ pub(crate) fn masquer_prepare(
     anonymiser: &dyn Fn(&str) -> String,
 ) -> (String, Decompte) {
     let mut d = Decompte::default();
-    // Le masquage commun change déjà une adresse web entière en « <url> » ; `masquer_url` reste derrière pour une
-    // adresse qu'il n'aurait pas reconnue. Devant, il laissait « https://<site>/ », que le masquage commun coupait
-    // en « <url><site>/ ».
-    let anonyme = anonymiser(texte);
-    let masque = crate::amelioration::texte::masquer(&anonyme);
-    let sans_url = masquer_url(&masque);
-    let reduit = reduire_chemins_dans(&sans_url, maisons);
-    compter(texte, &reduit, &mut d);
-    (reduit, d)
+    // L'ordre compte (relecture 0.97, hauts d, e et f) : les adresses web entières d'abord, même collées ; puis les
+    // chemins personnels, avant le masquage, qui prenait sinon la fin d'un chemin coupé à gauche
+    // (« …ob Exemple\Downloads\x.exe ») et laissait son début ; puis le masquage avant `anonymiser`, qui pose ses
+    // marqueurs au début d'un secret, et encore après ; enfin les chemins, pour ce qu'`anonymiser` aurait découvert.
+    let reduit = reduire_chemins_dans(&crate::amelioration::texte::sans_urls(texte), maisons);
+    let premier = crate::amelioration::texte::masquer(&reduit);
+    let masque = crate::amelioration::texte::masquer(&anonymiser(&premier));
+    let fin = reduire_chemins_dans(&masque, maisons);
+    compter(texte, &fin, &mut d);
+    (fin, d)
 }
 
 /// Les dossiers personnels de cet ordinateur (HOME, USERPROFILE).
@@ -535,18 +502,20 @@ pub(crate) fn controle_final(texte: &str, connues: &[(String, Sorte)]) -> Result
 mod tests {
     use super::*;
 
+    /// Une adresse web part entière, même collée à une option ou à un mot (valeurs inventées).
     #[test]
     fn adresses_web_sans_requete_ni_jeton() {
+        use crate::amelioration::texte::sans_urls;
+        assert_eq!(sans_urls("vu https://203.0.113.9/x?session=abc#k ici"), "vu <url> ici");
         assert_eq!(
-            masquer_url("vu https://203.0.113.9/x?session=abc#k ici"),
-            "vu https://203.0.113.9/x ici"
+            sans_urls("--url=HTTPS://alice:secret@exemple.example:8443/a?t=1, et xhttp://localhost:631/."),
+            "--url=<url>, et x<url>."
         );
+        assert_eq!(sans_urls("rien ici"), "rien ici");
         assert_eq!(
-            masquer_url("HTTPS://alice:secret@exemple.example:8443/a/b?t=1 et http://localhost:631/"),
-            "HTTPS://<site>:8443/a/b et http://localhost:631/"
+            sans_urls("« http://192.0.2.4/?q » (https://exemple.test/a)"),
+            "« <url> » (<url>)"
         );
-        assert_eq!(masquer_url("rien ici"), "rien ici");
-        assert_eq!(masquer_url("« http://192.0.2.4/?q » fin"), "« http://192.0.2.4/ » fin");
     }
 
     #[test]
@@ -554,13 +523,13 @@ mod tests {
         let m: Vec<String> = vec!["/home/alice".into()];
         assert_eq!(
             reduire_chemin("/home/alice/Documents/CV-Zoé-Martin.pdf", &m),
-            "~/…/<fichier>.pdf"
+            "<chemin .pdf>"
         );
-        assert_eq!(reduire_chemin("/home/bob/x", &m), "~/…/<fichier>");
-        assert_eq!(reduire_chemin("/Users/alice/Desktop/a.TXT", &m), "~/…/<fichier>.txt");
+        assert_eq!(reduire_chemin("/home/bob/x", &m), "<chemin>");
+        assert_eq!(reduire_chemin("/Users/alice/Desktop/a.TXT", &m), "<chemin .txt>");
         assert_eq!(
             reduire_chemin(r"C:\Users\Zoé\Downloads\setup.exe", &m),
-            r"~\…\<fichier>.exe"
+            r"<chemin .exe>"
         );
         assert_eq!(reduire_chemin("/usr/bin/curl", &m), "/usr/bin/curl");
         assert_eq!(
@@ -569,7 +538,7 @@ mod tests {
         );
         assert_eq!(
             reduire_chemins_dans("isolé : ~/Documents/CV-Zoé.pdf, puis C:\\Users\\Zoé\\a.exe.", &m),
-            "isolé : ~/…/<fichier>.pdf, puis ~\\…\\<fichier>.exe."
+            "isolé : <chemin .pdf>, puis <chemin .exe>."
         );
         assert_eq!(reduire_chemins_dans("ligne 1\n/usr/lib/x", &m), "ligne 1\n/usr/lib/x");
     }
@@ -581,22 +550,22 @@ mod tests {
         let m: Vec<String> = vec!["/home/alice".into()];
         assert_eq!(
             reduire_chemins_dans("lancé (…échargements/Facture-Bob-Exemple/x.exe) hier", &m),
-            "lancé (~/…/<fichier>.exe) hier"
+            "lancé (<chemin .exe>) hier"
         );
         let w = reduire_chemins_dans(r"lancé (…ob Exemple\Downloads\x.exe) hier", &m);
-        assert_eq!(w, r"lancé (~\…\<fichier>.exe) hier");
+        assert_eq!(w, r"lancé (<chemin .exe>) hier");
         assert!(!w.contains("ob") && !w.contains("Exemple"), "{w}");
         // Sans parenthèse : le chemin s'arrête au premier morceau sans barre.
         assert_eq!(
             reduire_chemins_dans("vu …ce/Bob-Exemple/x.sh puis rien", &m),
-            "vu ~/…/<fichier>.sh puis rien"
+            "vu <chemin .sh> puis rien"
         );
         // Un « … » qui ne coupe pas de chemin ne change rien.
         for t in [
             "dossiers protégés… et /usr/bin/curl",
             "…et 3 autres.",
             "(…)",
-            "~/…/<fichier>.pdf",
+            "<chemin .pdf>",
         ] {
             assert_eq!(reduire_chemins_dans(t, &m), t);
         }
@@ -607,13 +576,13 @@ mod tests {
     fn schema_ou_mot_avant_le_chemin() {
         let m: Vec<String> = vec!["/home/alice".into()];
         for (avant, apres) in [
-            ("fichier:~/Documents/CV-Bob-Exemple.pdf", "fichier:~/…/<fichier>.pdf"),
-            ("path:/home/alice/CV-Bob-Exemple.pdf", "path:~/…/<fichier>.pdf"),
-            ("file:///home/alice/CV-Bob-Exemple.pdf", "file://~/…/<fichier>.pdf"),
-            (r"C:\Users\alice\a.exe", r"~\…\<fichier>.exe"),
-            (r"(C:\Users\alice\a.exe)", r"(~\…\<fichier>.exe)"),
-            ("«C:/Users/alice/a.exe»", "«~/…/<fichier>.exe»"),
-            (r"fichier:C:\Users\alice\a.exe", r"fichier:~\…\<fichier>.exe"),
+            ("fichier:~/Documents/CV-Bob-Exemple.pdf", "fichier:<chemin .pdf>"),
+            ("path:/home/alice/CV-Bob-Exemple.pdf", "path:<chemin .pdf>"),
+            ("file:///home/alice/CV-Bob-Exemple.pdf", "file://<chemin .pdf>"),
+            (r"C:\Users\alice\a.exe", r"<chemin .exe>"),
+            (r"(C:\Users\alice\a.exe)", r"(<chemin .exe>)"),
+            ("«C:/Users/alice/a.exe»", "«<chemin .exe>»"),
+            (r"fichier:C:\Users\alice\a.exe", r"fichier:<chemin .exe>"),
             ("https://192.0.2.4/home/x", "https://192.0.2.4/home/x"),
         ] {
             assert_eq!(reduire_chemins_dans(avant, &m), apres, "{avant}");
@@ -626,6 +595,11 @@ mod tests {
         assert_eq!(compte("NT AUTHORITY\\SYSTEM"), "NT AUTHORITY\\SYSTEM");
         assert_eq!(compte("bob"), "<compte>");
         assert_eq!(compte("Zoé"), "<compte>");
+        assert_eq!(compte("NT SERVICE\\WinDefend"), "NT SERVICE\\WinDefend");
+        assert_eq!(compte("_apt"), "_apt");
+        assert_eq!(compte("NT SERVICE\\Zoé Martin"), "<compte>");
+        assert_eq!(compte("_Zoé Martin"), "<compte>");
+        assert_eq!(compte("_"), "<compte>");
     }
 
     #[test]
@@ -647,9 +621,22 @@ mod tests {
         assert_eq!(d.0.get(&Sorte::Mac), Some(&1));
         assert_eq!(d.0.get(&Sorte::Site), Some(&1), "{t}");
         // Le chemin entier devient « <chemin .pdf> » par le masquage commun : compté comme chemin, une seule fois.
-        assert_eq!(t, "<courriel> <mac> <url> <chemin .pdf>");
+        assert_eq!(t, "<adresse> <mac> <url> <chemin .pdf>");
         assert_eq!(d.0.get(&Sorte::Chemin), Some(&1));
         assert_ne!(d.texte(), "rien");
+    }
+
+    /// Relecture 0.97, hauts d, e et f (valeurs inventées) : un secret dont `anonymiser` marque le début, une adresse
+    /// web collée à une option, un chemin coupé à gauche ne laissent rien de lisible.
+    #[test]
+    fn ordre_du_masquage() {
+        let m: Vec<String> = vec!["/home/alice".into()];
+        let anonymiser = |t: &str| t.replace("alice", "<utilisateur>");
+        let masque = |t: &str| masquer_avec(t, &m, &anonymiser).0;
+        let w = masque("curl -u alice:Lune2Verte9 --url=https://exemple.test/a?session=abc");
+        assert_eq!(w, "curl -u <secret> --url=<url>");
+        let w = masque(r"lancé (…ob Exemple\Downloads\x.exe) hier");
+        assert_eq!(w, "lancé (<chemin .exe>) hier");
     }
 
     #[test]

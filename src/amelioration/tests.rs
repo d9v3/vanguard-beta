@@ -830,3 +830,14 @@ fn masquer_un_faux_marqueur() {
         "jeton <jeton> ip><jeton> fin"
     );
 }
+
+/// Relecture 0.97, haut b : un nom de fichier nu de document est masqué (« <chemin .pdf> ») ; un nom de programme ou
+/// de code reste (valeurs inventées).
+#[test]
+fn masquer_un_nom_de_fichier_nu() {
+    assert_eq!(
+        masquer("ouverture de CV-Zoe-Martin.PDF refusée, net.exe et main.rs restent"),
+        "ouverture de <chemin .pdf> refusée, net.exe et main.rs restent"
+    );
+    assert_eq!(masquer("vu sur https://exemple.test/?s=1."), "vu sur <url>.");
+}

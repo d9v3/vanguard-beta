@@ -13,13 +13,21 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 - **Le journal des erreurs et le brouillon de `vanguard signaler` passent par le masquage commun**, le même que les
   textes envoyés : numéros de série, mots de passe après `-p` ou `--password`, `net use`, clés Wi-Fi, jetons, adresses
-  MAC et IP (toutes, en « <mac> » et « <ip> »), chemins absolus (« <chemin .ext> ») et adresses web (« <url> »). Le
-  texte montré est celui qui est écrit puis envoyé ; un faux repère écrit dans un message (« <ip> » au milieu d'un
-  jeton) est désarmé. Limites : le diagnostic perd le préfixe du fabricant des MAC, les chemins et les IP ; les tickets
-  d'erreurs déjà ouverts peuvent revenir sous une nouvelle signature ; un secret fait seulement de mots courants
-  (« -p 'maison rouge' ») ou sans mot-clé devant lui peut rester ; le détail est coupé à 3000 octets (une valeur du
-  brouillon à 8192) avant le masquage, dont le coût croît vite avec la longueur ; un texte que le masquage ne stabilise
-  pas est remplacé en entier par « [texte retiré : masquage instable] ».
+  MAC et IP (toutes, en « <mac> » et « <ip> »), chemins (« <chemin .ext> ») et adresses web (« <url> »). Le texte
+  montré est celui qui est écrit puis envoyé ; un faux repère écrit dans un message (« <ip> » au milieu d'un jeton)
+  est désarmé. La commande écrite au journal est réduite argument par argument : il n'en reste que les sous-commandes,
+  les options connues et les mots de l'aide ; un fichier devient « <chemin .pdf> », un lien « <url> », un mot libre
+  « <valeur> ». Un nom de fichier nu de document (« CV-Bob-Exemple.pdf ») est masqué ; une adresse web est retirée
+  entière même collée à une option (« --url=https://… ») ; un secret est masqué avant et après l'anonymisation, qui
+  pouvait cacher son début (« -u alice:… ») ; un champ fichier ou programme du brouillon est remplacé en entier ; une
+  valeur trop longue est coupée à une espace avant le masquage ; seule la version du noyau est gardée, sans sa suite.
+  Les entrées écrites avant la 0.97 ne partent plus seules sur GitHub : elles attendent l'accord de l'auteur
+  (`--accord`), et c'est dit. Limites : le diagnostic perd le préfixe du fabricant des MAC, les chemins et les IP ; les
+  tickets d'erreurs déjà ouverts peuvent revenir sous une nouvelle signature ; un secret fait seulement de mots
+  courants (« -p 'maison rouge' ») ou sans mot-clé devant lui peut rester ; dans un texte libre, un nom de fichier à
+  espaces peut garder son début, et une adresse web sans « http:// » reste ; le détail est coupé à 3000 octets (une
+  valeur du brouillon à 4000 caractères) avant le masquage, dont le coût croît vite avec la longueur ; un texte que le
+  masquage ne stabilise pas est remplacé en entier par « [texte retiré : masquage instable] ».
 - **Le journal du système est lu en entier, comme `journalctl`.** Après un redémarrage, le journal peut redonner à
   une nouvelle entrée le numéro d'une entrée plus ancienne. Vanguard la prenait pour une copie et la sautait. Une entrée
   est maintenant reconnue par tout son en-tête (numéro, heure, démarrage, empreinte) et les fichiers sont fusionnés dans

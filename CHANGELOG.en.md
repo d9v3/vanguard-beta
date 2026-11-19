@@ -13,12 +13,20 @@ example, finds it, to rebuild it if needed.
 
 - **The error log and the `vanguard signaler` draft go through the common masker**, the same as sent texts: serial
   numbers, passwords after `-p` or `--password`, `net use`, Wi-Fi keys, tokens, MAC and IP addresses (all of them, as
-  "<mac>" and "<ip>"), absolute paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written
-  and then sent; a fake marker written in a message ("<ip>" inside a token) is disarmed. Limits: diagnostics lose the
-  MAC vendor prefix, paths and IPs; error tickets already open may come back under a new signature; a secret made only
-  of common words ("-p 'red house'") or with no keyword before it may remain; the detail is cut at 3000 bytes (a draft
-  value at 8192) before masking, whose cost grows quickly with length; a text the masker cannot stabilise is replaced
-  whole by "[texte retiré : masquage instable]".
+  "<mac>" and "<ip>"), paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written and then
+  sent; a fake marker written in a message ("<ip>" inside a token) is disarmed. The command written to the log is
+  reduced argument by argument: only subcommands, known options and words from the help remain; a file becomes
+  "<chemin .pdf>", a link "<url>", a free word "<valeur>". A bare document file name ("CV-Bob-Exemple.pdf") is masked;
+  a web address is removed whole even when glued to an option ("--url=https://…"); a secret is masked before and after
+  anonymization, which could hide its start ("-u alice:…"); a file or program field of the draft is replaced whole; a
+  value that is too long is cut at a space before masking; only the kernel version is kept, without its suffix.
+  Entries written before 0.97 are no longer sent to GitHub on their own: they wait for the author's approval
+  (`--accord`), and this is said. Limits: diagnostics lose the MAC vendor prefix, paths and IPs; error tickets already
+  open may come back under a new signature; a secret made only of common words ("-p 'red house'") or with no keyword
+  before it may remain; in free text, a file name with spaces may keep its beginning, and a web address without
+  "http://" remains; the detail is cut at 3000 bytes (a draft value at 4000 characters) before masking, whose cost
+  grows quickly with length; a text the masker cannot stabilise is replaced whole by "[texte retiré : masquage
+  instable]".
 - **The system journal is read in full, like `journalctl`.** After a reboot, the journal can give a new entry the
   number of an older one. Vanguard took it for a copy and skipped it. An entry is now recognized by its whole header
   (number, time, boot, hash), and the files are merged in writing order, not by time alone, which can go backward when

@@ -54,19 +54,12 @@ impl Masque<'_> {
         t
     }
 
-    /// Un chemin : le masquage commun le remplace en entier par « `<chemin .ext>` ». Une forme qu'il ne reconnaît pas
-    /// comme chemin passe encore par `reduire_chemin` (un nom de fichier personnel garde au plus son extension).
-    fn chemin(&self, chemin: &str, d: &mut Decompte) -> String {
-        let brut = crate::amelioration::texte::sans_faux_marqueurs(chemin);
-        let reduit = garde::reduire_chemin(&brut, self.maisons);
-        let mut entier = Decompte::default();
-        let masque = self.masquer_prepare(&brut, &mut entier);
-        if masque.contains("<chemin") || reduit == brut {
-            d.fusionner(&entier);
-            return masque;
-        }
-        d.ajouter(garde::Sorte::Fichier, 1);
-        self.masquer_prepare(&reduit, d)
+    /// Un chemin : remplacé en entier par « `<chemin .ext>` », sans rien d'autre que son extension. Masqué, un nom de
+    /// fichier à espace, à apostrophe ou à virgule (« L'avis de Zoé Martin.pdf ») gardait son début ou sa fin
+    /// (relecture 0.97, haut c) ; un chemin du système aide peu un éditeur, la sorte de fichier suffit.
+    fn chemin(chemin: &str, d: &mut Decompte) -> String {
+        d.ajouter(garde::Sorte::Chemin, 1);
+        garde::marqueur_de_chemin(&crate::amelioration::texte::sans_faux_marqueurs(chemin))
     }
 }
 
@@ -195,7 +188,11 @@ fn contenu(e: &Evenement, m: &Masque, d: &mut Decompte, l: Langue) -> String {
         Genre::Preuve { releve } => {
             if let Some(p) = &releve.processus {
                 if let Some(prog) = &p.programme {
-                    lignes.push(format!("{} {}", l.t("programme :", "program:"), m.chemin(prog, d)));
+                    lignes.push(format!(
+                        "{} {}",
+                        l.t("programme :", "program:"),
+                        Masque::chemin(prog, d)
+                    ));
                 }
                 if let Some(c) = &p.compte {
                     let brut = crate::amelioration::texte::sans_faux_marqueurs(c);
@@ -211,7 +208,11 @@ fn contenu(e: &Evenement, m: &Masque, d: &mut Decompte, l: Langue) -> String {
                 }
             }
             if let Some(f) = &releve.fichier {
-                lignes.push(format!("{} {}", l.t("fichier :", "file:"), m.chemin(&f.chemin, d)));
+                lignes.push(format!(
+                    "{} {}",
+                    l.t("fichier :", "file:"),
+                    Masque::chemin(&f.chemin, d)
+                ));
                 if let Some(h) = &f.sha256 {
                     // Une empreinte de 64 hexadécimaux reste telle quelle : elle désigne le fichier, pas la personne,
                     // et le masquage commun la changerait en « <hex> ». Toute autre forme est masquée.
@@ -612,8 +613,8 @@ pub(crate) fn en_markdown(b: &Brouillon) -> String {
         "{}\n\n{}",
         neutraliser_markdown(&b.masques.texte_dans(l == Langue::En)),
         l.t(
-            "Limites : les adresses IP et MAC, les chemins de fichier, les adresses web et les longues suites hexadécimales sont remplacés par un repère (<ip>, <mac>, <chemin .ext>, <url>, <hex>) ; un secret fait seulement de mots courants, ou sans mot-clé devant lui, peut rester ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué. Remettez ce qu'il faut pour reproduire, et relisez : vous seul savez ce qui est personnel.",
-            "Limits: IP and MAC addresses, file paths, web addresses and long hexadecimal strings are replaced by a marker (<ip>, <mac>, <chemin .ext>, <url>, <hex>); a secret made only of common words, or with no keyword before it, may remain; a name shorter than 3 characters (4 for a network or a device) is never masked. Put back what is needed to reproduce, and read it again: only you know what is personal."
+            "Limites : les adresses IP et MAC, les chemins de fichier, les adresses web et les longues suites hexadécimales sont remplacés par un repère (<ip>, <mac>, <chemin .ext>, <url>, <hex>) ; un secret fait seulement de mots courants, ou sans mot-clé devant lui, peut rester ; dans un texte libre, un nom de fichier à espaces peut garder son début (« CV de Zoé » devant « <chemin .pdf> »), et une adresse web sans « http:// » reste ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué. Remettez ce qu'il faut pour reproduire, et relisez : vous seul savez ce qui est personnel.",
+            "Limits: IP and MAC addresses, file paths, web addresses and long hexadecimal strings are replaced by a marker (<ip>, <mac>, <chemin .ext>, <url>, <hex>); a secret made only of common words, or with no keyword before it, may remain; in free text, a file name with spaces may keep its beginning, and a web address without \"http://\" remains; a name shorter than 3 characters (4 for a network or a device) is never masked. Put back what is needed to reproduce, and read it again: only you know what is personal."
         )
     );
     s

@@ -177,10 +177,16 @@ pub(crate) struct Evenement {
     pub precedent: String,
 }
 
-/// Les `max` premiers caractères, suivis de « … » s'il y en avait plus.
+/// Les `max` premiers caractères, coupés à la dernière espace, suivis de « … » s'il y en avait plus. Coupé au milieu,
+/// un secret ou un chemin à cheval sur la borne laissait son début, trop court pour que le masquage le reconnaisse
+/// (relecture 0.97) ; ce qui est à cheval disparaît entier.
 pub(crate) fn borne(texte: &str, max: usize) -> String {
     match texte.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &texte[..i]),
+        Some((i, _)) => {
+            let debut = &texte[..i];
+            let fin = debut.rfind(char::is_whitespace).unwrap_or(0);
+            format!("{}…", &debut[..fin])
+        }
         None => texte.to_string(),
     }
 }
@@ -326,6 +332,15 @@ impl Evenement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture 0.97 : la coupe se fait à une espace ; un jeton à cheval sur la borne disparaît entier (valeur
+    /// inventée), au lieu de laisser un début trop court pour être masqué.
+    #[test]
+    fn borne_coupe_a_une_espace() {
+        assert_eq!(borne("ab ghp_aB3dE5fG7hJ9kL1m fin", 10), "ab…");
+        assert_eq!(borne("sans_espace_du_tout", 5), "…");
+        assert_eq!(borne("court", 10), "court");
+    }
     use proptest::prelude::*;
 
     fn quand() -> chrono::DateTime<chrono::Utc> {
