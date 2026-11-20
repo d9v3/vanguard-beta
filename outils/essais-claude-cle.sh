@@ -409,7 +409,7 @@ rm -f "$ESSAI/code-logout"
 # « Déconnecté ».
 # L'avertissement seul (comme la 2.1.329), puis le succès suivi de l'avertissement (une version qui dirait les deux).
 for avec in "" "Successfully logged out from your Anthropic account."; do
-  printf '%s\n' $avec "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+  printf '%s\n' ${avec:+"$avec"} "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
   attendu "révocation pas confirmée (code 0${avec:+, succès dit aussi}) : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
   grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
     bon "révocation pas confirmée${avec:+, succès dit aussi} : NON confirmée" ||
@@ -529,10 +529,18 @@ pieges=(ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK NODE_EXTRA_CA_CERTS NODE_OPTIO
   AWS_REGION GOOGLE_APPLICATION_CREDENTIALS VERTEX_REGION_CLAUDE OTEL_EXPORTER_OTLP_ENDPOINT GIT_SSH_COMMAND LD_LIBRARY_PATH
   HTTP_PROXY https_proxy all_proxy NO_PROXY grpc_proxy REQUESTS_CA_BUNDLE CURL_CA_BUNDLE BROWSER BASH_ENV ENV
   SESSION_INGRESS_URL ENABLE_CLAUDEAI_MCP_SERVERS)
+# Le fichier est vidé avant chaque tour et le lancement exigé : un tour qui ne lance rien ne compte pas pour « retiré ».
+# BROWSER et ENABLE_CLAUDEAI_MCP_SERVERS sont de toute façon réécrits par le lanceur (vus plus haut : nav=, mcp=0).
 for v in "${pieges[@]}"; do
-  env "$v=piege-essai" bash "$CLE/Claude/depanner.sh" <<<"o" >"$ESSAI/sortie" 2>&1
-  grep -q piege-essai "$ESSAI/env-claude" && rate "$v du PC transmis à Claude" || bon "$v du PC retiré"
+  : >"$ESSAI/env-claude"
+  if env "$v=piege-essai" bash "$CLE/Claude/depanner.sh" <<<"o" >"$ESSAI/sortie" 2>&1 && [[ -s $ESSAI/env-claude ]]; then
+    grep -q piege-essai "$ESSAI/env-claude" && rate "$v du PC transmis à Claude" || bon "$v du PC retiré"
+  else rate "$v : Claude pas lancé ($(tail -1 "$ESSAI/sortie"))"; fi
 done
+# Le profil Anthropic du PC (~/.config/anthropic) n'est pas lu : son dossier est dans la session, vide.
+grep -qx "ANTHROPIC_CONFIG_DIR=$ESSAI/run/vanguard-claude\.[A-Za-z0-9]*/anthropic" "$ESSAI/env-claude" &&
+  bon "profil Anthropic du PC pas lu (dossier de la session)" ||
+  rate "profil Anthropic : $(grep ANTHROPIC_CONFIG_DIR "$ESSAI/env-claude")"
 # Un faux gpg en tête du PATH du PC (« bonne signature » toujours) : pas suivi, les commandes viennent du système.
 mkdir -p "$ESSAI/fauxgpg"
 printf '#!/bin/sh
@@ -558,16 +566,34 @@ rm -f "$CLE/Claude/depanner-sansgpg.sh"
 # Claude Code garde le PATH du PC pour dépanner.
 grep -q "^path=$ESSAI/bin:" "$ESSAI/journal-claude" && bon "PATH du PC rendu à Claude Code" || rate "PATH : $(grep path= "$ESSAI/journal-claude")"
 cp "$ESSAI/manifest.json.sig.bon" "$CLE/Claude/manifest.json.sig"
-# Pièges : binaire changé sur la clé, manifeste signé par une autre clé.
+# Pièges : binaire changé sur la clé, manifeste signé par une autre clé, clé fixée mais expirée. Chaque refus doit
+# venir du bon contrôle : le binaire remis est celui de la clé (son empreinte est bonne), et le message est exigé.
 : >"$ESSAI/journal-claude"
+cp "$CLE/Claude/Linux/claude" "$ESSAI/claude-de-la-cle"
 printf '#!/bin/sh\necho piege >>"%s/journal-claude"\n' "$ESSAI" >"$CLE/Claude/Linux/claude"
 attendu "binaire remplacé : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
-cp "$(cache)/2.0.3/linux-x64/claude" "$CLE/Claude/Linux/claude"
+grep -q "Empreinte de Claude Code différente" "$ESSAI/sortie" && bon "binaire remplacé : refusé par l'empreinte" ||
+  rate "binaire remplacé : $(tail -2 "$ESSAI/sortie")"
+cp "$ESSAI/claude-de-la-cle" "$CLE/Claude/Linux/claude"
+signature() { grep -q "Signature d'Anthropic absente ou fausse" "$ESSAI/sortie" && bon "$1 : refusé par la signature" ||
+  rate "$1 : $(tail -2 "$ESSAI/sortie")"; }
 gpg --batch --yes --quiet --local-user "$AUTRE" --detach-sign -o "$CLE/Claude/manifest.json.sig" "$CLE/Claude/manifest.json"
 attendu "manifeste signé par une autre clé : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+signature "manifeste signé par une autre clé"
 # La clé publique de la clé USB remplacée elle aussi (même signataire) : l'empreinte fixée dans le lanceur refuse.
 gpg --batch --armor --export "$AUTRE" >"$CLE/Claude/claude-code.asc"
 attendu "clé publique de la clé USB remplacée : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+signature "clé publique de la clé USB remplacée"
+# La clé fixée dans le lanceur, mais expirée (créée et signée « en 2020 ») : gpg dit VALIDSIG avec EXPKEYSIG.
+copie_lanceur "$CLE/Claude/depanner.sh"
+sed -i "s/^EMPREINTE_CLE=.*/EMPREINTE_CLE=$EXP/" "$CLE/Claude/depanner.sh"
+cp "$ESSAI/exp.asc" "$CLE/Claude/claude-code.asc"
+gpg --batch --yes --quiet --faked-system-time 20200101T120000 --local-user "$EXP" --detach-sign \
+  -o "$CLE/Claude/manifest.json.sig" "$CLE/Claude/manifest.json" 2>/dev/null
+attendu "clé fixée mais expirée : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+signature "clé fixée mais expirée"
+copie_lanceur "$CLE/Claude/depanner.sh"
+cp "$ESSAI/manifest.json.sig.bon" "$CLE/Claude/manifest.json.sig"
 cp "$ESSAI/cle.asc" "$CLE/Claude/claude-code.asc"
 [[ ! -s $ESSAI/journal-claude ]] && bon "pièges : rien lancé" || rate "piège lancé : $(cat "$ESSAI/journal-claude")"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "refus : dossier temporaire effacé" || rate "refus : restes"
@@ -592,6 +618,7 @@ j=$ESSAI/journal-win
 c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "\$c" && echo journal >"\$c/journal.txt"
 if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; echo "entree=\$SESSION_INGRESS_URL"; } >>"\$j"
+env >"$ESSAI/env-win"
 [ -f CLAUDE.md ] && echo consignes >>"\$j"
 echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
 exit 0
@@ -722,6 +749,18 @@ EOF
     HTTPS_PROXY=http://piege-essai GRPC_PROXY=piege-essai ENABLE_CLAUDEAI_MCP_SERVERS=1 BROWSER=piege-essai SESSION_INGRESS_URL=piege-essai
   grep -qx "url=" "$j" && grep -qx "proxy=" "$j" && grep -qx "entree=" "$j" && grep -qx "mcp=0" "$j" && ! grep -q piege "$j" && [[ ! -e $ESSAI/piege ]] &&
     bon "Windows : variables piégées retirées" || rate "Windows, pièges : $(tr '\n' ' ' <"$j")"
+  grep -qx "ANTHROPIC_CONFIG_DIR=$W/runw/vanguard-claude-[0-9a-f]*/anthropic" "$ESSAI/env-win" &&
+    bon "Windows : profil Anthropic du PC pas lu (dossier de la session)" ||
+    rate "Windows, profil Anthropic : $(grep ANTHROPIC_CONFIG_DIR "$ESSAI/env-win")"
+  # Toutes les familles retirées, une par une, dans tout l'environnement reçu ; le lancement est exigé à chaque tour.
+  for v in ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK NODE_EXTRA_CA_CERTS NODE_OPTIONS BUN_OPTIONS SSL_CERT_FILE \
+    AWS_REGION GOOGLE_APPLICATION_CREDENTIALS VERTEX_REGION_CLAUDE OTEL_EXPORTER_OTLP_ENDPOINT GIT_SSH_COMMAND \
+    HTTP_PROXY https_proxy ALL_PROXY NO_PROXY REQUESTS_CA_BUNDLE CURL_CA_BUNDLE; do
+    : >"$ESSAI/env-win"
+    if ps_lancer o "$v=piege-essai" >/dev/null && [[ -s $ESSAI/env-win ]]; then
+      grep -q piege-essai "$ESSAI/env-win" && rate "Windows : $v du PC transmis à Claude" || bon "Windows : $v du PC retiré"
+    else rate "Windows, $v : Claude pas lancé ($(tail -1 "$ESSAI/sortie-ps"))"; fi
+  done
   : >"$j"
   echo 1 >"$ESSAI/code-logout"
   attendu "Windows, déconnexion ratée : lancé" 0 ps_lancer o
@@ -730,7 +769,7 @@ EOF
   rm -f "$ESSAI/code-logout"
   # Code 0, révocation pas confirmée (hors ligne, version récente) : jamais « Déconnecté ».
   for avec in "" "Successfully logged out from your Anthropic account."; do
-    printf '%s\n' $avec "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+    printf '%s\n' ${avec:+"$avec"} "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
     attendu "Windows, révocation pas confirmée (code 0${avec:+, succès dit aussi}) : lancé" 0 ps_lancer o
     grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
       bon "Windows : révocation pas confirmée${avec:+, succès dit aussi} : NON confirmée" ||

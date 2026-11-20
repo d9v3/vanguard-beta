@@ -120,8 +120,10 @@ lancee=""
 #   fichiers en ligne, agenda) ne sont pas chargés ;
 # - BROWSER vers un fichier qui n'existe pas : le navigateur de ce PC ne s'ouvre jamais sur la page de connexion
 #   (l'adresse s'affiche, à ouvrir sur le téléphone) ;
+# - ANTHROPIC_CONFIG_DIR vers un dossier vide de la session : un profil Anthropic du PC (~/.config/anthropic) ne
+#   choisit ni le compte ni le serveur ; Claude Code le cherche là d'abord ;
 # - le PATH du PC, pour dépanner avec ses commandes.
-ENV_CLAUDE=(TMPDIR="$DOSSIER/tmp" XDG_CACHE_HOME="$DOSSIER/cache" DISABLE_AUTOUPDATER=1
+ENV_CLAUDE=(TMPDIR="$DOSSIER/tmp" XDG_CACHE_HOME="$DOSSIER/cache" ANTHROPIC_CONFIG_DIR="$DOSSIER/anthropic" DISABLE_AUTOUPDATER=1
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ENABLE_CLAUDEAI_MCP_SERVERS=0 CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES=1
   BROWSER="$DOSSIER/pas-de-navigateur" VANGUARD_CLE="$CLE" PATH="$PATH_PC")
 

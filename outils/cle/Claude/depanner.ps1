@@ -228,8 +228,11 @@ try {
     # - pas de mise à jour, pas de trafic non essentiel, pas de connecteurs du compte (ENABLE_CLAUDEAI_MCP_SERVERS=0,
     #   et --strict-mcp-config au lancement), pas de journal des serveurs MCP ;
     # - BROWSER vers un fichier qui n'existe pas : le navigateur de ce PC ne s'ouvre jamais sur la page de connexion
-    #   (l'adresse s'affiche, à ouvrir sur le téléphone).
+    #   (l'adresse s'affiche, à ouvrir sur le téléphone) ;
+    # - ANTHROPIC_CONFIG_DIR vers un dossier vide de la session : un profil Anthropic du PC (%APPDATA%\Anthropic) ne
+    #   choisit ni le compte ni le serveur ; Claude Code le cherche là d'abord.
     $env:CLAUDE_CONFIG_DIR = $Config
+    $env:ANTHROPIC_CONFIG_DIR = Join-Path $Dossier 'anthropic'
     $env:DISABLE_AUTOUPDATER = '1'
     $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
     $env:ENABLE_CLAUDEAI_MCP_SERVERS = '0'
