@@ -4,6 +4,7 @@
 //! marque dès que le cas est corrigé. Toutes les valeurs sont inventées.
 
 use super::masquer_chez;
+use crate::amelioration::texte::LIGNE_COLORIEE;
 
 /// Un essai par cas : `nom: [maisons], entrée => sortie attendue;`.
 macro_rules! banc {
@@ -299,11 +300,11 @@ banc! {
     r9_ff2c: [], r"sed 's/\/mnt\/nas\/Zoé Martin\/Documents/x/' f" => "sed '<chemin>' f";
     r9_ff3: [r"/srv/comptes/zoe.martin"], r"sed -i 's/\\/srv\\/comptes\\/zoe.martin\\/projets/x/' conf.ini" => r"sed -i 's/<chemin>";
     r9_ff4a: [], r#"{"msg":"ligne 1\u000A\\\\nas\\partage\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"msg":"ligne <chemin .pdf>"}"#;
-    r9_ff4b: [], r#"{"msg":"\u001b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u001b[0m"}"# => r#"{"msg":"<chemin .pdf>"}"#;
-    r9_ff4c: [], r"b'ls: \x1b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\x1b[0m'" => "b'ls: <chemin .pdf>'";
+    r9_ff4b: [], r#"{"msg":"\u001b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u001b[0m"}"# => LIGNE_COLORIEE;
+    r9_ff4c: [], r"b'ls: \x1b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\x1b[0m'" => LIGNE_COLORIEE;
     r9_ff4d: [], r#"stderr: "ligne 1\u{c}/mnt/nas/Zoé Martin/Lettre Roy.pdf""# => r#"stderr: "ligne <chemin .pdf>""#;
     r9_ff4e: [], r#""ligne 1`n\\nas\partage\Zoé Martin\Lettre Roy.pdf""# => r#""ligne 1`<chemin .pdf>""#;
-    r9_ff4f: [], "ls: \u{1b}[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u{1b}[0m" => "ls: <chemin .pdf>";
+    r9_ff4f: [], "ls: \u{1b}[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u{1b}[0m" => LIGNE_COLORIEE;
     r9_ff5a: [], r"erreur: Documents//Zoé Martin//Lettre Roy.pdf introuvable" => "erreur: <chemin .pdf>";
     r9_ff5b: [], r"erreur: /mnt/nas/Zoé Martin/liste.php?[nom]=Zoé Martin introuvable" => r"erreur: <chemin>";
     r9_ff5c: [], r#"{"cmd":"sort <$HOME/Documents/Lettre Zoé Martin.txt"}"# => r#"{"cmd":"sort <<chemin .txt>"#;
@@ -389,20 +390,20 @@ banc! {
 
 // Ronde 10 : constats confirmés (lot-journal-relecture-r10.json), fermeture-fuites (ff) et abus-regressions (ab).
 banc! {
-    r11_ff0a: [], "vrai: \u{1b}[38;2;97;175;239m/mnt/data/zoe.martin/build\u{1b}[0m" => "vrai: <chemin>";
-    r11_ff0b: [], "grep: \u{1b}[35m\u{1b}[K/mnt/data/zoe.martin/notes\u{1b}[m\u{1b}[K" => "grep: <chemin>";
-    r11_ff0c: [], "make: \u{1b}[2K/mnt/data/zoe.martin/build" => "make: <chemin>";
-    r11_ff0d: [], "\u{1b}[0;1;4;38;5;33m/mnt/data/zoe.martin/build\u{1b}[0m" => "<chemin>";
-    r11_ff0e: [], "\u{1b}]8;;file:///mnt/data/zoe.martin/a.pdf\u{1b}\\lien\u{1b}]8;;\u{1b}\\" => "lien";
-    r11_ff1a: [], r#"{"out":"\u001b[34mprojets/zoe.martin\u001b[0m/notes"}"# => r#"{"out":"<chemin>"}"#;
-    r11_ff1b: [], r"/mnt/nas/Zoé Martin\x1b[0m/Lettre Roy.pdf" => "<chemin .pdf>";
-    r11_ff1c: [], r#"{"out":"\u001b[34mD:\\Clients\\Zoé Martin\u001b[0m\\Lettre Roy.pdf"}"# => r#"{"out":"<chemin .pdf>"}"#;
-    r11_ff1d: [], r"erreur: projets/alice\x1b[0m/x.tar.gz : erreur" => "erreur: <chemin .gz> : erreur";
+    r11_ff0a: [], "vrai: \u{1b}[38;2;97;175;239m/mnt/data/zoe.martin/build\u{1b}[0m" => LIGNE_COLORIEE;
+    r11_ff0b: [], "grep: \u{1b}[35m\u{1b}[K/mnt/data/zoe.martin/notes\u{1b}[m\u{1b}[K" => LIGNE_COLORIEE;
+    r11_ff0c: [], "make: \u{1b}[2K/mnt/data/zoe.martin/build" => LIGNE_COLORIEE;
+    r11_ff0d: [], "\u{1b}[0;1;4;38;5;33m/mnt/data/zoe.martin/build\u{1b}[0m" => LIGNE_COLORIEE;
+    r11_ff0e: [], "\u{1b}]8;;file:///mnt/data/zoe.martin/a.pdf\u{1b}\\lien\u{1b}]8;;\u{1b}\\" => LIGNE_COLORIEE;
+    r11_ff1a: [], r#"{"out":"\u001b[34mprojets/zoe.martin\u001b[0m/notes"}"# => LIGNE_COLORIEE;
+    r11_ff1b: [], r"/mnt/nas/Zoé Martin\x1b[0m/Lettre Roy.pdf" => LIGNE_COLORIEE;
+    r11_ff1c: [], r#"{"out":"\u001b[34mD:\\Clients\\Zoé Martin\u001b[0m\\Lettre Roy.pdf"}"# => LIGNE_COLORIEE;
+    r11_ff1d: [], r"erreur: projets/alice\x1b[0m/x.tar.gz : erreur" => LIGNE_COLORIEE;
     r11_ff2a: [], r#"cmdline: "cat\0/mnt/data/zoe.martin/notes.txt\0""# => r#"cmdline: "<chemin>""#;
     r11_ff2b: [], r#"{"cmdline":"cat\u0000/mnt/data/zoe.martin/notes.txt\u0000"}"# => r#"{"cmdline":"<chemin>"}"#;
     r11_ff2c: [], r"argv: cat\x00/mnt/data/zoe.martin/notes.txt\x00" => "argv: <chemin>";
-    r11_ff2d: [], "sortie: \"\u{1b}[01;34m/mnt/data/zoe.martin\u{1b}[0m\"" => r#"sortie: "<chemin>""#;
-    r11_ff2e: [], "sortie: \"erreur\u{1b}[31m: /mnt/nas/Zoé Martin/Lettre Roy.pdf\u{1b}[0m\"" => r#"sortie: "erreur: <chemin .pdf>""#;
+    r11_ff2d: [], "sortie: \"\u{1b}[01;34m/mnt/data/zoe.martin\u{1b}[0m\"" => LIGNE_COLORIEE;
+    r11_ff2e: [], "sortie: \"erreur\u{1b}[31m: /mnt/nas/Zoé Martin/Lettre Roy.pdf\u{1b}[0m\"" => LIGNE_COLORIEE;
     r11_ff2f: [], r"refusée\012/mnt/nas/Zoé Martin/Lettre Roy.pdf" => "<chemin .pdf>";
     r11_ff3a: [], r#"{"url":"https://api.exemple.com/x?where={\"owner\":\"Zoé Martin\"}"}"# => r#"{"url":"<url>}"}"#;
     r11_ff3b: [], r#"args: ["curl", "-s", "https://api.exemple.com/x?where={\"owner\":\"Zoé Martin\"}"]"# => r#"args: ["curl", "-s", "<url>}"]"#;
@@ -428,11 +429,11 @@ banc! {
     r11_ab0c: [], r#"{"stderr":"Introuvable.\r\n\\\\?\\C:\\Users\\alice\\Documents\\Lettre Zoé Martin.pdf\r\n"}"# => r#"{"stderr":"Introuvable.\r<chemin>?\\C:<chemin>"#;
     r11_ab0d: [], r#"{"error":"Accès refusé :\n\\\\?\\C:\\Users\\Zoé Martin"}"# => r#"{"error":"Accès refusé :<chemin>?\\C:<chemin>"#;
     r11_ab0e: [], r"erreur:\n\??\C:\Users\Zoé Martin" => r"erreur:<chemin>??\C:<chemin>";
-    r11_ab1a: [], r"stdout: /srv/partage/\x1b[01;31mZoé Martin\x1b[0m/lettre.pdf" => "stdout: <chemin .pdf>";
-    r11_ab1b: [], r"/mnt/nas/\x1b[01;31mzoe.martin\x1b[0m/facture.pdf" => "<chemin .pdf>";
-    r11_ab1c: [], r"stdout: C:\Partage\\x1b[01;31mzoe.martin\x1b[0m\facture.pdf" => "stdout: <chemin .pdf>";
-    r11_ab1d: [], r"voir https://a.test/x?nom=\x1b[01;31mzoe.martin\x1b[0m&lecteur=luc.roy ici" => "voir <url> ici";
-    r11_ab1e: [], r"courriel \x1b[01;31mzoe\x1b[0m.martin@exemple.test refusé" => "courriel <adresse> refusé";
+    r11_ab1a: [], r"stdout: /srv/partage/\x1b[01;31mZoé Martin\x1b[0m/lettre.pdf" => LIGNE_COLORIEE;
+    r11_ab1b: [], r"/mnt/nas/\x1b[01;31mzoe.martin\x1b[0m/facture.pdf" => LIGNE_COLORIEE;
+    r11_ab1c: [], r"stdout: C:\Partage\\x1b[01;31mzoe.martin\x1b[0m\facture.pdf" => LIGNE_COLORIEE;
+    r11_ab1d: [], r"voir https://a.test/x?nom=\x1b[01;31mzoe.martin\x1b[0m&lecteur=luc.roy ici" => LIGNE_COLORIEE;
+    r11_ab1e: [], r"courriel \x1b[01;31mzoe\x1b[0m.martin@exemple.test refusé" => LIGNE_COLORIEE;
     r11_ab4: [], r#","https://api.test/items?where={"owner":"zoe.martin"}""# => r#","<url>}""#;
 }
 
@@ -443,35 +444,38 @@ banc! {
     r11_mut_octal: [], r"argv: cat\012/srv/Zoé Martin" => r"argv: cat\012<chemin>";
     r11_mut_accolades: [], r"argv: cat\u{41}/srv/Zoé Martin" => r"argv: cat\u{41}<chemin>";
     r11_mut_nom_long: [], r"argv: cat\N{LINE FEED}/srv/Zoé Martin" => r"argv: cat\N{LINE FEED}<chemin>";
-    r11_mut_entre_mots: [], "courriel zoe.mar\u{1b}[1mtin@exemple.test refusé" => "courriel <adresse> refusé";
+    r11_mut_entre_mots: [], "courriel zoe.mar\u{1b}[1mtin@exemple.test refusé" => LIGNE_COLORIEE;
 }
 
 // Ronde 12 : constats confirmés de la relecture de la ronde 11 (valeurs inventées).
 banc! {
     // Couleur entre un mot et un chemin (régression r11) : le repère ouvre le chemin.
-    r12_ff1a: [], "Fichier\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => "Fichier <chemin>";
-    r12_ff1b: [], "[ok]\u{1b}[0m/srv/zmartin/projet" => "[ok]<chemin>";
-    r12_ff1c: [], "\u{1b}[36mINFO\u{1b}[0m\u{1b}[2m/srv/zmartin/projet\u{1b}[0m: ouvert" => "INFO <chemin>: ouvert";
-    r12_ff1d: [], "\u{1b}[31m✗\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => "✗ <chemin>";
-    r12_ff1e: [], "\u{1b}[90m12:00\u{1b}[0m/srv/zmartin/projet" => "12:00 <chemin>";
-    r12_ff1f: [], "tput: \u{1b}(B\u{1b}[m/mnt/nas/Zoé Martin/Lettres" => "tput: <chemin>";
-    r12_ff1g: [], r"Erreur\x1b[0m\\nas\Clients\Zoé Martin\Lettres" => "Erreur <chemin>";
-    r12_ff1h: [], "lecture de\u{1b}]0;titre\u{7}\\\\nas\\Clients\\Zoé Martin\\x" => "lecture de <chemin>";
-    r12_ff1i: [], r"Erreur\x1b[0m/srv/partage/Zoé Martin/notes" => "Erreur <chemin>";
-    r12_ff1j: [], r"Erreur\x1b[31mDocuments/Zoé Martin/notes\x1b[0m introuvable" => "Erreur <chemin>";
-    r12_ff1k: [], "OK\u{1b}[0m/mnt/nas/Luc Roy/notes" => "OK <chemin>";
-    r12_ff1l: [], "100%\u{1b}[0m/mnt/nas/Luc Roy/x" => "100% <chemin>";
-    r12_ff1m: [], "→\u{1b}[0m/mnt/nas/Luc Roy/x.pdf" => "→ <chemin .pdf>";
+    r13_grep_relatif: [], "ok\n\u{1b}[01;31m\u{1b}[Kzoe.martin\u{1b}[m\u{1b}[K/notes/x.pdf\nfin" => "ok\n[ligne retirée : séquence de terminal]\nfin";
+    r13_invite_barres: [], "\u{1b}[38;5;103m/\u{1b}[38;5;31msrv\u{1b}[38;5;103m/\u{1b}[38;5;31mzmartin\u{1b}[38;5;103m/\u{1b}[38;5;31mMes Documents\u{1b}[0m $ ls" => LIGNE_COLORIEE;
+    r13_relatif_dossier: [], "\u{1b}[01;34mZoé Martin\u{1b}[0m/notes.txt" => LIGNE_COLORIEE;
+    r12_ff1a: [], "Fichier\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => LIGNE_COLORIEE;
+    r12_ff1b: [], "[ok]\u{1b}[0m/srv/zmartin/projet" => LIGNE_COLORIEE;
+    r12_ff1c: [], "\u{1b}[36mINFO\u{1b}[0m\u{1b}[2m/srv/zmartin/projet\u{1b}[0m: ouvert" => LIGNE_COLORIEE;
+    r12_ff1d: [], "\u{1b}[31m✗\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => LIGNE_COLORIEE;
+    r12_ff1e: [], "\u{1b}[90m12:00\u{1b}[0m/srv/zmartin/projet" => LIGNE_COLORIEE;
+    r12_ff1f: [], "tput: \u{1b}(B\u{1b}[m/mnt/nas/Zoé Martin/Lettres" => LIGNE_COLORIEE;
+    r12_ff1g: [], r"Erreur\x1b[0m\\nas\Clients\Zoé Martin\Lettres" => LIGNE_COLORIEE;
+    r12_ff1h: [], "lecture de\u{1b}]0;titre\u{7}\\\\nas\\Clients\\Zoé Martin\\x" => LIGNE_COLORIEE;
+    r12_ff1i: [], r"Erreur\x1b[0m/srv/partage/Zoé Martin/notes" => LIGNE_COLORIEE;
+    r12_ff1j: [], r"Erreur\x1b[31mDocuments/Zoé Martin/notes\x1b[0m introuvable" => LIGNE_COLORIEE;
+    r12_ff1k: [], "OK\u{1b}[0m/mnt/nas/Luc Roy/notes" => LIGNE_COLORIEE;
+    r12_ff1l: [], "100%\u{1b}[0m/mnt/nas/Luc Roy/x" => LIGNE_COLORIEE;
+    r12_ff1m: [], "→\u{1b}[0m/mnt/nas/Luc Roy/x.pdf" => LIGNE_COLORIEE;
     // Couleur au milieu d'un chemin ou d'un mot : un seul chemin, une seule adresse.
-    r12_ff1n: [], "/mnt/nas/Zoé\u{1b}[1m/Martin/Lettres" => "<chemin>";
-    r12_ff1o: [], "courriel zoe.mar\u{1b}[1mtin@exemple.test refusé" => "courriel <adresse> refusé";
-    r12_ff1p: [], "https://exemple.com/x?nom=Zoé\u{1b}[01;31m\u{1b}[K+\u{1b}[m\u{1b}[KMartin" => "<url>";
+    r12_ff1n: [], "/mnt/nas/Zoé\u{1b}[1m/Martin/Lettres" => LIGNE_COLORIEE;
+    r12_ff1o: [], "courriel zoe.mar\u{1b}[1mtin@exemple.test refusé" => LIGNE_COLORIEE;
+    r12_ff1p: [], "https://exemple.com/x?nom=Zoé\u{1b}[01;31m\u{1b}[K+\u{1b}[m\u{1b}[KMartin" => LIGNE_COLORIEE;
     // Titre de terminal (OSC) ouvert par un vrai ESC : ni « \A » ni « \a » ne le ferme.
-    r12_ff2a: [], "\u{1b}]9;9;C:\\Users\\alice\\Avis Roy\u{1b}\\PS>" => "PS>";
-    r12_ff2b: [], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS C:\\> dir" => "PS <chemin>> dir";
-    r12_ff2c: [], "\u{1b}]0;C:\\Users\\Zoé\\Projets\\Zoé Martin\u{7}PS>" => "PS>";
-    r12_ff2d: [], "\u{1b}]0;D:\\Archives\\Zoé Martin\u{7}suite" => "suite";
-    r12_ff2e: [r"C:\Users\alice"], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS>" => "PS>";
+    r12_ff2a: [], "\u{1b}]9;9;C:\\Users\\alice\\Avis Roy\u{1b}\\PS>" => LIGNE_COLORIEE;
+    r12_ff2b: [], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS C:\\> dir" => LIGNE_COLORIEE;
+    r12_ff2c: [], "\u{1b}]0;C:\\Users\\Zoé\\Projets\\Zoé Martin\u{7}PS>" => LIGNE_COLORIEE;
+    r12_ff2d: [], "\u{1b}]0;D:\\Archives\\Zoé Martin\u{7}suite" => LIGNE_COLORIEE;
+    r12_ff2e: [r"C:\Users\alice"], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS>" => LIGNE_COLORIEE;
     // Adresse à requête entre guillemets suivie d'un chemin à espace.
     r12_ff3a: [], r#""https://exemple.com/x?a=1"\n/mnt/nas/Zoé Martin/Lettres"# => "\"<url>\"<chemin>";
     r12_ff3b: [], r#""https://exemple.com/x?a=1":/mnt/nas/Zoé Martin/Lettres"# => r#""<url>":<chemin>"#;
@@ -500,12 +504,12 @@ banc! {
     r12_ff6f: [], "cc -I./Zoé-Martin/include x.c" => "cc <chemin>";
     r12_ff6g: [], "cc -Wl,-rpath/mnt/nas/Zoé-Martin/lib x.c" => "cc -Wl,-rpath<chemin>";
     // Séquences de terminal rares.
-    r12_ff7a: [], "\u{1b}[2 q/srv/zmartin/projet $ ls" => "<chemin> $ ls";
-    r12_ff7b: [], "\u{9b}1;34m/mnt/nas/Zoé Martin/Lettres\u{9b}0m" => "<chemin>";
-    r12_ff7c: [], "\u{1b}k/srv/zmartin/projet\u{1b}\\ suite" => " suite";
-    r12_ff7d: [], "\u{1b}7/srv/zmartin/projet" => "<chemin>";
-    r12_ff7e: [], "\u{1b}#8/mnt/data/zoe.martin/build" => "<chemin>";
-    r12_ff7f: [], "\u{1b}OA/srv/zmartin/projet" => "<chemin>";
+    r12_ff7a: [], "\u{1b}[2 q/srv/zmartin/projet $ ls" => LIGNE_COLORIEE;
+    r12_ff7b: [], "\u{9b}1;34m/mnt/nas/Zoé Martin/Lettres\u{9b}0m" => LIGNE_COLORIEE;
+    r12_ff7c: [], "\u{1b}k/srv/zmartin/projet\u{1b}\\ suite" => LIGNE_COLORIEE;
+    r12_ff7d: [], "\u{1b}7/srv/zmartin/projet" => LIGNE_COLORIEE;
+    r12_ff7e: [], "\u{1b}#8/mnt/data/zoe.martin/build" => LIGNE_COLORIEE;
+    r12_ff7f: [], "\u{1b}OA/srv/zmartin/projet" => LIGNE_COLORIEE;
     // Échappements écrits que la ronde 11 ne lisait pas.
     r12_ff8a: [], r"cat\N{LINE FEED/srv/zmartin/projet" => r"cat\N{LINE FEED<chemin>";
     r12_ff8b: [], r"cat\N{}/srv/zmartin/projet" => r"cat\N{}<chemin>";
@@ -528,17 +532,17 @@ banc! {
     r12_fermante: [], "voir (x)/srv/zmartin/projet" => "voir (x)<chemin>";
     r12_arobase_unc: [], r"zoe.martin@exemple.test\\nas\Clients\Zoé Martin\x" => "<adresse>";
     r12_prolonge_egal: [], r"/srv/zmartin/projet=\\nas\Clients\Zoé Martin\x" => "<chemin>";
-    r12_recolle: [], "ab\u{1b}[0mcd" => "abcd";
-    r12_capitale: [], "Erreur\u{1b}[0mDocuments/Zoé Martin/notes" => "Erreur <chemin>";
-    r12_dans_chemin: [], "voir /mnt/nas/Zoé\u{1b}[0m/Martin/x" => "voir <chemin>";
-    r12_dollar: [], "$HOME\u{1b}[0m/zmartin/x" => "<chemin>";
+    r12_recolle: [], "ab\u{1b}[0mcd" => LIGNE_COLORIEE;
+    r12_capitale: [], "Erreur\u{1b}[0mDocuments/Zoé Martin/notes" => LIGNE_COLORIEE;
+    r12_dans_chemin: [], "voir /mnt/nas/Zoé\u{1b}[0m/Martin/x" => LIGNE_COLORIEE;
+    r12_dollar: [], "$HOME\u{1b}[0m/zmartin/x" => LIGNE_COLORIEE;
     r12_heure_apres_chiffre: [], "112:00/srv/zmartin/projet" => "112:00<chemin>";
-    r12_mot_lie: [], "voir zoe\u{1b}[31m.martin/notes" => "voir <chemin>";
-    r12_recolle_nom: [], "voir zoe.mar\u{1b}[0mtin/notes" => "voir <chemin>";
+    r12_mot_lie: [], "voir zoe\u{1b}[31m.martin/notes" => LIGNE_COLORIEE;
+    r12_recolle_nom: [], "voir zoe.mar\u{1b}[0mtin/notes" => LIGNE_COLORIEE;
     r12_prolonge_disque: [], r"/srv/zmartin/projet=D:\Clients\Zoé Martin\x" => "<chemin>";
-    r12_points: [], "..\u{1b}[0m/zmartin/x.rs" => "<chemin>";
-    r12_deux_couleurs: [], "/mnt/nas/Zoé Martin/Lettres\u{1b}[0m\\\\nas\\Clients\\Zoé Mar\u{1b}[0mtin\\x" => "<chemin> <chemin>";
-    r12_recolle_dossier: [], "proj\u{1b}[mets/zoe.martin/notes" => "<chemin>";
+    r12_points: [], "..\u{1b}[0m/zmartin/x.rs" => LIGNE_COLORIEE;
+    r12_deux_couleurs: [], "/mnt/nas/Zoé Martin/Lettres\u{1b}[0m\\\\nas\\Clients\\Zoé Mar\u{1b}[0mtin\\x" => LIGNE_COLORIEE;
+    r12_recolle_dossier: [], "proj\u{1b}[mets/zoe.martin/notes" => LIGNE_COLORIEE;
     r12_ab0c: [], r#"args: [\"curl\", \"https://x.test/a?nom=Zoé Martin\"]"# => r#"args: [\"curl\", \"<url>\"]"#;
 }
 

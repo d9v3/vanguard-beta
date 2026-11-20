@@ -619,7 +619,8 @@ fn fin_de_chaine_vraie(c: &[char], mut pos: usize) -> usize {
 /// après, et « ESC[38;2;…m/mnt/… », « ESC[K/… » gardaient le chemin entier (ronde 10, moyen). Une séquence (ou une
 /// suite de séquences) laisse un repère privé (`REPERE`), jamais rien ni une espace : rien collait le mot d'avant au
 /// chemin qui suit (« Fichier/mnt/… » n'ouvrait plus de chemin), une espace coupait en deux un chemin colorié au
-/// milieu (« /mnt/nas/Zoé /Martin/… ») (ronde 11, moyens). `resoudre_reperes` décide ensuite de chacun.
+/// milieu (« /mnt/nas/Zoé /Martin/… ») (ronde 11, moyens). Puis toute ligne qui porte un repère est retirée
+/// entière (`lignes_coloriees_retirees`, ronde 13) : `resoudre_reperes` reste en filet.
 fn sans_couleurs(texte: &str) -> String {
     if !texte.contains(['\u{1b}', '\\', '`', '^', '\u{9b}', '\u{9d}', '\u{90}']) {
         return texte.to_string();
@@ -641,7 +642,26 @@ fn sans_couleurs(texte: &str) -> String {
         }
         k = fin;
     }
-    sortie
+    lignes_coloriees_retirees(&sortie)
+}
+
+/// Ce qui remplace une ligne qui portait une séquence de terminal (`lignes_coloriees_retirees`).
+pub(crate) const LIGNE_COLORIEE: &str = "[ligne retirée : séquence de terminal]";
+
+/// Le texte, chaque ligne qui portait une séquence de terminal (un `REPERE`) remplacée entière par
+/// `LIGNE_COLORIEE`. Les rondes 10 à 13 devinaient, couleur par couleur, si elle coupait un chemin ou le continuait :
+/// chaque devinette laissait fuir une famille voisine (« zoe.martin\x1b[0m/notes/x.pdf », invites coloriées barre
+/// par barre). Une sortie coloriée vient d'un autre programme et sert peu au diagnostic : la retirer entière ne peut
+/// rien laisser fuir. Dans le doute on masque plus.
+fn lignes_coloriees_retirees(texte: &str) -> String {
+    if !texte.contains(REPERE) {
+        return texte.to_string();
+    }
+    texte
+        .split('\n')
+        .map(|ligne| if ligne.contains(REPERE) { LIGNE_COLORIEE } else { ligne })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Le repère qu'une séquence de terminal retirée laisse à sa place (`sans_couleurs`) : un caractère d'usage privé,
