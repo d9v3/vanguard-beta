@@ -326,12 +326,21 @@ signatures() { # sorte nom
 
 # La signature est-elle d'une des clés principales attendues pour cette sorte ? Le trousseau est jetable, dans le
 # cache (pas dans /tmp, au quota partagé), et ne contient que la clé du projet.
+# Comme outils/claude-cle.sh : GOODSIG, et VALIDSIG … <empreinte de la clé principale> en dernier champ. VALIDSIG
+# sort aussi pour une clé expirée ou révoquée (EXPKEYSIG, REVKEYSIG) ou une signature expirée (EXPSIG) : refusées.
+# Signature par signature (chacune commence par NEWSIG) : une liste signée peut en porter plusieurs (Debian et Fedora
+# ont plusieurs clés attendues) ; une seule bonne, d'une clé attendue, suffit, et une autre, expirée, ne la fait pas
+# refuser.
 signe_par() { # sorte statut_gpg
-  local f
-  for f in ${SIGNATAIRES[$1]}; do
-    grep -q "^\[GNUPG:\] VALIDSIG .* $f\$" <<<"$2" && return 0
-  done
-  return 1
+  awk -v cles="${SIGNATAIRES[$1]}" '
+    BEGIN { n = split(cles, c, /[[:space:]]+/); for (i = 1; i <= n; i++) if (c[i] != "") attendue[c[i]] = 1 }
+    function fin() { if (bonne && valide && !perimee) ok = 1; bonne = valide = perimee = 0 }
+    $1 != "[GNUPG:]" { next }
+    $2 == "NEWSIG" { fin() }
+    $2 == "GOODSIG" { bonne = 1 }
+    $2 == "EXPSIG" || $2 == "EXPKEYSIG" || $2 == "REVKEYSIG" { perimee = 1 }
+    $2 == "VALIDSIG" && ($NF in attendue) { valide = 1 }
+    END { fin(); exit !ok }' <<<"$2"
 }
 
 # Vérifie une image et ses signatures, rangées dans un même dossier. Code 0 si tout est bon ; sinon la raison sur la
@@ -368,7 +377,11 @@ verifier_image() { # sorte dossier nom
   esac
   rm -rf "$trousseau"
   if ! signe_par "$sorte" "$statut"; then
-    if grep -q '^\[GNUPG:\] \(NO_PUBKEY\|ERRSIG\)' <<<"$statut"; then
+    if grep -q '^\[GNUPG:\] \(EXPKEYSIG\|REVKEYSIG\) ' <<<"$statut"; then
+      echo "signée par une clé du projet expirée ou révoquée (une mise à jour de Vanguard apportera la nouvelle)" >&2
+    elif grep -q '^\[GNUPG:\] EXPSIG ' <<<"$statut"; then
+      echo "signature expirée" >&2
+    elif grep -q '^\[GNUPG:\] \(NO_PUBKEY\|ERRSIG\)' <<<"$statut"; then
       echo "signée par une clé que Vanguard ne connaît pas encore (une mise à jour de Vanguard l'apportera)" >&2
     else
       echo "signature absente ou fausse" >&2

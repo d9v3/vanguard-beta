@@ -930,6 +930,72 @@ voir "début d'un torrent de Kali : sa taille lue dans le .torrent, et « repris
   "|Images de la clé : reprise du téléchargement|Kali Linux : kali-linux-2026.4-live-everything-amd64.iso, 15,7 Gio (" ||
   { montrer "$BANC/notifications.log"; montrer "$BANC/sortie"; }
 
+# --- Signatures des images (signe_par) : de vraies signatures de gpg, des clés d'essai jetées avec le banc ----------
+# VALIDSIG sort aussi pour une clé expirée ou révoquée, ou une signature expirée : seules les bonnes passent.
+G=$BANC/gnupg-sig
+S=$BANC/sig
+mkdir -m 700 "$G"
+mkdir -p "$S/cles" "$S/cache" "$S/img"
+gpg_essai() { gpg --homedir "$G" --batch --quiet --yes --pinentry-mode loopback --passphrase '' "$@" 2>/dev/null; }
+cle_sig() { # nom expiration [date de création] : son empreinte
+  gpg_essai ${3:+--faked-system-time "$3"} --quick-gen-key "$1 <essai@exemple.invalid>" ed25519 sign "$2"
+  gpg --homedir "$G" --batch --with-colons --list-keys "$1" 2>/dev/null | awk -F: '/^fpr/ { print $10; exit }'
+}
+BONNE=$(cle_sig "Essai Projet" never)
+PERIMEE=$(cle_sig "Essai Expiree" 2d 20200101T000000)
+REVOQUEE=$(cle_sig "Essai Revoquee" never)
+SIG_COURTE=$(cle_sig "Essai Signature Courte" never 20200101T000000)
+NOM_SIG=archlinux-2026.11.01-x86_64.iso
+echo "image d'essai" >"$S/img/$NOM_SIG"
+sha512sum "$S/img/$NOM_SIG" | sed "s| .*|  $NOM_SIG|" >"$S/img/SHA512SUMS"
+signer_sig() { # empreinte fichier sortie [options de gpg…]
+  gpg_essai --local-user "$1" "${@:4}" --detach-sign -o "$3" "$2"
+}
+# La signature de l'image par la clé, puis verifier_image avec cette seule clé attendue (sa copie exportée).
+verifier_sig() { # sorte empreintes-attendues… (le .asc dans $S/cles, l'image et ses signatures dans $S/img)
+  local sorte=$1
+  shift
+  ( source outils/images-cle.sh
+    CLES=$S/cles CACHE=$S/cache
+    SIGNATAIRES[$sorte]="$*"
+    verifier_image "$sorte" "$S/img" "$NOM_SIG" ) >"$BANC/sortie-sig" 2>&1
+}
+gpg --homedir "$G" --batch --armor --export "$BONNE" >"$S/cles/arch.asc" 2>/dev/null
+signer_sig "$BONNE" "$S/img/$NOM_SIG" "$S/img/$NOM_SIG.sig"
+verifier_sig arch "$BONNE"
+code=$?
+voir "image signée par la clé attendue : acceptée" eval '((code == 0))' || montrer "$BANC/sortie-sig"
+gpg --homedir "$G" --batch --armor --export "$PERIMEE" >"$S/cles/arch.asc" 2>/dev/null
+signer_sig "$PERIMEE" "$S/img/$NOM_SIG" "$S/img/$NOM_SIG.sig" --faked-system-time 20200101T120000
+verifier_sig arch "$PERIMEE"
+code=$?
+voir "clé du projet expirée : image refusée, et dit" eval '((code == 1)) && dit "$BANC/sortie-sig" "expirée ou révoquée"' ||
+  montrer "$BANC/sortie-sig"
+signer_sig "$REVOQUEE" "$S/img/$NOM_SIG" "$S/img/$NOM_SIG.sig"
+sed 's/^:-----BEGIN/-----BEGIN/' "$G/openpgp-revocs.d/$REVOQUEE.rev" | gpg_essai --import
+gpg --homedir "$G" --batch --armor --export "$REVOQUEE" >"$S/cles/arch.asc" 2>/dev/null
+verifier_sig arch "$REVOQUEE"
+code=$?
+voir "clé du projet révoquée : image refusée, et dit" eval '((code == 1)) && dit "$BANC/sortie-sig" "expirée ou révoquée"' ||
+  montrer "$BANC/sortie-sig"
+gpg --homedir "$G" --batch --armor --export "$SIG_COURTE" >"$S/cles/arch.asc" 2>/dev/null
+signer_sig "$SIG_COURTE" "$S/img/$NOM_SIG" "$S/img/$NOM_SIG.sig" --faked-system-time 20200101T120000 \
+  --default-sig-expire 1d
+verifier_sig arch "$SIG_COURTE"
+code=$?
+voir "signature expirée : image refusée, et dit" eval '((code == 1)) && dit "$BANC/sortie-sig" "signature expirée"' ||
+  montrer "$BANC/sortie-sig"
+# Deux signatures sur la liste de Debian, l'une bonne, l'autre d'une clé expirée : la bonne suffit.
+gpg --homedir "$G" --batch --armor --export "$BONNE" "$PERIMEE" >"$S/cles/debian.asc" 2>/dev/null
+signer_sig "$BONNE" "$S/img/SHA512SUMS" "$S/bonne.sig"
+signer_sig "$PERIMEE" "$S/img/SHA512SUMS" "$S/perimee.sig" --faked-system-time 20200101T120000
+cat "$S/perimee.sig" "$S/bonne.sig" >"$S/img/SHA512SUMS.sign"
+verifier_sig debian "$BONNE" "$PERIMEE"
+code=$?
+voir "liste signée deux fois, une bonne et une d'une clé expirée : acceptée" eval '((code == 0))' ||
+  montrer "$BANC/sortie-sig"
+gpgconf --homedir "$G" --kill all 2>/dev/null
+
 # Les essais de Kali qui suivent : allumée par le réglage.
 reglage CLE_SECOURS=oui 'IMAGES_EN_PLUS="kali"'
 
