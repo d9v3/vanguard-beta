@@ -2277,3 +2277,6 @@ fn detail_long_en_temps_borne() {
         debut.elapsed()
     );
 }
+
+/// Banc de non-régression : toutes les entrées des relecteurs, sortie exacte.
+mod banc;
