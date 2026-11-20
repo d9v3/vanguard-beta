@@ -2275,7 +2275,7 @@ fn adresse_web(c: &[char], i: usize) -> Option<usize> {
 /// au milieu d'un jeton base64 n'ouvre pas un chemin qui le couperait en deux. L'accent grave (Markdown, PowerShell)
 /// en est : « \`~/Zoé Martin… » restait entier (relecture 0.97, ronde 6). Pas « < » : « `</div>` » n'est pas un
 /// chemin. La barre verticale (« cat x|/home/alice/… ») en est aussi (relecture 0.97, ronde 9), et un fermant
-/// (« "https://…")/mnt/nas/Zoé Martin/… », « [ok]/srv/… ») : l'essai différentiel de la ronde 12.
+/// (« "https://…")/mnt/nas/Zoé Martin/… », « \[ok\]/srv/… ») : l'essai différentiel de la ronde 12.
 fn avant_chemin(p: Option<char>) -> bool {
     p.is_none_or(|p| p.is_whitespace() || "(\"'=,;:[{>`|)]}".contains(p))
 }
