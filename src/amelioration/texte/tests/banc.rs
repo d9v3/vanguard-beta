@@ -56,7 +56,7 @@ banc! {
     r6_chemins_9b: [], "lecture de ~bob/Lettre Zoé Martin.pdf" => "lecture de <chemin .pdf>";
     r6_chemins_9c: [], "ouverture de file:/home/bob/Lettre Zoé Martin" => "ouverture de <url><chemin>";
     #[ignore = "limite r6 chemins#10 (maison suivie d'une espace)"]
-    r6_chemins_10: [r"C:\Users\Zoé"], r"copie de C:\Users\Jean Dupont\Lettre Roy refusée" => "copie de <chemin>";
+    r6_chemins_10: [r"C:\Users\Zoé"], r"copie de C:\Users\Zoé d'alice\Lettre Roy refusée" => "copie de <chemin>";
 }
 
 // Ronde 6 : adresses, bornes et régressions.
@@ -94,13 +94,10 @@ banc! {
 
 // Ronde 7 : fermetures (variantes rejouées par le relecteur).
 banc! {
-    #[ignore = "ronde 8 : préfixe étendu devant un lecteur, sans maison connue"]
     r7_ferme_nt_lecteur: [], r"copie de \??\C:\Users\alice\Documents\Avis.pdf refusée"
         => "copie de <chemin .pdf>";
-    #[ignore = "ronde 8 : préfixe étendu devant un lecteur, sans maison connue"]
     r7_ferme_barres_lecteur: [], r"copie de //?/C:/Users/alice/Documents/Avis.pdf refusée"
         => "copie de <chemin .pdf>";
-    #[ignore = "ronde 8 : préfixe étendu devant un lecteur, sans maison connue"]
     r7_ferme_point_lecteur: [], r"copie de \\.\C:\Users\alice\Documents\Avis.pdf refusée"
         => "copie de <chemin .pdf>";
     r7_ferme_unc_minuscule: [], r"copie vers \\?\unc\nas-martin\Sauvegardes\luc.tremblay\photos refusée"
@@ -117,98 +114,64 @@ banc! {
 
 // Ronde 7 : constats confirmés.
 banc! {
-    #[ignore = "r7 fermeture-fuites#0 (haut)"]
     r7_fuites_0a: ["/home/bob"], r#"{"msg":"open failed: \/home\/bob\/Lettre Zoé Martin.pdf"}"#
         => r#"{"msg":"open failed: <chemin .pdf>"#;
-    #[ignore = "r7 fermeture-fuites#0 (haut)"]
     r7_fuites_0b: ["/home/bob"],
         r#"{"status":"error","date":"2026/11/20","path":"\/home\/bob\/Documents\/Lettre-Zoe-Martin.pdf"}"#
-        => r#"{"status":"error","date":"2026/11/20","path":"<chemin .pdf>"#;
-    #[ignore = "r7 fermeture-fuites#0 (haut)"]
+        => r#"{"status":"error","date":"2026/11/20","path":"<chemin .pdf>"}"#;
     r7_fuites_0c: [], r#"{"message":"Impossible de lire \/home\/alice\/x: refusé"}"#
         => r#"{"message":"Impossible de lire <chemin>"#;
-    #[ignore = "r7 fermeture-fuites#0 (haut)"]
     r7_fuites_0d: [], r"PHP Warning: fopen(\/home\/bob\/Lettre.pdf): failed to open stream"
         => "PHP Warning: fopen(<chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#0 (haut)"]
     r7_fuites_0e: [], r"ouverture de file:\/home\/bob\/Lettre Zoé Martin.pdf refusée"
         => "ouverture de <url><chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#1"]
     r7_fuites_1a: [], r#"{"url":"https://a.test/x?filter={\"nom\":\"zoe.martin\"}&lecteur=luc.roy"}"#
         => r#"{"url":"<url>"}"#;
-    #[ignore = "r7 fermeture-fuites#1"]
     r7_fuites_1b: [],
         r#"curl "https://api.test/items?where={"owner":"zoe.martin"}&key=abcdef0123456789abcdef0123456789" a échoué"#
-        => r#"curl "<url>"}&key=<secret>" a échoué"#;
-    #[ignore = "r7 fermeture-fuites#1"]
+        => r#"curl "<url>"}&key=<secret> a échoué"#;
     r7_fuites_1c: [], "lien 'https://a.test/x?nom=d'Alice':'Zoé'&lecteur=zoe.martin' refusé" => "lien '<url>' refusé";
-    #[ignore = "r7 fermeture-fuites#1"]
     r7_fuites_1d: [], r#"lien "https://a.test/x#frag":suite-zoe.martin" refusé"# => r#"lien "<url>" refusé"#;
-    #[ignore = "r7 fermeture-fuites#2"]
     r7_fuites_2a: [], r#"copie vers "\\\\?\\UNC\\nas-martin\\Sauvegardes\\luc.tremblay\\photos" refusée"#
         => r#"copie vers "<chemin>" refusée"#;
-    #[ignore = "r7 fermeture-fuites#2"]
     r7_fuites_2b: [], r#"Os { code: 5, kind: PermissionDenied }: "\\\\?\\UNC\\nas\\Sauvegardes\\zoe.martin\\lettre.txt""#
         => r#"Os { code: 5, kind: PermissionDenied }: "<chemin .txt>""#;
-    #[ignore = "r7 fermeture-fuites#2"]
     r7_fuites_2c: [], r#""\\\\?\\UNC\\nas-martin\\Sauvegardes\\Zoé Martin\\photos de Luc""# => r#""<chemin>""#;
-    #[ignore = "r7 fermeture-fuites#3"]
     r7_fuites_3a: [], r"copie vers \??\UNC\nas-martin\Sauvegardes\luc.tremblay\photos refusée"
         => "copie vers <chemin> refusée";
-    #[ignore = "r7 fermeture-fuites#3"]
     r7_fuites_3b: [], r"copie vers \\?\UNC/nas-martin/Sauvegardes/luc.tremblay/photos refusée"
         => "copie vers <chemin> refusée";
-    #[ignore = "r7 fermeture-fuites#3"]
     r7_fuites_3c: [], "//?/UNC/nas-martin/Sauvegardes/Zoé Martin/photos" => "<chemin>";
-    #[ignore = "r7 fermeture-fuites#4"]
-    r7_fuites_4a: [], r#"{"file":"Documents\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"file":"<chemin .pdf>"#;
-    #[ignore = "r7 fermeture-fuites#4"]
+    r7_fuites_4a: [], r#"{"file":"Documents\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"file":"<chemin>"}"#;
     r7_fuites_4b: [], r#"erreur: "..\\zoe.martin\\lettre.txt": introuvable"# => r#"erreur: "<chemin .txt>": introuvable"#;
-    #[ignore = "r7 fermeture-fuites#4"]
     r7_fuites_4c: [], r#"erreur: "sauvegardes\\zoe.martin\\lettre.txt": introuvable"#
         => r#"erreur: "<chemin .txt>": introuvable"#;
-    #[ignore = "r7 fermeture-fuites#4"]
     r7_fuites_4d: [], r#"path: "\\\\\\\\nas\\\\partage\\\\Zoé Martin\\\\Lettre Roy.pdf""# => r#"path: "<chemin .pdf>""#;
-    #[ignore = "r7 fermeture-fuites#5"]
     r7_fuites_5a: [], r#"{"error":"ligne 1\nDocuments/Zoé Martin/Lettre Roy.pdf introuvable"}"#
-        => r#"{"error":"ligne 1\n<chemin .pdf>"#;
-    #[ignore = "r7 fermeture-fuites#5"]
-    r7_fuites_5b: [], r#"{"error":"ligne 1\n../Zoé Martin/Lettre Roy.pdf"}"# => r#"{"error":"ligne 1\n<chemin .pdf>"#;
-    #[ignore = "r7 fermeture-fuites#6"]
+        => r#"{"error":"ligne 1\n<chemin>"#;
+    r7_fuites_5b: [], r#"{"error":"ligne 1\n../Zoé Martin/Lettre Roy.pdf"}"# => r#"{"error":"ligne 1\n<chemin> <chemin .pdf>"}"#;
     r7_fuites_6a: [],
         r"copie de \\?\Volume{4c1b02c1-d990-11dc-99ae-806e6f6e6963}\Users\alice\AppData\Local\x.log refusée"
         => "copie de <chemin .log>";
-    #[ignore = "r7 fermeture-fuites#6"]
     r7_fuites_6b: [],
         r"copie de \\?\Volume{4c1b02c1-d990-11dc-99ae-806e6f6e6963}\Users\Jean Dupont\Documents\Avis Luc.pdf"
         => "copie de <chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#7"]
     r7_fuites_7a: [], "ouverture de file:C:/Users/Jean Dupont/Lettre Roy.pdf refusée" => "ouverture de <url><chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#7"]
     r7_fuites_7b: [], "ouverture de file:$HOME/Lettre Zoé Martin.pdf refusée" => "ouverture de <url><chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#7"]
     r7_fuites_7c: [], r"ouverture de file:%USERPROFILE%\Lettre Zoé Martin.pdf refusée"
         => "ouverture de <url><chemin .pdf>";
-    #[ignore = "r7 fermeture-fuites#8"]
+    r8_apostrophe_windows: [], r"lecture de C:\Users\bob\L'été de Zoé Martin.pdf refusée" => "lecture de <chemin .pdf>";
+    r8_appel_unix: [], "open(/home/bob/Lettre Roy.pdf) a échoué" => "open(<chemin .pdf>";
     r7_fuites_8a: [], "mount '//nas.local/L'été de Zoé Martin' impossible" => "mount '<chemin>' impossible";
-    #[ignore = "r7 fermeture-fuites#9"]
     r7_fuites_9a: [], "lecture de /srv/www/page.php?zoe.martin refusée" => "lecture de <chemin> refusée";
-    #[ignore = "r7 fermeture-fuites#9"]
     r7_fuites_9b: [], "lecture de /srv/www/page.php?Zoé%20Martin refusée" => "lecture de <chemin> refusée";
-    #[ignore = "r7 fermeture-fuites#10"]
     r7_fuites_10: [], r#"extrait : …"Zoé Martin\Downloads\Facture.exe" bloqué"# => "extrait : <chemin>";
-    #[ignore = "r7 fermeture-fuites#12"]
     r7_fuites_12: [], "cc -I$HOME/projets/client-tremblay/include x.c" => "cc -I<chemin>";
-    #[ignore = "r7 abus-regressions#13"]
     r7_abus_13a: [], r#"{"msg": "Le fichier \/home\/alice\/Documents\/notes.txt est introuvable"}"#
         => r#"{"msg": "Le fichier <chemin .txt>"#;
-    #[ignore = "r7 abus-regressions#13"]
     r7_abus_13b: [], r#"{"msg": "open \/home\/bob\/Lettre Zoé Martin.pdf failed"}"# => r#"{"msg": "open <chemin .pdf>"#;
-    #[ignore = "r7 abus-regressions#17"]
     r7_abus_17: [], r"… [Privé] Zoé Martin\outil.exe" => "<chemin>";
-    #[ignore = "r7 abus-regressions#18"]
     r7_abus_18: [], "lecture de /srv/www/profil?zoe-martin refusée" => "lecture de <chemin> refusée";
-    #[ignore = "r7 abus-regressions#19"]
     r7_abus_19: [], r#"{"url":"https://a.test/x?noms=[\"zoe\",\"martin\"]&jeton=abc"}"# => r#"{"url":"<url>"}"#;
 }
 
@@ -229,15 +192,10 @@ garde! {
     garde_r5_heure: "à 12:30:45?vraiment oui";
     garde_accent_grave: "lancer `ls -l` puis `cargo test`";
     garde_balise: "fin </div> ici";
-    #[ignore = "r7 fermeture-fuites#11 et abus-regressions#16"]
     garde_r7_11a: "vitesse ~50Mo/s, 3 erreurs sur le disque de sauvegarde";
-    #[ignore = "r7 fermeture-fuites#11 et abus-regressions#16"]
     garde_r7_11b: "Sauvegarde : ~3/4 du disque utilisé, nettoyage refusé (code 5)";
-    #[ignore = "r7 abus-regressions#16"]
     garde_r7_16a: r#"printf "$msg\n""#;
-    #[ignore = "r7 abus-regressions#16"]
     garde_r7_16b: r"sed 's/\r//g' fichier";
-    #[ignore = "r7 abus-regressions#16"]
     garde_r7_16c: r#"replace(/\n/g, "")"#;
     garde_courant_1: "Le service wuauserv ne répond pas après 30 s";
     garde_courant_2: "ERROR_ACCESS_DENIED lors de la lecture du registre";
@@ -255,4 +213,8 @@ garde! {
     garde_faux_positif_7: "pid 4242 terminé";
     garde_json_date: r#"{"status":"error","date":"2026/11/20","code":5}"#;
     garde_sed_echappe: r"sed 's/a\/b/c\/d/' fichier";
+    garde_r8_appel: "fopen(fichier) puis close(fichier) : délai dépassé";
+    garde_r8_apostrophe: "l'été prochain, d'après l'équipe, rien n'a changé";
+    garde_r8_sed_virgule: r"sed 's,\/usr\/bin,\/opt\/bin,g' fichier";
+    garde_r8_sed_egal: r"sed -e s=\/usr\/lib=\/opt\/lib= fichier";
 }

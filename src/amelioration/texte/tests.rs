@@ -1969,7 +1969,7 @@ fn chemin_personnel_jusqu_a_la_fin_de_la_ligne() {
         ("erreur: /home/alice/Impôts Zoé Martin, refusé", "erreur: <chemin>"),
         (
             "erreur: /home/alice/Documents/Avis d'imposition Zoé Martin.pdf: absent",
-            "erreur: <chemin>",
+            "erreur: <chemin .pdf>",
         ),
         ("vu /home/alice/Documents/Lettre à l'avocat Martin", "vu <chemin>"),
         (
@@ -2264,18 +2264,31 @@ fn basses_de_la_ronde_7() {
     assert!(w.starts_with("il affiche \"…\" puis panique"), "{w:?}");
 }
 
-/// Ronde 7, bas : un détail long fait de barres inverses derrière une adresse ne coûte pas un temps quadratique
-/// (porte du relevé, sans borne avant `sans_urls`).
+/// Ronde 7, bas, refait en ronde 8 : un détail long (barres inverses derrière une adresse, espaces derrière
+/// « www. ») ne coûte pas un temps quadratique. Sans limite en secondes, qui dépend de la machine : (1) au-delà de
+/// `ENTREE_MAX`, doubler l'entrée ne change pas la sortie, donc rien de plus n'est lu ; (2) sous la borne, doubler
+/// l'entrée multiplie le temps par environ 2 (moins de 3 ; un coût quadratique donnerait 4), meilleur de 5 essais.
 #[test]
-fn detail_long_en_temps_borne() {
-    let debut = std::time::Instant::now();
-    let _ = crate::amelioration::texte(&format!("\"file:///home/x/{}", "\\".repeat(100_000)));
-    let _ = crate::amelioration::texte(&format!("www.a{}", " ".repeat(100_000)));
-    assert!(
-        debut.elapsed() < std::time::Duration::from_secs(3),
-        "{:?}",
-        debut.elapsed()
-    );
+fn detail_long_croissance_lineaire() {
+    let barres = |n: usize| format!("\"file:///home/x/{}", "\\".repeat(n));
+    let espaces = |n: usize| format!("www.a{}", " ".repeat(n));
+    for entree in [barres, espaces] {
+        let grand = sans_urls(&entree(100_000));
+        assert_eq!(grand, sans_urls(&entree(200_000)));
+        assert!(grand.len() <= super::ENTREE_MAX + 16, "{}", grand.len());
+        let temps = |n: usize| {
+            (0..5)
+                .map(|_| {
+                    let debut = std::time::Instant::now();
+                    let _ = crate::amelioration::texte(&entree(n));
+                    debut.elapsed()
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        let (petit, double) = (temps(3_000), temps(6_000));
+        assert!(double < petit.saturating_mul(3), "{petit:?} puis {double:?}");
+    }
 }
 
 /// Banc de non-régression : toutes les entrées des relecteurs, sortie exacte.
