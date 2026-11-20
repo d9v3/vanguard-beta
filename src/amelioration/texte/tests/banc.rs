@@ -218,14 +218,14 @@ banc! {
     r8_ff0a: [], r#"{"error":"cannot open `\/home\/alice\/Documents\/x.txt`"}"# => "{\"error\":\"cannot open `<chemin .txt>";
     r8_ff0b: [], r#"{"cmd":"echo x >\/home\/alice\/Documents\/x.txt"}"# => r#"{"cmd":"echo x ><chemin .txt>"#;
     r8_ff0c: [], r#"{"cmd":"ls;\/home\/alice\/bin\/outil"}"# => r#"{"cmd":"ls;<chemin>"#;
-    r8_ff0d: [], r#"{"msg":"<\/home\/alice\/x.txt>"}"# => r#"{"msg":"</home/<compte><chemin .txt>>"}"#;
+    r8_ff0d: [], r#"{"msg":"<\/home\/alice\/x.txt>"}"# => r#"{"msg":"<<chemin .txt>"#;
     r8_ff0e: ["/home/bob"], r#"{"a":">\/home\/bob\/Lettre Zoé Martin.pdf"}"# => r#"{"a":"><chemin .pdf>"#;
     r8_ff0f: [], r#"{"cmd":"cat x|\/home\/alice\/bin\/outil"}"# => r#"{"cmd":"cat x|<chemin>"#;
     r8_ff0g: ["/home/alice"], r#"{"error":"cannot open `\/home\/alice\/Documents\/x.txt`"}"# => "{\"error\":\"cannot open `<chemin .txt>";
     r8_ff1a: ["/home/alice"], r"sed -i 's/\/home\/alice\/projets/\/srv/' conf.ini" => "sed -i 's/<chemin>";
     r8_ff1b: ["/home/alice"], r"awk '/\/home\/alice\/projets/{print}' conf.ini" => "awk '<chemin>' conf.ini";
     r8_ff1c: ["/home/alice"], r"sed -i 's,\/home\/alice,\/home\/bob,g' /etc/passwd" => "sed -i 's,~,<chemin>";
-    r8_ff1d: [], r"sed 's\/home\/alice\/projets\/x\/' f" => "sed '<jeton>' f";
+    r8_ff1d: [], r"sed 's\/home\/alice\/projets\/x\/' f" => "sed '<chemin>' f";
     r8_ff1e: [], r"s,\/home\/alice\/Documents\/lettre.txt" => "s,<chemin .txt>";
     r8_ff2a: [], r#"{"msg":"copie refusée\n\\\\nas\\partage\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"msg":"copie <chemin .pdf>"}"#;
     r8_ff2b: [], r#"{"msg":"ligne 1\n\\\\nas\\alice"}"# => r#"{"msg":"ligne 1\n<chemin>"}"#;
@@ -294,9 +294,9 @@ banc! {
     r9_ff1d: [], r#"{"cmd":"cat x|\/mnt\/c\/Users\/zoe.martin\/bin\/outil"}"# => r#"{"cmd":"cat x|<chemin>"#;
     r9_ff1e: [], r#"{"error":"cannot open `\/run\/media\/zoe.martin\/CLE\/Lettre Roy.pdf`"}"# => r#"{"error":"cannot open `<chemin .pdf>"#;
     r9_ff1f: [], r#"{"cmd":"ls;\/mnt\/nas\/Zoé Martin\/Lettre Roy.pdf"}"# => r#"{"cmd":"ls;<chemin .pdf>"}"#;
-    r9_ff2a: [], r"sed 's/\/Users\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
-    r9_ff2b: [], r"sed 's/\/home\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
-    r9_ff2c: [], r"sed 's/\/mnt\/nas\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
+    r9_ff2a: [], r"sed 's/\/Users\/Zoé Martin\/Documents/x/' f" => "sed '<chemin>' f";
+    r9_ff2b: [], r"sed 's/\/home\/Zoé Martin\/Documents/x/' f" => "sed '<chemin>' f";
+    r9_ff2c: [], r"sed 's/\/mnt\/nas\/Zoé Martin\/Documents/x/' f" => "sed '<chemin>' f";
     r9_ff3: [r"/srv/comptes/zoe.martin"], r"sed -i 's/\\/srv\\/comptes\\/zoe.martin\\/projets/x/' conf.ini" => r"sed -i 's/<chemin>";
     r9_ff4a: [], r#"{"msg":"ligne 1\u000A\\\\nas\\partage\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"msg":"ligne <chemin .pdf>"}"#;
     r9_ff4b: [], r#"{"msg":"\u001b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u001b[0m"}"# => r#"{"msg":"<chemin .pdf>"}"#;
@@ -450,7 +450,7 @@ banc! {
 banc! {
     // Couleur entre un mot et un chemin (régression r11) : le repère ouvre le chemin.
     r12_ff1a: [], "Fichier\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => "Fichier <chemin>";
-    r12_ff1b: [], "[ok]\u{1b}[0m/srv/zmartin/projet" => "[ok] <chemin>";
+    r12_ff1b: [], "[ok]\u{1b}[0m/srv/zmartin/projet" => "[ok]<chemin>";
     r12_ff1c: [], "\u{1b}[36mINFO\u{1b}[0m\u{1b}[2m/srv/zmartin/projet\u{1b}[0m: ouvert" => "INFO <chemin>: ouvert";
     r12_ff1d: [], "\u{1b}[31m✗\u{1b}[0m/mnt/nas/Zoé Martin/Lettres" => "✗ <chemin>";
     r12_ff1e: [], "\u{1b}[90m12:00\u{1b}[0m/srv/zmartin/projet" => "12:00 <chemin>";
@@ -458,7 +458,7 @@ banc! {
     r12_ff1g: [], r"Erreur\x1b[0m\\nas\Clients\Zoé Martin\Lettres" => "Erreur <chemin>";
     r12_ff1h: [], "lecture de\u{1b}]0;titre\u{7}\\\\nas\\Clients\\Zoé Martin\\x" => "lecture de <chemin>";
     r12_ff1i: [], r"Erreur\x1b[0m/srv/partage/Zoé Martin/notes" => "Erreur <chemin>";
-    r12_ff1j: [], r"Erreur\x1b[31mDocuments/Zoé Martin/notes\x1b[0m introuvable" => "Erreur <chemin> introuvable";
+    r12_ff1j: [], r"Erreur\x1b[31mDocuments/Zoé Martin/notes\x1b[0m introuvable" => "Erreur <chemin>";
     r12_ff1k: [], "OK\u{1b}[0m/mnt/nas/Luc Roy/notes" => "OK <chemin>";
     r12_ff1l: [], "100%\u{1b}[0m/mnt/nas/Luc Roy/x" => "100% <chemin>";
     r12_ff1m: [], "→\u{1b}[0m/mnt/nas/Luc Roy/x.pdf" => "→ <chemin .pdf>";
@@ -468,20 +468,20 @@ banc! {
     r12_ff1p: [], "https://exemple.com/x?nom=Zoé\u{1b}[01;31m\u{1b}[K+\u{1b}[m\u{1b}[KMartin" => "<url>";
     // Titre de terminal (OSC) ouvert par un vrai ESC : ni « \A » ni « \a » ne le ferme.
     r12_ff2a: [], "\u{1b}]9;9;C:\\Users\\alice\\Avis Roy\u{1b}\\PS>" => "PS>";
-    r12_ff2b: [], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS C:\\> dir" => "PS C:\\> dir";
+    r12_ff2b: [], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS C:\\> dir" => "PS <chemin>> dir";
     r12_ff2c: [], "\u{1b}]0;C:\\Users\\Zoé\\Projets\\Zoé Martin\u{7}PS>" => "PS>";
     r12_ff2d: [], "\u{1b}]0;D:\\Archives\\Zoé Martin\u{7}suite" => "suite";
     r12_ff2e: [r"C:\Users\alice"], "\u{1b}]0;C:\\Users\\alice\\Documents\u{7}PS>" => "PS>";
     // Adresse à requête entre guillemets suivie d'un chemin à espace.
-    r12_ff3a: [], r#""https://exemple.com/x?a=1"\n/mnt/nas/Zoé Martin/Lettres"# => r#""<url>"\n<chemin>"#;
+    r12_ff3a: [], r#""https://exemple.com/x?a=1"\n/mnt/nas/Zoé Martin/Lettres"# => "\"<url>\"<chemin>";
     r12_ff3b: [], r#""https://exemple.com/x?a=1":/mnt/nas/Zoé Martin/Lettres"# => r#""<url>":<chemin>"#;
     r12_ff3c: [], r#""https://exemple.com/x?a=1"\nC:\Users\Zoé\Zoé Martin\Lettres"# => r#""<url>"\n<chemin>"#;
-    r12_ff3d: [], r"'https://exemple.com/x?a=1'\n/mnt/nas/Zoé Martin/Lettres" => r"'<url>'\n<chemin>";
+    r12_ff3d: [], r"'https://exemple.com/x?a=1'\n/mnt/nas/Zoé Martin/Lettres" => "'<url>'<chemin>";
     // Requête à espace, guillemet fermant suivi d'une ponctuation.
     r12_ff4a: [], r#"fetch("https://exemple.com/x?nom=Zoé Martin")"# => r#"fetch("<url>")"#;
     r12_ff4b: [], r#"requests.get("https://exemple.com/x?nom=Zoé Martin"): 403"# => r#"requests.get("<url>"): 403"#;
     r12_ff4c: [], r#"curl "https://exemple.com/x?nom=Zoé Martin"; echo"# => r#"curl "<url>"; echo"#;
-    r12_ff4d: [], r#"<a href="https://exemple.com/x?nom=Zoé Martin">lien</a>"# => r#" a href="<url>" lien /a "#;
+    r12_ff4d: [], r#"<a href="https://exemple.com/x?nom=Zoé Martin">lien</a>"# => "<a href=\"<url>\">lien</a>";
     r12_ff4e: [], r#"curl "https://exemple.com/x?nom=Zoé Martin"|jq"# => r#"curl "<url>"|jq"#;
     // Chemin relatif dont le nom porte une apostrophe, une virgule ou une initiale.
     r12_ff5a: [], r#"{"file":"clients/Zoé Martin/Avis d'imposition 2024.pdf"}"# => r#"{"file":"<chemin .pdf>"}"#;
@@ -492,17 +492,17 @@ banc! {
     r12_ff5f: [], r#"{"file":"clients/Zoé M. Martin/Lettre.pdf"}"# => r#"{"file":"<chemin .pdf>"}"#;
     r12_ff5g: [], r#"{"file":"clients/Zoé Martin Jr./Lettre.pdf"}"# => r#"{"file":"<chemin .pdf>"}"#;
     // Option collée à un chemin relatif ou à un nom de fichier nu (régression r11).
-    r12_ff6a: [], "gcc -I../../Zoé-Martin/include -L../../Zoé-Martin/lib x.c" => "gcc <chemin> <chemin> x.c";
-    r12_ff6b: [], "gcc -I./Documents/zoe.martin/include x.c" => "gcc <chemin> x.c";
+    r12_ff6a: [], "gcc -I../../Zoé-Martin/include -L../../Zoé-Martin/lib x.c" => "gcc <chemin> <chemin>";
+    r12_ff6b: [], "gcc -I./Documents/zoe.martin/include x.c" => "gcc <chemin>";
     r12_ff6c: [], "pdftk -oLettre-Zoé-Martin.pdf" => "pdftk <chemin .pdf>";
     r12_ff6d: [], "javac -cp../lib/zoe.martin.jar X.java" => "javac <chemin .jar> X.java";
-    r12_ff6e: [], r"gcc -Iclients\Zoé-Martin\include\x.h x.c" => "gcc <chemin .h> x.c";
-    r12_ff6f: [], "cc -I./Zoé-Martin/include x.c" => "cc <chemin> x.c";
-    r12_ff6g: [], "cc -Wl,-rpath/mnt/nas/Zoé-Martin/lib x.c" => "cc -Wl,-rpath<chemin> x.c";
+    r12_ff6e: [], r"gcc -Iclients\Zoé-Martin\include\x.h x.c" => "gcc <chemin> x.c";
+    r12_ff6f: [], "cc -I./Zoé-Martin/include x.c" => "cc <chemin>";
+    r12_ff6g: [], "cc -Wl,-rpath/mnt/nas/Zoé-Martin/lib x.c" => "cc -Wl,-rpath<chemin>";
     // Séquences de terminal rares.
     r12_ff7a: [], "\u{1b}[2 q/srv/zmartin/projet $ ls" => "<chemin> $ ls";
     r12_ff7b: [], "\u{9b}1;34m/mnt/nas/Zoé Martin/Lettres\u{9b}0m" => "<chemin>";
-    r12_ff7c: [], "\u{1b}k/srv/zmartin/projet\u{1b}\\ suite" => "suite";
+    r12_ff7c: [], "\u{1b}k/srv/zmartin/projet\u{1b}\\ suite" => " suite";
     r12_ff7d: [], "\u{1b}7/srv/zmartin/projet" => "<chemin>";
     r12_ff7e: [], "\u{1b}#8/mnt/data/zoe.martin/build" => "<chemin>";
     r12_ff7f: [], "\u{1b}OA/srv/zmartin/projet" => "<chemin>";
@@ -515,14 +515,30 @@ banc! {
     r12_ff8f: [], "cat%00/srv/zmartin/projet" => "cat%00<chemin>";
     r12_ff8g: [], "cat␊/srv/zmartin/projet" => "cat␊<chemin>";
     // Chemin relatif fini par une barre suivie d'un guillemet ou d'une ponctuation.
-    r12_ff9a: [], r#"cd "Documents/Zoé Martin/" && ls"# => r#"cd "<chemin>/" && ls"#;
-    r12_ff9b: [], "cat Documents/Zoé Martin/*.pdf" => "cat <chemin>/*.pdf";
-    r12_ff9c: [], "tar: Documents/Zoé Martin/: Permission non accordée" => "tar: <chemin>/: Permission non accordée";
-    r12_ff9d: [], "cd Documents/Zoé Martin/; ls" => "cd <chemin>/; ls";
-    r12_ff9e: [], r"Documents\Zoé Martin\: refusé" => r"<chemin>\: refusé";
+    r12_ff9a: [], r#"cd "Documents/Zoé Martin/" && ls"# => "cd \"<chemin>\" && ls";
+    r12_ff9b: [], "cat Documents/Zoé Martin/*.pdf" => "cat <chemin>";
+    r12_ff9c: [], "tar: Documents/Zoé Martin/: Permission non accordée" => "tar: <chemin>";
+    r12_ff9d: [], "cd Documents/Zoé Martin/; ls" => "cd <chemin>";
+    r12_ff9e: [], r"Documents\Zoé Martin\: refusé" => "<chemin>";
     // Adresses : premier guillemet qui ferme, ouvrant échappé.
     r12_ab0a: [], r#""url": "https://x.test/a?b=c d", "nom": "Luc""# => r#""url": "<url>", "nom": "Luc""#;
     r12_ab0b: [], r#"stderr: {\"url\":\"https://x.test/a?nom=Zoé Martin\"} refusé"# => r#"stderr: {\"url\":\"<url>\"} refusé"#;
+    r12_heure: [], "12:00/srv/zmartin/projet" => "12:00<chemin>";
+    r12_balise: [], "ok</srv/zmartin/x>" => "ok<<chemin>>";
+    r12_fermante: [], "voir (x)/srv/zmartin/projet" => "voir (x)<chemin>";
+    r12_arobase_unc: [], r"zoe.martin@exemple.test\\nas\Clients\Zoé Martin\x" => "<adresse>";
+    r12_prolonge_egal: [], r"/srv/zmartin/projet=\\nas\Clients\Zoé Martin\x" => "<chemin>";
+    r12_recolle: [], "ab\u{1b}[0mcd" => "abcd";
+    r12_capitale: [], "Erreur\u{1b}[0mDocuments/Zoé Martin/notes" => "Erreur <chemin>";
+    r12_dans_chemin: [], "voir /mnt/nas/Zoé\u{1b}[0m/Martin/x" => "voir <chemin>";
+    r12_dollar: [], "$HOME\u{1b}[0m/zmartin/x" => "<chemin>";
+    r12_heure_apres_chiffre: [], "112:00/srv/zmartin/projet" => "112:00<chemin>";
+    r12_mot_lie: [], "voir zoe\u{1b}[31m.martin/notes" => "voir <chemin>";
+    r12_recolle_nom: [], "voir zoe.mar\u{1b}[0mtin/notes" => "voir <chemin>";
+    r12_prolonge_disque: [], r"/srv/zmartin/projet=D:\Clients\Zoé Martin\x" => "<chemin>";
+    r12_points: [], "..\u{1b}[0m/zmartin/x.rs" => "<chemin>";
+    r12_deux_couleurs: [], "/mnt/nas/Zoé Martin/Lettres\u{1b}[0m\\\\nas\\Clients\\Zoé Mar\u{1b}[0mtin\\x" => "<chemin> <chemin>";
+    r12_recolle_dossier: [], "proj\u{1b}[mets/zoe.martin/notes" => "<chemin>";
     r12_ab0c: [], r#"args: [\"curl\", \"https://x.test/a?nom=Zoé Martin\"]"# => r#"args: [\"curl\", \"<url>\"]"#;
 }
 
