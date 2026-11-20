@@ -694,7 +694,9 @@ gardes :
   ne reçoit qu'un état qu'elle ne peut pas changer : rien ne s'y lance, rien n'en est écrit).
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
-  pas posée à côté, quand son empreinte n'est pas celle gravée dans ce `vanguard` (ou qu'il n'en grave aucune), quand
+  pas posée à côté (le menu le dit alors et, si aucune autre garde ne joue, propose de l'ajouter par la mise à jour
+  vérifiée, jamais par un autre chemin), quand son empreinte n'est pas celle gravée dans ce `vanguard` (ou qu'il
+  n'en grave aucune), quand
   (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni les autres ne peuvent
   modifier, dans des dossiers que ni le groupe ni les autres ne peuvent modifier, quand le fichier en mémoire ne peut
   pas être lancé (noyau réglé `vm.memfd_noexec=2`, politique SELinux ou AppArmor qui le refuse : jamais de repli vers

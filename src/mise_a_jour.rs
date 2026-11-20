@@ -349,6 +349,70 @@ pub fn avertissement(touche: &str) -> Option<String> {
     })
 }
 
+/// La ligne du menu quand la fenêtre manquait au lancement (`lancer_fenetre::absente`, C-6, 0.97) : elle propose de
+/// l'ajouter par `touche` (« Mettre Vanguard à jour »), seul chemin qui la télécharge, la vérifie contre l'empreinte
+/// gravée et la pose, après l'avoir montrée ; ou, si la mise à jour ne le pourrait pas d'ici, pourquoi, sans rien
+/// proposer.
+pub(crate) fn fenetre_absente(programme: &Path, fenetre: &Path, touche: &str) -> String {
+    ligne_fenetre_absente(
+        empechement_fenetre(programme, fenetre, crate::parametres::hors_ligne()),
+        touche,
+    )
+}
+
+fn ligne_fenetre_absente(empechement: Option<&str>, touche: &str) -> String {
+    match empechement {
+        None => trf!(
+            "Fenêtre de Vanguard absente : {touche} l'ajoute, vérifiée.",
+            "Vanguard window missing: {touche} adds it, verified."
+        ),
+        Some(pourquoi) => trf!(
+            "Fenêtre de Vanguard absente : {pourquoi}.",
+            "Vanguard window missing: {pourquoi}."
+        ),
+    }
+}
+
+/// Ce qui, su d'ici et sans réseau, empêcherait la mise à jour d'ajouter `fenetre` à côté de `programme` ; `None` :
+/// rien, et la mise à jour juge le reste (version publiée, signature) et le dit. Les cas mêmes où elle refuserait :
+/// sans Internet, un programme de la clé ou temporaire (jamais une cible, `cibles_github`), un programme qu'elle ne
+/// remplace pas d'ici (root), un dossier que le lancement refuse (`sa_fenetre::seule_a_poser`), un dossier que ce
+/// compte ne peut pas écrire.
+fn empechement_fenetre(programme: &Path, fenetre: &Path, hors_ligne: bool) -> Option<&'static str> {
+    if hors_ligne {
+        return Some(tr!(
+            "sans Internet, impossible de l'ajouter",
+            "offline, it cannot be added"
+        ));
+    }
+    if crate::protection::cle::programme_ephemere(programme) {
+        return Some(tr!(
+            "lancé de la clé, pas d'ajout d'ici",
+            "started from the key, not added here"
+        ));
+    }
+    if !remplacable_ici(programme) {
+        return Some(tr!(
+            "ce programme ne se met pas à jour d'ici",
+            "this program is not updated from here"
+        ));
+    }
+    if crate::demarrage::lancer_fenetre::dossiers_refuses(fenetre).is_some() {
+        return Some(tr!(
+            "son dossier est refusé au lancement",
+            "its folder is refused at launch"
+        ));
+    }
+    #[cfg(unix)]
+    if fenetre.parent().is_none_or(|d| !crate::socle::ecrivable(d)) {
+        return Some(tr!(
+            "son dossier n'est pas modifiable ici",
+            "its folder cannot be changed here"
+        ));
+    }
+    None
+}
+
 /// Ce que la mise à jour depuis GitHub remplace : la copie de cet ordinateur, et le programme lancé s'il n'est ni
 /// sur la clé (elle se met à jour chez son propriétaire) ni cette copie.
 fn cibles_github() -> Vec<PathBuf> {
@@ -5143,5 +5207,49 @@ mod tests {
             assert!(std::fs::symlink_metadata(provisoire).is_err(), "{e}");
         }
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// C-6 (0.97) : la fenêtre absente au lancement, dans un dossier que la mise à jour peut écrire, est proposée par
+    /// l'entrée qui met à jour ; sans Internet, ou dans un dossier que ce compte ne peut pas écrire, rien n'est
+    /// proposé et la raison est dite. Chaque ligne tient dans la largeur, avec sa marque, dans les deux langues.
+    #[cfg(unix)]
+    #[test]
+    fn fenetre_absente_proposee_seulement_si_la_mise_a_jour_le_peut() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::socle::euid() == 0 {
+            return crate::essais::saute("en root, tout dossier s'écrit");
+        }
+        let dossier = crate::essais::temporaire().join(crate::essais::nom_unique("fenetre-absente-maj"));
+        std::fs::create_dir_all(&dossier).unwrap();
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let programme = dossier.join(NOM);
+        std::fs::write(&programme, b"un programme invente").unwrap();
+        let fenetre = dossier.join("vanguard-fenetre");
+        assert_eq!(empechement_fenetre(&programme, &fenetre, false), None);
+        let proposee = ligne_fenetre_absente(empechement_fenetre(&programme, &fenetre, false), "13.3");
+        assert!(proposee.contains("13.3"), "{proposee}");
+        let hors_ligne = empechement_fenetre(&programme, &fenetre, true);
+        assert!(hors_ligne.is_some(), "sans Internet : rien à proposer");
+        let dite = ligne_fenetre_absente(hors_ligne, "13.3");
+        assert!(!dite.contains("13.3"), "{dite}");
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let fige = empechement_fenetre(&programme, &fenetre, false);
+        // Chaque raison possible, relue dans la langue du tour, avec sa marque : elle tient dans la largeur.
+        let lignes = || {
+            [
+                None,
+                empechement_fenetre(&programme, &fenetre, true),
+                empechement_fenetre(&programme, &fenetre, false),
+            ]
+            .map(|e| format!("  › {}", ligne_fenetre_absente(e, "13.3")))
+        };
+        let toutes = [lignes(), crate::langue::en_anglais(lignes)];
+        std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(fige.is_some(), "dossier non modifiable : rien à proposer");
+        assert!(!ligne_fenetre_absente(fige, "13.3").contains("13.3"));
+        for l in toutes.iter().flatten() {
+            assert!(largeur_affichee(l) <= LARGEUR, "trop large : {l}");
+        }
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 }

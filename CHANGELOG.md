@@ -69,6 +69,10 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   nom, pas ses nombres). Par la porte des assistants, aucune de ces formes ne sort : ce ne sont pas des mots
   de Vanguard.
 
+- **Fenêtre absente : le menu le dit et propose de l'ajouter.** Quand rien d'autre ne garde le menu, il dit en une
+  ligne que la fenêtre manque et donne l'entrée « Mettre Vanguard à jour », qui l'ajoute après l'avoir montrée,
+  vérifiée contre l'empreinte gravée. En SSH, au Bureau à distance, en administrateur ou sans écran, rien n'est
+  proposé ; sans Internet, depuis la clé ou dans un dossier qu'on ne peut pas écrire, la raison est dite.
 - **Fenêtre : une rubrique en liste et page, en un clic.** Dans une fenêtre large, une rubrique montre à gauche la liste
   de ses commandes (titre et état) et à droite la page de la commande choisie ; un clic dans la liste change la page
   sans rien ajouter à Retour, ↑ et ↓ changent de commande, Entrée ou F5 la relancent, jamais pendant une saisie. Une

@@ -9,7 +9,8 @@
 //!
 //! Le menu reste le choix sûr : sans terminal des deux côtés (un script qui écrit les choix, une sortie redirigée),
 //! en SSH ou au Bureau à distance, en administrateur, sans écran graphique, sans fenêtre posée à côté, avec une fenêtre que d'autres
-//! comptes pourraient remplacer, ou si elle ne dit pas « ouverte » à temps. `vanguard --menu` le force.
+//! comptes pourraient remplacer, ou si elle ne dit pas « ouverte » à temps. `vanguard --menu` le force. Sans fenêtre
+//! posée à côté, quand rien d'autre ne garde le menu, il le dit et propose de l'ajouter (`absente`, C-6, 0.97).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -312,12 +313,39 @@ pub(crate) fn ouvrir() -> bool {
     ouvrir_depuis(contexte(), &chemin, &programme)
 }
 
-/// `ouvrir`, pour un contexte, un chemin de fenêtre et un programme d'origine donnés (les essais).
-fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
+/// La fenêtre que le lancement a cherchée et pas trouvée, alors que tout le reste la voulait (C-6, 0.97) : le
+/// programme d'origine et le chemin cherché. Le menu le dit et propose de l'ajouter par la mise à jour
+/// (`mise_a_jour::fenetre_absente`), qui seule la télécharge, la vérifie et la pose.
+static ABSENTE: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// La fenêtre trouvée absente au lancement (programme, chemin de la fenêtre), si elle l'est encore : posée depuis (la
+/// mise à jour vient de l'ajouter), le menu n'en dit plus rien.
+pub(crate) fn absente() -> Option<(&'static Path, &'static Path)> {
+    ABSENTE
+        .get()
+        .filter(|(_, f)| std::fs::symlink_metadata(f).is_err())
+        .map(|(p, f)| (p.as_path(), f.as_path()))
+}
+
+/// Ce que décide le lancement avant de lancer quoi que ce soit.
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// Le menu, sans rien proposer : une garde tient (pas de terminal, pas d'écran, à distance, administrateur,
+    /// bibliothèque injectée, fenêtre non livrée), ou ce qui la refuse est déjà dit.
+    Menu,
+    /// Tout voulait la fenêtre, mais aucun fichier n'est posé à côté : le menu, qui le dit et propose de l'ajouter.
+    Absente,
+    /// Un fichier est là : à juger puis lancer.
+    Lancer,
+}
+
+/// La décision pour un contexte, une fenêtre livrée ou non (`livree`, son empreinte gravée) et un chemin donnés.
+/// Une garde du contexte passe toujours avant l'absence : en SSH, en administrateur ou sans écran, rien n'est proposé.
+fn decider(c: Contexte, livree: bool, chemin: &Path) -> Decision {
     if !choisir(c) {
-        return false;
+        return Decision::Menu;
     }
-    if !fenetre_livree() {
+    if !livree {
         // Quelqu'un attendait la fenêtre (un fichier à son nom est posé à côté) : le dire, sans rien lancer.
         if std::fs::symlink_metadata(chemin).is_ok() {
             eprintln!(
@@ -328,12 +356,33 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
                 )
             );
         }
-        return false;
+        return Decision::Menu;
+    }
+    // symlink_metadata : un lien n'est pas suivi, il est refusé plus loin (pas un fichier ordinaire).
+    if std::fs::symlink_metadata(chemin).is_err() {
+        // Une bibliothèque injectée refuserait aussi la fenêtre une fois posée : rien à proposer, l'alerte le dit.
+        return if refus_du_contexte(c).is_some() {
+            Decision::Menu
+        } else {
+            Decision::Absente
+        };
+    }
+    Decision::Lancer
+}
+
+/// `ouvrir`, pour un contexte, un chemin de fenêtre et un programme d'origine donnés (les essais).
+fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
+    match decider(c, fenetre_livree(), chemin) {
+        Decision::Menu => return false,
+        Decision::Absente => {
+            let _ = ABSENTE.set((programme.to_path_buf(), chemin.to_path_buf()));
+            return false;
+        }
+        Decision::Lancer => {}
     }
     let chemin = chemin.to_path_buf();
-    // symlink_metadata : un lien n'est pas suivi, il est refusé (pas un fichier ordinaire).
+    // Disparue depuis la décision : le menu, comme si elle n'avait jamais été là.
     let Ok(m) = std::fs::symlink_metadata(&chemin) else {
-        // Pas de fenêtre posée à côté (un Vanguard sans elle) : le menu, sans un mot.
         return false;
     };
     #[cfg(unix)]
@@ -798,6 +847,78 @@ mod tests {
         // En administrateur : le menu, jamais une fenêtre avec tous les droits.
         assert!(!choisir(Contexte { eleve: true, ..devant }));
         assert!(!choisir(Contexte::default()));
+    }
+
+    /// C-6 (0.97) : une fenêtre livrée mais absente, quand tout la voulait, est dite au menu (`Absente`) ; un fichier
+    /// posé, lui, est à juger puis lancer.
+    #[test]
+    fn une_fenetre_absente_est_dite_quand_tout_la_voulait() {
+        let dossier = crate::essais::temporaire().join(crate::essais::nom_unique("fenetre-absente-dite"));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let absente = dossier.join("vanguard-fenetre");
+        let devant = Contexte {
+            terminal: true,
+            graphique: true,
+            a_distance: false,
+            eleve: false,
+            injection: false,
+        };
+        assert_eq!(decider(devant, true, &absente), Decision::Absente);
+        std::fs::write(&absente, b"une fenetre inventee").unwrap();
+        assert_eq!(
+            decider(devant, true, &absente),
+            Decision::Lancer,
+            "posée : jugée puis lancée"
+        );
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// C-6 (0.97) : quand une garde tient (pas de terminal, pas d'écran, SSH ou Bureau à distance, administrateur,
+    /// bibliothèque injectée, fenêtre non livrée), une fenêtre absente n'est jamais proposée : le menu, comme avant.
+    #[test]
+    fn une_garde_ne_propose_jamais_la_fenetre_absente() {
+        let absente = crate::essais::temporaire().join(crate::essais::nom_unique("fenetre-absente-gardee"));
+        let devant = Contexte {
+            terminal: true,
+            graphique: true,
+            a_distance: false,
+            eleve: false,
+            injection: false,
+        };
+        for (garde, c) in [
+            (
+                "pas de terminal",
+                Contexte {
+                    terminal: false,
+                    ..devant
+                },
+            ),
+            (
+                "pas d'écran",
+                Contexte {
+                    graphique: false,
+                    ..devant
+                },
+            ),
+            (
+                "à distance",
+                Contexte {
+                    a_distance: true,
+                    ..devant
+                },
+            ),
+            ("administrateur", Contexte { eleve: true, ..devant }),
+            (
+                "bibliothèque injectée",
+                Contexte {
+                    injection: true,
+                    ..devant
+                },
+            ),
+        ] {
+            assert_eq!(decider(c, true, &absente), Decision::Menu, "{garde}");
+        }
+        assert_eq!(decider(devant, false, &absente), Decision::Menu, "non livrée");
     }
 
     /// La fenêtre n'est livrée que par une empreinte gravée : « aucune » (`cargo build`, les essais) ou une marque

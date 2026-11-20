@@ -662,7 +662,9 @@ safeguards:
   gets a state it cannot change: nothing starts from it, nothing is written from it).
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
-  it is not placed next to `vanguard`, when its fingerprint is not the one engraved in this `vanguard` (or it engraves
+  it is not placed next to `vanguard` (the menu then says so and, if no other guard applies, offers to add it through
+  the verified update, never another path), when its fingerprint is not the one engraved in this `vanguard` (or it
+  engraves
   none), when (on Linux) it is not a regular file owned by this account or root that neither the group nor others
   can modify, in folders that neither the group nor others can modify, when the in-memory file cannot be started (a
   kernel set to `vm.memfd_noexec=2`, an SELinux or AppArmor policy refusing it: never a fallback to the path), or

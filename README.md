@@ -830,7 +830,8 @@ versions](../../releases/latest), avec les empreintes SHA-256. Ce qu'a apporté 
   dossier que le programme, sous ce nom. Sur un bureau graphique, `vanguard` l'ouvre alors au lieu du menu, seulement
   si son empreinte est celle gravée en lui à la compilation (la fenêtre d'une autre version n'est pas lancée). Le menu
   du terminal reste là sans fenêtre posée à côté, en SSH ou au Bureau à distance, en administrateur, ou sans terminal ;
-  `vanguard --menu` le force. Sous Linux, la fenêtre demande la bibliothèque C glibc, celle de presque toutes les
+  `vanguard --menu` le force. Sans fenêtre posée, il le dit et propose de l'ajouter par « Mettre Vanguard à jour ».
+  Sous Linux, la fenêtre demande la bibliothèque C glibc, celle de presque toutes les
   distributions (le programme, lui, n'en dépend pas) : sur une distribution sans glibc (Alpine, par exemple), prendre
   le menu du terminal. Une fois posée, la mise à jour intégrée la remplace avec le programme.
 - **Depuis la clé USB** : `Windows/vanguard.exe` ou `Linux/vanguard` ; le guide de la clé est dans `LISEZMOI.txt`.

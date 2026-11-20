@@ -63,6 +63,10 @@ example, finds it, to rebuild it if needed.
   taken for an address even when named ("version 6.1.0.2" keeps its name, not its numbers). Through the assistants'
   door none of these forms comes out: they are not Vanguard's words.
 
+- **Missing window: the menu says so and offers to add it.** When nothing else keeps the menu, it says in one line
+  that the window is missing and points to "Update Vanguard", which adds it after showing it, checked against the
+  built-in fingerprint. Over SSH, Remote Desktop, as administrator or without a screen, nothing is offered; offline,
+  from the key or in a folder that cannot be written, the reason is given.
 - **Window: a section as list and page, in one click.** In a wide window, a section shows the list of its commands
   (title and state) on the left and the chosen command's page on the right; a click in the list changes the page without
   adding anything to Back, ↑ and ↓ change command, Enter or F5 rerun it, never while typing. A narrow window keeps its

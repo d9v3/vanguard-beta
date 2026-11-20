@@ -784,7 +784,8 @@ with the SHA-256 checksums. What each version brought: [history](CHANGELOG.en.md
   folder as the program, under that name. On a graphical desktop, `vanguard` then opens it instead of the menu, only
   if its fingerprint is the one built into it at compile time (another version's window is not started). The
   terminal menu stays with no window next to it, over SSH or Remote Desktop, as administrator, or with no terminal;
-  `vanguard --menu` forces it. On Linux, the window needs the glibc C library, the one of almost every distribution
+  `vanguard --menu` forces it. With no window placed, it says so and offers to add it through “Update Vanguard”.
+  On Linux, the window needs the glibc C library, the one of almost every distribution
   (the program itself does not depend on it): on a distribution without glibc (Alpine, for example), use the terminal
   menu. Once in place, the built-in update replaces it along with the program.
 - **From the USB key**: `Windows/vanguard.exe` or `Linux/vanguard`; the key's guide is in `README.txt`.

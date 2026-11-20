@@ -87,6 +87,13 @@ pub(crate) fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec
                 .and_then(|t| mise_a_jour::avertissement(&t))
                 .map(|a| format!("  {ACCENT}↑{RESET} {a}"))
         })
+        // La fenêtre manquait au lancement : une nouvelle version l'ajoute aussi, d'où sa place après elle.
+        .or_else(|| {
+            avis_fenetre_absente(
+                crate::demarrage::lancer_fenetre::absente(),
+                touche_de(Action::MettreAJour),
+            )
+        })
         .or_else(|| {
             nouveau_menu.then(|| {
                 // Posée quand l'avis paraît, pas avant : caché par un autre avis, il revient à la session suivante.
@@ -98,6 +105,20 @@ pub(crate) fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec
             })
         });
     lignes_d_etat(bilan, connexion, cle, avis)
+}
+
+/// L'avis de la fenêtre absente au lancement (`absente` : programme, fenêtre), avec l'entrée qui l'ajoute ; sans
+/// cette entrée (menu réorganisé), rien : jamais une proposition qui ne mènerait nulle part.
+pub(crate) fn avis_fenetre_absente(
+    absente: Option<(&std::path::Path, &std::path::Path)>,
+    touche: Option<String>,
+) -> Option<String> {
+    let (programme, fenetre) = absente?;
+    let touche = touche?;
+    Some(format!(
+        "  {ACCENT}›{RESET} {}",
+        mise_a_jour::fenetre_absente(programme, fenetre, &touche)
+    ))
 }
 
 /// La ligne de la clé et de la surveillance, avec la protection en temps réel quand elle est coupée : à côté de la

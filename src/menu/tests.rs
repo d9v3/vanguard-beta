@@ -1980,3 +1980,25 @@ fn erreurs_standard() {
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     dite(&crate::socle::relro::Echec::Mprotect(13));
 }
+
+/// C-6 (0.97) : l'avis de la fenêtre absente nomme l'entrée qui met Vanguard à jour, seule à pouvoir l'ajouter ;
+/// pas d'avis sans fenêtre absente, ni sans cette entrée (jamais une proposition qui ne mène nulle part).
+#[test]
+fn l_avis_de_la_fenetre_absente_mene_a_la_mise_a_jour() {
+    let dossier = crate::essais::temporaire().join(crate::essais::nom_unique("avis-fenetre-absente"));
+    std::fs::create_dir_all(&dossier).unwrap();
+    let (programme, fenetre) = (dossier.join("vanguard"), dossier.join("vanguard-fenetre"));
+    let touche = touche_de(Action::MettreAJour);
+    assert!(touche.is_some(), "l'entrée de la mise à jour existe");
+    let avis = avis_fenetre_absente(Some((&programme, &fenetre)), touche.clone()).unwrap();
+    assert!(avis.contains('›'), "{avis}");
+    // La suite sans Internet (VANGUARD_HORS_LIGNE) : la raison est dite à la place, sans entrée.
+    assert_eq!(
+        avis.contains(&*touche.clone().unwrap()),
+        !crate::parametres::hors_ligne(),
+        "{avis}"
+    );
+    assert_eq!(avis_fenetre_absente(None, touche), None);
+    assert_eq!(avis_fenetre_absente(Some((&programme, &fenetre)), None), None);
+    let _ = std::fs::remove_dir_all(&dossier);
+}
