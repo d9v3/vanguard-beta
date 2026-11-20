@@ -583,7 +583,7 @@ fn sera_repose(c: &str) -> &'static str {
             "le déploiement ne le repose pas : Vanguard ne vise plus le Mac",
             "the deployment does not put it back: Vanguard no longer targets the Mac"
         )
-    } else if c.starts_with("Claude/") && c.ends_with(".part") {
+    } else if matches!(c, "Claude/Linux/.claude.part" | "Claude/Windows/.claude.exe.part") {
         tr!(
             "copie de Claude Code arrêtée en route ; le déploiement repose le binaire lui-même",
             "Claude Code copy stopped midway; the deployment puts the binary itself back"
