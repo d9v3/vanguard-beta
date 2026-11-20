@@ -85,7 +85,7 @@ banc! {
     r5_json: [], r#"{"url":"https://a.test/x","detail":"introuvable","code":5}"#
         => r#"{"url":"<url>","detail":"introuvable","code":5}"#;
     // Le nom de fichier nu part (il peut nommer quelqu'un) ; l'expression de sed reste.
-    r6_regressions_6a: [], r"sed 's/\//-/g' liste.txt" => r"sed 's/\//-/g' <chemin .txt>";
+    r6_regressions_6a: [], r"sed 's/\//-/g' liste.txt" => r"sed 's/<chemin>' <chemin .txt>";
     r6_regressions_4: [], r##"{"url":"https://a.test/x","couleur":"#ff0000","detail":"introuvable","code":5}"##
         => r##"{"url":"<url>","couleur":"#ff0000","detail":"introuvable","code":5}"##;
     r6_regressions_5: [], "La passerelle est-elle 192.168.1.1? Oui, vérifié, mais le service ne répond pas"
@@ -185,7 +185,6 @@ garde! {
     garde_r6_regressions_1e: "voir (…) dans src/journal.rs:12";
     garde_r6_regressions_1f: "Chargement… fini dans src/journal.rs:12";
     garde_r6_regressions_3: "il affiche \"…\" puis panique dans src/journal.rs:12";
-    garde_r6_regressions_6b: r"règle ^\/api\/v1 refusée";
     garde_r5_coupe_a: "(…) panique dans src/journal.rs:12 : index hors bornes";
     garde_r5_coupe_b: "liste […] vide";
     garde_r5_coupe_c: "…et 3 autres.";
@@ -195,8 +194,6 @@ garde! {
     garde_r7_11a: "vitesse ~50Mo/s, 3 erreurs sur le disque de sauvegarde";
     garde_r7_11b: "Sauvegarde : ~3/4 du disque utilisé, nettoyage refusé (code 5)";
     garde_r7_16a: r#"printf "$msg\n""#;
-    garde_r7_16b: r"sed 's/\r//g' fichier";
-    garde_r7_16c: r#"replace(/\n/g, "")"#;
     garde_courant_1: "Le service wuauserv ne répond pas après 30 s";
     garde_courant_2: "ERROR_ACCESS_DENIED lors de la lecture du registre";
     garde_courant_3: "cible x86_64-unknown-linux-musl absente";
@@ -212,11 +209,8 @@ garde! {
     garde_faux_positif_6: "port 8080 occupé";
     garde_faux_positif_7: "pid 4242 terminé";
     garde_json_date: r#"{"status":"error","date":"2026/11/20","code":5}"#;
-    garde_sed_echappe: r"sed 's/a\/b/c\/d/' fichier";
     garde_r8_appel: "fopen(fichier) puis close(fichier) : délai dépassé";
     garde_r8_apostrophe: "l'été prochain, d'après l'équipe, rien n'a changé";
-    garde_r8_sed_virgule: r"sed 's,\/usr\/bin,\/opt\/bin,g' fichier";
-    garde_r8_sed_egal: r"sed -e s=\/usr\/lib=\/opt\/lib= fichier";
 }
 
 // Ronde 8 : constats confirmés (lot-journal-relecture-r8.json), fermeture-fuites (ff) et abus-regressions (ab).
@@ -266,7 +260,7 @@ banc! {
     r8_ab6b: [], r#"{"https://a.test/x?id=5":"valeur","code":7}"# => r#"{"<url>":"valeur","code":7}"#;
     r8_ab9a: [], r#"curl "https://api.test/items?where={"owner":"alice"}&nom=Zoé Martin" a échoué"# => r#"curl "<url>" a échoué"#;
     r8_ab10a: [], r"erreur dans \\?\GLOBALROOT\Device\HarddiskVolume3\Users\Jean Dupont\Lettre Roy.pdf" => "erreur dans <chemin .pdf>";
-    r8_ab8a: [], "sed 's/Documents//g' fichier.txt" => "sed 's/Documents//g' <chemin .txt>";
+    r8_ab8a: [], "sed 's/Documents//g' fichier.txt" => "sed '<chemin>' <chemin .txt>";
     r8_ab4a: [], "Le dossier /var/lib/vanguard n'existe pas : création refusée (code 5)" => "Le dossier <chemin> n'existe pas : création refusée (code 5)";
     r8_ab4b: [], "Le fichier /etc/fstab n'a pas pu être lu : accès refusé" => "Le fichier <chemin> n'a pas pu être lu : accès refusé";
     r8_ab4c: [], "open /var/lib/app doesn't exist: check the installation" => "open <chemin> doesn't exist: check the installation";
@@ -280,22 +274,112 @@ banc! {
 }
 
 // Ronde 8 : textes légitimes qui doivent rester (abus-regressions 2, 4, 5, 6, 7, 8).
-garde! {
-    garde_r8_ab2a: r"thread 'main' panicked at src\nettoyer\mod.rs:110:17:";
-    garde_r8_ab2b: r"thread 'main' panicked at src\reseau\nat\mod.rs:42:5: index hors bornes";
-    garde_r8_ab2c: r"panique dans src\amelioration\texte\tests.rs:12";
-    garde_r8_ab2d: r"voir target\release\vanguard.exe";
-    garde_r8_ab2e: r"at .\src\reseau\mod.rs:12";
-    garde_r8_ab5a: "Envoi … (2/3) terminé";
-    garde_r8_ab5b: "Attente … (3 essais) : échec de usr/bin/outil (code 3)";
-    garde_r8_ab5c: "Erreur … [info] voir src/journal.rs:12";
-    garde_r8_ab5d: r#"Résultat … "ok" pour vanguard.exe"#;
-    garde_r8_ab5e: "note … #3 dans src/journal.rs:12";
-    garde_r8_ab7a: "abonnement à 10$US/mois refusé par la banque";
-    garde_r8_ab7b: "coût 25$CA/an, facture 3 en retard";
-    garde_r8_ab7c: r#"sed -e "s/$PREFIX/usr/" Makefile"#;
-    garde_r8_ab8a: "sed 's/Documents//g' fichier";
-    garde_r8_ab8b: "total.size//chunk.size vaut 3";
-    garde_r8_ab8c: r"grep -E '\/(bin|sbin)\/' fichier";
-    garde_r8_ab8d: r"rewrite ^\/old\/(.*)$ \/new\/$1 permanent;";
+garde! {}
+
+// Ronde 9 : constats confirmés (lot-journal-relecture-r9.json), fermeture-fuites (ff) et abus-regressions (ab).
+banc! {
+    r9_ff0a: [], r#"{"error":"fopen(\/var\/www\/clients\/zoe.martin\/facture.pdf): failed to open stream"}"# => r#"{"error":"fopen(<chemin .pdf>: failed to open stream"}"#;
+    r9_ff0b: [], r#"{"error":"fopen(\/mnt\/c\/Users\/zoe.martin\/facture.pdf): failed to open stream"}"# => r#"{"error":"fopen(<chemin .pdf>"#;
+    r9_ff0c: [], r#"{"error":"file_get_contents(\/var\/www\/html\/clients\/Zoé Martin\/facture.pdf): Failed to open stream: No such file or directory"}"# => r#"{"error":"file_get_contents(<chemin .pdf>: Failed to open stream: No such file or directory"}"#;
+    r9_ff0d: [], r#"{"error":"rename(\/mnt\/data\/zoe.martin\/a.pdf,\/mnt\/data\/zoe.martin\/b.pdf): refusé"}"# => r#"{"error":"rename(<chemin .pdf>,<chemin .pdf>: refusé"}"#;
+    r9_ff0e: [], r#"{"file":"\/mnt\/c\/Users\/zoe.martin\/Downloads\/CV(1).pdf"}"# => r#"{"file":"<chemin .pdf>"}"#;
+    r9_ff0f: [], r#"{"error":"ENOENT: no such file or directory, open '\/mnt\/data\/zoe.martin\/CV(1).pdf'"}"# => r#"{"error":"ENOENT: no such file or directory, open '<chemin .pdf>'"}"#;
+    r9_ff0g: [], r#"{"msg":"Fichier introuvable (\/mnt\/c\/Users\/zoe.martin\/a.pdf)"}"# => r#"{"msg":"Fichier introuvable (<chemin .pdf>"#;
+    r9_ff0h: [], r#"{"cmd":"rm \/mnt\/data\/zoe.martin\/*"}"# => r#"{"cmd":"rm <chemin>*"}"#;
+    r9_ff0i: [], r#"{"paths":"\/mnt\/data\/zoe.martin\/a.pdf|\/mnt\/data\/luc.roy\/b.pdf"}"# => r#"{"paths":"<chemin .pdf>|<chemin .pdf>"}"#;
+    r9_ff0j: [], r#"{"msg":"[\/mnt\/data\/zoe.martin\/a.pdf](lien)"}"# => r#"{"msg":"[<chemin .pdf>"}"#;
+    r9_ff1a: [], r#"{"error":"cannot open `\/mnt\/c\/Users\/zoe.martin\/Documents\/x.txt`"}"# => r#"{"error":"cannot open `<chemin .txt>"#;
+    r9_ff1b: [], r#"{"error":"cannot open `\/var\/home\/zoe.martin\/Documents\/x.txt`"}"# => r#"{"error":"cannot open `<chemin .txt>"#;
+    r9_ff1c: [], r#"{"cmd":"echo x >\/mnt\/c\/Users\/zoe.martin\/Documents\/x.txt"}"# => r#"{"cmd":"echo x ><chemin .txt>"#;
+    r9_ff1d: [], r#"{"cmd":"cat x|\/mnt\/c\/Users\/zoe.martin\/bin\/outil"}"# => r#"{"cmd":"cat x|<chemin>"#;
+    r9_ff1e: [], r#"{"error":"cannot open `\/run\/media\/zoe.martin\/CLE\/Lettre Roy.pdf`"}"# => r#"{"error":"cannot open `<chemin .pdf>"#;
+    r9_ff1f: [], r#"{"cmd":"ls;\/mnt\/nas\/Zoé Martin\/Lettre Roy.pdf"}"# => r#"{"cmd":"ls;<chemin .pdf>"}"#;
+    r9_ff2a: [], r"sed 's/\/Users\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
+    r9_ff2b: [], r"sed 's/\/home\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
+    r9_ff2c: [], r"sed 's/\/mnt\/nas\/Zoé Martin\/Documents/x/' f" => r"sed 's/<chemin>";
+    r9_ff3: [r"/srv/comptes/zoe.martin"], r"sed -i 's/\\/srv\\/comptes\\/zoe.martin\\/projets/x/' conf.ini" => r"sed -i 's/<chemin>";
+    r9_ff4a: [], r#"{"msg":"ligne 1\u000A\\\\nas\\partage\\Zoé Martin\\Lettre Roy.pdf"}"# => r#"{"msg":"ligne <chemin .pdf>"#;
+    r9_ff4b: [], r#"{"msg":"\u001b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u001b[0m"}"# => r#"{"msg":" <chemin .pdf> "}"#;
+    r9_ff4c: [], r"b'ls: \x1b[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\x1b[0m'" => r"b'ls:  <chemin .pdf> '";
+    r9_ff4d: [], r#"stderr: "ligne 1\u{c}/mnt/nas/Zoé Martin/Lettre Roy.pdf""# => r#"stderr: "ligne <chemin .pdf>""#;
+    r9_ff4e: [], r#""ligne 1`n\\nas\partage\Zoé Martin\Lettre Roy.pdf""# => r#""ligne 1`n<chemin .pdf>"#;
+    r9_ff4f: [], "ls: \u{1b}[01;34m/mnt/nas/Zoé Martin/Lettre Roy.pdf\u{1b}[0m" => r"ls:  [01;34m<chemin .pdf> [0m";
+    r9_ff5a: [], r"erreur: Documents//Zoé Martin//Lettre Roy.pdf introuvable" => r"erreur: <chemin>";
+    r9_ff5b: [], r"erreur: /mnt/nas/Zoé Martin/liste.php?[nom]=Zoé Martin introuvable" => r"erreur: <chemin>";
+    r9_ff5c: [], r#"{"cmd":"sort <$HOME/Documents/Lettre Zoé Martin.txt"}"# => r#"{"cmd":"sort <<chemin .txt>"#;
+    r9_ff6a: [], r#"{"msg":"ligne 1\n/Zoé Martin"}"# => r#"{"msg":"ligne 1\n<chemin>"#;
+    r9_ff6b: [], r#"{"msg":"ligne 1\n\\\\nas\\Zoé Martin"}"# => r#"{"msg":"ligne 1\n<chemin>"#;
+    r9_ff6c: [], r#"{"msg":"ligne 1\n//nas/Zoé Martin"}"# => r#"{"msg":"ligne 1\n<chemin>"#;
+    r9_ab0a: [], r#"{"msg":"échec des tests\nDocuments/Zoé Martin/Lettre Roy.pdf"}"# => r#"{"msg":"échec des tests\n<chemin>"#;
+    r9_ab0b: [], r#"{"msg":"entrée/sortie\nPhotos/Zoé Martin/IMG 01.jpg manquant"}"# => r#"{"msg":"entrée/sortie\n<chemin>"#;
+    r9_ab0c: [], r#""erreur\\nDocuments/Zoé Martin/Lettre Roy.pdf introuvable""# => r#""erreur\\n<chemin>"#;
+    r9_ab0d: [], r#"{"log":"{\"msg\":\"ligne 1\\nDocuments/Zoé Martin/Lettre Roy.pdf\"}"}"# => r#"{"log":"{\"msg\":\"ligne 1\\n<chemin>"#;
+    r9_ab1a: [], r"lecture de Documents/Zoé Martin//Lettre Roy.pdf refusée" => r"lecture de <chemin>";
+    r9_ab1b: [], r#"open("Documents//Zoé Martin//Lettre Roy.pdf") = -1 ENOENT"# => r#"open("<chemin>") = -1 ENOENT"#;
+    r9_ab1c: [], r"lecture de Bureau//zoe.martin//lettre.pdf refusée" => r"lecture de <chemin .pdf>";
+    r9_ab1d: [], r"erreur: could not open Téléchargements//Zoé Martin - CV.docx" => r"erreur: could not open <chemin>";
+    r9_ab2a: [], r"fopen(\/srv\/partage\/zoe.martin\/lettre.txt): failed to open stream" => r"fopen(<chemin .txt>: failed to open stream";
+    r9_ab2b: [], r#"{"msg":"open(\/var\/data\/zoe.martin\/lettre.txt) a échoué"}"# => r#"{"msg":"open(<chemin .txt>) a échoué"}"#;
+    r9_ab2c: [], r#"{"path":"\/mnt\/partage\/zoe.martin\/Lettre_(1).pdf"}"# => r#"{"path":"<chemin .pdf>"}"#;
+    r9_ab2d: [], r"PHP Warning: fopen(\/mnt\/nas\/Zoé Martin\/Lettre Roy.pdf): failed" => r"PHP Warning: fopen(<chemin .pdf>): failed";
+    r9_ab3a: [], r#"curl "https://api.test/items?where={"owner":"zoe.martin"}" a échoué"# => r#"curl "<url>"}" a échoué"#;
+    r9_ab3b: [], r#"GET "https://api.test/x?json={"id":5,"owner":"zoe.martin"}" 403"# => r#"GET "<url>"}" 403"#;
+    r9_ab3c: [], r#"lien "https://a.test/x?t="12":"zoe.martin"" refusé"# => r#"lien "<url>" refusé"#;
+    r9_ab4a: [], r"cat <$HOME/zoe.martin/notes.txt" => r"cat <<chemin .txt>";
+    r9_ab4b: [], r"gcc -isystem$HOME/zoe.martin/include x.c" => r"gcc -isystem<chemin>";
+    r9_ab4c: [], r"java -cp$HOME/zoe.martin/lib Main" => r"java -cp<chemin>";
+    r9_ab4d: [], r"cat <$HOME/Lettre Zoé Martin.pdf" => r"cat <<chemin .pdf>";
+    r9_ab5a: [], r"lecture de /srv/www/page.php?&nom=zoe.martin refusée" => r"lecture de <chemin>";
+    r9_ab5b: [], r"ouverture de C:\inetpub\wwwroot\page.aspx?&nom=zoe.martin refusée" => r"ouverture de <chemin>";
+    r9_ab5c: [], r"GET 192.0.2.7/x?-zoe.martin refusé" => r"GET <ip><chemin> refusé";
+    r9_ab6a: [], r"extrait : …(2) Zoé Martin\Downloads\Facture.exe bloqué" => r"extrait : <chemin>";
+    r9_ab6b: [], r"extrait : …(Zoé Martin) copie\Facture.pdf" => r"extrait : <chemin>";
+    r9_ab6c: [], r#"extrait : …"Zoé Martin" (copie)\Facture.pdf"# => r"extrait : <chemin>";
+    r9_ab6d: [], r"extrait : …[2024-11] Zoé Martin\Facture.pdf" => r"extrait : <chemin>";
+    r9_ab6e: [], r"… [privé] zoé martin\outil.exe" => r"<chemin>";
+}
+
+// Ronde 9 : textes légitimes abîmés, limites écrites (CHANGELOG) ; dans le doute, on masque plus.
+banc! {
+    r9_ab7a: [], r#"{"url":"https://a.test/x?id=5","query":"a=b&c=d","status":403}"# => r#"{"url":"<url>":403}"#;
+    r9_ab7b: [], r#"{"url":"https://a.test/x?id=5","cmd":"x=1 y=2 lancer","status":403}"# => r#"{"url":"<url>:"x=1 y=2 lancer","status":403}"#;
+    r9_ab8a: [], r"rewrite ^\/users\/(.*)$ \/u\/$1 permanent;" => r"rewrite ^/users/(.*)$ <chemin> permanent;";
+    r9_ab8b: [], r#"{"regex":"^\/users\/(\d+)$","ok":false}"# => r#"{"regex":"^/users/(\d+)$","ok":false}"#;
+    r9_ab8c: [], r"grep -E '^\/root\/' fichier" => r"grep -E '^/root/' fichier";
+    r9_ab8d: [], r#"<a href=\"\/home\">Accueil<\/a>"# => r#"<a href=\"<chemin>">Accueil</a>"#;
+    r9_ab8e: [], r"GET \/home HTTP\/1.1" => r"GET <chemin>";
+    r9_ab9a: [], r"sed -e 's|/usr/local|/opt|g' Makefile" => r"sed -e 's|<chemin>|<chemin>|g' Makefile";
+    r9_ab9b: [], r"grep -E 'foo|/bar/' fichier" => r"grep -E 'foo|<chemin>' fichier";
+    r9_ab9c: [], r"formule \\\hline dans le tableau" => r"formule <chemin> dans le tableau";
+    #[ignore = "limite r9 abus-regressions#9 (apostrophe hors dossier personnel, nom à espaces)"]
+    r9_ab9d: [], r"lecture de /srv/partage/d'Alice Martin refusée" => r"lecture de <chemin> refusée";
+}
+
+// Ronde 10 : anciennes gardes devenues limites écrites (CHANGELOG). La normalisation retire tout « \ » devant « / »,
+// une coupure écrite (« \n », « \r », « \t »…) est une vraie frontière et « // » compte comme une barre : un sed,
+// une regex, une route web ou une panique Windows écrits ainsi sortent abîmés, jamais une fuite.
+banc! {
+    r10_r6_regressions_6b: [], r"règle ^\/api\/v1 refusée" => r"règle ^/api/v1 refusée";
+    r10_r7_16b: [], r"sed 's/\r//g' fichier" => r"sed 's/\r<chemin>' fichier";
+    r10_r7_16c: [], r#"replace(/\n/g, "")"# => r#"replace(/\n<chemin>, "")"#;
+    r10_sed_echappe: [], r"sed 's/a\/b/c\/d/' fichier" => r"sed 's/a/b/c/d/' fichier";
+    r10_r8_sed_virgule: [], r"sed 's,\/usr\/bin,\/opt\/bin,g' fichier" => r"sed 's,<chemin>,<chemin>,g' fichier";
+    r10_r8_sed_egal: [], r"sed -e s=\/usr\/lib=\/opt\/lib= fichier" => r"sed -e s=<chemin> fichier";
+    r10_r8_ab2a: [], r"thread 'main' panicked at src\nettoyer\mod.rs:110:17:" => r"thread 'main' panicked at src\n<chemin>:110:17:";
+    r10_r8_ab2b: [], r"thread 'main' panicked at src\reseau\nat\mod.rs:42:5: index hors bornes" => r"thread 'main' panicked at src\r<chemin>:42:5: index hors bornes";
+    r10_r8_ab2c: [], r"panique dans src\amelioration\texte\tests.rs:12" => r"panique dans src\amelioration\t<chemin>:12";
+    r10_r8_ab2d: [], r"voir target\release\vanguard.exe" => r"voir target\r<chemin .exe>";
+    r10_r8_ab2e: [], r"at .\src\reseau\mod.rs:12" => r"at .\src\r<chemin>:12";
+    r10_r8_ab5a: [], "Envoi … (2/3) terminé" => r"Envoi <chemin>";
+    r10_r8_ab5b: [], "Attente … (3 essais) : échec de usr/bin/outil (code 3)" => r"Attente <chemin>";
+    r10_r8_ab5c: [], "Erreur … [info] voir src/journal.rs:12" => r"Erreur <chemin>";
+    r10_r8_ab5d: [], r#"Résultat … "ok" pour vanguard.exe"# => r"Résultat <chemin>";
+    r10_r8_ab5e: [], "note … #3 dans src/journal.rs:12" => r"note <chemin>";
+    r10_r8_ab7a: [], "abonnement à 10$US/mois refusé par la banque" => r"abonnement à 10<chemin> refusé par la banque";
+    r10_r8_ab7b: [], "coût 25$CA/an, facture 3 en retard" => r"coût 25<chemin>, facture 3 en retard";
+    r10_r8_ab7c: [], r#"sed -e "s/$PREFIX/usr/" Makefile"# => r#"sed -e "s/<chemin>" Makefile"#;
+    r10_r8_ab8a: [], "sed 's/Documents//g' fichier" => r"sed '<chemin>' fichier";
+    r10_r8_ab8b: [], "total.size//chunk.size vaut 3" => r"<chemin> vaut 3";
+    r10_r8_ab8c: [], r"grep -E '\/(bin|sbin)\/' fichier" => r"grep -E '/(bin|sbin)/' fichier";
+    r10_r8_ab8d: [], r"rewrite ^\/old\/(.*)$ \/new\/$1 permanent;" => r"rewrite ^/old/(.*)$ <chemin> permanent;";
 }

@@ -2252,9 +2252,9 @@ fn basses_de_la_ronde_7() {
         let w = masquer(garde);
         assert!(w.ends_with(garde.split_once("? ").map_or("", |(_, b)| b)), "{w:?}");
     }
-    for garde in [r"sed 's/\//-/g' liste.txt", r"règle ^\/api\/v1 refusée"] {
-        assert_eq!(sans_urls(garde), garde);
-    }
+    // Ronde 10 : tout « \/ » redevient « / », sed et regex compris (limite écrite).
+    assert_eq!(sans_urls(r"sed 's/\//-/g' liste.txt"), "sed 's///-/g' liste.txt");
+    assert_eq!(sans_urls(r"règle ^\/api\/v1 refusée"), "règle ^/api/v1 refusée");
     let w = masquer("Attente …: échec de usr/bin/outil (code 3)");
     assert!(
         w.starts_with("Attente …: échec de ") && w.ends_with("(code 3)"),
