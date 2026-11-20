@@ -373,8 +373,10 @@ jobs:
           bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'
           # Le nom de chaque bibliothèque et du programme porte le hachage que cargo leur donne (-C metadata, qui fixe
           # les noms des symboles et donc l'ordre des fonctions) : comparé à la même liste sur l'ordinateur de l'auteur,
-          # il dit si un écart d'empreinte vient de ce hachage ou d'ailleurs.
-          find target -path '*/release/deps/*' \( -name '*.rlib' -o -name 'vanguard-*' \) ! -name '*.d' -printf '%P\n' |
+          # il dit si un écart d'empreinte vient de ce hachage ou d'ailleurs. Rangés en release/build/<paquet>/<hachage>/out
+          # depuis Rust 1.100, en release/deps avant.
+          find target \( -path '*/release/deps/*' -o -path '*/release/build/*/out/*' \) \
+            \( -name '*.rlib' -o -name 'vanguard-*' \) ! -name '*.d' -printf '%P\n' |
             sort | sed 's/^/CRATES-VANGUARD /'
       # Ce que l'ordinateur de l'auteur vérifie avant de livrer (vanguard deploiement verifier-binaire) : Linux en PIE
       # statique, marque RELRO, pile non exécutable ; le .exe avec ses DLL depuis System32 seulement, son manifeste

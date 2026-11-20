@@ -1659,6 +1659,23 @@ GIT_COMMITTER_DATE="@$((DATE1 + 100)) +0000" git -C "$G" -c user.name=essai -c u
 [[ $(cd "$G" && bash outils/date-du-code.sh) == "$DATE1" ]] &&
   ok "date du code : celle du dernier commit qui touche le programme (GitHub et l'auteur gravent la même)" ||
   ko "date du code : $(cd "$G" && bash outils/date-du-code.sh) au lieu de $DATE1"
+# Un commit du code qui touche aussi des milliers de fichiers hors code (plus que ce que le tuyau garde) : jugé dix fois,
+# toujours sa date. Un grep -q au bout du tuyau quittait au premier fichier du code, git diff recevait SIGPIPE et,
+# sous pipefail, le commit passait pour hors code : la date du commit d'avant, au hasard.
+D=$T/depot-date-gros
+mkdir -p "$D/outils" "$D/.github" "$D/docs"
+cp "$G/.github/hors-code.txt" "$D/.github/" && cp "$DEPOT/outils/date-du-code.sh" "$D/outils/"
+echo 'fn main() {}' >"$D/a.rs"
+git -C "$D" init -q && git -C "$D" add -A &&
+  GIT_COMMITTER_DATE="@1700000000 +0000" git -C "$D" -c user.name=essai -c user.email=essai@exemple.invalid commit -qm avant
+echo 'fn main() { 1; }' >"$D/a.rs"
+for i in $(seq 4000); do : >"$D/docs/page-$i-$(printf '%080d' "$i").md"; done
+git -C "$D" add -A &&
+  GIT_COMMITTER_DATE="@1700000100 +0000" git -C "$D" -c user.name=essai -c user.email=essai@exemple.invalid commit -qm gros
+dates=$(for _ in $(seq 10); do (cd "$D" && bash outils/date-du-code.sh); done | sort -u | tr '\n' ' ')
+[[ $dates == "1700000100 " ]] &&
+  ok "date du code : un commit du code aux milliers de fichiers garde sa date, à chaque fois (pas de SIGPIPE)" ||
+  ko "date du code : un gros commit du code daté $dates au lieu de 1700000100"
 programmes_g $((DATE1 + 100))
 compilation >/dev/null && ko "publier : la date d'un commit de documentation gravée est acceptée" ||
   ok "publier : la date gravée doit être celle du code, pas d'un commit de documentation"

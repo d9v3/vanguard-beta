@@ -178,8 +178,10 @@ verifier_compilation() {
       return 1
     }
   done
+  # grep lit toute la liste de git diff (pas de -q) : avec -q, git diff recevrait SIGPIPE et, sous pipefail, un code
+  # changé passerait pour inchangé (outils/date-du-code.sh).
   if [[ $compile != "$COMMIT" ]] && ! { git merge-base --is-ancestor "$compile" "$COMMIT" 2>/dev/null &&
-    [[ -n $HORS_CODE ]] && ! git diff --name-only "$compile" "$COMMIT" | grep -vqE "$HORS_CODE"; }; then
+    [[ -n $HORS_CODE ]] && ! git diff --name-only "$compile" "$COMMIT" | grep -vE "$HORS_CODE" >/dev/null; }; then
     echo "Les programmes compilés viennent de ${compile:0:12}, et le code a changé depuis : lancer d'abord outils/deployer.sh."
     return 1
   fi
@@ -444,7 +446,8 @@ avec_nomenclatures() {
       git merge-base --is-ancestor "$sha" "$COMMIT" 2>/dev/null || continue
       # Un fichier du programme a changé depuis : ces nomenclatures-là ne valent pas pour ce commit.
       [[ -n $HORS_CODE ]] || continue
-      git diff --name-only "$sha" "$COMMIT" | grep -vqE "$HORS_CODE" && continue
+      # grep lit toute la liste (pas de -q) : avec -q, git diff recevrait SIGPIPE et pipefail dirait « hors code ».
+      git diff --name-only "$sha" "$COMMIT" | grep -vE "$HORS_CODE" >/dev/null && continue
       # Ce qui fait les nomenclatures est « hors code » : changé depuis, celles d'ici ne seraient plus les siennes.
       git diff --quiet "$sha" "$COMMIT" -- outils/sbom.sh outils/date-du-code.sh .github/hors-code.txt || continue
     fi

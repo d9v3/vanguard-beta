@@ -19,9 +19,11 @@ fi
 if [[ -n $HORS_CODE ]]; then
   while read -r sha date; do
     # Le premier commit (sans parent) compte, comme un commit qui touche le code ; une fusion se juge sur son premier
-    # parent.
+    # parent. Pas de grep -q au bout du tuyau : il quitterait au premier fichier du code, git diff (des centaines de
+    # fichiers) recevrait SIGPIPE, pipefail rendrait 141 et le commit passerait pour hors code, au hasard (deux dates
+    # différentes pour un même commit, CI du 20 nov. 2026). grep lit donc toute la liste.
     if ! git rev-parse -q --verify "$sha^" >/dev/null ||
-      git diff --name-only "$sha^" "$sha" | grep -vqE "$HORS_CODE"; then
+      git diff --name-only "$sha^" "$sha" | grep -vE "$HORS_CODE" >/dev/null; then
       echo "$date"
       exit 0
     fi

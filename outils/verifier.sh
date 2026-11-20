@@ -652,7 +652,9 @@ vocabulaire_binaire() {
       { echo "$fichier n'est plus celui de la compilation de ce commit : relancer outils/compiler-version.sh"; return 1; }
     programmes+=("$fichier")
   done
-  for v in "$cible"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
+  # build/vanguard/<empreinte>/out depuis Rust 1.100, build/vanguard-<empreinte>/out avant.
+  for v in "$cible"/x86_64-*/release/build/vanguard/*/out/vocabulaire.txt \
+    "$cible"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
     [[ -f $v ]] && vocabulaires+=(--vocabulaire "$v")
   done
   ((${#vocabulaires[@]})) || { echo "aucun vocabulaire.txt dans $cible : rien de conclu"; return 1; }

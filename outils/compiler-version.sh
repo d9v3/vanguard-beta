@@ -252,9 +252,11 @@ python3 -I outils/confidentialite.py --compilation "$CIBLES_DONNEES" "${DOSSIERS
 # Le contrôle croisé du vocabulaire de la porte MCP (lot V1) : chaque mot qu'une réponse de la porte peut laisser sortir
 # est, octet pour octet, dans l'un des deux programmes publiés. Un mot absent est un texte que rustc n'a pas gardé (une
 # ruse de lecture, du code mort) : aucun repère, rien n'est publié. Les candidats : chaque OUT_DIR de vanguard ;
-# l'outil prend celui que les programmes portent, par ses octets, et les données à retirer à côté de lui.
+# l'outil prend celui que les programmes portent, par ses octets, et les données à retirer à côté de lui. Cargo range
+# l'OUT_DIR en build/vanguard/<empreinte>/out depuis Rust 1.100 ; build/vanguard-<empreinte>/out avant, gardé aussi.
 VOCABULAIRES=()
-for v in "$CIBLES"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
+for v in "$CIBLES"/x86_64-*/release/build/vanguard/*/out/vocabulaire.txt \
+  "$CIBLES"/x86_64-*/release/build/vanguard-*/out/vocabulaire.txt; do
   [[ -f $v ]] && VOCABULAIRES+=(--vocabulaire "$v")
 done
 python3 -I outils/vocabulaire-binaire.py --sources src --a-cote reversinglabs.yara --a-cote fabricants.rs \

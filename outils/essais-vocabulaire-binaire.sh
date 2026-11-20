@@ -197,13 +197,15 @@ fi
 echo "6. Branché dans outils/compiler-version.sh, avant le repère"
 # Le bloc du contrôle, lu tel quel dans compiler-version.sh, lancé avec l'outil remplacé par un faux : son refus
 # arrête le script (aucun repère après), son vert le laisse continuer ; chaque OUT_DIR des deux cibles est candidat.
+# L'OUT_DIR Linux rangé comme cargo le fait depuis Rust 1.100 (build/vanguard/<empreinte>/out), celui de Windows comme
+# avant (build/vanguard-<empreinte>/out) : les deux rangements sont candidats.
 bloc=$(awk '/^VOCABULAIRES=\(\)$/,/^# Relu après/' "$RACINE/outils/compiler-version.sh")
 debut=$(grep -n '^VOCABULAIRES=()$' "$RACINE/outils/compiler-version.sh" | cut -d: -f1)
 # shellcheck disable=SC2016 # la ligne du repère, lue telle quelle : $COMMIT n'est pas à remplacer ici
 repere=$(grep -nxF '  echo "commit $COMMIT"' "$RACINE/outils/compiler-version.sh" | cut -d: -f1)
-mkdir -p "$T/cibles/x86_64-unknown-linux-musl/release/build/vanguard-a/out" \
+mkdir -p "$T/cibles/x86_64-unknown-linux-musl/release/build/vanguard/a/out" \
   "$T/cibles/x86_64-pc-windows-gnu/release/build/vanguard-b/out"
-touch "$T/cibles/x86_64-unknown-linux-musl/release/build/vanguard-a/out/vocabulaire.txt" \
+touch "$T/cibles/x86_64-unknown-linux-musl/release/build/vanguard/a/out/vocabulaire.txt" \
   "$T/cibles/x86_64-pc-windows-gnu/release/build/vanguard-b/out/vocabulaire.txt"
 bloc_lance() { # code de l'outil
   CIBLES=$T/cibles bash -c "python3() { echo \"\$*\" >'$T/appel'; return $1; }
@@ -223,7 +225,7 @@ else
   bloc_lance 0
   if [ "$CODE" = 0 ] && grep -qx apres "$T/sortie" &&
     grep -qF -- "--vocabulaire $T/cibles/x86_64-pc-windows-gnu/release/build/vanguard-b/out/vocabulaire.txt" "$T/appel" &&
-    grep -qF -- "--vocabulaire $T/cibles/x86_64-unknown-linux-musl/release/build/vanguard-a/out/vocabulaire.txt" "$T/appel" &&
+    grep -qF -- "--vocabulaire $T/cibles/x86_64-unknown-linux-musl/release/build/vanguard/a/out/vocabulaire.txt" "$T/appel" &&
     grep -qE -- '-- [^ ]+/x86_64-unknown-linux-musl/release/vanguard [^ ]+/x86_64-pc-windows-gnu/release/vanguard\.exe$' "$T/appel"; then
     ok "un vert laisse continuer, les deux programmes et chaque OUT_DIR donnés"
   else

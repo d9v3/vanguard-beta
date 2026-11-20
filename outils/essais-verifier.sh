@@ -231,12 +231,13 @@ grep -q '{ etape durcissement durcissement || true; } && etape regression-detect
   ko "verifier.sh : l'étape durcissement n'est pas dans la chaîne Linux ou dans le résumé"
 
 # Le contrôle croisé du vocabulaire de la porte MCP (vocabulaire_binaire, lue dans verifier.sh ; ses essais et l'outil
-# remplacés par des faux qui notent leurs appels).
+# remplacés par des faux qui notent leurs appels). L'OUT_DIR rangé comme cargo le fait depuis Rust 1.100 :
+# build/vanguard/<empreinte>/out.
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-vocabulaire.XXXX")
-mkdir -p "$faux/x86_64-unknown-linux-musl/release/build/vanguard-a/out" "$faux/x86_64-pc-windows-gnu/release"
+mkdir -p "$faux/x86_64-unknown-linux-musl/release/build/vanguard/a/out" "$faux/x86_64-pc-windows-gnu/release"
 echo linux >"$faux/x86_64-unknown-linux-musl/release/vanguard"
 echo windows >"$faux/x86_64-pc-windows-gnu/release/vanguard.exe"
-echo mot >"$faux/x86_64-unknown-linux-musl/release/build/vanguard-a/out/vocabulaire.txt"
+echo mot >"$faux/x86_64-unknown-linux-musl/release/build/vanguard/a/out/vocabulaire.txt"
 fonction=$(awk '/^vocabulaire_binaire\(\) \{/,/^\}/' outils/verifier.sh)
 controler() { # code-des-essais code-de-l-outil
   : >"$faux/appels"

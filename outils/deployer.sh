@@ -43,7 +43,8 @@ code_change_depuis() { # commit compilé
   git merge-base --is-ancestor "$1" HEAD 2>/dev/null || return 0
   hors=$(grep -v '^#' .github/hors-code.txt 2>/dev/null | head -n 1)
   [[ -n $hors ]] || return 0
-  git diff --name-only "$1" HEAD | grep -vqE "$hors"
+  # grep lit toute la liste (pas de -q) : sinon git diff reçoit SIGPIPE et pipefail dit « code inchangé » (date-du-code.sh).
+  git diff --name-only "$1" HEAD | grep -vE "$hors" >/dev/null
 }
 MODE=${1:-}
 if [[ $MODE == --publier ]]; then
