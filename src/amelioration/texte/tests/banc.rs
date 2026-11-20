@@ -435,3 +435,13 @@ banc! {
     r11_ab1e: [], r"courriel \x1b[01;31mzoe\x1b[0m.martin@exemple.test refusé" => "courriel <adresse> refusé";
     r11_ab4: [], r#","https://api.test/items?where={"owner":"zoe.martin"}""# => r#","<url>}""#;
 }
+
+// Ronde 11 : cas qui tiennent chaque règle seule (survivants des mutations).
+banc! {
+    r11_mut_hexa_x: [], r"argv: cat\x1f/srv/Zoé Martin" => r"argv: cat\x1f<chemin>";
+    r11_mut_hexa_u: [], r"argv: cat\u001F/srv/Zoé Martin" => r"argv: cat\u001F<chemin>";
+    r11_mut_octal: [], r"argv: cat\012/srv/Zoé Martin" => r"argv: cat\012<chemin>";
+    r11_mut_accolades: [], r"argv: cat\u{41}/srv/Zoé Martin" => r"argv: cat\u{41}<chemin>";
+    r11_mut_nom_long: [], r"argv: cat\N{LINE FEED}/srv/Zoé Martin" => r"argv: cat\N{LINE FEED}<chemin>";
+    r11_mut_entre_mots: [], "courriel zoe.mar\u{1b}[1mtin@exemple.test refusé" => "courriel <adresse> refusé";
+}
