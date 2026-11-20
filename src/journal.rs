@@ -276,7 +276,14 @@ pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
         // Aussi écrit avec des barres obliques (« C:/Users/… ») ou doublées (JSON, PowerShell : « C:\\Users\\… »),
         // et en forme étendue (« \\?\C:\Users\… », « \??\C:\… »), partie avec elle : « \\?\~\… » n'était plus
         // un chemin, et le nom restait (relecture 0.97, ronde 7, haut).
-        let barres = [maison.clone(), maison.replace('\\', "/"), maison.replace('\\', "\\\\")];
+        // Et à barres échappées (« \/home\/alice », JSON ou expression de sed) : la ronde 8 laissait la maison
+        // dans « sed 's/\/home\/alice\/…/' » (relecture 0.97, ronde 9).
+        let barres = [
+            maison.clone(),
+            maison.replace('\\', "/"),
+            maison.replace('\\', "\\\\"),
+            maison.replace('/', "\\/"),
+        ];
         let etendues = [r"\\?\", r"\??\", "//?/", r"\\\\?\\"]
             .iter()
             .flat_map(|prefixe| barres.iter().map(move |v| format!("{prefixe}{v}")));

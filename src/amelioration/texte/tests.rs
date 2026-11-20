@@ -2266,13 +2266,15 @@ fn basses_de_la_ronde_7() {
 
 /// Ronde 7, bas, refait en ronde 8 : un détail long (barres inverses derrière une adresse, espaces derrière
 /// « www. ») ne coûte pas un temps quadratique. Sans limite en secondes, qui dépend de la machine : (1) au-delà de
-/// `ENTREE_MAX`, doubler l'entrée ne change pas la sortie, donc rien de plus n'est lu ; (2) sous la borne, doubler
-/// l'entrée multiplie le temps par environ 2 (moins de 3 ; un coût quadratique donnerait 4), meilleur de 5 essais.
+/// `ENTREE_MAX`, doubler l'entrée ne change pas la sortie, donc rien de plus n'est lu ; (2) sous la borne, quadrupler
+/// l'entrée (2000 puis 8000) multiplie le temps par environ 4 (moins de 8 ; un coût quadratique donnerait 16),
+/// meilleur de 5 essais. La ronde 9 ajoute « www.a " » répété, et l'écart plus large tient mieux sous la charge.
 #[test]
 fn detail_long_croissance_lineaire() {
     let barres = |n: usize| format!("\"file:///home/x/{}", "\\".repeat(n));
     let espaces = |n: usize| format!("www.a{}", " ".repeat(n));
-    for entree in [barres, espaces] {
+    let guillemets = |n: usize| "www.a \"".repeat(n / 7);
+    for entree in [barres, espaces, guillemets] {
         let grand = sans_urls(&entree(100_000));
         assert_eq!(grand, sans_urls(&entree(200_000)));
         assert!(grand.len() <= super::ENTREE_MAX + 16, "{}", grand.len());
@@ -2286,8 +2288,8 @@ fn detail_long_croissance_lineaire() {
                 .min()
                 .unwrap_or_default()
         };
-        let (petit, double) = (temps(3_000), temps(6_000));
-        assert!(double < petit.saturating_mul(3), "{petit:?} puis {double:?}");
+        let (petit, quadruple) = (temps(2_000), temps(8_000));
+        assert!(quadruple < petit.saturating_mul(8), "{petit:?} puis {quadruple:?}");
     }
 }
 
