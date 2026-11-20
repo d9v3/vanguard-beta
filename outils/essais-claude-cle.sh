@@ -22,6 +22,11 @@ mkdir -p "$XDG_CONFIG_HOME/vanguard" "$ESSAI/bin" "$ESSAI/serveur" "$GNUPGHOME"
 chmod 700 "$GNUPGHOME"
 printf '#!/bin/sh\necho "$*" >>"%s/notifications"\n' "$ESSAI" >"$ESSAI/bin/notify-send"
 chmod +x "$ESSAI/bin/notify-send"
+# systemctl remplacé aussi : jamais une vraie unité touchée. is-enabled répond le contenu de $ESSAI/minuterie
+# (« enabled » sans lui) ; chaque appel noté.
+printf '#!/bin/sh\necho "$*" >>"%s/systemctl.log"\ncase "$*" in *is-enabled*) cat "%s/minuterie" 2>/dev/null || echo enabled ;; esac\n' \
+  "$ESSAI" "$ESSAI" >"$ESSAI/bin/systemctl"
+chmod +x "$ESSAI/bin/systemctl"
 export PATH=$ESSAI/bin:$PATH
 export VANGUARD_CLAUDE_SOURCE=file://$ESSAI/serveur
 
@@ -200,6 +205,23 @@ cmp -s "$CLE/Claude/Linux/claude" "$(cache)/2.0.3/linux-x64/claude" && bon "bina
   rate "note absente"
 [[ -n $(find "$CLE" -name .credentials.json) ]] && rate "un jeton sur la clé" || bon "aucun jeton sur la clé"
 attendu "deuxième pose, rien de changé" 0 bash outils/claude-cle.sh --cle "$CLE"
+# La minuterie qui remplit le cache, pas allumée (dépôt mis à jour sans relancer installer.sh) : allumée par la pose,
+# depuis le dépôt des unités seulement, et une première recherche lancée.
+echo disabled >"$ESSAI/minuterie"
+rm -f "$ESSAI/systemctl.log"
+attendu "minuterie absente, autre copie de travail : pose quand même" 0 env VANGUARD_CLAUDE_DEPOT="$ESSAI/ailleurs-depot" \
+  bash outils/claude-cle.sh --cle "$CLE"
+! grep -qE -- "--user (link|enable )" "$ESSAI/systemctl.log" 2>/dev/null && grep -q "installer.sh" "$ESSAI/sortie" &&
+  bon "minuterie : jamais liée depuis une autre copie de travail, et dit" || rate "minuterie : liée depuis une autre copie"
+rm -f "$ESSAI/systemctl.log"
+attendu "minuterie absente : pose" 0 env VANGUARD_CLAUDE_DEPOT="$DEPOT" bash outils/claude-cle.sh --cle "$CLE"
+grep -qxF -- "--user enable --now $DEPOT/outils/systemd/vanguard-claude-cle.timer" "$ESSAI/systemctl.log" 2>/dev/null &&
+  grep -qxF -- "--user start --no-block vanguard-claude-cle.service" "$ESSAI/systemctl.log" &&
+  bon "minuterie absente : allumée depuis le dépôt, recherche lancée" ||
+  rate "minuterie absente : $(tr '\n' ' ' <"$ESSAI/systemctl.log" 2>/dev/null)"
+rm -f "$ESSAI/minuterie" "$ESSAI/systemctl.log"
+attendu "minuterie allumée : pose" 0 env VANGUARD_CLAUDE_DEPOT="$DEPOT" bash outils/claude-cle.sh --cle "$CLE"
+! grep -qE -- "--user (link|enable |start)" "$ESSAI/systemctl.log" 2>/dev/null && bon "minuterie allumée : laissée" || rate "minuterie allumée : retouchée"
 # Changé pendant le voyage, même taille : le manifeste de la clé (taille seule au-delà de 64 Mio) ne le verrait pas.
 printf 'X' | dd of="$CLE/Claude/Windows/claude.exe" bs=1 seek=4 conv=notrunc 2>/dev/null
 rm -f "$ESSAI/notifications"

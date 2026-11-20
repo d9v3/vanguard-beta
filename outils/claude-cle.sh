@@ -46,10 +46,13 @@ SIGNATAIRE="d'Anthropic"
 # Les crochets des essais (outils/essais-claude-cle.sh), sous VANGUARD_ESSAI seulement : une autre source (un faux
 # serveur, file://), un autre cache (le ménage y efface des dossiers), une autre clé de confiance. Toujours dits en
 # première ligne, et jamais sur une vraie clé (poser, plus bas).
+# Le dépôt dont les unités de systemd sont liées (outils/systemd/installer.sh) ; voir minuterie, plus bas.
+DEPOT_UNITES=$HOME/Projects/vanguard
 CROCHETS=""
 if [[ -n ${VANGUARD_ESSAI:-} ]]; then
   [[ -n ${VANGUARD_CLAUDE_SOURCE:-} ]] && { SOURCE=$VANGUARD_CLAUDE_SOURCE; CROCHETS+=", source"; }
   [[ -n ${VANGUARD_CLAUDE_CACHE:-} ]] && { CACHE=$VANGUARD_CLAUDE_CACHE; CROCHETS+=", cache"; }
+  [[ -n ${VANGUARD_CLAUDE_DEPOT:-} ]] && { DEPOT_UNITES=$VANGUARD_CLAUDE_DEPOT; CROCHETS+=", dépôt des unités"; }
   if [[ -n ${VANGUARD_CLAUDE_CLE_GPG:-} ]]; then
     CLE_GPG=$VANGUARD_CLAUDE_CLE_GPG EMPREINTE_CLE=${VANGUARD_CLAUDE_EMPREINTE:-} SIGNATAIRE="de la clé d'essai"
     CROCHETS+=", clé de confiance"
@@ -392,6 +395,31 @@ refuser() { # point changes raison texte
   erreur "$4"
 }
 
+# La minuterie qui remplit le cache (vanguard-claude-cle.timer) n'est allumée que par outils/systemd/installer.sh :
+# après une mise à jour du dépôt, rien ne la posait, et la clé restait sans Claude Code. Chaque pose réglage allumé
+# la vérifie donc ; absente, elle est liée et allumée depuis le dépôt des unités (jamais depuis une autre copie de
+# travail, qui peut disparaître), et une première recherche part aussitôt, en arrière-plan. Rien de root : les
+# unités de l'utilisateur. Annulable : systemctl --user disable vanguard-claude-cle.timer.
+minuterie() {
+  local unites=$PWD/outils/systemd etat_m
+  command -v systemctl >/dev/null || return 0
+  etat_m=$(systemctl --user is-enabled vanguard-claude-cle.timer 2>/dev/null)
+  [[ $etat_m != enabled ]] || return 0
+  if [[ $(pwd -P) != $(cd "$DEPOT_UNITES" 2>/dev/null && pwd -P) ]]; then
+    echo "⚠ Minuterie de Claude Code (vanguard-claude-cle.timer) pas allumée : lancer outils/systemd/installer.sh." >&2
+    return 0
+  fi
+  if systemctl --user link "$unites/vanguard-claude-cle.service" >/dev/null 2>&1 &&
+    systemctl --user enable --now "$unites/vanguard-claude-cle.timer" >/dev/null 2>&1; then
+    echo "Minuterie de Claude Code (vanguard-claude-cle.timer) allumée : elle manquait (${etat_m:-absente})."
+    systemctl --user start --no-block vanguard-claude-cle.service >/dev/null 2>&1 &&
+      echo "  Première recherche lancée en arrière-plan ; la clé l'aura au dépôt suivant."
+  else
+    echo "⚠ Minuterie de Claude Code (vanguard-claude-cle.timer) pas allumée (systemctl a refusé) :" \
+      "lancer outils/systemd/installer.sh." >&2
+  fi
+}
+
 poser() { # point
   local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu=""
   # Les crochets d'essai ne touchent jamais une vraie clé.
@@ -411,6 +439,7 @@ poser() { # point
     [[ -z $change ]] || retirer_change "$p" "$change" "Claude Code coupé"
     return 0
   fi
+  minuterie
   if ! cache_present; then
     [[ -z $change ]] || retirer_change "$p" "$change" "cache absent"
     return 0

@@ -6,7 +6,8 @@
 # branchement ; sauf sur un ordinateur dont le réglage local coupe la clé de secours (CLE_SECOURS=non, voir
 # images-cle.sh) : là, ces unités ne copient rien.
 # vanguard-claude-cle.timer cherche chaque jour la nouvelle version de Claude Code pour la clé, en option
-# (outils/claude-cle.sh ; CLAUDE_CLE=oui dans le même réglage).
+# (outils/claude-cle.sh ; CLAUDE_CLE=oui dans le même réglage) ; si elle manque (dépôt mis à jour sans relancer ce
+# script), la pose de Claude sur la clé (outils/claude-cle.sh --cle) l'allume depuis ~/Projects/vanguard.
 # vanguard-cle-maj.timer remet chaque jour la clé restée branchée à jour (outils/maj-cle.sh : programme et images).
 # vanguard-menage.timer fait chaque semaine le ménage des fichiers de développement devenus inutiles
 # (outils/menage-dev.sh).
