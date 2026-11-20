@@ -642,6 +642,13 @@ T_CLE=$SECONDS
 REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
 REPRENDRE=()
 [[ -f $REPRISE && $REPRISE != */deploiement-en-cours- ]] && REPRENDRE=(--reprise)
+# La reprise retire aussi les binaires de Claude Code qui diffèrent de la référence : un binaire changé pendant le
+# voyage est dit avant (outils/claude-cle.sh --relire : notification, rien n'est retiré), sans quoi la pose de Claude
+# Code ne verrait plus qu'un binaire absent. Jamais un arrêt du déploiement.
+if [[ -z $ACCEPTER && ${#REPRENDRE[@]} -gt 0 && -f outils/claude-cle.sh ]]; then
+  bash outils/claude-cle.sh --relire "$CLE" || true
+fi
+ECART=""
 if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" "${REPRENDRE[@]}" 2>&1); then
   echo "✖ La clé VANGUARD ($CLE) a changé depuis son dernier déploiement : rien n'y est écrit."
   sed 's/^/  /' <<<"$ECART"
@@ -652,6 +659,12 @@ if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" "$
   publier_la_version
   dire_durees
   exit 1
+fi
+# Une reprise acceptée : ce qu'elle a retiré de la clé (puis que le déploiement repose) est dit, et notifié.
+REPRIS=$(grep -E '^(Reprise :|Resume:) ' <<<"$ECART" || true)
+if [[ -n $REPRIS ]]; then
+  echo "$REPRIS"
+  avertir_cle "Clé VANGUARD : déploiement arrêté repris" "$(head -c 300 <<<"$REPRIS")"
 fi
 
 # Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),

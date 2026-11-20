@@ -15,6 +15,9 @@ ESSAI=$(mktemp -d "$prive/vanguard-essais-claude.XXXXXX") || exit 1
 trap 'gpgconf --homedir "$ESSAI/gnupg" --kill gpg-agent 2>/dev/null; rm -rf "$ESSAI"' EXIT
 export VANGUARD_ESSAI=1 XDG_CONFIG_HOME=$ESSAI/config XDG_CACHE_HOME=$ESSAI/cache XDG_STATE_HOME=$ESSAI/etat
 export GNUPGHOME=$ESSAI/gnupg
+# Le verrou de claude-cle.sh (dans XDG_RUNTIME_DIR) : celui des essais, jamais celui de la vraie minuterie.
+mkdir -m 700 "$ESSAI/session"
+export XDG_RUNTIME_DIR=$ESSAI/session
 mkdir -p "$XDG_CONFIG_HOME/vanguard" "$ESSAI/bin" "$ESSAI/serveur" "$GNUPGHOME"
 chmod 700 "$GNUPGHOME"
 printf '#!/bin/sh\necho "$*" >>"%s/notifications"\n' "$ESSAI" >"$ESSAI/bin/notify-send"
@@ -90,6 +93,27 @@ rm -f "$XDG_STATE_HOME/vanguard/claude-cle-version"
 attendu "déjà là, note perdue" 0 bash outils/claude-cle.sh --chercher
 [[ $(cat "$XDG_STATE_HOME/vanguard/claude-cle-version" 2>/dev/null) == 2.0.1 ]] && bon "déjà là : version la plus haute notée" ||
   rate "déjà là : version pas notée"
+grep -q "^· Crochets d'essai actifs (VANGUARD_ESSAI) : source, clé de confiance\.$" "$ESSAI/sortie" &&
+  bon "crochets d'essai dits en première ligne" || rate "crochets d'essai pas dits"
+# Le verrou hors du cache : un lien .verrou planté dans le cache ne vide pas le fichier au bout. Un dossier partiel
+# laissé par un téléchargement tué part ; un lien au même genre de nom, lui, reste, et ce qu'il vise aussi.
+echo "à garder" >"$ESSAI/garde"
+ln -s "$ESSAI/garde" "$(cache)/.verrou"
+mkdir -p "$(cache)/.2.0.1.Ab12Cd/linux-x64" "$ESSAI/garde-dossier"
+echo partiel >"$(cache)/.2.0.1.Ab12Cd/linux-x64/claude"
+echo x >"$ESSAI/garde-dossier/f"
+ln -s "$ESSAI/garde-dossier" "$(cache)/.2.0.0.Zz99Yy"
+attendu "déjà là : revérifié" 0 bash outils/claude-cle.sh --chercher
+[[ $(cat "$ESSAI/garde") == "à garder" ]] && bon "verrou : le lien du cache n'est pas suivi" || rate "verrou : fichier au bout du lien vidé"
+[[ ! -e $(cache)/.2.0.1.Ab12Cd && -L $(cache)/.2.0.0.Zz99Yy && -f $ESSAI/garde-dossier/f ]] &&
+  bon "dossier partiel d'un arrêt brutal effacé, lien laissé" || rate "partiels : $(ls -A "$(cache)" | tr '\n' ' ')"
+rm -f "$(cache)/.verrou" "$(cache)/.2.0.0.Zz99Yy"
+# Déjà là mais abîmé : revérifié, effacé, téléchargé de nouveau, pas cru sur son témoin .verifiee.
+echo abime >>"$(cache)/2.0.1/win32-x64/claude.exe"
+attendu "déjà là, abîmé : téléchargé de nouveau" 0 bash outils/claude-cle.sh --chercher
+cmp -s "$(cache)/2.0.1/win32-x64/claude.exe" "$ESSAI/serveur/2.0.1/win32-x64/claude.exe" &&
+  grep -q "ne se vérifie plus" "$ESSAI/sortie" && bon "copie abîmée du cache : dite et remplacée" ||
+  rate "copie abîmée du cache : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
 
 publier 2.0.2 oui "$AUTRE"
 attendu "signée par une autre clé : refusée" 1 bash outils/claude-cle.sh --chercher
@@ -114,6 +138,8 @@ echo "2.0.2; rm -rf /" >"$ESSAI/serveur/stable"
 attendu "version « stable » de forme inattendue : refusée" 1 bash outils/claude-cle.sh --chercher
 publier 2.0.2
 attendu "version suivante : acceptée" 0 bash outils/claude-cle.sh --chercher
+grep -q "signature de la clé d'essai" "$ESSAI/sortie" && ! grep -q "Anthropic" "$ESSAI/sortie" &&
+  bon "clé d'essai : la signature n'est pas dite d'Anthropic" || rate "clé d'essai : $(tail -1 "$ESSAI/sortie")"
 publier 2.0.3
 publier 2.0.0
 attendu "version plus ancienne : refusée" 1 bash outils/claude-cle.sh --chercher
@@ -156,6 +182,9 @@ echo cle >"$CLE/vanguard.cle"
 echo 0123456789abcdef0123456789abcdef >"$CLE/vanguard.jeton"
 echo autre >"$CLE/Windows/vanguard.exe"
 attendu "pas une clé VANGUARD : refusé" 1 bash outils/claude-cle.sh --cle "$ESSAI/serveur"
+attendu "crochets d'essai actifs, clé de /run/media : refusé" 1 bash outils/claude-cle.sh --cle /run/media/alice/VANGUARD-ESSAI
+grep -q "Crochets d'essai actifs : rien n'est posé" "$ESSAI/sortie" && bon "crochets d'essai : jamais sur une vraie clé" ||
+  rate "crochets d'essai : $(tail -1 "$ESSAI/sortie")"
 attendu "pose sur la clé" 0 bash outils/claude-cle.sh --cle "$CLE"
 for f in "Depanner avec Claude.bat" Claude/CLAUDE.md Claude/depanner.ps1 Claude/depanner.sh Claude/LISEZMOI.txt \
   Claude/README.txt Claude/manifest.json Claude/manifest.json.sig Claude/claude-code.asc Claude/Linux/claude \
@@ -175,6 +204,17 @@ cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.3/win32-x64/claude.exe" &&
   rate "pas remplacé"
 grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null && bon "changement notifié" || rate "changement pas notifié"
 attendu "après remplacement : plus rien à dire" 0 bash outils/claude-cle.sh --cle "$CLE"
+# --relire, avant la reprise d'un déploiement arrêté (qui retire ce qui diffère de la référence) : un binaire changé
+# est dit, rien n'est retiré ; retiré ensuite par la reprise, il est reposé sans fausse alerte.
+attendu "relecture, rien de changé" 0 bash outils/claude-cle.sh --relire "$CLE"
+printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
+cp "$CLE/Claude/Linux/claude" "$ESSAI/change"
+rm -f "$ESSAI/notifications"
+attendu "relecture, binaire changé : dit (code 2)" 2 bash outils/claude-cle.sh --relire "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/change" && grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "relecture : notifiée, rien retiré" || rate "relecture : $(cat "$ESSAI/notifications" 2>/dev/null)"
+rm "$CLE/Claude/Linux/claude"
+attendu "binaire noté, retiré par la reprise : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
 # Changé pendant le voyage, et pas de copie vérifiée à remettre : retiré de la clé, jamais laissé là.
 printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
 mv "$(cache)" "$ESSAI/cache-de-cote"
@@ -202,6 +242,50 @@ cp "$CLE/vanguard.cle" "$CLE/vanguard.jeton" "$ESSAI/cle-lien/"
 ln -s "$ESSAI/ailleurs" "$ESSAI/cle-lien/Claude"
 attendu "Claude/ lien symbolique : refusé" 1 bash outils/claude-cle.sh --cle "$ESSAI/cle-lien"
 [[ -z $(ls "$ESSAI/ailleurs") ]] && bon "rien écrit au bout du lien" || rate "écrit au bout du lien"
+# Un fichier de Claude/ en lien : refusé, rien écrit au bout.
+echo "à garder" >"$ESSAI/hors-cle"
+rm "$CLE/Claude/LISEZMOI.txt"
+ln -s "$ESSAI/hors-cle" "$CLE/Claude/LISEZMOI.txt"
+attendu "fichier de Claude/ en lien : refusé" 1 bash outils/claude-cle.sh --cle "$CLE"
+[[ $(cat "$ESSAI/hors-cle") == "à garder" ]] && bon "rien écrit au bout du lien d'un fichier" || rate "écrit au bout du lien d'un fichier"
+rm "$CLE/Claude/LISEZMOI.txt"
+# Un binaire noté remplacé par un lien (même au bout la bonne copie) : compte comme changé, le lien est retiré.
+cp "$CLE/Claude/Linux/claude" "$ESSAI/hors-bin"
+rm "$CLE/Claude/Linux/claude"
+ln -s "$ESSAI/hors-bin" "$CLE/Claude/Linux/claude"
+attendu "binaire en lien : retiré et dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+[[ ! -e $CLE/Claude/Linux/claude && ! -L $CLE/Claude/Linux/claude && -f $ESSAI/hors-bin ]] &&
+  bon "binaire en lien : le lien retiré, rien effacé au bout" || rate "binaire en lien : $(ls -l "$CLE/Claude/Linux")"
+attendu "binaire en lien retiré : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
+# Une copie qui rate n'est jamais suivie de « ✔ ».
+rm "$CLE/Claude/README.txt"
+chmod a-w "$CLE/Claude"
+attendu "fichier de Claude/ pas copié : erreur" 1 bash outils/claude-cle.sh --cle "$CLE"
+chmod u+w "$CLE/Claude"
+! grep -q "✔ Claude Code" "$ESSAI/sortie" && bon "copie ratée : pas de ✔" || rate "copie ratée : ✔ dit"
+attendu "fichier revenu : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
+# La clé de confiance posée est celle du dépôt : un claude-code.asc du cache (ici en lien) n'est jamais copié.
+echo "pas une clé" >"$ESSAI/hors-cache"
+ln -s "$ESSAI/hors-cache" "$(cache)/2.0.3/claude-code.asc"
+rm "$CLE/Claude/claude-code.asc"
+attendu "claude-code.asc du cache : ignoré" 0 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/claude-code.asc" "$ESSAI/cle.asc" && bon "clé de confiance posée : celle du dépôt" ||
+  rate "clé de confiance posée : prise dans le cache"
+rm "$(cache)/2.0.3/claude-code.asc"
+# Un manifeste du cache en lien : la version ne se vérifie pas, rien n'est posé.
+mv "$(cache)/2.0.3/manifest.json" "$ESSAI/manifeste-de-cote"
+ln -s "$ESSAI/manifeste-de-cote" "$(cache)/2.0.3/manifest.json"
+attendu "manifeste du cache en lien : rien n'est posé" 1 bash outils/claude-cle.sh --cle "$CLE"
+rm "$(cache)/2.0.3/manifest.json"
+mv "$ESSAI/manifeste-de-cote" "$(cache)/2.0.3/manifest.json"
+# Le cache redescendu (la plus récente effacée) : la pose refuse une version plus ancienne que la plus haute vérifiée.
+mv "$(cache)/2.0.3" "$ESSAI/2.0.3-de-cote"
+rm -f "$ESSAI/notifications"
+attendu "cache redescendu à une version plus ancienne : rien n'est posé" 1 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/2.0.3-de-cote/linux-x64/claude" &&
+  grep -q "plus ancienne refusée" "$ESSAI/notifications" 2>/dev/null && bon "version plus ancienne : clé laissée, notifié" ||
+  rate "version plus ancienne : $(tail -1 "$ESSAI/sortie")"
+mv "$ESSAI/2.0.3-de-cote" "$(cache)/2.0.3"
 # Coupé : ce qui avait été posé part, le reste reste.
 echo "Claude/piege-pas-a-moi" >"$CLE/Claude/autre.txt"
 echo "CLAUDE_CLE=non" >"$XDG_CONFIG_HOME/vanguard/images-cle.conf"
@@ -225,6 +309,18 @@ rm -f "$ESSAI/notifications"
 attendu "binaire inconnu sans note : remplacé et dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
 cmp -s "$CLE/Claude/Linux/claude" "$(cache)/2.0.3/linux-x64/claude" && grep -q "inconnu" "$ESSAI/notifications" 2>/dev/null &&
   bon "binaire inconnu : remplacé et notifié" || rate "binaire inconnu : $(cat "$ESSAI/notifications" 2>/dev/null)"
+# Une copie ratée en route (ici Windows/, en lecture seule) : ce qui a été posé est noté au fur et à mesure, le dépôt
+# suivant ne crie pas au piège, et aucun nom provisoire ne reste.
+publier 2.0.5
+attendu "2.0.5 dans le cache" 0 bash outils/claude-cle.sh --chercher
+chmod a-w "$CLE/Claude/Windows"
+attendu "copie de Windows/claude.exe ratée : erreur" 1 bash outils/claude-cle.sh --cle "$CLE"
+chmod u+w "$CLE/Claude/Windows"
+[[ -z $(find "$CLE" -name '*.part') ]] && bon "copie ratée : aucun nom provisoire laissé" || rate "copie ratée : .part laissé"
+rm -f "$ESSAI/notifications"
+attendu "après une copie ratée : reposé sans fausse alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" && bon "après une copie ratée : 2.0.5 posée" ||
+  rate "après une copie ratée : pas la 2.0.5"
 
 echo "Lanceur Linux (depanner.sh)"
 attendu "pose pour le lanceur" 0 bash outils/claude-cle.sh --cle "$CLE"
@@ -330,9 +426,13 @@ grep -q 'NoDefaultCurrentDirectoryInExePath=1' "outils/cle/Depanner avec Claude.
   rate ".bat : NoDefaultCurrentDirectoryInExePath absent"
 # La même liste à trois endroits : le script, le manifeste de la clé (Rust), ces essais.
 for f in CLAUDE.md depanner.ps1 depanner.sh LISEZMOI.txt README.txt manifest.json manifest.json.sig claude-code.asc \
-  Linux/claude Windows/claude.exe; do
+  Linux/claude Windows/claude.exe Linux/.claude.part Windows/.claude.exe.part; do
   grep -q "\"$f\"" src/protection/manifeste.rs || rate "manifeste.rs ne connaît pas Claude/$f"
 done
+grep -q 'claude-cle\.sh --chercher' outils/systemd/vanguard-claude-cle.service &&
+  grep -q '^OnCalendar=daily$' outils/systemd/vanguard-claude-cle.timer && grep -q 'vanguard-claude-cle\.timer' outils/systemd/installer.sh &&
+  ! grep -q 'claude-cle\.sh' outils/systemd/vanguard-images.service && bon "Claude Code cherché chaque jour (sa minuterie)" ||
+  rate "minuterie de Claude Code"
 grep -q "^EMPREINTE_CLE=$(awk -F= '/^EMPREINTE_CLE=/ { print $2; exit }' outils/claude-cle.sh)$" outils/cle/Claude/depanner.sh &&
   bon "même empreinte de clé dans le script et le lanceur" || rate "empreintes de clé différentes"
 gpg --batch --with-colons --import-options show-only --import "$DEPOT/outils/cles-images/claude-code.asc" 2>/dev/null |

@@ -1,0 +1,15 @@
+[Unit]
+Description=Vanguard : chercher et vérifier la nouvelle version de Claude Code pour la clé
+# Claude Code pour « Dépanner avec Claude », en option (CLAUDE_CLE=oui dans ~/.config/vanguard/images-cle.conf ;
+# coupé : rien n'est fait). La version « stable » d'Anthropic, vérifiée par sa signature, dans
+# ~/.cache/vanguard/claude-cle ; déjà là : revérifiée, quelques octets lus sur le serveur. Posée sur la clé par
+# deployer.sh, au branchement ou à la mise à jour du jour (maj-cle.sh).
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=-%h/Projects/vanguard/outils/claude-cle.sh --chercher
+# En arrière-plan, sans gêner le reste de l'ordinateur : près de 600 Mo pour une nouvelle version.
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=2h

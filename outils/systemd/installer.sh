@@ -5,6 +5,8 @@
 # 1er et le 15 du mois (et les copie aussitôt si la clé est branchée), vanguard-images-cle.service les copie au
 # branchement ; sauf sur un ordinateur dont le réglage local coupe la clé de secours (CLE_SECOURS=non, voir
 # images-cle.sh) : là, ces unités ne copient rien.
+# vanguard-claude-cle.timer cherche chaque jour la nouvelle version de Claude Code pour la clé, en option
+# (outils/claude-cle.sh ; CLAUDE_CLE=oui dans le même réglage).
 # vanguard-cle-maj.timer remet chaque jour la clé restée branchée à jour (outils/maj-cle.sh : programme et images).
 # vanguard-menage.timer fait chaque semaine le ménage des fichiers de développement devenus inutiles
 # (outils/menage-dev.sh).
@@ -20,7 +22,7 @@ fi
 # Réinstallation (dépôt déplacé, unités changées) : les liens d'avant sont retirés, puis refaits.
 for unite in vanguard-copie.service vanguard-cle.service vanguard-compilation.path vanguard-images.service \
   vanguard-images.timer vanguard-images-cle.service vanguard-cle-maj.service vanguard-cle-maj.timer \
-  vanguard-menage.service vanguard-menage.timer; do
+  vanguard-menage.service vanguard-menage.timer vanguard-claude-cle.service vanguard-claude-cle.timer; do
   systemctl --user disable "$unite" >/dev/null 2>&1 || true
   rm -f "$UNITES/$unite" "$UNITES"/*.wants/"$unite"
 done
@@ -32,9 +34,11 @@ systemctl --user enable --now "$PWD/vanguard-images.timer" >/dev/null
 systemctl --user enable "$PWD/vanguard-images-cle.service" >/dev/null
 systemctl --user link "$PWD/vanguard-cle-maj.service" >/dev/null
 systemctl --user enable --now "$PWD/vanguard-cle-maj.timer" >/dev/null
+systemctl --user link "$PWD/vanguard-claude-cle.service" >/dev/null
+systemctl --user enable --now "$PWD/vanguard-claude-cle.timer" >/dev/null
 systemctl --user link "$PWD/vanguard-menage.service" >/dev/null
 systemctl --user enable --now "$PWD/vanguard-menage.timer" >/dev/null
 systemctl --user daemon-reload
 echo "Unités installées : vanguard-compilation.path, vanguard-copie.service, vanguard-cle.service, vanguard-images.timer,"
 echo "vanguard-images.service, vanguard-images-cle.service, vanguard-cle-maj.timer, vanguard-cle-maj.service,"
-echo "vanguard-menage.timer, vanguard-menage.service."
+echo "vanguard-claude-cle.timer, vanguard-claude-cle.service, vanguard-menage.timer, vanguard-menage.service."

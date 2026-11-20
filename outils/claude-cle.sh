@@ -4,9 +4,12 @@
 # clé (SystemRescue). Mode d'emploi : outils/cle/Claude/LISEZMOI.txt ; consignes données à Claude :
 # outils/cle/Claude/CLAUDE.md.
 #   outils/claude-cle.sh --chercher   la version « stable » téléchargée et vérifiée dans le cache (minuterie
-#                                     vanguard-images.timer) ; déjà là : rien n'est téléchargé
+#                                     vanguard-claude-cle.timer, chaque jour) ; déjà là : revérifiée, rien n'est
+#                                     téléchargé (quelques octets lus sur le serveur)
 #   outils/claude-cle.sh --cle POINT  pose la version vérifiée du cache sur la clé (outils/deployer.sh, qui tient le
 #                                     verrou de la clé) ; réglage coupé : retire de la clé ce que ce script y a posé
+#   outils/claude-cle.sh --relire POINT  dit (code 2) un binaire de la clé changé depuis le dernier dépôt, sans rien
+#                                     retirer (outils/deployer.sh, avant de reprendre un déploiement arrêté)
 #   outils/claude-cle.sh --etat       ce qui est dans le cache
 #   outils/claude-cle.sh --active     code 0 si le réglage local le demande, 1 sinon
 # EN OPTION, COUPÉ PAR DÉFAUT : près de 600 Mo d'un programme tiers, qui demande un compte Claude. Le réglage local
@@ -18,7 +21,12 @@
 # empreinte, celle que publie la documentation d'Anthropic (code.claude.com, docs/en/setup) : jamais une clé lue sur
 # le serveur qui sert les binaires. Seules les lignes d'un manifeste dont gpg a vérifié la signature sont lues ; un
 # binaire qui n'a pas la taille et l'empreinte du manifeste signé est effacé. Une version plus ancienne que la
-# dernière vérifiée est refusée (un serveur piégé ne fait pas revenir une version à faille).
+# dernière vérifiée est refusée, au téléchargement comme sur la clé (un serveur piégé ne fait pas revenir une version
+# à faille).
+# Ce que la copie fixée ne sait pas : une révocation publiée plus tard par Anthropic. Une clé expirée ou révoquée DANS
+# cette copie est refusée ; si Anthropic change de clé ou révoque la sienne, la nouvelle copie et sa nouvelle empreinte
+# arrivent avec une mise à jour de Vanguard (outils/cles-images/claude-code.asc, EMPREINTE_CLE ici et dans
+# outils/cle/Claude/depanner.sh), jamais par le serveur.
 # Le jeton de connexion à Claude n'est JAMAIS sur la clé : les lanceurs le gardent dans un dossier temporaire de
 # l'ordinateur visité, effacé en sortant (outils/cle/Claude/depanner.ps1 et depanner.sh).
 #
@@ -31,15 +39,23 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 SOURCE=https://downloads.claude.ai/claude-code-releases
-# Une autre source (un faux serveur, file://), dans les essais seulement (outils/essais-claude-cle.sh).
-[[ -n ${VANGUARD_ESSAI:-} && -n ${VANGUARD_CLAUDE_SOURCE:-} ]] && SOURCE=$VANGUARD_CLAUDE_SOURCE
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/vanguard/claude-cle
-# Un autre cache, dans les essais seulement : le ménage y efface des dossiers.
-[[ -n ${VANGUARD_ESSAI:-} && -n ${VANGUARD_CLAUDE_CACHE:-} ]] && CACHE=$VANGUARD_CLAUDE_CACHE
 CLE_GPG=$PWD/outils/cles-images/claude-code.asc
 EMPREINTE_CLE=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
-[[ -n ${VANGUARD_ESSAI:-} && -n ${VANGUARD_CLAUDE_CLE_GPG:-} ]] &&
-  { CLE_GPG=$VANGUARD_CLAUDE_CLE_GPG; EMPREINTE_CLE=$VANGUARD_CLAUDE_EMPREINTE; }
+SIGNATAIRE="d'Anthropic"
+# Les crochets des essais (outils/essais-claude-cle.sh), sous VANGUARD_ESSAI seulement : une autre source (un faux
+# serveur, file://), un autre cache (le ménage y efface des dossiers), une autre clé de confiance. Toujours dits en
+# première ligne, et jamais sur une vraie clé (poser, plus bas).
+CROCHETS=""
+if [[ -n ${VANGUARD_ESSAI:-} ]]; then
+  [[ -n ${VANGUARD_CLAUDE_SOURCE:-} ]] && { SOURCE=$VANGUARD_CLAUDE_SOURCE; CROCHETS+=", source"; }
+  [[ -n ${VANGUARD_CLAUDE_CACHE:-} ]] && { CACHE=$VANGUARD_CLAUDE_CACHE; CROCHETS+=", cache"; }
+  if [[ -n ${VANGUARD_CLAUDE_CLE_GPG:-} ]]; then
+    CLE_GPG=$VANGUARD_CLAUDE_CLE_GPG EMPREINTE_CLE=${VANGUARD_CLAUDE_EMPREINTE:-} SIGNATAIRE="de la clé d'essai"
+    CROCHETS+=", clé de confiance"
+  fi
+  [[ -z $CROCHETS ]] || echo "· Crochets d'essai actifs (VANGUARD_ESSAI) : ${CROCHETS#, }." >&2
+fi
 REGLAGE=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf
 ETAT=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard
 # Les deux plateformes tenues : dossier du serveur, nom du binaire, dossier sur la clé.
@@ -51,9 +67,12 @@ SIGNES=(manifest.json manifest.json.sig claude-code.asc)
 LANCEUR="Depanner avec Claude.bat"
 # Place laissée libre sur la clé après la copie (les rapports de Vanguard, sa base).
 MARGE_MIO=512
+# Remplis par version_verifiee : l'empreinte signée de chaque plateforme ; par poser : la note de la clé en cours.
+declare -A VERIFIEES=() NOTEE=()
 
 tmp=""
 erreur() { echo "✖ $*" >&2; exit 1; }
+[[ $EMPREINTE_CLE =~ ^[0-9A-F]{40}$ ]] || erreur "Empreinte de la clé de confiance de forme inattendue."
 avertir() { # titre texte
   command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -- "$1" "$2" || true
 }
@@ -145,8 +164,15 @@ derniere() {
 }
 
 # Vérifie un dossier de version : manifeste signé, de cette version, et chaque binaire à sa taille et à son empreinte.
+# Rien n'y est suivi : un lien à la place du dossier, du manifeste ou de sa signature est refusé. L'empreinte signée
+# de chaque plateforme est gardée dans VERIFIEES (la copie sur la clé y est comparée).
 version_verifiee() { # dossier version
-  local d=$1 v=$2 m ligne plat bin _dossier sha taille
+  local d=$1 v=$2 m ligne plat bin _dossier sha taille f
+  VERIFIEES=()
+  [[ -d $d && ! -L $d ]] || { echo "$d : pas un dossier" >&2; return 1; }
+  for f in manifest.json manifest.json.sig; do
+    [[ -f $d/$f && ! -L $d/$f ]] || { echo "$f : absent, ou pas un fichier ordinaire" >&2; return 1; }
+  done
   m=$(manifeste_verifie "$d") || return 1
   [[ $(champ version <<<"$m") == "$v" ]] || { echo "le manifeste signé n'est pas celui de la version $v" >&2; return 1; }
   for ligne in "${PLATEFORMES[@]}"; do
@@ -157,31 +183,53 @@ version_verifiee() { # dossier version
     [[ $(stat -c %s "$d/$plat/$bin") == "$taille" ]] || { echo "$plat/$bin : taille différente du manifeste" >&2; return 1; }
     [[ $(sha256sum "$d/$plat/$bin" | cut -d' ' -f1) == "$sha" ]] ||
       { echo "$plat/$bin : empreinte différente du manifeste signé" >&2; return 1; }
+    VERIFIEES[$plat]=$sha
   done
+}
+
+# La plus haute version jamais vérifiée ici, notée hors du cache (un cache vidé ou redescendu ne la fait pas oublier).
+haute_notee() {
+  local h
+  h=$(head -c 32 "$ETAT/claude-cle-version" 2>/dev/null | tr -d '[:space:]')
+  [[ $h =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] && echo "$h"
+  return 0
+}
+plus_ancienne() { # a b : code 0 si a est plus ancienne que b
+  [[ $1 != "$2" && $(printf '%s\n' "$1" "$2" | sort -V | head -1) == "$1" ]]
 }
 
 chercher() {
   active || { echo "Claude Code sur la clé : coupé sur cet ordinateur (CLAUDE_CLE=oui dans $REGLAGE l'allume)."; return 0; }
   cache_present || return 0
   mkdir -p "$CACHE" || return 1
-  exec 8>"$CACHE/.verrou"
+  # Le verrou hors du cache, comme ceux du déploiement : un lien planté dans le cache ne fait rien écrire ailleurs.
+  exec 8>>"${XDG_RUNTIME_DIR:-/tmp}/vanguard-claude-cle.lock" || return 1
   flock 8
-  local v avant haute m ligne plat bin _dossier sha taille raison
+  local v avant haute m ligne plat bin _dossier sha taille raison reste
+  # Un téléchargement tué (arrêt brutal, kill -9) laisse son dossier partiel : sous le verrou, aucun n'est en cours.
+  # Seulement ces noms-là (.x.y.z.XXXXXX), de vrais dossiers.
+  for reste in "$CACHE"/.[0-9]*.??????; do
+    [[ ${reste##*/} =~ ^\.[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}\.[A-Za-z0-9]{6}$ && -d $reste && ! -L $reste ]] &&
+      rm -rf -- "$reste"
+  done
   v=$(lire "$SOURCE/stable" | tr -d '[:space:]') || { echo "✖ Version stable de Claude Code illisible (Internet ?)." >&2; return 1; }
   [[ $v =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] || { echo "✖ Version stable de forme inattendue : rien n'est téléchargé." >&2; return 1; }
   avant=$(derniere)
-  # La plus haute version jamais vérifiée ici est notée hors du cache : un cache vidé ne fait pas revenir une
-  # version plus ancienne.
-  haute=$(head -c 32 "$ETAT/claude-cle-version" 2>/dev/null | tr -d '[:space:]')
-  [[ $haute =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] || haute=""
-  haute=$(printf '%s\n' "$avant" "$haute" | sed '/^$/d' | sort -V | tail -1)
   if [[ $v == "$avant" ]]; then
-    # Notée ici aussi : un cache rempli autrement (ou une note perdue) garde sa protection contre le retour.
-    mkdir -p "$ETAT" && echo "$haute" >"$ETAT/claude-cle-version"
-    echo "Claude Code $v : déjà dans le cache, vérifié."
-    return 0
+    # Revérifiée, pas crue sur son témoin : une copie abîmée ou changée est effacée, puis téléchargée de nouveau.
+    if raison=$(version_verifiee "$CACHE/$v" "$v" 2>&1); then
+      # Notée ici aussi : un cache rempli autrement (ou une note perdue) garde sa protection contre le retour.
+      haute=$(printf '%s\n' "$v" "$(haute_notee)" | sed '/^$/d' | sort -V | tail -1)
+      mkdir -p "$ETAT" && echo "$haute" >"$ETAT/claude-cle-version"
+      echo "Claude Code $v : déjà dans le cache, revérifié."
+      return 0
+    fi
+    echo "⚠ Claude Code $v du cache ne se vérifie plus ($raison) : effacé, téléchargé de nouveau." >&2
+    rm -rf -- "${CACHE:?}/$v"
+    avant=$(derniere)
   fi
-  if [[ -n $haute && $(printf '%s\n' "$v" "$haute" | sort -V | tail -1) != "$v" ]]; then
+  haute=$(printf '%s\n' "$avant" "$(haute_notee)" | sed '/^$/d' | sort -V | tail -1)
+  if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
     echo "✖ Le serveur annonce Claude Code $v, plus ancien que la $haute déjà vérifiée : refusé." >&2
     avertir "Claude Code : version plus ancienne refusée" "Le serveur annonce la $v ; la $haute a déjà été vérifiée."
     return 1
@@ -215,7 +263,6 @@ chercher() {
     avertir "Claude Code $v refusé" "$raison"
     return 1
   fi
-  cp -- "$CLE_GPG" "$tmp/claude-code.asc"
   rm -f "$tmp/.raison"
   rm -rf "${CACHE:?}/$v"
   # Un mv raté laisse le trap effacer le dossier temporaire.
@@ -231,11 +278,54 @@ chercher() {
     [[ ${d##*/} =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ && -f $d/manifest.json && ! -L $d ]] || continue
     [[ ${d##*/} == "$v" || ${d##*/} == "$avant" ]] || rm -rf -- "$d"
   done
-  echo "✔ Claude Code $v vérifié (signature d'Anthropic, empreintes) dans le cache."
+  echo "✔ Claude Code $v vérifié (signature $SIGNATAIRE, empreintes) dans le cache."
 }
 
 # Le SHA-256 de chaque binaire posé sur la clé, noté ici au jeton de la clé (jamais sur la clé).
 note_de() { echo "$ETAT/claude-cle-$1.sha256"; }
+# Le jeton de la clé (32 caractères hexadécimaux), ou rien.
+jeton_de() { # point
+  local j
+  j=$(head -c 64 "$1/vanguard.jeton" 2>/dev/null | tr -d '[:space:]' | tr 'A-F' 'a-f')
+  [[ $j =~ ^[0-9a-f]{32}$ ]] && echo "$j"
+  return 0
+}
+BINAIRES_CLE=(Claude/Linux/claude Claude/Windows/claude.exe)
+# Relire la clé, pas la mémoire : les pages du fichier sont lâchées (après sync, elles sont propres).
+relache() { # fichier
+  python3 -I -c 'import os,sys
+fd=os.open(sys.argv[1],os.O_RDONLY)
+os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)
+os.close(fd)' "$1" 2>/dev/null || true
+}
+# Les binaires notés qui ont changé sur la clé depuis le dernier dépôt, relus entiers (« Claude/… », chacun précédé
+# d'une espace) ; un lien ou un non-fichier à leur place compte comme changé. Un binaire absent ne compte pas : un
+# dépôt arrêté en route en laisse un (poser), et outils/deployer.sh appelle --relire avant que la reprise d'un
+# déploiement ne retire quoi que ce soit.
+changes() { # point note
+  local p=$1 note=$2 chemin sha
+  [[ -f $note ]] || return 0
+  for chemin in "${BINAIRES_CLE[@]}"; do
+    [[ -e $p/$chemin || -L $p/$chemin ]] || continue
+    grep -qF " $chemin" "$note" || continue
+    sha=""
+    if [[ -f $p/$chemin && ! -L $p/$chemin ]]; then
+      relache "$p/$chemin"
+      sha=$(sha256sum <"$p/$chemin" | cut -d' ' -f1)
+    fi
+    grep -qxF "$sha $chemin" "$note" || printf ' %s' "$chemin"
+  done
+}
+# La note, réécrite d'un coup (nom provisoire, puis renommée) : jamais à moitié.
+ecrire_note() { # note
+  local c
+  for c in "${!NOTEE[@]}"; do echo "${NOTEE[$c]} $c"; done | sort -k2 >"$1.tmp" && mv -f -- "$1.tmp" "$1"
+}
+# Un petit fichier posé : copié seulement s'il a changé, en remplaçant ce qui est là (jamais en le suivant), puis relu.
+copier_relu() { # source destination
+  cmp -s -- "$1" "$2" 2>/dev/null && return 0
+  cp -T --remove-destination -- "$1" "$2" && cmp -s -- "$1" "$2"
+}
 
 # Retire de la clé ce que ce script y a posé, et rien d'autre ; les dossiers seulement vides. Seulement si la note de
 # cette clé existe : sans elle, rien ne dit que ces fichiers viennent d'ici (ceux de la personne, un autre jeton) ;
@@ -272,7 +362,9 @@ retirer() { # point note
 retirer_change() { # point changes raison
   local p=$1 chemin
   for chemin in $2; do
-    [[ $chemin =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ && ! -L $p/$chemin ]] && rm -f -- "${p:?}/$chemin"
+    # Un lien à la place du binaire est retiré lui-même (rm ne suit pas) ; jamais au travers d'un dossier lien.
+    [[ $chemin =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ && ! -L $p/Claude && ! -L $p/${chemin%/*} ]] &&
+      rm -f -- "${p:?}/$chemin"
   done
   echo "✖ Sur la clé, changé depuis le dernier dépôt :$2. Pas de copie vérifiée à remettre ($3) : retiré." >&2
   echo "  Un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
@@ -280,24 +372,28 @@ retirer_change() { # point changes raison
 un programme remplacé est un piège possible."
   exit 2
 }
+# Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé (code 2).
+refuser() { # point changes raison texte
+  [[ -z $2 ]] || retirer_change "$1" "$2" "$3"
+  erreur "$4"
+}
 
 poser() { # point
-  local p=$1 jeton v d note ligne plat bin dossier change="" besoin libre sha chemin
+  local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu=""
+  # Les crochets d'essai ne touchent jamais une vraie clé.
+  [[ -z $CROCHETS || $(realpath -m -- "$p") != /run/media/* ]] ||
+    erreur "Crochets d'essai actifs : rien n'est posé sur une clé de /run/media ($p)."
   [[ -d $p && -f $p/vanguard.cle ]] || erreur "$p n'est pas une clé VANGUARD."
   # Ce qui a changé pendant le voyage, d'abord, quoi qu'il arrive ensuite (coupé, cache absent, place) : relu
   # entier, comparé à la note du dernier dépôt.
-  jeton=$(head -c 64 "$p/vanguard.jeton" 2>/dev/null | tr -d '[:space:]' | tr 'A-F' 'a-f')
-  if [[ $jeton =~ ^[0-9a-f]{32}$ ]]; then
+  jeton=$(jeton_de "$p")
+  if [[ -n $jeton ]]; then
     note=$(note_de "$jeton")
-    if [[ -f $note ]]; then
-      while read -r sha chemin; do
-        [[ $chemin =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ && -f $p/$chemin ]] || continue
-        [[ $(sha256sum "$p/$chemin" | cut -d' ' -f1) == "$sha" ]] || change+=" $chemin"
-      done <"$note"
-    fi
+    change=$(changes "$p" "$note")
   fi
+  vu=$change
   if ! active; then
-    retirer "$p" "${note:-}"
+    retirer "$p" "$note"
     [[ -z $change ]] || retirer_change "$p" "$change" "Claude Code coupé"
     return 0
   fi
@@ -312,19 +408,35 @@ poser() { # point
     return 0
   fi
   d=$CACHE/$v
+  # Jamais plus ancienne que la plus haute version vérifiée ici : un cache redescendu (version récente effacée, copie
+  # d'un autre ordinateur) ne fait pas revenir une version à faille sur la clé.
+  haute=$(haute_notee)
+  if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
+    avertir "Claude Code : version plus ancienne refusée" "Le cache n'a que la $v ; la $haute a déjà été vérifiée. \
+Rien n'est posé sur la clé."
+    refuser "$p" "$change" "cache plus ancien que la version vérifiée" \
+      "Claude Code $v du cache, plus ancien que la $haute déjà vérifiée : rien n'est posé (relancer --chercher)."
+  fi
   # Revérifié avant chaque copie : le cache est sur un disque de cet ordinateur, mais une copie abîmée ne doit pas
   # partir sur la clé.
-  if ! version_verifiee "$d" "$v"; then
-    [[ -z $change ]] || retirer_change "$p" "$change" "cache qui ne se vérifie plus"
-    erreur "Claude Code $v du cache ne se vérifie plus : rien n'est posé (relancer --chercher)."
-  fi
-  for chemin in "$p/Claude" "$p/Claude/Linux" "$p/Claude/Windows" "$p/$LANCEUR"; do
-    [[ ! -L $chemin ]] || erreur "$chemin est un lien symbolique : rien n'est posé."
+  version_verifiee "$d" "$v" ||
+    refuser "$p" "$change" "cache qui ne se vérifie plus" \
+      "Claude Code $v du cache ne se vérifie plus : rien n'est posé (relancer --chercher)."
+  # Rien n'est suivi sur la clé : chaque dossier est un vrai dossier, chaque fichier écrit un fichier ordinaire, ou
+  # absent.
+  for chemin in Claude Claude/Linux Claude/Windows; do
+    [[ ! -L $p/$chemin && (! -e $p/$chemin || -d $p/$chemin) ]] ||
+      refuser "$p" "$change" "chemin piégé sur la clé" "$p/$chemin : lien symbolique, ou pas un dossier : rien n'est posé."
   done
-  [[ $jeton =~ ^[0-9a-f]{32}$ ]] || erreur "Jeton de la clé illisible : rien n'est posé."
+  for chemin in "${FIXES[@]/#/Claude/}" "${SIGNES[@]/#/Claude/}" "${BINAIRES_CLE[@]}" Claude/Linux/.claude.part \
+    Claude/Windows/.claude.exe.part "$LANCEUR"; do
+    [[ ! -L $p/$chemin && (! -e $p/$chemin || -f $p/$chemin) ]] ||
+      refuser "$p" "$change" "chemin piégé sur la clé" \
+        "$p/$chemin : lien symbolique, ou pas un fichier ordinaire : rien n'est posé."
+  done
+  [[ -n $jeton ]] || erreur "Jeton de la clé illisible : rien n'est posé."
   # Un binaire déjà là sans note de dépôt (jeton changé, note perdue, posé par autre chose) : on ne sait pas d'où il
   # vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé.
-  local inconnu=""
   if [[ ! -f $note ]]; then
     for ligne in "${PLATEFORMES[@]}"; do
       read -r plat bin dossier <<<"$ligne"
@@ -339,48 +451,64 @@ poser() { # point
       besoin=$((besoin + $(stat -c %s "$d/$plat/$bin") / 1048576 + 1))
   done
   libre=$(($(df -Pk "$p" | awk 'NR == 2 { print $4 }') / 1024))
-  if ((libre < besoin)); then
-    [[ -z $change ]] || retirer_change "$p" "$change" "place insuffisante"
-    erreur "Place insuffisante sur la clé pour Claude Code ($besoin Mio voulus, $libre libres)."
+  ((libre >= besoin)) ||
+    refuser "$p" "$change" "place insuffisante" "Place insuffisante sur la clé pour Claude Code ($besoin Mio voulus, $libre libres)."
+  mkdir -p "$p/Claude/Linux" "$p/Claude/Windows" "$ETAT" ||
+    refuser "$p" "$change" "dossiers pas créés" "Dossiers de Claude/ pas créés sur la clé."
+  # La note du dernier dépôt, reprise : chaque binaire y est réécrit dès qu'il est posé et relu.
+  NOTEE=()
+  if [[ -f $note ]]; then
+    while read -r s c; do
+      [[ $s =~ ^[0-9a-f]{64}$ && $c =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ ]] && NOTEE[$c]=$s
+    done <"$note"
   fi
-  mkdir -p "$p/Claude/Linux" "$p/Claude/Windows" "$ETAT" || return 1
+  # Chaque binaire : l'ancien retiré, le nouveau copié sous un nom provisoire, relu sur la clé et comparé à l'empreinte
+  # signée, noté, puis renommé. Arrêté en route, la clé n'a jamais sous son vrai nom un binaire à moitié écrit ni un
+  # binaire que la note ne connaît pas : pas de fausse alerte au dépôt suivant. Le nom provisoire est de ceux que le
+  # déploiement dépose (src/protection/manifeste.rs) : la reprise d'un déploiement arrêté le retire.
   for ligne in "${PLATEFORMES[@]}"; do
     read -r plat bin dossier <<<"$ligne"
-    cmp -s "$d/$plat/$bin" "$p/Claude/$dossier/$bin" 2>/dev/null || cp -f -- "$d/$plat/$bin" "$p/Claude/$dossier/$bin" ||
-      { [[ -z $change ]] || retirer_change "$p" "$change" "copie ratée"; erreur "Copie de $dossier/$bin ratée."; }
+    c=Claude/$dossier/$bin part=Claude/$dossier/.$bin.part
+    relache "$p/$c"
+    if cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null; then
+      NOTEE[$c]=${VERIFIEES[$plat]}
+      change=${change// $c/}
+      continue
+    fi
+    if ! rm -f -- "${p:?}/$c" || ! cp -T --remove-destination -- "$d/$plat/$bin" "$p/$part"; then
+      rm -f -- "${p:?}/$part"
+      refuser "$p" "$change" "copie ratée" "Copie de $c ratée."
+    fi
+    sync -f "$p/$part" 2>/dev/null || true
+    relache "$p/$part"
+    sha=$(sha256sum <"$p/$part" | cut -d' ' -f1)
+    if [[ $sha != "${VERIFIEES[$plat]}" ]]; then
+      rm -f -- "${p:?}/$part"
+      refuser "$p" "$change" "copie différente" "$c relu sur la clé : différent de la copie vérifiée, retiré."
+    fi
+    NOTEE[$c]=$sha
+    ecrire_note "$note" || { rm -f -- "${p:?}/$part"; refuser "$p" "$change" "note pas écrite" "Note du dépôt pas écrite ($note)."; }
+    mv -f -T -- "$p/$part" "$p/$c" || { rm -f -- "${p:?}/$part"; refuser "$p" "$change" "copie ratée" "$c pas renommé sur la clé."; }
+    change=${change// $c/}
   done
+  ecrire_note "$note" || refuser "$p" "$change" "note pas écrite" "Note du dépôt pas écrite ($note)."
+  # Les petits fichiers : le lanceur et les consignes du dépôt, le manifeste signé et sa signature du cache, la clé de
+  # confiance du dépôt (celle qui a vérifié le manifeste, jamais une copie du cache).
   for f in "${FIXES[@]}"; do
-    cmp -s "outils/cle/Claude/$f" "$p/Claude/$f" 2>/dev/null || cp -f -- "outils/cle/Claude/$f" "$p/Claude/$f"
+    copier_relu "outils/cle/Claude/$f" "$p/Claude/$f" || refuser "$p" "$change" "copie ratée" "Claude/$f pas copié sur la clé."
   done
   for f in "${SIGNES[@]}"; do
-    cmp -s "$d/$f" "$p/Claude/$f" 2>/dev/null || cp -f -- "$d/$f" "$p/Claude/$f"
+    s=$d/$f
+    [[ $f != claude-code.asc ]] || s=$CLE_GPG
+    copier_relu "$s" "$p/Claude/$f" || refuser "$p" "$change" "copie ratée" "Claude/$f pas copié sur la clé."
   done
-  cmp -s "outils/cle/$LANCEUR" "$p/$LANCEUR" 2>/dev/null || cp -f -- "outils/cle/$LANCEUR" "$p/$LANCEUR"
-  sync -f "$p/Claude/Windows/claude.exe" 2>/dev/null || true
-  # Relire la clé, pas la mémoire : les pages de la copie sont lâchées (après sync, elles sont propres).
-  for ligne in "${PLATEFORMES[@]}"; do
-    read -r plat bin dossier <<<"$ligne"
-    python3 -I -c 'import os,sys
-fd=os.open(sys.argv[1],os.O_RDONLY)
-os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)
-os.close(fd)' "$p/Claude/$dossier/$bin" 2>/dev/null || true
-  done
-  # La note : relue sur la clé après la copie, pour noter ce qui y est vraiment.
-  {
-    for ligne in "${PLATEFORMES[@]}"; do
-      read -r plat bin dossier <<<"$ligne"
-      echo "$(sha256sum "$p/Claude/$dossier/$bin" | cut -d' ' -f1) Claude/$dossier/$bin"
-    done
-  } >"$note.tmp" && mv -f "$note.tmp" "$note"
-  for ligne in "${PLATEFORMES[@]}"; do
-    read -r plat bin dossier <<<"$ligne"
-    cmp -s "$d/$plat/$bin" "$p/Claude/$dossier/$bin" || erreur "$dossier/$bin relu sur la clé : différent de la copie vérifiée."
-  done
+  copier_relu "outils/cle/$LANCEUR" "$p/$LANCEUR" || refuser "$p" "$change" "copie ratée" "$LANCEUR pas copié sur la clé."
+  sync -f "$p/Claude/CLAUDE.md" 2>/dev/null || true
   echo "✔ Claude Code $v sur la clé (vérifié, relu)."
-  if [[ -n $change ]]; then
-    echo "✖ Sur la clé, changé depuis le dernier dépôt :$change. Remplacé par la copie vérifiée ; un programme" >&2
+  if [[ -n $vu ]]; then
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$vu. Remplacé par la copie vérifiée ; un programme" >&2
     echo "  remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
-    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$change. Remplacé par la copie vérifiée ; \
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$vu. Remplacé par la copie vérifiée ; \
 un programme remplacé est un piège possible."
     return 2
   fi
@@ -390,6 +518,23 @@ un programme remplacé est un piège possible."
     avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
     return 2
   fi
+}
+
+# Avant la reprise d'un déploiement arrêté (outils/deployer.sh) : la reprise retire de la clé ce que le déploiement
+# pose et qui diffère de sa référence, binaires de Claude compris, et poser ne verrait plus qu'un binaire absent. Un
+# binaire changé pendant le voyage est donc dit ici, avant (notification, code 2) ; rien n'est retiré ni écrit.
+relire() { # point
+  local p=$1 jeton change
+  [[ -d $p && -f $p/vanguard.cle ]] || erreur "$p n'est pas une clé VANGUARD."
+  jeton=$(jeton_de "$p")
+  [[ -n $jeton ]] || return 0
+  change=$(changes "$p" "$(note_de "$jeton")")
+  [[ -n $change ]] || return 0
+  echo "✖ Sur la clé, changé depuis le dernier dépôt :$change. Dit avant la reprise du déploiement, qui peut le" >&2
+  echo "  retirer ; un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
+  avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$change (dit avant la reprise du déploiement) ; \
+un programme remplacé est un piège possible."
+  return 2
 }
 
 etat() {
@@ -406,7 +551,8 @@ etat() {
 case ${1:-} in
   --chercher) chercher ;;
   --cle) [[ $# == 2 ]] || erreur "Usage : outils/claude-cle.sh --cle POINT"; poser "$2" ;;
+  --relire) [[ $# == 2 ]] || erreur "Usage : outils/claude-cle.sh --relire POINT"; relire "$2" ;;
   --etat) etat ;;
   --active) active ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \?//'; [[ ${1:-} == -h || ${1:-} == --help ]] ;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \?//'; [[ ${1:-} == -h || ${1:-} == --help ]] ;;
 esac

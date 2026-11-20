@@ -1250,6 +1250,8 @@ cp -r outils/cle "$DD/outils/"
 printf '#!/bin/sh\nexit 0\n' | tee "$DD/outils/verifier-masque.sh" "$DD/outils/failles-programmes.sh" \
   >"$BANC/faux-dep/pgrep"
 : >"$DD/outils/licences-tierces.py"
+# Faux claude-cle.sh : chaque appel noté ; --relire dit un binaire changé (code 2), comme le vrai.
+printf '#!/bin/sh\necho "$*" >>"$BANC/claude-cle.log"\n[ "$1" = --relire ] && exit 2\nexit 0\n' >"$DD/outils/claude-cle.sh"
 sed -i 's/exit 0/exit 1/' "$BANC/faux-dep/pgrep"
 chmod +x "$DD"/outils/*.sh "$DD"/outils/*.py "$BANC/faux-dep/pgrep"
 : >"$DD/LICENSE"
@@ -1283,6 +1285,8 @@ case "$1 ${2:-}" in
     # --reprise : ce que le déploiement pose (ici Linux/ et source/) ne compte pas.
     filtre='^$'
     [[ ${4:-} == --reprise ]] && filtre=' \./(Linux|source)/'
+    # Le vrai dit chaque fichier retiré à la reprise.
+    [[ ${4:-} == --reprise ]] && echo "Reprise : Linux/vanguard différait de la référence, retiré de la clé (le déploiement le repose)" >&2
     diff <(releve "$3" | grep -vE "$filtre") <(grep -vE "$filtre" "$BANC/reference") >&2 || exit 2 ;;
   "deploiement temoins")
     [[ -s $3/vanguard.jeton ]] || echo fedcba9876543210fedcba9876543210 >"$3/vanguard.jeton"
@@ -1331,6 +1335,9 @@ code=$?
 voir "déploiement arrêté en route : le suivant reprend (sa copie à moitié écrite ne compte pas), repère retiré" \
   eval '((code == 0)) && dit "$BANC/vanguard.log" "comparer-cle $K --reprise" && [[ ! -e $BANC/etat/vanguard/deploiement-en-cours-$J ]] &&
     ! grep -qx moitié "$K/Linux/vanguard"' || montrer "$BANC/sortie"
+voir "reprise : les binaires de Claude Code relus avant, ce qu'elle retire dit et notifié" \
+  eval 'dit "$BANC/claude-cle.log" "--relire $K" && dit "$BANC/sortie" "Reprise : Linux/vanguard différait" &&
+    dit "$BANC/notifications.log" "déploiement arrêté repris"' || { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
 # Le voyage : un raccourci planté. Rien n'est écrit (ni copie, ni référence), une notification le dit.
 echo piege >"$K/Photos.lnk"
 echo "ancien" >"$K/Linux/vanguard"

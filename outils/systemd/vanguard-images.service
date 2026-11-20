@@ -12,9 +12,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=-%h/Projects/vanguard/outils/images-cle.sh --chercher
-# Claude Code pour « Dépanner avec Claude », en option (CLAUDE_CLE=oui dans le même réglage ; coupé : rien n'est fait).
-# Posé sur la clé par deployer.sh, au branchement ou à la mise à jour du jour (maj-cle.sh).
-ExecStart=-%h/Projects/vanguard/outils/claude-cle.sh --chercher
+# Claude Code pour la clé : sa propre minuterie, chaque jour (vanguard-claude-cle.timer).
 # Clé absente : « rien à copier », sans erreur. Le même verrou que deployer.sh.
 ExecStart=%h/Projects/vanguard/outils/images-cle.sh --cle
 # En arrière-plan, sans gêner le reste de l'ordinateur : quelques gigaoctets, et 16 Gio de plus pour une nouvelle Kali

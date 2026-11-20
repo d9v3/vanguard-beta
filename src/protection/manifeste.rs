@@ -521,6 +521,10 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
                 | "claude-code.asc"
                 | "Linux/claude"
                 | "Windows/claude.exe"
+                // Le nom provisoire de chaque binaire pendant sa copie : une copie arrêtée en laisse un, que la
+                // reprise retire.
+                | "Linux/.claude.part"
+                | "Windows/.claude.exe.part"
         );
     }
     if let Some(nom) = chemin.strip_prefix("tldr/") {
@@ -578,6 +582,11 @@ fn sera_repose(c: &str) -> &'static str {
         tr!(
             "le déploiement ne le repose pas : Vanguard ne vise plus le Mac",
             "the deployment does not put it back: Vanguard no longer targets the Mac"
+        )
+    } else if c.starts_with("Claude/") && c.ends_with(".part") {
+        tr!(
+            "copie de Claude Code arrêtée en route ; le déploiement repose le binaire lui-même",
+            "Claude Code copy stopped midway; the deployment puts the binary itself back"
         )
     } else if c.starts_with("tldr/") {
         tr!(
@@ -2073,6 +2082,8 @@ mod tests {
             "Claude/manifest.json.sig",
             "Claude/Linux/claude",
             "Claude/Windows/claude.exe",
+            "Claude/Linux/.claude.part",
+            "Claude/Windows/.claude.exe.part",
         ] {
             assert!(depose_par_le_deploiement(pose), "{pose}");
         }
@@ -2082,6 +2093,9 @@ mod tests {
             "Claude/autre.bat",
             "Claude/Windows/../piege.exe",
             "Claudex/Linux/claude",
+            "Claude/Linux/claude.part",
+            "Claude/Windows/.claude.part",
+            "Claude/.claude.part",
         ] {
             assert!(!depose_par_le_deploiement(piege), "{piege}");
         }
@@ -2177,6 +2191,10 @@ mod tests {
             sera_repose("tldr/tldr-pages.en.zip").contains("hors ligne") || sera_repose("tldr/x").contains("offline")
         );
         assert!(!sera_repose("Linux/vanguard").contains("sinon"));
+        assert!(
+            sera_repose("Claude/Linux/.claude.part").contains("binaire")
+                || sera_repose("Claude/Linux/.claude.part").contains("binary")
+        );
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&racine);
     }

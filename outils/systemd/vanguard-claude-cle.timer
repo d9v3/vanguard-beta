@@ -1,0 +1,13 @@
+[Unit]
+Description=Vanguard : chercher chaque jour la nouvelle version de Claude Code pour la clé
+
+[Timer]
+# Chaque jour : Anthropic publie souvent, et une version corrigée doit gagner la clé sans attendre deux semaines
+# (le lanceur de la clé coupe la mise à jour automatique de Claude Code, qui ne passerait pas par la vérification).
+OnCalendar=daily
+# Ordinateur éteint à l'heure prévue : rattrapé au démarrage suivant, à un moment tiré au hasard.
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
