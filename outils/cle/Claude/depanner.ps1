@@ -52,14 +52,14 @@ function Existe([string]$chemin) { [bool](Get-Item -LiteralPath $chemin -Force -
 # « auth logout » sort avec le code 0 même hors ligne (le jeton de ce PC est effacé, le serveur n'a rien révoqué). Une
 # version récente le dit (« … didn't confirm the login was revoked », $revocation) ; une ancienne affiche le même succès
 # dans les deux cas. 'oui' seulement sur preuve : code 0, le texte de succès, pas l'avertissement, et un binaire
-# vérifié qui sait l'écrire ($revocation non vide : l'appelant l'a trouvé dedans). Le gardien ne le passe pas : son
-# résultat n'est jamais dit.
+# vérifié qui sait l'écrire ($sait : l'appelant a trouvé l'avertissement dans ses octets). Le gardien ne le passe
+# pas : son résultat n'est jamais dit.
 $TexteNettoyer = @'
 function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier, [string]$sortie, [string]$erreurs) {
     Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $sortie -RedirectStandardError $erreurs -ErrorAction Stop
 }
-function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [string]$revocation = '') {
+function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait = $false) {
     $deconnexion = ''
     if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; Deconnexion = '' } }
     $config = [IO.Path]::Combine($dossier, 'config')
@@ -75,8 +75,9 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [string]$rev
             if ($p.WaitForExit(20000)) {
                 $p.WaitForExit()   # les fichiers de sortie fermés
                 $dit = [IO.File]::ReadAllText($sortie) + [IO.File]::ReadAllText($erreurs)
-                if ($p.ExitCode -eq 0 -and $revocation -and
-                    $dit.Contains('Successfully logged out from your Anthropic account.') -and -not $dit.Contains($revocation)) {
+                if ($p.ExitCode -eq 0 -and $sait -and
+                    $dit.Contains('Successfully logged out from your Anthropic account.') -and
+                    -not $dit.Contains("didn't confirm the login was revoked")) {
                     $deconnexion = 'oui'
                 }
             }
@@ -207,7 +208,7 @@ if ($Dossier.StartsWith('\\') -or @('NTFS', 'ReFS') -notcontains $format) {
 }
 $Session = $null
 $Lance = $false
-$Revocation = ''
+$Revocation = $false
 $code = 0
 # Un seul try/finally de la création du dossier à la fin : un refus, une erreur ou Ctrl+C l'efface toujours.
 try {
@@ -296,7 +297,7 @@ try {
         # La version lue dans le programme signé, pas dans le manifeste qui ne l'est pas ici.
         $Version = (Get-Item -LiteralPath $Exe).VersionInfo.ProductVersion
         # Ces octets vérifiés savent-ils dire une révocation pas confirmée ? Sinon, aucune déconnexion n'est « confirmée ».
-        $Revocation = if (ContientTexte $Exe $RevocationDite) { $RevocationDite } else { '' }
+        $Revocation = ContientTexte $Exe $RevocationDite
     } catch {
         Arret "Claude Code refusé ($($_.Exception.Message)). Rien n'a été lancé : la copie de la clé est peut-être abîmée ou remplacée ; mettez la clé à jour avec Vanguard." `
               'Claude Code refused. Nothing was started: the copy on the key may be damaged or replaced. Update the key with Vanguard.'

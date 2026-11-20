@@ -407,10 +407,14 @@ grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/s
 rm -f "$ESSAI/code-logout"
 # Hors ligne, un Claude Code récent sort avec le code 0 et dit que la révocation n'est pas confirmée : jamais
 # « Déconnecté ».
-echo "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
-attendu "révocation pas confirmée (code 0) : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
-grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
-  bon "révocation pas confirmée, code 0 : NON confirmée" || rate "révocation pas confirmée : $(tail -2 "$ESSAI/sortie")"
+# L'avertissement seul (comme la 2.1.329), puis le succès suivi de l'avertissement (une version qui dirait les deux).
+for avec in "" "Successfully logged out from your Anthropic account."; do
+  printf '%s\n' $avec "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+  attendu "révocation pas confirmée (code 0${avec:+, succès dit aussi}) : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+  grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+    bon "révocation pas confirmée${avec:+, succès dit aussi} : NON confirmée" ||
+    rate "révocation pas confirmée${avec:+, succès dit aussi} : $(tail -2 "$ESSAI/sortie")"
+done
 rm -f "$ESSAI/sortie-logout"
 # Une version qui ne sait pas dire une révocation ratée (le même succès dans les deux cas) : jamais « Déconnecté ».
 copie_lanceur "$ESSAI/lanceur-ancien.sh"
@@ -725,10 +729,13 @@ EOF
     rate "Windows, déconnexion ratée : $(tail -2 "$ESSAI/sortie")"
   rm -f "$ESSAI/code-logout"
   # Code 0, révocation pas confirmée (hors ligne, version récente) : jamais « Déconnecté ».
-  echo "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
-  attendu "Windows, révocation pas confirmée (code 0) : lancé" 0 ps_lancer o
-  grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
-    bon "Windows : révocation pas confirmée, code 0 : NON confirmée" || rate "Windows, révocation : $(tail -2 "$ESSAI/sortie")"
+  for avec in "" "Successfully logged out from your Anthropic account."; do
+    printf '%s\n' $avec "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+    attendu "Windows, révocation pas confirmée (code 0${avec:+, succès dit aussi}) : lancé" 0 ps_lancer o
+    grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+      bon "Windows : révocation pas confirmée${avec:+, succès dit aussi} : NON confirmée" ||
+      rate "Windows, révocation${avec:+, succès dit aussi} : $(tail -2 "$ESSAI/sortie")"
+  done
   rm -f "$ESSAI/sortie-logout"
   # Une version qui ne sait pas la dire : le même succès, jamais « Déconnecté ».
   attendu "Windows, version qui ne dit pas la révocation : lancé" 0 ps_lancer o ESSAI_REVOCATION="texte que ce binaire n'a pas"
