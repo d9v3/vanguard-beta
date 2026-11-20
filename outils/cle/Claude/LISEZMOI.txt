@@ -4,7 +4,8 @@ English: README.txt
 
 Claude Code, l'assistant d'Anthropic, aide à trouver la cause d'une panne sur l'ordinateur d'un proche
 (lenteur, plantage, virus, réseau, démarrage). Il lit l'ordinateur, explique, et propose ; il demande avant
-chaque commande et ne change rien sans accord. Il se sert de Vanguard, sur la même clé, pour le diagnostic.
+toute commande qui change quelque chose. Certaines commandes de simple lecture passent sans demander, et ce
+qu'elles montrent part aussi chez Anthropic. Il se sert de Vanguard, sur la même clé, pour le diagnostic.
 
 Il faut : un compte Claude (abonnement Pro ou Max, ou console Anthropic), Internet, et l'accord du
 propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de fichiers) part chez Anthropic.
@@ -18,15 +19,17 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    Ordinateur qui ne démarre plus : démarrer sur SystemRescue (menu de la clé), puis la même commande que sous
    Linux. Claude y monte le disque en lecture seule pour diagnostiquer.
 
-   La première fois, Claude donne une adresse de connexion : l'ouvrir sur VOTRE téléphone, jamais dans le
-   navigateur de cet ordinateur (il garderait votre compte connecté après votre départ), se connecter, et
-   recopier le code s'il en demande un.
+   La première fois, Claude donne une adresse de connexion (le navigateur de cet ordinateur ne s'ouvre pas) :
+   l'ouvrir sur VOTRE téléphone, jamais dans le navigateur de cet ordinateur (il garderait votre compte
+   connecté après votre départ), se connecter, et recopier le code s'il en demande un.
 
 
 2. FINIR
 
-   Taper /exit dans Claude. Le lanceur déconnecte le compte et efface Claude Code, la connexion et la
-   conversation de l'ordinateur. Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
+   Taper /exit dans Claude. Le lanceur déconnecte le compte et efface de l'ordinateur Claude Code, la
+   connexion, la conversation et les journaux de Claude Code de cette session. S'il affiche « Déconnexion NON
+   confirmée » (hors ligne, par exemple), terminer la session sur claude.ai (Réglages › Compte).
+   Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
    au moindre doute (ou sous Linux), relancer le lanceur une fois, puis /exit : il efface d'abord ce qui
    était resté.
    Après un ordinateur douteux (virus possible), ou s'il s'est éteint ou a planté en pleine session :
@@ -39,12 +42,19 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 
    - Rien n'est installé : le programme est copié dans un dossier temporaire, lancé de là, puis effacé.
    - La connexion à votre compte Claude n'est jamais écrite sur la clé ; elle vit seulement dans le dossier
-     temporaire de la session (accessible à votre seul compte sous Windows), effacé à la fin.
-   - Avant le lancement, le programme est vérifié : sous Windows, sa signature numérique « Anthropic, PBC »,
-     contrôlée par Windows ; sous Linux, la signature d'Anthropic sur la liste des empreintes, et l'empreinte
-     du programme.
-   - Des consignes posées sur l'ordinateur pour Claude (CLAUDE.md, AGENTS.md, .claude) ou des réglages
-     imposés à Claude Code : le lanceur refuse de démarrer, et dit pourquoi.
+     temporaire de la session (à votre seul compte ; sous Windows, refusé sur un disque sans droits Windows,
+     FAT ou réseau), effacé à la fin.
+   - Avant le lancement, le programme est vérifié : sous Windows, sa signature numérique, contrôlée par
+     Windows, faite par « Anthropic, PBC » (nom, pays et numéro d'entreprise du certificat), et son empreinte ;
+     sous Linux, la signature d'Anthropic sur la liste des empreintes, et l'empreinte du programme.
+   - Les connecteurs de votre compte Claude (courriel, fichiers en ligne, agenda) ne sont pas chargés, ni
+     aucun serveur MCP. Le navigateur de cet ordinateur ne s'ouvre jamais.
+   - Des consignes posées sur l'ordinateur pour Claude, dans un dossier au-dessus du dossier temporaire
+     (CLAUDE.md, CLAUDE.local.md, AGENTS.md, .mcp.json, un dossier .claude), ou des réglages imposés à Claude
+     Code par l'ordinateur (/etc/claude-code, C:\Program Files\ClaudeCode, stratégies du registre) : le
+     lanceur refuse de démarrer, et dit pourquoi. Seule exception : le dossier .claude du dossier personnel
+     (Claude Code déjà utilisé sur cet ordinateur), où seules des consignes (CLAUDE.md, AGENTS.md, rules) font
+     refuser.
    - Claude reçoit des consignes de dépannage (CLAUDE.md, dans ce dossier) : diagnostiquer en lecture seule,
      expliquer la cause avant de corriger, ne rien changer sans accord, ne jamais couper l'antivirus, le
      pare-feu ni les mises à jour, respecter la vie privée du proche.
@@ -58,6 +68,13 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 
    - Windows et Linux 64 bits (x86-64). Sous Windows ARM, la version x86-64 tourne en émulation.
    - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
+   - Sous Windows, la liste des empreintes n'est pas vérifiée par une signature (pas de gpg) : seule la
+     signature d'Anthropic sur le programme l'est.
+   - Sous Windows, les variables de certificats de l'ordinateur sont retirées, mais Claude Code se fie, comme
+     le navigateur, aux certificats installés dans Windows : un ordinateur qui inspecte les connexions
+     (antivirus, entreprise, ou virus qui y a ajouté le sien) peut les lire.
+   - Sous Windows, tout compte peut créer un dossier C:\.claude : le lanceur refuse s'il existe au départ,
+     pas s'il apparaît pendant la session.
    - Le lanceur vit sur la même clé que le programme : il voit une copie abîmée, pas une clé réécrite en
      entier. Une clé qui a quitté vos mains repasse par Vanguard (sur votre ordinateur) avant de servir.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
