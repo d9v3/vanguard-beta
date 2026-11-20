@@ -27,8 +27,10 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 2. FINIR
 
    Taper /exit dans Claude. Le lanceur déconnecte le compte et efface de l'ordinateur Claude Code, la
-   connexion, la conversation et les journaux de Claude Code de cette session. S'il affiche « Déconnexion NON
-   confirmée » (hors ligne, par exemple), terminer la session sur claude.ai (Réglages › Compte).
+   connexion, la conversation et les journaux de Claude Code de cette session. « Déconnecté » n'est affiché
+   que si Anthropic a confirmé la fin de la connexion. S'il affiche « Déconnexion NON confirmée » (hors
+   ligne, ou une version de Claude Code qui ne le dit pas), terminer la session sur claude.ai (Réglages ›
+   Compte).
    Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
    au moindre doute (ou sous Linux), relancer le lanceur une fois, puis /exit : il efface d'abord ce qui
    était resté.

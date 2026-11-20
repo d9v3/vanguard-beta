@@ -47,13 +47,19 @@ function Existe([string]$chemin) { [bool](Get-Item -LiteralPath $chemin -Force -
 # dossier de travail de la session (ses journaux y sont nommés), puis effacement du dossier et des journaux de Claude
 # Code à son nom (%LOCALAPPDATA%\claude-cli-nodejs\Cache\…vanguard-claude-…). [IO.Directory]::Delete ne suit pas les
 # jonctions : il retire le lien, jamais ce qui est au bout. Le même texte sert au gardien (plus bas) : une seule façon
-# de nettoyer. Rend Efface (le dossier n'existe plus) et Deconnexion ('oui' : Claude Code l'a confirmée, code 0 ;
-# 'non' : tentée sans confirmation ; '' : pas tentée).
+# de nettoyer. Rend Efface (le dossier n'existe plus) et Deconnexion ('oui' : confirmée par le serveur ; 'non' :
+# tentée sans cette preuve ; '' : pas tentée).
+# « auth logout » sort avec le code 0 même hors ligne (le jeton de ce PC est effacé, le serveur n'a rien révoqué). Une
+# version récente le dit (« … didn't confirm the login was revoked », $revocation) ; une ancienne affiche le même succès
+# dans les deux cas. 'oui' seulement sur preuve : code 0, le texte de succès, pas l'avertissement, et un binaire
+# vérifié qui sait l'écrire ($revocation non vide : l'appelant l'a trouvé dedans). Le gardien ne le passe pas : son
+# résultat n'est jamais dit.
 $TexteNettoyer = @'
-function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier) {
-    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -WindowStyle Hidden -PassThru -ErrorAction Stop
+function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier, [string]$sortie, [string]$erreurs) {
+    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $sortie -RedirectStandardError $erreurs -ErrorAction Stop
 }
-function Nettoyer([string]$dossier, [string]$exe, [string]$travail) {
+function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [string]$revocation = '') {
     $deconnexion = ''
     if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; Deconnexion = '' } }
     $config = [IO.Path]::Combine($dossier, 'config')
@@ -61,10 +67,19 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail) {
         $deconnexion = 'non'
         $avant = $env:CLAUDE_CONFIG_DIR
         $env:CLAUDE_CONFIG_DIR = $config
+        $sortie = [IO.Path]::Combine($dossier, 'deconnexion.txt')
+        $erreurs = [IO.Path]::Combine($dossier, 'deconnexion-erreurs.txt')
         try {
-            $p = LancerCache $exe @('auth', 'logout') $travail
+            $p = LancerCache $exe @('auth', 'logout') $travail $sortie $erreurs
             [void]$p.Handle   # sans lui, ExitCode reste vide sous PowerShell 5.1
-            if ($p.WaitForExit(20000)) { if ($p.ExitCode -eq 0) { $deconnexion = 'oui' } }
+            if ($p.WaitForExit(20000)) {
+                $p.WaitForExit()   # les fichiers de sortie fermés
+                $dit = [IO.File]::ReadAllText($sortie) + [IO.File]::ReadAllText($erreurs)
+                if ($p.ExitCode -eq 0 -and $revocation -and
+                    $dit.Contains('Successfully logged out from your Anthropic account.') -and -not $dit.Contains($revocation)) {
+                    $deconnexion = 'oui'
+                }
+            }
             else { try { $p.Kill() } catch { } ; Start-Sleep -Seconds 1 }
         } catch { }
         $env:CLAUDE_CONFIG_DIR = $avant
@@ -125,6 +140,23 @@ function LancerGardien([string]$code64) {
     Start-Process -FilePath $ps -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile', '-NonInteractive',
         '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-EncodedCommand', $code64
 }
+# Le texte d'une révocation pas confirmée (voir Nettoyer) : cherché dans les octets de claude.exe vérifié.
+$RevocationDite = "didn't confirm the login was revoked"
+function ContientTexte([string]$chemin, [string]$texte) {
+    $latin = [Text.Encoding]::GetEncoding(28591)   # un octet, un caractère : rien n'est perdu ni fusionné
+    $f = [IO.File]::OpenRead($chemin)
+    try {
+        $tampon = New-Object byte[] (16MB)
+        $reste = ''
+        while (($n = $f.Read($tampon, 0, $tampon.Length)) -gt 0) {
+            $bloc = $reste + $latin.GetString($tampon, 0, $n)
+            if ($bloc.IndexOf($texte, [StringComparison]::Ordinal) -ge 0) { return $true }
+            # La fin du bloc, pour un texte à cheval sur deux lectures.
+            $reste = $bloc.Substring([Math]::Max(0, $bloc.Length - $texte.Length + 1))
+        }
+        $false
+    } finally { $f.Dispose() }
+}
 # ESSAIS : les doublures des fonctions ci-dessus sont posées ici.
 
 Write-Host ''
@@ -175,6 +207,7 @@ if ($Dossier.StartsWith('\\') -or @('NTFS', 'ReFS') -notcontains $format) {
 }
 $Session = $null
 $Lance = $false
+$Revocation = ''
 $code = 0
 # Un seul try/finally de la création du dossier à la fin : un refus, une erreur ou Ctrl+C l'efface toujours.
 try {
@@ -262,6 +295,8 @@ try {
         if ($vu -ne $manifeste.platforms.'win32-x64'.checksum) { throw [Exception]::new('empreinte différente du manifeste de la clé') }
         # La version lue dans le programme signé, pas dans le manifeste qui ne l'est pas ici.
         $Version = (Get-Item -LiteralPath $Exe).VersionInfo.ProductVersion
+        # Ces octets vérifiés savent-ils dire une révocation pas confirmée ? Sinon, aucune déconnexion n'est « confirmée ».
+        $Revocation = if (ContientTexte $Exe $RevocationDite) { $RevocationDite } else { '' }
     } catch {
         Arret "Claude Code refusé ($($_.Exception.Message)). Rien n'a été lancé : la copie de la clé est peut-être abîmée ou remplacée ; mettez la clé à jour avec Vanguard." `
               'Claude Code refused. Nothing was started: the copy on the key may be damaged or replaced. Update the key with Vanguard.'
@@ -292,7 +327,7 @@ try {
             if ([IO.File]::Exists($verrou)) {
                 try { ([IO.File]::Open($verrou, 'Open', 'ReadWrite', 'None')).Dispose() } catch { return }
             }
-            $n = Nettoyer $d $Exe $Travail
+            $n = Nettoyer $d $Exe $Travail $Revocation
             if ($n.Efface) {
                 Dire 'Restes d''une session précédente effacés.' 'Leftovers of a previous session erased.'
                 if ($n.Deconnexion -eq 'non') {
@@ -340,7 +375,7 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
     }
 } finally {
     if ($Session) { $Session.Dispose() }
-    $n = Nettoyer $Dossier $(if ($Lance) { $Exe } else { '' }) $Travail
+    $n = Nettoyer $Dossier $(if ($Lance) { $Exe } else { '' }) $Travail $Revocation
     if ($Lance) {
         Write-Host ''
         if (-not $n.Efface) {
@@ -350,8 +385,8 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
             Dire '✔ Déconnecté ; Claude Code, la connexion et la conversation sont effacés de cet ordinateur.' `
                  '✔ Logged out; Claude Code, the sign-in and the conversation are erased from this computer.'
         } else {
-            Dire '⚠ Déconnexion NON confirmée : fermez la session sur claude.ai. Le reste est effacé de cet ordinateur.' `
-                 '⚠ Logout NOT confirmed: end the session on claude.ai. Everything else is erased from this computer.'
+            Dire '⚠ Déconnexion NON confirmée par Anthropic (hors ligne, ou version qui ne le dit pas) : fermez la session sur claude.ai. Le reste est effacé de cet ordinateur.' `
+                 '⚠ Logout NOT confirmed by Anthropic (offline, or a version that does not tell): end the session on claude.ai. Everything else is erased from this computer.'
         }
         Write-Host ''
     } elseif (-not $n.Efface) {

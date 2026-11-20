@@ -16,6 +16,12 @@ ICI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
 CLE=${ICI%/*}
 EMPREINTE_CLE=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
 PLACE_MIO=700
+# « auth logout » sort avec le code 0 même sans Internet : Claude Code efface le jeton de ce PC, et ne peut pas dire
+# au serveur de le révoquer. Une version récente le dit (« … didn't confirm the login was revoked ») ; une ancienne
+# affiche le même succès dans les deux cas. « Déconnecté » n'est donc dit que sur preuve : code 0, ce texte de
+# succès, pas l'avertissement, et un binaire vérifié qui sait l'écrire (REVOCATION_DITE dedans).
+DECONNECTE="Successfully logged out from your Anthropic account."
+REVOCATION_DITE="didn't confirm the login was revoked"
 # Réglages imposés à tout l'ordinateur (« managed ») : Claude Code les lit là, et ses skills sous $GERE/.claude.
 GERE=/etc/claude-code
 # Les commandes de ce script (gpg, sha256sum, cp…) viennent des dossiers du système, jamais d'un PATH posé par le PC
@@ -122,18 +128,19 @@ ENV_CLAUDE=(TMPDIR="$DOSSIER/tmp" XDG_CACHE_HOME="$DOSSIER/cache" DISABLE_AUTOUP
 # Une session : déconnexion avec un binaire vérifié, puis effacement. Sans condition : si Claude Code rangeait le
 # jeton ailleurs que dans .credentials.json, il serait quand même déconnecté. Délai borné : hors ligne, rien ne
 # bloque. La déconnexion tourne comme la session (même environnement, depuis le dossier de travail de celle-ci) :
-# ses journaux restent dans ce dossier. « deconnexion » dit si Claude Code l'a confirmée (code 0).
+# ses journaux restent dans ce dossier. « deconnexion » : oui seulement si le serveur l'a confirmée (DECONNECTE,
+# plus haut) ; non si elle a été tentée sans cette preuve.
 deconnexion=""
+revocation_dite=""
 nettoyer() { # dossier [binaire vérifié]
-  local d=$1 exe=${2:-}
+  local d=$1 exe=${2:-} sortie
   deconnexion=""
   [[ -d $d ]] || return 0
   if [[ -n $exe && -x $exe && -d $d/config && -d $DOSSIER/travail ]]; then
-    if (cd -- "$DOSSIER/travail" &&
-      timeout 20 env "${ENV_CLAUDE[@]}" CLAUDE_CONFIG_DIR="$d/config" "$exe" auth logout </dev/null >/dev/null 2>&1); then
-      deconnexion=oui
-    else
-      deconnexion=non
+    deconnexion=non
+    if sortie=$(cd -- "$DOSSIER/travail" &&
+      timeout 20 env "${ENV_CLAUDE[@]}" CLAUDE_CONFIG_DIR="$d/config" "$exe" auth logout </dev/null 2>&1); then
+      [[ -n $revocation_dite && $sortie == *"$DECONNECTE"* && $sortie != *"$REVOCATION_DITE"* ]] && deconnexion=oui
     fi
   fi
   rm -rf -- "$d"
@@ -150,8 +157,10 @@ fin() {
       dire "✔ Déconnecté ; Claude Code, la connexion et la conversation sont effacés de cet ordinateur." \
         "✔ Logged out; Claude Code, the sign-in and the conversation are erased from this computer."
     elif [[ -n $lancee ]]; then
-      dire "⚠ Déconnexion NON confirmée : fermez la session sur claude.ai. Le reste est effacé de cet ordinateur." \
-        "⚠ Logout NOT confirmed: end the session on claude.ai. Everything else is erased from this computer."
+      dire "⚠ Déconnexion NON confirmée par Anthropic (hors ligne, ou version qui ne le dit pas) : fermez la session sur
+  claude.ai. Le reste est effacé de cet ordinateur." \
+        "⚠ Logout NOT confirmed by Anthropic (offline, or a version that does not tell): end the session on
+  claude.ai. Everything else is erased from this computer."
     fi
   else
     dire "✖ $DOSSIER n'a pas pu être effacé : à effacer à la main (rm -rf)." "✖ Could not erase $DOSSIER."
@@ -219,6 +228,8 @@ fi
   arret "Empreinte de Claude Code différente du manifeste : rien n'a été lancé. Mettez la clé à jour avec Vanguard." \
     "Claude Code checksum differs from the manifest: nothing was started."
 version=$(awk -F'"' '/"version"/ { print $4; exit }' "$DOSSIER/manifest.json")
+# Les octets vérifiés savent-ils dire une révocation pas confirmée ? Sinon, aucune déconnexion n'est « confirmée ».
+grep -aqF -- "$REVOCATION_DITE" "$EXE" && revocation_dite=oui
 if [[ -n $verifie ]]; then
   dire "✔ Claude Code $version, signature d'Anthropic et empreinte vérifiées." "✔ Claude Code $version, Anthropic signature and checksum verified."
 else

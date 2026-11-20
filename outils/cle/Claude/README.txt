@@ -27,8 +27,9 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
 2. FINISH
 
    Type /exit in Claude. The launcher logs out and erases from the computer Claude Code, the login, the
-   conversation and Claude Code's logs of this session. If it shows "Logout NOT confirmed" (offline, for
-   example), end the session on claude.ai (Settings › Account).
+   conversation and Claude Code's logs of this session. "Logged out" is shown only if Anthropic confirmed
+   that the login ended. If it shows "Logout NOT confirmed" (offline, or a version of Claude Code that
+   does not tell), end the session on claude.ai (Settings › Account).
    Window closed with its X: on Windows, a watchdog still erases; if in doubt (or on Linux),
    run the launcher once more, then /exit: it first erases what was left.
    After a doubtful computer (possible virus), or if it shut down or crashed during the session: also end

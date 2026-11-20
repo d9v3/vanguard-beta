@@ -52,13 +52,15 @@ gpg --batch --armor --export "$FPR" >"$ESSAI/cle.asc"
 export VANGUARD_CLAUDE_CLE_GPG=$ESSAI/cle.asc VANGUARD_CLAUDE_EMPREINTE=$FPR
 
 # Le faux claude : note son environnement, écrit un jeton et un journal là où le vrai range les siens
-# (~/.cache/claude-cli-nodejs), et répond à « auth logout » (code lu dans « code-logout » s'il existe).
+# (~/.cache/claude-cli-nodejs), et répond à « auth logout » (code lu dans « code-logout », texte dans « sortie-logout »,
+# s'ils existent ; sinon le succès du vrai).
 faux_claude() { # version
   cat <<EOF
 #!/bin/sh
 # version $1
+# Sait dire une révocation pas confirmée, comme le vrai récent : « didn't confirm the login was revoked ».
 c=\${XDG_CACHE_HOME:-\$HOME/.cache}/claude-cli-nodejs/essai; mkdir -p "\$c" && echo journal >"\$c/journal.txt"
-if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "env-logout=\$ANTHROPIC_BASE_URL\$https_proxy"; echo "pwd-logout=\$PWD"; echo "tmp-logout=\$TMPDIR"; } >>"$ESSAI/journal-claude"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
+if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "env-logout=\$ANTHROPIC_BASE_URL\$https_proxy"; echo "pwd-logout=\$PWD"; echo "tmp-logout=\$TMPDIR"; } >>"$ESSAI/journal-claude"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "pwd=\$PWD"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$https_proxy\$HTTPS_PROXY\$GIT_DIR"; echo "args=\$*"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "path=\$PATH"; } >>"$ESSAI/journal-claude"
 env >"$ESSAI/env-claude"
 [ -f CLAUDE.md ] && echo consignes >>"$ESSAI/journal-claude"
@@ -403,6 +405,21 @@ attendu "déconnexion ratée : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
 grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "déconnexion ratée : dite" ||
   rate "déconnexion ratée : $(tail -2 "$ESSAI/sortie")"
 rm -f "$ESSAI/code-logout"
+# Hors ligne, un Claude Code récent sort avec le code 0 et dit que la révocation n'est pas confirmée : jamais
+# « Déconnecté ».
+echo "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+attendu "révocation pas confirmée (code 0) : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+  bon "révocation pas confirmée, code 0 : NON confirmée" || rate "révocation pas confirmée : $(tail -2 "$ESSAI/sortie")"
+rm -f "$ESSAI/sortie-logout"
+# Une version qui ne sait pas dire une révocation ratée (le même succès dans les deux cas) : jamais « Déconnecté ».
+copie_lanceur "$ESSAI/lanceur-ancien.sh"
+sed -i 's/^REVOCATION_DITE=.*/REVOCATION_DITE="texte que ce binaire n a pas"/' "$ESSAI/lanceur-ancien.sh"
+cp "$ESSAI/lanceur-ancien.sh" "$CLE/Claude/depanner.sh"
+attendu "version qui ne dit pas la révocation : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+  bon "version qui ne dit pas la révocation : NON confirmée" || rate "version ancienne : $(tail -2 "$ESSAI/sortie")"
+copie_lanceur "$CLE/Claude/depanner.sh"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "dossier temporaire effacé" || rate "restes : $(ls "$ESSAI/run")"
 # Restes d'une session tuée : effacés au lancement suivant, après déconnexion.
 mkdir -p "$ESSAI/run/vanguard-claude.reste/config"
@@ -566,9 +583,10 @@ else
   # (%LOCALAPPDATA%\claude-cli-nodejs\Cache\<dossier de travail, chaque signe hors lettres et chiffres devenu « - »>).
   cat >"$W/Claude/Windows/claude.exe" <<EOF
 #!/bin/sh
+# Sait dire une révocation pas confirmée, comme le vrai récent : « didn't confirm the login was revoked ».
 j=$ESSAI/journal-win
 c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "\$c" && echo journal >"\$c/journal.txt"
-if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
+if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; echo "entree=\$SESSION_INGRESS_URL"; } >>"\$j"
 [ -f CLAUDE.md ] && echo consignes >>"\$j"
 echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
@@ -616,9 +634,12 @@ function LancerGardien([string]$code64) {
     [pscustomobject]@{ HasExited = $false }
 }
 # Sous Linux, Start-Process ne connaît pas -WindowStyle : seule différence avec le vrai.
-function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier) {
-    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -PassThru -ErrorAction Stop
+function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier, [string]$sortie, [string]$erreurs) {
+    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -PassThru `
+        -RedirectStandardOutput $sortie -RedirectStandardError $erreurs -ErrorAction Stop
 }
+# Une version qui ne sait pas dire une révocation ratée : le texte cherché, absent du binaire.
+if ($env:ESSAI_REVOCATION) { $RevocationDite = $env:ESSAI_REVOCATION }
 EOF
   copie_ps() { # le vrai depanner.ps1, doublures posées au repère (absent : l'essai le dit)
     python3 -I - outils/cle/Claude/depanner.ps1 "$ESSAI/doublures.ps1" "$W/Claude/depanner.ps1" <<'EOF' || rate "repère « # ESSAIS » absent de depanner.ps1"
@@ -703,6 +724,16 @@ EOF
   grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "Windows : déconnexion ratée, dit" ||
     rate "Windows, déconnexion ratée : $(tail -2 "$ESSAI/sortie")"
   rm -f "$ESSAI/code-logout"
+  # Code 0, révocation pas confirmée (hors ligne, version récente) : jamais « Déconnecté ».
+  echo "Logged out on this computer, but Anthropic didn't confirm the login was revoked." >"$ESSAI/sortie-logout"
+  attendu "Windows, révocation pas confirmée (code 0) : lancé" 0 ps_lancer o
+  grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+    bon "Windows : révocation pas confirmée, code 0 : NON confirmée" || rate "Windows, révocation : $(tail -2 "$ESSAI/sortie")"
+  rm -f "$ESSAI/sortie-logout"
+  # Une version qui ne sait pas la dire : le même succès, jamais « Déconnecté ».
+  attendu "Windows, version qui ne dit pas la révocation : lancé" 0 ps_lancer o ESSAI_REVOCATION="texte que ce binaire n'a pas"
+  grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+    bon "Windows : version qui ne dit pas la révocation : NON confirmée" || rate "Windows, version ancienne : $(tail -2 "$ESSAI/sortie")"
   # Les restes d'une session d'avant : déconnectés (avec leur dossier config) et effacés, journaux compris ; pas ceux
   # d'un autre compte, ni ceux d'une session en cours.
   mkdir -p "$W/runw/vanguard-claude-vieux/config" "$W/runw/vanguard-claude-autre/config" "$W/runw/vanguard-claude-encours"
