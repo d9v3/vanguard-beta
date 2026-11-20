@@ -16,6 +16,14 @@ ICI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
 CLE=${ICI%/*}
 EMPREINTE_CLE=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
 PLACE_MIO=700
+# Réglages imposés à tout l'ordinateur (« managed ») : Claude Code les lit là, et ses skills sous $GERE/.claude.
+GERE=/etc/claude-code
+# Les commandes de ce script (gpg, sha256sum, cp…) viennent des dossiers du système, jamais d'un PATH posé par le PC
+# visité : un faux gpg en tête du PATH dirait « bonne signature ». Claude Code, lui, garde le PATH du PC pour dépanner.
+CHEMINS_SURS=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin
+PATH_PC=${PATH:-$CHEMINS_SURS}
+PATH=$CHEMINS_SURS
+export PATH
 
 dire() { printf '  %s\n' "$1"; [[ -z ${2:-} ]] || printf '  \e[90m%s\e[0m\n' "$2"; }
 # Oui seulement par « o », « oui », « y » ou « yes » (majuscules permises) : « ok non » ou « yo » ne valent pas accord.
@@ -28,10 +36,12 @@ case $(uname -m) in
 esac
 # L'environnement du PC visité ne choisit ni le serveur, ni le compte, ni les certificats, ni le mandataire, ni le code
 # chargé ; retiré d'abord, avant toute commande de Claude Code (même la déconnexion des restes d'une session).
+# Limite, dite : BASH_ENV posé avant ce script s'exécute avant lui ; c'est le même compte, hors de portée d'un script.
 while IFS= read -r v; do
   case ${v^^} in
-    ANTHROPIC_* | CLAUDE_* | NODE_* | BUN_* | SSL_CERT_* | AWS_* | GOOGLE_* | VERTEX_* | OTEL_* | GIT_* | \
-      HTTP_PROXY | HTTPS_PROXY | ALL_PROXY | NO_PROXY | REQUESTS_CA_BUNDLE | CURL_CA_BUNDLE | BROWSER) unset "$v" ;;
+    ANTHROPIC_* | CLAUDE_* | NODE_* | BUN_* | SSL_CERT_* | AWS_* | GOOGLE_* | VERTEX_* | OTEL_* | GIT_* | LD_* | \
+      HTTP_PROXY | HTTPS_PROXY | ALL_PROXY | NO_PROXY | GRPC_PROXY | REQUESTS_CA_BUNDLE | CURL_CA_BUNDLE | BROWSER | \
+      BASH_ENV | ENV | SESSION_INGRESS_URL | ENABLE_CLAUDEAI_MCP_SERVERS) unset "$v" ;;
   esac
 done < <(compgen -e)
 SOURCE=$ICI/Linux/claude
@@ -40,10 +50,12 @@ SOURCE=$ICI/Linux/claude
 printf '\n  \e[31mDépanner avec Claude (Vanguard)\e[0m\n  \e[90mTroubleshoot with Claude (Vanguard)\e[0m\n\n'
 dire "Claude Code, l'assistant d'Anthropic, va lire cet ordinateur pour trouver la panne. Ce qu'il lit (journaux," \
   "Claude Code, Anthropic's assistant, will read this computer to find the problem. What it reads (logs,"
-dire "réglages, noms de fichiers) part chez Anthropic pour être analysé. Il demande avant chaque commande, et ne" \
-  "settings, file names) is sent to Anthropic for analysis. It asks before every command, and changes"
-dire "change rien sans votre accord. Il faut un compte Claude (abonnement Pro ou Max, ou console Anthropic)." \
-  "nothing without your consent. A Claude account is needed (Pro or Max plan, or Anthropic Console)."
+dire "réglages, noms de fichiers) part chez Anthropic pour être analysé. Il demande avant toute commande qui change" \
+  "settings, file names) is sent to Anthropic for analysis. It asks before any command that changes something;"
+dire "quelque chose ; certaines commandes de simple lecture passent sans demander, et ce qu'elles montrent part aussi" \
+  "some read-only commands run without asking, and what they show is sent to Anthropic too."
+dire "chez Anthropic. Il faut un compte Claude (abonnement Pro ou Max, ou console Anthropic)." \
+  "A Claude account is needed (Pro or Max plan, or Anthropic Console)."
 echo
 dire "Connexion : sur VOTRE téléphone, jamais dans le navigateur de cet ordinateur (il garderait votre compte)." \
   "Sign in on YOUR phone, never in this computer's browser (it would keep your account signed in)."
@@ -71,16 +83,22 @@ a_l_abri() { # dossier
 }
 cache=${XDG_CACHE_HOME:-${HOME:-}/.cache}
 [[ $cache != /* || -e $cache ]] || (umask 077 && mkdir -p -- "$cache") 2>/dev/null
+# Le chemin réel (pwd -P), jamais celui donné : Claude Code lit les consignes au-dessus du chemin réel, et un chemin
+# relatif ne vaudrait plus rien après le « cd » du lancement. Chaque dossier à l'abri est gardé dans « bases » : les
+# restes d'une session d'avant y sont cherchés, même si elle avait pris un autre dossier que celle-ci.
 base=""
+bases=()
 for d in "${XDG_RUNTIME_DIR:-}" "$cache" "${TMPDIR:-}" /run; do
-  [[ -n $d && -d $d && -w $d && ! -L $d ]] || continue
+  [[ -n $d && -d $d && ! -L $d ]] || continue
   a_l_abri "$d" || continue
+  d=$(cd -- "$d" 2>/dev/null && pwd -P) || continue
+  bases+=("$d")
+  [[ -z $base && -w $d ]] || continue
   if command -v findmnt >/dev/null; then
     findmnt -no OPTIONS -T "$d" 2>/dev/null | tr ',' '\n' | grep -qx noexec && continue
   fi
   (($(df -Pk "$d" 2>/dev/null | awk 'NR == 2 { print $4 + 0 }') / 1024 >= PLACE_MIO)) || continue
   base=$d
-  break
 done
 [[ -n $base ]] || arret "Pas de dossier à soi (ni /tmp, partagé) avec $PLACE_MIO Mio libres où lancer un programme." \
   "No private folder (not the shared /tmp) with $PLACE_MIO MiB free where a program may run."
@@ -89,15 +107,34 @@ DOSSIER=$(mktemp -d "$base/vanguard-claude.XXXXXXXX") || arret "Dossier temporai
 chmod 700 "$DOSSIER"
 EXE=$DOSSIER/claude
 lancee=""
+# Ce que Claude Code reçoit, pour la session comme pour chaque déconnexion :
+# - TMPDIR et XDG_CACHE_HOME dans le dossier : ses fichiers passagers et ses journaux (~/.cache/claude-cli-nodejs)
+#   partent avec lui ; CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES : pas de journal des serveurs MCP du tout ;
+# - ENABLE_CLAUDEAI_MCP_SERVERS=0 (et --strict-mcp-config au lancement) : les connecteurs du compte (courriel,
+#   fichiers en ligne, agenda) ne sont pas chargés ;
+# - BROWSER vers un fichier qui n'existe pas : le navigateur de ce PC ne s'ouvre jamais sur la page de connexion
+#   (l'adresse s'affiche, à ouvrir sur le téléphone) ;
+# - le PATH du PC, pour dépanner avec ses commandes.
+ENV_CLAUDE=(TMPDIR="$DOSSIER/tmp" XDG_CACHE_HOME="$DOSSIER/cache" DISABLE_AUTOUPDATER=1
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ENABLE_CLAUDEAI_MCP_SERVERS=0 CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES=1
+  BROWSER="$DOSSIER/pas-de-navigateur" VANGUARD_CLE="$CLE" PATH="$PATH_PC")
 
-# Une session : déconnexion avec un binaire vérifié, puis effacement.
-# Sans condition : si Claude Code rangeait le jeton ailleurs que dans .credentials.json, il serait quand même
-# déconnecté. Délai borné : hors ligne, rien ne bloque.
+# Une session : déconnexion avec un binaire vérifié, puis effacement. Sans condition : si Claude Code rangeait le
+# jeton ailleurs que dans .credentials.json, il serait quand même déconnecté. Délai borné : hors ligne, rien ne
+# bloque. La déconnexion tourne comme la session (même environnement, depuis le dossier de travail de celle-ci) :
+# ses journaux restent dans ce dossier. « deconnexion » dit si Claude Code l'a confirmée (code 0).
+deconnexion=""
 nettoyer() { # dossier [binaire vérifié]
   local d=$1 exe=${2:-}
+  deconnexion=""
   [[ -d $d ]] || return 0
-  if [[ -n $exe && -x $exe && -d $d/config ]]; then
-    CLAUDE_CONFIG_DIR=$d/config timeout 20 "$exe" auth logout </dev/null >/dev/null 2>&1 || true
+  if [[ -n $exe && -x $exe && -d $d/config && -d $DOSSIER/travail ]]; then
+    if (cd -- "$DOSSIER/travail" &&
+      timeout 20 env "${ENV_CLAUDE[@]}" CLAUDE_CONFIG_DIR="$d/config" "$exe" auth logout </dev/null >/dev/null 2>&1); then
+      deconnexion=oui
+    else
+      deconnexion=non
+    fi
   fi
   rm -rf -- "$d"
   [[ ! -e $d ]]
@@ -109,8 +146,13 @@ fin() {
   trap - EXIT
   echo
   if nettoyer "$DOSSIER" "$lancee"; then
-    [[ -z $lancee ]] || dire "✔ Déconnecté ; Claude Code et la conversation sont effacés de cet ordinateur." \
-      "✔ Logged out; Claude Code and the conversation are erased from this computer."
+    if [[ $deconnexion == oui ]]; then
+      dire "✔ Déconnecté ; Claude Code, la connexion et la conversation sont effacés de cet ordinateur." \
+        "✔ Logged out; Claude Code, the sign-in and the conversation are erased from this computer."
+    elif [[ -n $lancee ]]; then
+      dire "⚠ Déconnexion NON confirmée : fermez la session sur claude.ai. Le reste est effacé de cet ordinateur." \
+        "⚠ Logout NOT confirmed: end the session on claude.ai. Everything else is erased from this computer."
+    fi
   else
     dire "✖ $DOSSIER n'a pas pu être effacé : à effacer à la main (rm -rf)." "✖ Could not erase $DOSSIER."
   fi
@@ -120,6 +162,26 @@ trap 'exit 130' HUP INT TERM
 # Tenu pendant toute la session : un second lancement ne prend pas ce dossier pour des restes à effacer.
 exec 7>"$DOSSIER/.session"
 command -v flock >/dev/null && flock -n 7
+
+# Claude Code lit aussi, au-dessus du dossier de travail, les consignes (CLAUDE.md, AGENTS.md), les serveurs MCP
+# (.mcp.json) et les dossiers .claude (consignes, skills, commandes, agents), et les réglages imposés à tout
+# l'ordinateur : posés là par quelqu'un d'autre, ce seraient des consignes. Refusé, en le disant, avant toute
+# commande de Claude Code. Le dossier personnel est l'exception pour .claude : Claude Code n'y cherche pas de skills,
+# et le refuser bloquerait tout PC où l'on se sert déjà de Claude Code ; ses consignes y sont refusées quand même.
+refus() { arret "$1 existe : Claude le lirait comme une consigne. Rien n'a été lancé." \
+  "$1 exists: Claude would read it as an instruction. Nothing was started."; }
+d=$DOSSIER
+while [[ $d == /* && $d != / ]]; do
+  d=${d%/*}
+  [[ -n $d ]] || d=/
+  noms=(CLAUDE.md CLAUDE.local.md AGENTS.md .mcp.json)
+  if [[ $d == "${HOME:-}" ]]; then noms+=(.claude/CLAUDE.md .claude/AGENTS.md .claude/rules); else noms+=(.claude); fi
+  for f in "${noms[@]}"; do
+    [[ ! -e ${d%/}/$f && ! -L ${d%/}/$f ]] || refus "${d%/}/$f"
+  done
+done
+[[ ! -e $GERE && ! -L $GERE ]] || arret "$GERE existe : cet ordinateur impose ses réglages à Claude Code. Rien n'a été lancé." \
+  "$GERE exists: this computer imposes its settings on Claude Code. Nothing was started."
 
 echo
 dire "Copie et vérification de Claude Code…" "Copying and checking Claude Code…"
@@ -165,36 +227,6 @@ else
   accord "Lancer quand même ? / Run anyway?" || exit 0
 fi
 chmod 700 "$EXE"
-lancee=$EXE
-
-# Ce qu'une session d'avant a laissé (terminal tué, panne) : déconnecté avec le binaire vérifié, puis effacé.
-for d in "$base"/vanguard-claude.*; do
-  [[ -d $d && ! -L $d && -O $d && $d != "$DOSSIER" ]] || continue
-  # Une session qui tourne encore (autre terminal) tient son verrou : la laisser. Sans flock, impossible de le
-  # savoir : un dossier de session est laissé.
-  if [[ -f $d/.session ]]; then
-    command -v flock >/dev/null || continue
-    flock -n "$d/.session" true 2>/dev/null || continue
-  fi
-  nettoyer "$d" "$EXE" && dire "Restes d'une session précédente effacés." "Leftovers of a previous session erased."
-done
-
-# Claude Code lit aussi les consignes des dossiers au-dessus du dossier de travail, et les réglages imposés à tout
-# l'ordinateur : posés là par quelqu'un d'autre, ce seraient des consignes. Refusé, en le disant.
-d=$DOSSIER
-while [[ $d == /* && $d != / ]]; do
-  d=${d%/*}
-  [[ -n $d ]] || d=/
-  for f in CLAUDE.md CLAUDE.local.md AGENTS.md .claude/CLAUDE.md .claude/AGENTS.md .claude/rules; do
-    [[ ! -e ${d%/}/$f && ! -L ${d%/}/$f ]] || arret "${d%/}/$f existe : Claude le lirait comme une consigne. Rien n'a été lancé." \
-      "${d%/}/$f exists: Claude would read it as an instruction. Nothing was started."
-  done
-done
-for f in /etc/claude-code/CLAUDE.md /etc/claude-code/managed-settings.json /etc/claude-code/managed-settings.d \
-  /etc/claude-code/managed-mcp.json; do
-  [[ ! -e $f ]] || arret "$f existe : cet ordinateur impose ses réglages à Claude Code. Rien n'a été lancé." \
-    "$f exists: this computer imposes its settings on Claude Code. Nothing was started."
-done
 mkdir -m 700 "$DOSSIER/travail" || arret "Dossier de travail impossible à créer."
 # Sans ses consignes, Claude dépannerait sans les règles (lecture seule, accord, sécurité jamais baissée) : refusé.
 if ! { cp -- "$ICI/CLAUDE.md" "$DOSSIER/travail/CLAUDE.md" 2>/dev/null && [[ -s $DOSSIER/travail/CLAUDE.md ]] &&
@@ -202,7 +234,27 @@ if ! { cp -- "$ICI/CLAUDE.md" "$DOSSIER/travail/CLAUDE.md" 2>/dev/null && [[ -s 
   arret "Consignes de dépannage (Claude/CLAUDE.md) absentes ou illisibles : rien n'a été lancé." \
     "Troubleshooting instructions (Claude/CLAUDE.md) missing or unreadable: nothing was started."
 fi
-mkdir -m 700 "$DOSSIER/config" "$DOSSIER/tmp" || arret "Dossier de travail impossible à créer."
+mkdir -m 700 "$DOSSIER/config" "$DOSSIER/tmp" "$DOSSIER/cache" || arret "Dossier de travail impossible à créer."
+
+# Ce qu'une session d'avant a laissé (terminal tué, panne), dans n'importe quel dossier à l'abri : déconnecté avec le
+# binaire vérifié, puis effacé.
+for b in "${bases[@]}"; do
+  for d in "$b"/vanguard-claude.*; do
+    [[ -d $d && ! -L $d && -O $d && $d != "$DOSSIER" ]] || continue
+    # Une session qui tourne encore (autre terminal) tient son verrou : la laisser. Sans flock, impossible de le
+    # savoir : un dossier de session est laissé.
+    if [[ -f $d/.session ]]; then
+      command -v flock >/dev/null || continue
+      flock -n "$d/.session" true 2>/dev/null || continue
+    fi
+    if nettoyer "$d" "$EXE"; then
+      dire "Restes d'une session précédente effacés." "Leftovers of a previous session erased."
+      [[ $deconnexion != non ]] || dire "⚠ Sa déconnexion n'est PAS confirmée : fermez cette session sur claude.ai." \
+        "⚠ Its logout is NOT confirmed: end that session on claude.ai."
+    fi
+  done
+done
+lancee=$EXE
 echo
 dire "Pour finir : tapez /exit dans Claude. Après un ordinateur douteux : fermez aussi la session sur claude.ai." \
   "To finish: type /exit in Claude. After a doubtful computer: also end the session on claude.ai."
@@ -210,8 +262,7 @@ dire "Connecté dans le navigateur de cet ordinateur par erreur : déconnectez-v
   "Signed in in this computer's browser by mistake: sign out of claude.ai before leaving."
 echo
 cd "$DOSSIER/travail" || exit 1
-TMPDIR=$DOSSIER/tmp CLAUDE_CONFIG_DIR=$DOSSIER/config DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 VANGUARD_CLE=$CLE \
-  "$EXE"
+env "${ENV_CLAUDE[@]}" CLAUDE_CONFIG_DIR="$DOSSIER/config" "$EXE" --strict-mcp-config
 code=$?
 cd / || true
 exit "$code"

@@ -46,13 +46,16 @@ AUTRE=$(cle_gpg "Essai Pirate") || exit 1
 gpg --batch --armor --export "$FPR" >"$ESSAI/cle.asc"
 export VANGUARD_CLAUDE_CLE_GPG=$ESSAI/cle.asc VANGUARD_CLAUDE_EMPREINTE=$FPR
 
-# Le faux claude : note son environnement, écrit un jeton, et répond à « auth logout ».
+# Le faux claude : note son environnement, écrit un jeton et un journal là où le vrai range les siens
+# (~/.cache/claude-cli-nodejs), et répond à « auth logout » (code lu dans « code-logout » s'il existe).
 faux_claude() { # version
   cat <<EOF
 #!/bin/sh
 # version $1
-if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "env-logout=\$ANTHROPIC_BASE_URL\$https_proxy"; } >>"$ESSAI/journal-claude"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; exit 0; fi
-{ echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "pwd=\$PWD"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$https_proxy\$HTTPS_PROXY\$GIT_DIR"; } >>"$ESSAI/journal-claude"
+c=\${XDG_CACHE_HOME:-\$HOME/.cache}/claude-cli-nodejs/essai; mkdir -p "\$c" && echo journal >"\$c/journal.txt"
+if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "env-logout=\$ANTHROPIC_BASE_URL\$https_proxy"; echo "pwd-logout=\$PWD"; echo "tmp-logout=\$TMPDIR"; } >>"$ESSAI/journal-claude"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
+{ echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "pwd=\$PWD"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$https_proxy\$HTTPS_PROXY\$GIT_DIR"; echo "args=\$*"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "path=\$PATH"; } >>"$ESSAI/journal-claude"
+env >"$ESSAI/env-claude"
 [ -f CLAUDE.md ] && echo consignes >>"$ESSAI/journal-claude"
 echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
 exit 0
@@ -326,8 +329,14 @@ cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" &&
 echo "Lanceur Linux (depanner.sh)"
 attendu "pose pour le lanceur" 0 bash outils/claude-cle.sh --cle "$CLE"
 # L'empreinte de la vraie clé d'Anthropic est écrite dans le lanceur : la copie d'essai a celle de la clé d'essai.
-sed "s/^EMPREINTE_CLE=.*/EMPREINTE_CLE=$FPR/" outils/cle/Claude/depanner.sh >"$CLE/Claude/depanner.sh"
+# Les réglages imposés de l'ordinateur (/etc/claude-code) : un faux dossier, pour essayer le refus.
+copie_lanceur() { # destination [chemins sûrs]
+  sed -e "s/^EMPREINTE_CLE=.*/EMPREINTE_CLE=$FPR/" -e "s|^GERE=.*|GERE=$ESSAI/gere|" \
+    ${2:+-e "s|^CHEMINS_SURS=.*|CHEMINS_SURS=$2|"} outils/cle/Claude/depanner.sh >"$1"
+}
+copie_lanceur "$CLE/Claude/depanner.sh"
 cp "$ESSAI/cle.asc" "$CLE/Claude/claude-code.asc"
+cp "$CLE/Claude/manifest.json.sig" "$ESSAI/manifest.json.sig.bon"
 export XDG_RUNTIME_DIR=$ESSAI/run TMPDIR=$ESSAI/run
 mkdir -m 700 "$ESSAI/run"
 attendu "non : rien n'est lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"n"
@@ -341,6 +350,26 @@ grep -qx "cle=$CLE" "$ESSAI/journal-claude" && grep -qx "maj=1" "$ESSAI/journal-
   grep -qx consignes "$ESSAI/journal-claude" && bon "VANGUARD_CLE, sans mise à jour, avec les consignes" ||
   rate "environnement : $(tr '\n' ' ' <"$ESSAI/journal-claude")"
 grep -qx logout "$ESSAI/journal-claude" && bon "déconnecté en sortant" || rate "pas de déconnexion"
+grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "déconnexion confirmée : dit" || rate "déconnexion : $(tail -2 "$ESSAI/sortie")"
+grep -qx "mcp=0" "$ESSAI/journal-claude" && grep -qx "args=--strict-mcp-config" "$ESSAI/journal-claude" &&
+  bon "connecteurs du compte non chargés (ENABLE_CLAUDEAI_MCP_SERVERS=0, --strict-mcp-config)" ||
+  rate "connecteurs : $(grep -E '^(mcp|args)=' "$ESSAI/journal-claude" | tr '\n' ' ')"
+grep -qx "mcp-journaux=1" "$ESSAI/journal-claude" && bon "pas de journal des serveurs MCP" || rate "journaux MCP demandés"
+[[ ! -e $ESSAI/cache/claude-cli-nodejs && ! -e $HOME/.cache/claude-cli-nodejs/essai ]] &&
+  bon "journaux de Claude Code effacés avec le dossier" || rate "journaux laissés : $(find "$ESSAI/cache" | head -3)"
+nav=$(sed -n 's/^nav=//p' "$ESSAI/journal-claude" | head -1)
+[[ $nav == "$ESSAI"/run/vanguard-claude.*/pas-de-navigateur ]] && bon "navigateur du PC jamais ouvert (BROWSER vers rien)" ||
+  rate "BROWSER : $nav"
+grep -qx "pwd-logout=$ESSAI/run/vanguard-claude\.[^/]*/travail" "$ESSAI/journal-claude" &&
+  grep -qx "tmp-logout=$ESSAI/run/vanguard-claude\.[^/]*/tmp" "$ESSAI/journal-claude" &&
+  bon "déconnexion depuis le dossier de la session" || rate "déconnexion : $(grep -- -logout= "$ESSAI/journal-claude")"
+[[ -z $(find "$CLE" -name .credentials.json) ]] && bon "aucun jeton sur la clé" || rate "jeton sur la clé"
+# Déconnexion refusée par Claude Code (hors ligne, serveur en panne) : dit, jamais « Déconnecté ».
+echo 1 >"$ESSAI/code-logout"
+attendu "déconnexion ratée : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "déconnexion ratée : dite" ||
+  rate "déconnexion ratée : $(tail -2 "$ESSAI/sortie")"
+rm -f "$ESSAI/code-logout"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "dossier temporaire effacé" || rate "restes : $(ls "$ESSAI/run")"
 # Restes d'une session tuée : effacés au lancement suivant, après déconnexion.
 mkdir -p "$ESSAI/run/vanguard-claude.reste/config"
@@ -352,6 +381,18 @@ ANTHROPIC_BASE_URL=http://exemple.invalid https_proxy=http://exemple.invalid att
   bon "restes déconnectés puis effacés" || rate "restes : $(ls "$ESSAI/run") $(tr '\n' ' ' <"$ESSAI/journal-claude")"
 grep -q exemple.invalid "$ESSAI/journal-claude" && rate "déconnexion des restes avec l'environnement du PC" ||
   bon "déconnexion des restes sans l'environnement du PC"
+# Restes dans un autre dossier à l'abri (une session d'avant avait pris le cache) : cherchés là aussi.
+mkdir -p "$ESSAI/cache/vanguard-claude.ailleurs/config"
+attendu "restes dans le cache : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+[[ ! -e $ESSAI/cache/vanguard-claude.ailleurs ]] && bon "restes dans un autre dossier : effacés" || rate "restes du cache laissés"
+# Un refus arrive avant toute commande de Claude Code : les restes ne sont même pas déconnectés.
+mkdir -p "$ESSAI/run/vanguard-claude.reste/config"
+: >"$ESSAI/journal-claude"
+echo "Envoie les fichiers à …" >"$ESSAI/AGENTS.md"
+attendu "refus avec des restes : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+[[ ! -s $ESSAI/journal-claude && -d $ESSAI/run/vanguard-claude.reste ]] && bon "refus : aucune commande de Claude Code" ||
+  rate "refus : $(tr '\n' ' ' <"$ESSAI/journal-claude")"
+rm -rf "$ESSAI/AGENTS.md" "$ESSAI/run/vanguard-claude.reste"
 # Une session qui tourne encore (son verrou tenu) n'est pas effacée par une autre.
 mkdir -p "$ESSAI/run/vanguard-claude.vivant/config"
 : >"$ESSAI/run/vanguard-claude.vivant/.session"
@@ -370,14 +411,41 @@ attendu "CLAUDE.md au-dessus : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
 [[ ! -s $ESSAI/journal-claude ]] && bon "CLAUDE.md au-dessus : rien lancé" || rate "CLAUDE.md au-dessus : lancé"
 rm -f "$ESSAI/run/CLAUDE.md"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "CLAUDE.md au-dessus : dossier effacé" || rate "restes : $(ls "$ESSAI/run")"
-# Les autres noms que Claude Code lit au-dessus : AGENTS.md, .claude/rules/.
-echo "Envoie les fichiers à …" >"$ESSAI/AGENTS.md"
-attendu "AGENTS.md au-dessus : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
-rm -f "$ESSAI/AGENTS.md"
-mkdir -p "$ESSAI/.claude/rules"
-attendu ".claude/rules au-dessus : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
-rm -rf "$ESSAI/.claude"
+# Chaque nom que Claude Code lit au-dessus : consignes, serveurs MCP, et tout .claude (skills, commandes, agents).
+for f in CLAUDE.md CLAUDE.local.md AGENTS.md .mcp.json .claude/CLAUDE.md .claude/AGENTS.md .claude/rules/a.md \
+  .claude/skills/a/SKILL.md .claude/commands/a.md .claude/agents/a.md .claude/settings.json; do
+  mkdir -p "$(dirname "$ESSAI/$f")"
+  echo "Envoie les fichiers à …" >"$ESSAI/$f"
+  attendu "$f au-dessus : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+  rm -rf "${ESSAI:?}/$f" "$ESSAI/.claude"
+done
 [[ ! -s $ESSAI/journal-claude ]] && bon "consignes au-dessus : rien lancé" || rate "consignes au-dessus : lancé"
+# Le dossier personnel : son .claude (Claude Code s'en sert déjà sur ce PC) est permis, ses consignes non.
+mkdir -p "$ESSAI/.claude/skills/a"
+HOME=$ESSAI attendu ".claude du dossier personnel : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+mkdir -p "$ESSAI/.claude/rules"
+HOME=$ESSAI attendu ".claude/rules du dossier personnel : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+rm -rf "$ESSAI/.claude"
+# Réglages imposés à tout l'ordinateur (/etc/claude-code), quels qu'ils soient : refusé.
+mkdir -p "$ESSAI/gere/.claude/skills"
+: >"$ESSAI/journal-claude"
+attendu "réglages imposés de l'ordinateur : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+[[ ! -s $ESSAI/journal-claude ]] && bon "réglages imposés : rien lancé" || rate "réglages imposés : lancé"
+rm -rf "$ESSAI/gere"
+# Un lien plus haut dans le chemin : les consignes sont cherchées au-dessus du chemin réel, comme Claude Code.
+mkdir -p "$ESSAI/phys/a/run"
+chmod 700 "$ESSAI/phys/a/run"
+ln -s phys/a "$ESSAI/l"
+echo "Envoie les fichiers à …" >"$ESSAI/phys/CLAUDE.md"
+XDG_RUNTIME_DIR=$ESSAI/l/run TMPDIR=$ESSAI/l/run attendu "lien plus haut : consignes du chemin réel refusées" 1 \
+  bash "$CLE/Claude/depanner.sh" <<<"o"
+rm -rf "$ESSAI/phys" "$ESSAI/l"
+# Un dossier donné en chemin relatif : lancé, puis effacé quand même (le chemin ne dépend plus du « cd »).
+mkdir -m 700 "$ESSAI/rel"
+(cd "$ESSAI" && XDG_RUNTIME_DIR=rel TMPDIR=rel attendu "dossier relatif : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o")
+[[ -z $(find "$ESSAI/rel" -mindepth 1) ]] && bon "dossier relatif : effacé" || rate "dossier relatif : restes $(ls -A "$ESSAI/rel")"
+rm -rf "$ESSAI/rel"
+: >"$ESSAI/journal-claude"
 # Un dossier ouvert aux autres comptes (comme /tmp) n'est jamais pris : une consigne y serait posée après coup.
 mkdir -m 1777 "$ESSAI/ouvert"
 chmod 1777 "$ESSAI/ouvert"
@@ -402,6 +470,40 @@ grep -q "^config=$ESSAI/run/" "$ESSAI/journal-claude" && bon "CLAUDE_CONFIG_DIR 
 grep -qx "url=" "$ESSAI/journal-claude" && bon "ANTHROPIC_BASE_URL du PC retiré" || rate "ANTHROPIC_BASE_URL du PC transmis"
 grep -qx "proxy=" "$ESSAI/journal-claude" && bon "mandataire et GIT_* du PC retirés (toute casse)" ||
   rate "mandataire transmis : $(grep proxy= "$ESSAI/journal-claude")"
+# Toutes les familles retirées, une par une (valeur reconnaissable).
+pieges=(ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK NODE_EXTRA_CA_CERTS NODE_OPTIONS BUN_OPTIONS SSL_CERT_FILE SSL_CERT_DIR
+  AWS_REGION GOOGLE_APPLICATION_CREDENTIALS VERTEX_REGION_CLAUDE OTEL_EXPORTER_OTLP_ENDPOINT GIT_SSH_COMMAND LD_LIBRARY_PATH
+  HTTP_PROXY https_proxy all_proxy NO_PROXY grpc_proxy REQUESTS_CA_BUNDLE CURL_CA_BUNDLE BROWSER BASH_ENV ENV
+  SESSION_INGRESS_URL ENABLE_CLAUDEAI_MCP_SERVERS)
+for v in "${pieges[@]}"; do
+  env "$v=piege-essai" bash "$CLE/Claude/depanner.sh" <<<"o" >"$ESSAI/sortie" 2>&1
+  grep -q piege-essai "$ESSAI/env-claude" && rate "$v du PC transmis à Claude" || bon "$v du PC retiré"
+done
+# Un faux gpg en tête du PATH du PC (« bonne signature » toujours) : pas suivi, les commandes viennent du système.
+mkdir -p "$ESSAI/fauxgpg"
+printf '#!/bin/sh
+case "$*" in *--verify*) echo "[GNUPG:] GOODSIG 0 x"; echo "[GNUPG:] VALIDSIG x 0 0 0 0 0 0 0 0 %s";; esac
+exit 0
+' \
+  "$FPR" >"$ESSAI/fauxgpg/gpg"
+chmod +x "$ESSAI/fauxgpg/gpg"
+gpg --batch --yes --quiet --local-user "$AUTRE" --detach-sign -o "$CLE/Claude/manifest.json.sig" "$CLE/Claude/manifest.json"
+: >"$ESSAI/journal-claude"
+PATH=$ESSAI/fauxgpg:$PATH attendu "faux gpg dans le PATH : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+[[ ! -s $ESSAI/journal-claude ]] && bon "faux gpg : rien lancé" || rate "faux gpg suivi : lancé"
+# Sans gpg du tout : la question est posée ; « non » ne lance rien, « oui » lance.
+mkdir -p "$ESSAI/sansgpg"
+for f in /usr/bin/*; do [[ ${f##*/} == gpg* ]] || ln -s "$f" "$ESSAI/sansgpg/"; done
+copie_lanceur "$CLE/Claude/depanner-sansgpg.sh" "$ESSAI/sansgpg"
+attendu "sans gpg, non : rien lancé" 0 bash "$CLE/Claude/depanner-sansgpg.sh" <<<$'o\nn'
+grep -q "gpg absent" "$ESSAI/sortie" && [[ ! -s $ESSAI/journal-claude ]] && bon "sans gpg : dit, et rien lancé sur « non »" ||
+  rate "sans gpg, non : $(tail -2 "$ESSAI/sortie")"
+attendu "sans gpg, oui : lancé" 0 bash "$CLE/Claude/depanner-sansgpg.sh" <<<$'o\no'
+grep -qx "mcp=0" "$ESSAI/journal-claude" && bon "sans gpg, oui : lancé" || rate "sans gpg, oui : pas lancé"
+rm -f "$CLE/Claude/depanner-sansgpg.sh"
+# Claude Code garde le PATH du PC pour dépanner.
+grep -q "^path=$ESSAI/bin:" "$ESSAI/journal-claude" && bon "PATH du PC rendu à Claude Code" || rate "PATH : $(grep path= "$ESSAI/journal-claude")"
+cp "$ESSAI/manifest.json.sig.bon" "$CLE/Claude/manifest.json.sig"
 # Pièges : binaire changé sur la clé, manifeste signé par une autre clé.
 : >"$ESSAI/journal-claude"
 printf '#!/bin/sh\necho piege >>"%s/journal-claude"\n' "$ESSAI" >"$CLE/Claude/Linux/claude"
@@ -409,6 +511,10 @@ attendu "binaire remplacé : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
 cp "$(cache)/2.0.3/linux-x64/claude" "$CLE/Claude/Linux/claude"
 gpg --batch --yes --quiet --local-user "$AUTRE" --detach-sign -o "$CLE/Claude/manifest.json.sig" "$CLE/Claude/manifest.json"
 attendu "manifeste signé par une autre clé : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+# La clé publique de la clé USB remplacée elle aussi (même signataire) : l'empreinte fixée dans le lanceur refuse.
+gpg --batch --armor --export "$AUTRE" >"$CLE/Claude/claude-code.asc"
+attendu "clé publique de la clé USB remplacée : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+cp "$ESSAI/cle.asc" "$CLE/Claude/claude-code.asc"
 [[ ! -s $ESSAI/journal-claude ]] && bon "pièges : rien lancé" || rate "piège lancé : $(cat "$ESSAI/journal-claude")"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "refus : dossier temporaire effacé" || rate "refus : restes"
 
