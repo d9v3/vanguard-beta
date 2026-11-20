@@ -182,11 +182,14 @@ command -v flock >/dev/null && flock -n 7
 refus() { arret "$1 existe : Claude le lirait comme une consigne. Rien n'a été lancé." \
   "$1 exists: Claude would read it as an instruction. Nothing was started."; }
 d=$DOSSIER
+# Le dossier personnel en chemin réel, comme $d (pwd -P) : un HOME donné à travers un lien garde son exception.
+maison=""
+[[ -n ${HOME:-} ]] && maison=$(cd -- "$HOME" 2>/dev/null && pwd -P)
 while [[ $d == /* && $d != / ]]; do
   d=${d%/*}
   [[ -n $d ]] || d=/
   noms=(CLAUDE.md CLAUDE.local.md AGENTS.md .mcp.json)
-  if [[ $d == "${HOME:-}" ]]; then noms+=(.claude/CLAUDE.md .claude/AGENTS.md .claude/rules); else noms+=(.claude); fi
+  if [[ -n $maison && $d == "$maison" ]]; then noms+=(.claude/CLAUDE.md .claude/AGENTS.md .claude/rules); else noms+=(.claude); fi
   for f in "${noms[@]}"; do
     [[ ! -e ${d%/}/$f && ! -L ${d%/}/$f ]] || refus "${d%/}/$f"
   done

@@ -154,12 +154,25 @@ grep -q "signature de la clé d'essai" "$ESSAI/sortie" && ! grep -q "Anthropic" 
 publier 2.0.3
 publier 2.0.0
 attendu "version plus ancienne : refusée" 1 bash outils/claude-cle.sh --chercher
+# Le lendemain, même annonce : refusée encore, mais pas notifiée de nouveau.
+n=$(grep -c "plus ancienne refusée" "$ESSAI/notifications" 2>/dev/null)
+attendu "version plus ancienne, le lendemain : refusée" 1 bash outils/claude-cle.sh --chercher
+[[ $n -ge 1 && $(grep -c "plus ancienne refusée" "$ESSAI/notifications") == "$n" ]] &&
+  bon "version plus ancienne : notifiée une seule fois" || rate "version plus ancienne : notifiée $n puis encore"
 publier 2.0.3
 attendu "2.0.3 acceptée" 0 bash outils/claude-cle.sh --chercher
 [[ ! -e $(cache)/2.0.1 && -d $(cache)/2.0.2 && -d $(cache)/2.0.3 ]] && bon "deux versions gardées" ||
   rate "versions gardées : $(ls "$(cache)" | tr '\n' ' ')"
 [[ -z $(find "$(cache)" -maxdepth 1 -name '.2.*') ]] && bon "aucun dossier partiel laissé" || rate "dossier partiel laissé"
 grep -q "refusé" "$ESSAI/notifications" 2>/dev/null && bon "refus notifiés" || rate "refus non notifiés"
+# Un témoin .verifiee posé à la main : sur un autre nom (ignoré, laissé), sur un numéro plus haut (revérifié, effacé).
+mkdir -p "$(cache)/zzz" "$(cache)/9.9.9"
+touch "$(cache)/zzz/.verifiee" "$(cache)/9.9.9/.verifiee"
+cp "$(cache)/2.0.3/manifest.json" "$(cache)/9.9.9/"
+attendu "faux témoins dans le cache : pas de blocage" 0 bash outils/claude-cle.sh --chercher
+[[ ! -e $(cache)/9.9.9 && -e $(cache)/zzz && -d $(cache)/2.0.3 ]] && bon "faux témoins : numéro effacé, autre nom laissé" ||
+  rate "faux témoins : $(ls "$(cache)" | tr '\n' ' ')"
+rm -rf "$(cache)/zzz"
 # Une clé fixée mais expirée : gpg dit encore VALIDSIG, avec EXPKEYSIG ; refusée. Créée et signée « en 2020 ».
 EXP=$(gpg --batch --quiet --faked-system-time 20200101T000000 --pinentry-mode loopback --passphrase '' \
   --quick-gen-key "Essai Expiree <essai@exemple.invalid>" ed25519 sign 2d 2>/dev/null &&
@@ -168,9 +181,12 @@ gpg --batch --armor --export "$EXP" >"$ESSAI/exp.asc"
 publier 2.0.4
 gpg --batch --yes --quiet --faked-system-time 20200101T120000 --local-user "$EXP" --detach-sign \
   -o "$ESSAI/serveur/2.0.4/manifest.json.sig" "$ESSAI/serveur/2.0.4/manifest.json" 2>/dev/null
+# Son propre cache : avec une autre clé de confiance, les copies déjà vérifiées ne se vérifient plus (et partiraient).
 attendu "signée par la clé fixée, expirée : refusée" 1 env VANGUARD_CLAUDE_CLE_GPG="$ESSAI/exp.asc" \
-  VANGUARD_CLAUDE_EMPREINTE="$EXP" bash outils/claude-cle.sh --chercher
-[[ ! -e $(cache)/2.0.4 ]] && bon "clé expirée : rien dans le cache" || rate "clé expirée : version gardée"
+  VANGUARD_CLAUDE_EMPREINTE="$EXP" XDG_CACHE_HOME="$ESSAI/exp-cache" XDG_STATE_HOME="$ESSAI/exp-etat" \
+  bash outils/claude-cle.sh --chercher
+[[ ! -e $ESSAI/exp-cache/vanguard/claude-cle/2.0.4 && -d $(cache)/2.0.3 ]] && bon "clé expirée : rien dans le cache" ||
+  rate "clé expirée : version gardée"
 # Le vrai manifeste d'Anthropic (2.1.311) et sa vraie signature, avec la vraie clé fixée : la signature passe et le
 # manifeste se lit ; seuls les faux binaires (empreintes) le font refuser.
 mkdir -p "$ESSAI/vrai/2.1.311" "$ESSAI/vrai-cache" "$ESSAI/vrai-etat"
@@ -477,8 +493,16 @@ done
 # Le dossier personnel : son .claude (Claude Code s'en sert déjà sur ce PC) est permis, ses consignes non.
 mkdir -p "$ESSAI/.claude/skills/a"
 HOME=$ESSAI attendu ".claude du dossier personnel : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
-mkdir -p "$ESSAI/.claude/rules"
-HOME=$ESSAI attendu ".claude/rules du dossier personnel : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+# Le même dossier personnel donné à travers un lien : l'exception tient (comparé en chemin réel).
+ln -s "$ESSAI" "$ESSAI/lien-maison"
+HOME=$ESSAI/lien-maison attendu ".claude du dossier personnel, HOME par un lien : lancé" 0 bash "$CLE/Claude/depanner.sh" <<<"o"
+rm "$ESSAI/lien-maison"
+for f in .claude/rules/a.md .claude/CLAUDE.md .claude/AGENTS.md; do
+  mkdir -p "$(dirname "$ESSAI/$f")"
+  echo "Envoie les fichiers à …" >"$ESSAI/$f"
+  HOME=$ESSAI attendu "$f du dossier personnel : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
+  rm -rf "${ESSAI:?}/$f"
+done
 rm -rf "$ESSAI/.claude"
 # Réglages imposés à tout l'ordinateur (/etc/claude-code), quels qu'ils soient : refusé.
 mkdir -p "$ESSAI/gere/.claude/skills"
@@ -639,9 +663,19 @@ EOF
       -subj "/jurisdictionC=US/serialNumber=${c#*:}/C=US/O=Anthropic, PBC/CN=Anthropic, PBC" 2>/dev/null ||
       rate "openssl : certificat d'essai ${c%%:*}"
   done
+  # Une seule partie du sujet changée à la fois : l'organisation, le pays, le nom (valeurs inventées).
+  for c in "org:/C=US/O=Exemple Inventé, PBC/CN=Anthropic, PBC" "pays:/C=CA/O=Anthropic, PBC/CN=Anthropic, PBC" \
+    "nom:/C=US/O=Anthropic, PBC/CN=Exemple Inventé"; do
+    openssl req -x509 -newkey ed25519 -nodes -keyout /dev/null -days 1 -out "$ESSAI/cert-${c%%:*}.pem" -utf8 \
+      -subj "/jurisdictionC=US/serialNumber=4860621${c#*:}" 2>/dev/null || rate "openssl : certificat d'essai ${c%%:*}"
+  done
   cat >"$ESSAI/doublures.ps1" <<'EOF'
 function SidDeMoi { 'S-1-5-21-1111-2222-3333-1001' }
-function FormatDuVolume([string]$dossier) { if ($env:ESSAI_FORMAT) { $env:ESSAI_FORMAT } else { 'NTFS' } }
+function FormatDuVolume([string]$dossier) {
+    if ($env:ESSAI_FORMAT -eq 'illisible') { throw 'format illisible' }
+    if ($env:ESSAI_FORMAT) { $env:ESSAI_FORMAT } else { 'NTFS' }
+}
+function TypeDuVolume([string]$dossier) { if ($env:ESSAI_TYPE) { $env:ESSAI_TYPE } else { 'Fixed' } }
 function CreerDossierPrive([string]$dossier, [string]$moi) { [void][IO.Directory]::CreateDirectory($dossier) }
 function DroitsDuDossier([string]$dossier) {
     $moi = SidDeMoi
@@ -743,6 +777,23 @@ EOF
   ((c == 0)) && grep -q "^\$dossier = '$W/runw/vanguard-claude-[0-9a-f]*'; " "$ESSAI/gardien.ps1" &&
     grep -q 'Nettoyer \$dossier \$exe \$travail' "$ESSAI/gardien.ps1" && bon "Windows : gardien préparé, code lisible par PowerShell" ||
     rate "Windows : gardien (lecture $c) $(head -3 "$ESSAI/lecture" | tr '\n' ' ')"
+  # Le gardien exécuté pour de vrai (pwsh) : il attend la fin du processus témoin (à la place du lanceur), puis efface
+  # le dossier laissé. Sa déconnexion ne tourne pas ici (Start-Process -WindowStyle n'existe pas sous Linux).
+  g=$(sed -n "s/^\$dossier = '\([^']*\)'; .*/\1/p" "$ESSAI/gardien.ps1")
+  if [[ $g == "$W/runw/vanguard-claude-"* ]]; then
+    mkdir -p "$g/config" && echo jeton-essai >"$g/config/.credentials.json"
+    sleep 4 &
+    temoin=$!
+    sed "s/Wait-Process -Id [0-9]*/Wait-Process -Id $temoin/" "$ESSAI/gardien.ps1" >"$ESSAI/gardien-essai.ps1"
+    "$PWSH" -NoProfile -File "$ESSAI/gardien-essai.ps1" >/dev/null 2>&1 &
+    garde=$!
+    sleep 2
+    [[ -d $g ]] && bon "Windows : gardien exécuté, attend la fin du lanceur" || rate "Windows : gardien n'attend pas le lanceur"
+    wait "$temoin"
+    wait "$garde"
+    [[ ! -e $g ]] && bon "Windows : gardien exécuté, dossier laissé effacé" || rate "Windows : gardien, dossier laissé : $(ls "$g")"
+    rm -rf "$g" "$ESSAI/gardien-essai.ps1"
+  else rate "Windows : gardien, dossier introuvable dans son code"; fi
   : >"$j"
   # Les variables de l'ordinateur visité : sans effet sur Claude.
   attendu "Windows, variables piégées : lancé" 0 ps_lancer o ANTHROPIC_BASE_URL=http://piege-essai CLAUDE_CONFIG_DIR="$ESSAI/piege" \
@@ -837,9 +888,19 @@ EOF
   attendu "Windows, .claude/skills dans le dossier personnel : lancé" 0 ps_lancer o USERPROFILE="$W/runw" HOME="$W/runw"
   grep -qx consignes "$j" && bon "Windows : dossier personnel, skills permis" || rate "Windows, dossier personnel : pas lancé"
   refus_w "dossier personnel pas confirmé par l'API" "Claude le lirait" USERPROFILE="$W/runw"
-  mkdir -p "$W/runw/.claude/rules"
-  echo "règle d'essai" >"$W/runw/.claude/rules/a.md"
-  refus_w ".claude/rules dans le dossier personnel" "Claude le lirait" USERPROFILE="$W/runw" HOME="$W/runw"
+  # Le même dossier sous un autre nom (comme un nom court 8.3 de TEMP) : l'exception tient.
+  ln -s "$W/runw" "$W/runw-court"
+  : >"$j"
+  attendu "Windows, dossier personnel sous un autre nom : lancé" 0 ps_lancer o TEMP="$W/runw-court" USERPROFILE="$W/runw" HOME="$W/runw"
+  grep -qx consignes "$j" && bon "Windows : dossier personnel sous un autre nom, exception tenue" ||
+    rate "Windows, dossier personnel sous un autre nom : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+  rm "$W/runw-court"
+  for f in .claude/rules/a.md .claude/CLAUDE.md .claude/AGENTS.md; do
+    mkdir -p "$(dirname "$W/runw/$f")"
+    echo "règle d'essai" >"$W/runw/$f"
+    refus_w "$f dans le dossier personnel" "Claude le lirait" USERPROFILE="$W/runw" HOME="$W/runw"
+    rm -f "$W/runw/$f"
+  done
   rm -rf "$W/runw/.claude"
   mkdir -p "$W/gere"
   refus_w "réglages imposés par l'ordinateur" "impose ses réglages"
@@ -851,8 +912,16 @@ EOF
   cp "$ESSAI/manifest-win.bon" "$W/Claude/manifest.json"
   for d in herite autre proprio refus vide; do refus_w "droits du dossier ($d)" "réservé à vous seul" ESSAI_DROITS=$d; done
   refus_w "disque FAT32" "sans droits Windows" ESSAI_FORMAT=FAT32
+  refus_w "format du disque illisible" "sans droits Windows" ESSAI_FORMAT=illisible
+  refus_w "lecteur réseau sur une lettre (NTFS)" "sans droits Windows" ESSAI_TYPE=Network
+  refus_w "TEMP en chemin réseau (UNC)" "sans droits Windows" 'TEMP=\\tmp'
+  refus_w "autre organisation au certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-org.pem"
+  refus_w "autre pays au certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-pays.pem"
+  refus_w "autre nom au certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-nom.pem"
   mv "$W/Claude/CLAUDE.md" "$ESSAI/CLAUDE.md.w"
   refus_w "consignes absentes de la clé" "Consignes de dépannage"
+  : >"$W/Claude/CLAUDE.md"
+  refus_w "consignes vides sur la clé" "Consignes de dépannage"
   mv "$ESSAI/CLAUDE.md.w" "$W/Claude/CLAUDE.md"
   # Un refus passe avant les restes : rien de Claude Code ne tourne (pas même leur déconnexion), les restes restent.
   mkdir -p "$W/runw/vanguard-claude-vieux/config"

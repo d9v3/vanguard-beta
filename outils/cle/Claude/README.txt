@@ -65,6 +65,8 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
 4. LIMITS
 
    - 64-bit Windows and Linux (x86-64). On Windows ARM, the x86-64 version runs under emulation.
+   - The Windows launcher is tested under PowerShell on Linux, with the Windows-specific calls (permissions,
+     signature, drive, watchdog) replaced by stand-ins: it has not yet run on a real Windows.
    - On Linux without gpg, Anthropic's signature cannot be checked: the launcher says so and asks.
    - On Windows, the checksum list is not checked by a signature (no gpg): only Anthropic's signature on the
      program is.

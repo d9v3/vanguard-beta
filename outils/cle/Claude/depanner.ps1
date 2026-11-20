@@ -104,6 +104,7 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
 # Les appels propres à Windows, chacun dans sa fonction : les essais (sous Linux) les remplacent au repère plus bas.
 function SidDeMoi { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 function FormatDuVolume([string]$dossier) { (New-Object IO.DriveInfo([IO.Path]::GetPathRoot($dossier))).DriveFormat }
+function TypeDuVolume([string]$dossier) { [string](New-Object IO.DriveInfo([IO.Path]::GetPathRoot($dossier))).DriveType }
 function CreerDossierPrive([string]$dossier, [string]$moi) {
     $sid = New-Object Security.Principal.SecurityIdentifier($moi)
     $droits = New-Object Security.AccessControl.DirectorySecurity
@@ -195,15 +196,18 @@ if (-not $TempPc -or -not (Test-Path -LiteralPath $TempPc -PathType Container)) 
     Arret 'Dossier temporaire de Windows introuvable (TEMP).' 'Windows temporary folder not found (TEMP).'
 }
 $Moi = SidDeMoi
-$Dossier = Join-Path $TempPc ('vanguard-claude-' + [Guid]::NewGuid().ToString('N'))
-$Exe = Join-Path $Dossier 'claude.exe'
-$Travail = Join-Path $Dossier 'travail'
-$Config = Join-Path $Dossier 'config'
-$Tmp = Join-Path $Dossier 'tmp'
+# Combine, pas Join-Path : même résultat, et un TEMP réseau (\\serveur\partage) arrive jusqu'à son refus ci-dessous.
+$Dossier = [IO.Path]::Combine($TempPc, 'vanguard-claude-' + [Guid]::NewGuid().ToString('N'))
+$Exe = [IO.Path]::Combine($Dossier, 'claude.exe')
+$Travail = [IO.Path]::Combine($Dossier, 'travail')
+$Config = [IO.Path]::Combine($Dossier, 'config')
+$Tmp = [IO.Path]::Combine($Dossier, 'tmp')
 # Sans droits Windows (FAT, exFAT, partage réseau), « à soi seul » ne voudrait rien dire : refusé avant de créer.
+# Un lecteur réseau monté sur une lettre rend souvent « NTFS » : seul un disque local (Fixed) est permis.
 $format = try { FormatDuVolume $Dossier } catch { '' }
-if ($Dossier.StartsWith('\\') -or @('NTFS', 'ReFS') -notcontains $format) {
-    Arret "Le dossier temporaire (TEMP) est sur un disque sans droits Windows ($format) : il ne serait pas à vous seul. Rien n'a été lancé." `
+$type = try { TypeDuVolume $Dossier } catch { '' }
+if ($Dossier.StartsWith('\\') -or @('NTFS', 'ReFS') -notcontains $format -or $type -ne 'Fixed') {
+    Arret "Le dossier temporaire (TEMP) est sur un disque sans droits Windows ($format, $type) : il ne serait pas à vous seul. Rien n'a été lancé." `
           "The temporary folder (TEMP) is on a drive without Windows permissions: it would not be yours alone. Nothing was started."
 }
 $Session = $null
@@ -252,16 +256,21 @@ try {
     }
     # Claude Code lit aussi, au-dessus du dossier de travail, les consignes (CLAUDE.md, AGENTS.md), les serveurs MCP
     # (.mcp.json) et les dossiers .claude (consignes, skills, commandes, agents) : posés là par quelqu'un d'autre, ce
-    # seraient des consignes. Il remonte le chemin écrit, comme cette boucle (une jonction n'est pas suivie vers son
-    # vrai dossier). Le dossier personnel est l'exception pour .claude : Claude Code n'y cherche pas de skills, et le
-    # refuser bloquerait tout PC où l'on se sert déjà de Claude Code ; ses consignes y sont refusées quand même.
+    # seraient des consignes. Cette boucle remonte le chemin écrit ; Claude Code fait pareil dans son binaire Linux,
+    # pas vérifié dans claude.exe (une jonction ou un lecteur subst pourrait y être suivi vers son vrai dossier). Le
+    # dossier personnel est l'exception pour .claude : Claude Code n'y cherche pas de skills, et le refuser bloquerait
+    # tout PC où l'on se sert déjà de Claude Code ; ses consignes y sont refusées quand même.
     # Limite, dite : un compte sans droits peut créer C:\.claude après cette vérification ; seul un dossier refait à
     # chaque lancement le verrait. GetDirectoryName rend $null à la racine (C:\), sans erreur.
     $maison = [Environment]::GetFolderPath('UserProfile')
     for ($d = [IO.Path]::GetDirectoryName($Dossier); $d; $d = [IO.Path]::GetDirectoryName($d)) {
         $noms = @('CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', '.mcp.json')
-        # Les deux façons de connaître le dossier personnel doivent tomber d'accord : sinon, pas d'exception.
-        if ($env:USERPROFILE -and $d -ceq $env:USERPROFILE -and $d -ceq $maison) {
+        # Les deux façons de connaître le dossier personnel doivent tomber d'accord : sinon, pas d'exception. Comparé
+        # par le dossier lui-même, pas par son nom : le dossier de session (nom unique) doit se voir par les deux. Un
+        # TEMP en nom court 8.3, une autre casse ou une jonction gardent ainsi l'exception.
+        $suite = $Dossier.Substring($d.Length).TrimStart('\', '/')
+        if ($env:USERPROFILE -and $maison -and [IO.Directory]::Exists((Join-Path $env:USERPROFILE $suite)) -and
+            [IO.Directory]::Exists((Join-Path $maison $suite))) {
             $noms += '.claude/CLAUDE.md', '.claude/AGENTS.md', '.claude/rules'
         } else { $noms += '.claude' }
         foreach ($nom in $noms) {

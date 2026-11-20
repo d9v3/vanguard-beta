@@ -69,6 +69,8 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 4. LIMITES
 
    - Windows et Linux 64 bits (x86-64). Sous Windows ARM, la version x86-64 tourne en émulation.
+   - Le lanceur Windows est essayé sous PowerShell sous Linux, les appels propres à Windows (droits,
+     signature, disque, gardien) remplacés par des doublures : il n'a pas encore tourné sur un vrai Windows.
    - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
    - Sous Windows, la liste des empreintes n'est pas vérifiée par une signature (pas de gpg) : seule la
      signature d'Anthropic sur le programme l'est.

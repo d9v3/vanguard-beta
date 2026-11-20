@@ -160,9 +160,12 @@ sys.exit(1)' "$@" 2>/dev/null
 
 # La dernière version vérifiée du cache (le témoin .verifiee n'est écrit qu'après la vérification de tout), ou rien.
 derniere() {
-  local d
+  # Seulement les dossiers de version (nom x.y.z, pas un lien, avec leur manifeste) : un autre nom, ou un témoin seul,
+  # ne passe jamais pour la plus récente.
+  local d n
   for d in "$CACHE"/*/.verifiee; do
-    [[ -f $d ]] && basename "${d%/.verifiee}"
+    n=${d%/.verifiee}
+    [[ ${n##*/} =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ && -f $d && ! -L $n && -f $n/manifest.json ]] && echo "${n##*/}"
   done | sort -V | tail -1
 }
 
@@ -218,6 +221,13 @@ chercher() {
   v=$(lire "$SOURCE/stable" | tr -d '[:space:]') || { echo "✖ Version stable de Claude Code illisible (Internet ?)." >&2; return 1; }
   [[ $v =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] || { echo "✖ Version stable de forme inattendue : rien n'est téléchargé." >&2; return 1; }
   avant=$(derniere)
+  # La plus récente du cache, si ce n'est pas celle annoncée, revérifiée elle aussi : une copie abîmée ou un témoin
+  # posé à la main ne bloque pas les mises à jour. La protection contre le retour tient par la note (haute_notee).
+  while [[ -n $avant && $avant != "$v" ]] && ! raison=$(version_verifiee "$CACHE/$avant" "$avant" 2>&1); do
+    echo "⚠ Claude Code $avant du cache ne se vérifie plus ($raison) : effacé." >&2
+    rm -rf -- "${CACHE:?}/$avant"
+    avant=$(derniere)
+  done
   if [[ $v == "$avant" ]]; then
     # Revérifiée, pas crue sur son témoin : une copie abîmée ou changée est effacée, puis téléchargée de nouveau.
     if raison=$(version_verifiee "$CACHE/$v" "$v" 2>&1); then
@@ -234,7 +244,11 @@ chercher() {
   haute=$(printf '%s\n' "$avant" "$(haute_notee)" | sed '/^$/d' | sort -V | tail -1)
   if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
     echo "✖ Le serveur annonce Claude Code $v, plus ancien que la $haute déjà vérifiée : refusé." >&2
-    avertir "Claude Code : version plus ancienne refusée" "Le serveur annonce la $v ; la $haute a déjà été vérifiée."
+    # Notifié une fois par annonce : la minuterie repasse chaque jour, la même alerte n'use pas l'attention.
+    if [[ $(cat "$ETAT/claude-cle-refus" 2>/dev/null) != "$v<$haute" ]]; then
+      avertir "Claude Code : version plus ancienne refusée" "Le serveur annonce la $v ; la $haute a déjà été vérifiée."
+      mkdir -p "$ETAT" && echo "$v<$haute" >"$ETAT/claude-cle-refus"
+    fi
     return 1
   fi
   # Global, pas local : le piège de sortie le lit après la fin de la fonction.
