@@ -273,8 +273,14 @@ pub(crate) fn anonymiser_avec(texte: &str, maisons: &[String], noms: &[(String, 
 pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
     let mut t = texte.to_string();
     for maison in maisons.iter().filter(|m| m.len() > 3) {
-        // Aussi écrit avec des barres obliques (« C:/Users/… ») ou doublées (JSON, PowerShell : « C:\\Users\\… »).
-        for variante in [maison.clone(), maison.replace('\\', "/"), maison.replace('\\', "\\\\")] {
+        // Aussi écrit avec des barres obliques (« C:/Users/… ») ou doublées (JSON, PowerShell : « C:\\Users\\… »),
+        // et en forme étendue (« \\?\C:\Users\… », « \??\C:\… »), partie avec elle : « \\?\~\… » n'était plus
+        // un chemin, et le nom restait (relecture 0.97, ronde 7, haut).
+        let barres = [maison.clone(), maison.replace('\\', "/"), maison.replace('\\', "\\\\")];
+        let etendues = [r"\\?\", r"\??\", "//?/", r"\\\\?\\"]
+            .iter()
+            .flat_map(|prefixe| barres.iter().map(move |v| format!("{prefixe}{v}")));
+        for variante in etendues.chain(barres.clone()) {
             t = remplacer(
                 &t,
                 &variante,

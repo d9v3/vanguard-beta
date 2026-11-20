@@ -2061,6 +2061,16 @@ fn coupes_de_la_ronde_6() {
     for garde in ["voir (…) puis […] et {…} fin", "Chargement… fini"] {
         assert_eq!(crate::amelioration::masquer(garde), garde);
     }
+    // Ronde 7 : une barre plus loin sur la ligne ; sans les deux contrôles, la coupe l'avalait.
+    for garde in [
+        "liste […] dans src/journal.rs:12",
+        "bloc {…} dans src/journal.rs:12",
+        "voir (…) dans src/journal.rs:12",
+        "Chargement… fini dans src/journal.rs:12",
+    ] {
+        let w = crate::amelioration::masquer(garde);
+        assert!(w.contains(" dans "), "{garde:?} : {w:?}");
+    }
 }
 
 /// Ronde 6 : adresses derrière un accent grave ou un chevron, apostrophe dans un mot, « # » comme « ? », requête
@@ -2104,12 +2114,20 @@ fn chemins_de_la_ronde_6() {
             "{brut:?} : {w:?}"
         );
     }
+    // Ronde 7 : un guillemet échappé (« 27\" ») ne ferme pas, une apostrophe collée à un mot non plus.
+    let w = masque(r#""/home/bob/Écran 27\" Zoé Martin"#);
+    assert!(!w.contains("Zoé") && !w.contains("Martin"), "{w:?}");
     let long = format!("vu /home/alice/{} Zoé Martin", "Lettre ".repeat(30));
     assert_eq!(masque(&long), "vu <chemin>");
     for (brut, attendu) in [
         (
             "'/home/bob/Documents/Classe de 2019's photos Zoé Martin' fin",
             "'<chemin>' fin",
+        ),
+        ("'/home/bob/Lettre Zoé Martin' n'existe pas", "'<chemin>' n'existe pas"),
+        (
+            r#""/home/bob/Lettre Zoé.pdf" lu, puis \"fin\" x"#,
+            r#""<chemin .pdf>" lu, puis \"fin\" x"#,
         ),
         (
             "\"/home/bob/Documents/Écran 27\" Zoé Martin.pdf\" fin",
@@ -2130,4 +2148,132 @@ fn chemins_de_la_ronde_6() {
     ] {
         assert_eq!(masque(brut), attendu, "{brut:?}");
     }
+}
+
+/// Le texte masqué avec ces maisons inventées (`masquer_pour`), comme le journal des erreurs.
+fn masquer_chez(brut: &str, maisons: &[&str]) -> String {
+    let maisons: Vec<String> = maisons.iter().map(|m| (*m).to_string()).collect();
+    let anonymiser = |t: &str| crate::journal::anonymiser_avec(t, &maisons, &[]);
+    crate::amelioration::masquer_pour(brut, &maisons, &anonymiser)
+}
+
+/// Ronde 7, haut et moyens : forme étendue « \\?\ » avec ou sans maison, maison au milieu d'un chemin, collée à une
+/// option ou derrière un « \n » écrit, « file:/ » à une barre, partage entre guillemets à espace (valeurs inventées).
+#[test]
+fn chemins_de_la_ronde_7() {
+    for (maisons, brut) in [
+        (
+            &[r"C:\Users\alice"][..],
+            r"copie de \\?\C:\Users\alice\Documents\Impôts\Avis Luc Tremblay.pdf refusée",
+        ),
+        (
+            &[],
+            r"copie vers \\?\UNC\nas-martin\Sauvegardes\luc.tremblay\photos refusée",
+        ),
+        (
+            &["/home/alice"],
+            "lecture de /mnt/sauvegarde/home/alice/Lettre Zoé Martin impossible",
+        ),
+        (&["/home/alice"], "cc -I/home/alice/projets/client-tremblay/include x.c"),
+        (
+            &["/home/bob"],
+            r#"{"error":"open failed\n/home/bob/Lettre Zoé Martin"}"#,
+        ),
+        (
+            &["/home/bob"],
+            r#"{"error":"open failed\n/home/bob/Lettre Zoé Martin.pdf"}"#,
+        ),
+        (
+            &[],
+            r#"{"msg":"Voulez-vous le recréer?\n/home/alice/Documents/Impôts Zoé Martin.pdf"}"#,
+        ),
+        (&[], "xdg-open file:/home/alice/Lettre de Zoé Martin Tremblay.pdf"),
+        (&["/home/bob"], "Erreur : file:/home/bob/Lettre Zoé Martin introuvable"),
+        (&[], "Erreur : file:/home/bob/Lettre Zoé Martin.pdf introuvable"),
+        (&[], r#"mount "//nas.local/partage/Zoé Martin/Lettres" impossible"#),
+    ] {
+        let w = masquer_chez(brut, maisons);
+        for nom in ["Zoé", "Martin", "Tremblay", "tremblay", "Luc", "nas-martin", "Impôts"] {
+            assert!(!w.contains(nom), "{brut:?} : {w:?}");
+        }
+    }
+    // Sans reste : le préfixe étendu part avec la maison, l'option garde son nom, le « \n » écrit reste.
+    assert_eq!(
+        masquer_chez(
+            r"copie de \\?\C:\Users\alice\Documents\Impôts\Avis Luc Tremblay.pdf refusée",
+            &[r"C:\Users\alice"]
+        ),
+        "copie de <chemin .pdf>"
+    );
+    assert_eq!(
+        masquer_chez("cc -I/home/alice/projets/client-tremblay/include x.c", &["/home/alice"]),
+        "cc -I<chemin>"
+    );
+    assert_eq!(
+        masquer_chez(
+            r#"{"msg":"Voulez-vous le recréer?\n/home/alice/Documents/Impôts Zoé Martin.pdf"}"#,
+            &[]
+        ),
+        r#"{"msg":"Voulez-vous le recréer?\n<chemin .pdf>"#
+    );
+    // Sans abus : le partage entre guillemets garde ce qui suit, une adresse sans espace reste une adresse.
+    assert_eq!(
+        masquer_chez(r#"mount "//nas.local/partage/Zoé Martin/Lettres" impossible"#, &[]),
+        r#"mount "<chemin>" impossible"#
+    );
+    assert_eq!(sans_urls(r#"src="//cdn.exemple.test/a.js" ici"#), r#"src="<url>" ici"#);
+}
+
+/// Ronde 7, bas : « C:// », partage à quatre barres, « $HOME\ », « ~compte/ », « ? » de phrase, « # » et requête
+/// dans un JSON compact, « \/ » hors JSON, coupe « … » suivie d'une ponctuation seule (valeurs inventées).
+#[test]
+fn basses_de_la_ronde_7() {
+    for brut in [
+        "Lecture de C://Users/Zoé Martin/Lettre Roy.pdf refusée",
+        r#""\\\\nas\\partage\\Zoé Martin\\Lettre Roy.pdf""#,
+        r"Get-Content $HOME\Lettre Zoé Martin.txt",
+        "lecture de ~bob/Lettre Zoé Martin.pdf",
+    ] {
+        let w = masquer_chez(brut, &[]);
+        assert!(!w.contains("Martin") && !w.contains("Roy"), "{brut:?} : {w:?}");
+    }
+    assert_eq!(
+        sans_urls(r#"{"url":"https://a.test/x?id=5","status":403,"error":"forbidden"}"#),
+        r#"{"url":"<url>","status":403,"error":"forbidden"}"#
+    );
+    assert_eq!(
+        sans_urls(r##"{"url":"https://a.test/x","couleur":"#ff0000","detail":"introuvable","code":5}"##),
+        r##"{"url":"<url>","couleur":"#ff0000","detail":"introuvable","code":5}"##
+    );
+    for garde in [
+        "Could not reach 192.0.2.7? Check the network: timeout after 30 s",
+        "La passerelle est-elle 192.168.1.1? Oui, vérifié, mais le service ne répond pas",
+    ] {
+        let w = masquer(garde);
+        assert!(w.ends_with(garde.split_once("? ").map_or("", |(_, b)| b)), "{w:?}");
+    }
+    for garde in [r"sed 's/\//-/g' liste.txt", r"règle ^\/api\/v1 refusée"] {
+        assert_eq!(sans_urls(garde), garde);
+    }
+    let w = masquer("Attente …: échec de usr/bin/outil (code 3)");
+    assert!(
+        w.starts_with("Attente …: échec de ") && w.ends_with("(code 3)"),
+        "{w:?}"
+    );
+    let w = masquer("il affiche \"…\" puis panique dans src/journal.rs:12");
+    assert!(w.starts_with("il affiche \"…\" puis panique"), "{w:?}");
+}
+
+/// Ronde 7, bas : un détail long fait de barres inverses derrière une adresse ne coûte pas un temps quadratique
+/// (porte du relevé, sans borne avant `sans_urls`).
+#[test]
+fn detail_long_en_temps_borne() {
+    let debut = std::time::Instant::now();
+    let _ = crate::amelioration::texte(&format!("\"file:///home/x/{}", "\\".repeat(100_000)));
+    let _ = crate::amelioration::texte(&format!("www.a{}", " ".repeat(100_000)));
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        debut.elapsed()
+    );
 }
