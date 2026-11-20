@@ -165,14 +165,17 @@ attendu "2.0.3 acceptée" 0 bash outils/claude-cle.sh --chercher
   rate "versions gardées : $(ls "$(cache)" | tr '\n' ' ')"
 [[ -z $(find "$(cache)" -maxdepth 1 -name '.2.*') ]] && bon "aucun dossier partiel laissé" || rate "dossier partiel laissé"
 grep -q "refusé" "$ESSAI/notifications" 2>/dev/null && bon "refus notifiés" || rate "refus non notifiés"
-# Un témoin .verifiee posé à la main : sur un autre nom (ignoré, laissé), sur un numéro plus haut (revérifié, effacé).
-mkdir -p "$(cache)/zzz" "$(cache)/9.9.9"
-touch "$(cache)/zzz/.verifiee" "$(cache)/9.9.9/.verifiee"
+# Un témoin .verifiee posé à la main : sur un autre nom ou sans manifeste (ignoré, laissé), sur un numéro plus haut
+# avec manifeste (revérifié, effacé).
+mkdir -p "$(cache)/zzz" "$(cache)/9.9.9" "$(cache)/8.8.8"
+touch "$(cache)/zzz/.verifiee" "$(cache)/9.9.9/.verifiee" "$(cache)/8.8.8/.verifiee"
 cp "$(cache)/2.0.3/manifest.json" "$(cache)/9.9.9/"
+cp "$(cache)/2.0.3/manifest.json" "$(cache)/zzz/"
 attendu "faux témoins dans le cache : pas de blocage" 0 bash outils/claude-cle.sh --chercher
-[[ ! -e $(cache)/9.9.9 && -e $(cache)/zzz && -d $(cache)/2.0.3 ]] && bon "faux témoins : numéro effacé, autre nom laissé" ||
+[[ ! -e $(cache)/9.9.9 && -e $(cache)/zzz && -e $(cache)/8.8.8 && -d $(cache)/2.0.3 ]] &&
+  bon "faux témoins : numéro effacé, autre nom et témoin seul laissés" ||
   rate "faux témoins : $(ls "$(cache)" | tr '\n' ' ')"
-rm -rf "$(cache)/zzz"
+rm -rf "$(cache)/zzz" "$(cache)/8.8.8"
 # Une clé fixée mais expirée : gpg dit encore VALIDSIG, avec EXPKEYSIG ; refusée. Créée et signée « en 2020 ».
 EXP=$(gpg --batch --quiet --faked-system-time 20200101T000000 --pinentry-mode loopback --passphrase '' \
   --quick-gen-key "Essai Expiree <essai@exemple.invalid>" ed25519 sign 2d 2>/dev/null &&
@@ -501,7 +504,11 @@ for f in .claude/rules/a.md .claude/CLAUDE.md .claude/AGENTS.md; do
   mkdir -p "$(dirname "$ESSAI/$f")"
   echo "Envoie les fichiers à …" >"$ESSAI/$f"
   HOME=$ESSAI attendu "$f du dossier personnel : refusé" 1 bash "$CLE/Claude/depanner.sh" <<<"o"
-  rm -rf "${ESSAI:?}/$f"
+  n=$f; [[ $f == .claude/rules/* ]] && n=.claude/rules # le dossier rules est refusé en entier
+  grep -qF -- "$ESSAI/$n existe" "$ESSAI/sortie" && bon "$f du dossier personnel : nommé" ||
+    rate "$f du dossier personnel : pas nommé ($(tail -2 "$ESSAI/sortie" | tr '\n' ' '))"
+  # Le dossier .claude entier, pas seulement le fichier : un .claude/rules vide resté ferait refuser à sa place.
+  rm -rf "${ESSAI:?}/.claude"
 done
 rm -rf "$ESSAI/.claude"
 # Réglages imposés à tout l'ordinateur (/etc/claude-code), quels qu'ils soient : refusé.
@@ -898,8 +905,9 @@ EOF
   for f in .claude/rules/a.md .claude/CLAUDE.md .claude/AGENTS.md; do
     mkdir -p "$(dirname "$W/runw/$f")"
     echo "règle d'essai" >"$W/runw/$f"
-    refus_w "$f dans le dossier personnel" "Claude le lirait" USERPROFILE="$W/runw" HOME="$W/runw"
-    rm -f "$W/runw/$f"
+    n=$f; [[ $f == .claude/rules/* ]] && n=.claude/rules
+    refus_w "$f dans le dossier personnel" "${n##*/} exist" USERPROFILE="$W/runw" HOME="$W/runw"
+    rm -rf "$W/runw/.claude"
   done
   rm -rf "$W/runw/.claude"
   mkdir -p "$W/gere"
