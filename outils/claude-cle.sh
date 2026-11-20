@@ -359,7 +359,9 @@ retirer() { # point note
 
 # Un binaire changé pendant le voyage qu'on ne peut pas remplacer par la copie vérifiée (coupé, cache absent,
 # place, copie ratée) : retiré de la clé, jamais laissé là. Code 2.
-retirer_change() { # point changes raison
+# Ceux de la liste « remplacés » (changés pendant le voyage, déjà remplacés par la copie vérifiée avant la panne)
+# sont dits aussi : la panne qui suit ne fait jamais oublier qu'ils avaient changé.
+retirer_change() { # point changes raison [remplacés]
   local p=$1 chemin
   for chemin in $2; do
     # Un lien à la place du binaire est retiré lui-même (rm ne suit pas) ; jamais au travers d'un dossier lien.
@@ -367,14 +369,26 @@ retirer_change() { # point changes raison
       rm -f -- "${p:?}/$chemin"
   done
   echo "✖ Sur la clé, changé depuis le dernier dépôt :$2. Pas de copie vérifiée à remettre ($3) : retiré." >&2
+  [[ -z ${4:-} ]] || echo "  Changé aussi, déjà remplacé par la copie vérifiée :$4." >&2
   echo "  Un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
-  avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$2. Retiré de la clé ($3) ; \
-un programme remplacé est un piège possible."
+  avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$2${4:-}. Retiré de la clé ($3) ou remplacé \
+par la copie vérifiée ; un programme remplacé est un piège possible."
   exit 2
 }
-# Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé (code 2).
+# Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé, et il est toujours
+# dit (code 2), même s'il a déjà été remplacé avant la panne (vu, la liste du début, dans poser).
 refuser() { # point changes raison texte
-  [[ -z $2 ]] || retirer_change "$1" "$2" "$3"
+  local remplaces=${vu:-} c
+  for c in $2; do remplaces=${remplaces// $c/}; done
+  [[ -z $2 ]] || retirer_change "$1" "$2" "$3" "$remplaces"
+  if [[ -n $remplaces ]]; then
+    echo "✖ $4" >&2
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$remplaces. Remplacé par la copie vérifiée avant la panne ;" >&2
+    echo "  un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$remplaces. Remplacé par la copie vérifiée \
+(le reste du dépôt a raté) ; un programme remplacé est un piège possible."
+    exit 2
+  fi
   erreur "$4"
 }
 

@@ -325,6 +325,17 @@ rm -f "$ESSAI/notifications"
 attendu "après une copie ratée : reposé sans fausse alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
 cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" && bon "après une copie ratée : 2.0.5 posée" ||
   rate "après une copie ratée : pas la 2.0.5"
+# Changé pendant le voyage, remplacé, puis une panne plus loin (un petit fichier pas copié) : le changement reste dit
+# (code 2, notification), jamais perdu derrière l'erreur.
+printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
+rm "$CLE/Claude/README.txt"
+chmod a-w "$CLE/Claude"
+rm -f "$ESSAI/notifications"
+attendu "changé, remplacé, puis panne : dit quand même (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+chmod u+w "$CLE/Claude"
+grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null && grep -q "Claude/Linux/claude" "$ESSAI/sortie" &&
+  bon "changé puis panne : notifié et nommé" || rate "changé puis panne : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "après la panne : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
 
 echo "Lanceur Linux (depanner.sh)"
 attendu "pose pour le lanceur" 0 bash outils/claude-cle.sh --cle "$CLE"
