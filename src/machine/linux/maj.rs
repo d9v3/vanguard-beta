@@ -116,12 +116,22 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
     std::thread::scope(|portee| {
         let flatpak = present("flatpak").then(|| {
             crate::socle::fil::dans_ou_ici(portee, "flatpak", || {
-                sortie_delai(
-                    "flatpak",
-                    &["remote-ls", "--updates", "--columns=application"],
-                    40,
-                    &[0],
-                )
+                let r = crate::commande::lancer(
+                    crate::commande::par_le_systeme("flatpak").args([
+                        "remote-ls",
+                        "--updates",
+                        "--columns=application",
+                    ]),
+                    DELAI_FLATPAK,
+                );
+                match r {
+                    Some(r) if r.code == Some(0) => Ok(r.sortie),
+                    Some(r) => Err(raison_flatpak(
+                        r.code.map_or(FinFlatpak::Signal, FinFlatpak::Code),
+                        &r.erreurs,
+                    )),
+                    None => Err(raison_flatpak(FinFlatpak::SansReponse, "")),
+                }
             })
         });
         // snapd par son API (/run/snapd.socket) ; la CLI si la prise ne répond pas. Un nombre de snaps à mettre à
@@ -172,13 +182,14 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         });
 
         if let Some(t) = flatpak {
-            constats.push(match t.join().ok().flatten() {
-                None => impossible("Flatpak", tr!("hors ligne ?", "offline?")),
-                Some(l) if lignes(&l) == 0 => ok(
+            constats.push(match t.join() {
+                Err(_) => impossible("Flatpak", tr!("lecture interrompue", "reading interrupted")),
+                Ok(Err(raison)) => impossible("Flatpak", &raison),
+                Ok(Ok(l)) if lignes(&l) == 0 => ok(
                     "Flatpak",
                     tr!("Applications Flatpak à jour.", "Flatpak apps up to date."),
                 ),
-                Some(l) => alerte(
+                Ok(Ok(l)) => alerte(
                     "Flatpak",
                     Niveau::Moyen,
                     trf!(
@@ -301,6 +312,50 @@ fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, crate:
             Ok(false)
         }
         Err(e) => Err(echec_fwupd(e)),
+    }
+}
+
+/// Délai de `flatpak remote-ls --updates` : il lit le résumé de chaque dépôt sur le réseau.
+const DELAI_FLATPAK: u64 = 40;
+
+/// Comment `flatpak remote-ls` a fini quand il n'a pas rendu le code 0.
+#[derive(Debug, Clone, Copy)]
+enum FinFlatpak {
+    /// Pas lancé, ou pas fini dans le délai (arrêté).
+    SansReponse,
+    /// Tué par un signal.
+    Signal,
+    /// Fini avec ce code de retour.
+    Code(i32),
+}
+
+/// Pourquoi les applications Flatpak n'ont pas pu être lues (ticket #28 : la raison dite était toujours « hors
+/// ligne ? », même pour un délai dépassé ou un dépôt en erreur). Avec un code ou un signal, la première ligne non vide
+/// de sa sortie d'erreur est dite, rendue affichable et coupée à 160 caractères (elle vient du programme et du dépôt).
+fn raison_flatpak(fin: FinFlatpak, erreurs: &str) -> String {
+    let code = match fin {
+        FinFlatpak::SansReponse => {
+            return trf!(
+                "flatpak sans réponse en {DELAI_FLATPAK} s",
+                "no answer from flatpak within {DELAI_FLATPAK} s"
+            );
+        }
+        FinFlatpak::Signal => tr!("arrêté par un signal", "stopped by a signal").to_string(),
+        FinFlatpak::Code(c) => c.to_string(),
+    };
+    let premiere = erreurs
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    let cause: String = crate::ui::affichable(premiere).chars().take(160).collect();
+    if cause.is_empty() {
+        trf!("flatpak a échoué (code {code})", "flatpak failed (code {code})")
+    } else {
+        trf!(
+            "flatpak a échoué (code {code} : {cause})",
+            "flatpak failed (code {code}: {cause})"
+        )
     }
 }
 
@@ -1919,6 +1974,38 @@ mod tests {
 
     /// L'oracle : les firmwares proposés par D-Bus contre `fwupdmgr get-updates --json`, sur cet ordinateur (des
     /// nombres seulement dans le message).
+    #[test]
+    fn raison_flatpak_dit_ce_qui_a_echoue() {
+        // Ticket #28 : jamais « hors ligne ? » à la place de la vraie raison.
+        for anglais in [false, true] {
+            let dire = |code, e: &str| {
+                if anglais {
+                    crate::langue::en_anglais(|| raison_flatpak(code, e))
+                } else {
+                    raison_flatpak(code, e)
+                }
+            };
+            let delai = dire(FinFlatpak::SansReponse, "");
+            assert!(delai.contains("40 s"), "{delai}");
+            let erreur = dire(
+                FinFlatpak::Code(1),
+                "\n  error: Unable to load summary from remote flathub\u{202e}\nsuite",
+            );
+            assert!(
+                erreur.contains('1') && erreur.contains("Unable to load summary"),
+                "{erreur}"
+            );
+            assert!(!erreur.contains("suite") && !erreur.contains('\u{202e}'), "{erreur}");
+            let signal = dire(FinFlatpak::Signal, "");
+            assert!(signal.contains("signal"), "{signal}");
+            let long = dire(FinFlatpak::Code(2), &"x".repeat(1000));
+            assert_eq!(long.matches('x').count(), 160, "{long}");
+            for r in [&delai, &erreur, &signal, &long] {
+                assert!(!r.contains("hors ligne") && !r.contains("offline"), "{r}");
+            }
+        }
+    }
+
     #[test]
     fn raison_firmware_dit_ce_qui_a_echoue() {
         for anglais in [false, true] {
