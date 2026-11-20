@@ -126,6 +126,45 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   il n'est pas proposé. Sous Windows, le fichier est tenu et son empreinte comparée, mais c'est encore le chemin qui
   est lancé (limites dites au modèle de menace). Ouverte seule, sans `vanguard`, la fenêtre fait confiance à son
   voisin au premier usage.
+- **La mise à jour pose aussi la fenêtre qui manque.** Quand `vanguard` est déjà au numéro publié sur GitHub mais
+  que sa fenêtre manque à côté, n'est pas la sienne, ou serait refusée au lancement (un lien, de mauvais droits), la
+  mise à jour propose de la poser. Seulement si le programme d'ici est exactement celui publié, et toujours vérifiée
+  contre l'empreinte gravée dans `vanguard` ; montrée dans l'aperçu, posée seulement après votre accord, et remise
+  comme avant si la relecture échoue (avec ses droits, ou c'est dit). L'état de chaque fenêtre montrée entre dans
+  l'accord : si elle change entre l'aperçu et le clic, rien n'est fait.
+- **Une fenêtre qui ne se lit pas ne bloque plus la mise à jour du programme.** Si la fenêtre d'ici ne se lit pas
+  (droits, dossier à son nom), si la copie est un lien, ou si la fenêtre de la clé ne se vérifie pas, le programme
+  est mis à jour seul : sa fenêtre n'est pas touchée, c'est montré dans l'aperçu comme un geste à part, et redit au
+  résultat comme « non vérifié ». Un dossier que le lancement refuse est dit, sans réparation proposée (la reposer
+  ne réparerait rien). Les fichiers provisoires portent un nom tiré au hasard, jamais un nom devinable.
+- **Console de la fenêtre : dix lectures de plus, et une valeur tapée.** agent, camera-micro, logiciels, nettoyer,
+  desinstaller, sites-dangereux, parametres, blocage, verifier-sauvegarde et ordinateurs se tapent dans la Console,
+  toujours lancées en lecture seule (`--json`) ; chaque mot qui agit (on, off, annuler, --appliquer…) y est refusé.
+  Ces commandes, avec `--liste` quand elles en ont un, donnent un JSON seul sans rien changer ; `--json` est refusé
+  (code 2) dès qu'il va avec un geste qui change, y compris dans la queue d'un réglage de `parametres`, où il était
+  avalé et laissait changer la langue. Huit lectures prennent une valeur (`vanguard console <commande> -- <valeur>` :
+  chercher, lien, evenements --incident, dernieres-failles, journaux-windows, verifier-fichier, courriel-suspect,
+  verifier-moi) : la valeur est bornée et jugée deux fois, par la fenêtre puis par `vanguard`, sans tiret au début,
+  ni caractère de contrôle, ni inversion de sens ; un chemin n'est permis qu'après son chemin réel, pour un fichier
+  ordinaire sous Téléchargements, Bureau ou Documents du compte, ou sur un support amovible ; le reste est hors ligne
+  et la valeur est masquée au journal. Un fichier donné est ouvert une seule fois, et ce qui est vérifié est
+  exactement ce qui est lu (plus d'écart entre les deux).
+- **Console : les dossiers liés ou déclarés, jugés plus juste.** Sous Linux, un endroit permis qui est un lien
+  symbolique (~/Documents vers ~/Nextcloud/Documents) est suivi une seule fois, quand les endroits sont faits, et
+  seulement si sa cible est un dossier visible sous le dossier personnel : un lien changé ensuite n'est pas suivi, un
+  lien qui sort du dossier personnel n'est jamais suivi, même pour vérifier sa cible, et un lien vers un dossier caché
+  ou vers le dossier personnel est refusé avec cette raison. Un dossier déclaré dans ~/.config/user-dirs.dirs ne
+  compte que si son nom, sans tenir compte des majuscules, est l'un de ceux que xdg-user-dirs donne à
+  Téléchargements, Bureau ou Documents (liste fermée, tirée de xdg-user-dirs 0.20) : `XDG_DESKTOP_DIR="$HOME/Projets"`
+  ne fait plus d'un projet un endroit permis. Une maison à la racine (« / ») ne donne aucun endroit permis, et un
+  chemin sur un support amovible est refusé avec sa cause quand le compte n'est pas dans /etc/passwd. Sous Windows,
+  ces trois dossiers viennent de Windows lui-même (SHGetKnownFolderPath) ; Bureau et Documents sauvegardés dans
+  OneDrive sont acceptés, mais OneDrive entier (même déplacé sous un autre nom), Images, Vidéos, Musique et les autres
+  dossiers connus ne sont jamais permis ; chaque dossier de la lecture est ouvert sous le précédent et tenu de façon
+  que nul ne le renomme pendant qu'on lit (vérifié sous Wine, pas encore sur un vrai Windows).
+- **Linux : le témoin de `journalctl` coupé au milieu d'une lettre accentuée ne passe plus pour vide.** Avant, toutes
+  les entrées des fichiers du journal semblaient cachées par journalctl (fausse alerte). Un témoin illisible est dit
+  « non vérifié », jamais compté comme sain.
 - **Le principe de Vanguard, réécrit : Vanguard agit, vous gardez la main.** Ce qui protège, entretient ou améliore
   l'ordinateur se fera seul, l'état d'avant noté, journalisé, annulable exactement, avec un compte rendu après ; seule
   une baisse de protection attend votre choix, et reste demandé tout geste qui coupe une connexion, supprime ou déplace

@@ -115,6 +115,43 @@ example, finds it, to rebuild it if needed.
   if it is owned by root and protected; otherwise it is not offered. On Windows, the file is held and its fingerprint
   compared, but the path is still what is started (limits stated in the threat model). Opened alone, without
   `vanguard`, the window trusts its neighbour on first use.
+- **The update also places the missing window.** When `vanguard` is already at the version published on GitHub
+  but its window is missing next to it, is not its own, or would be refused at launch (a link, wrong permissions),
+  the update offers to place it. Only if the program here is exactly the published one, and always checked against
+  the fingerprint engraved in `vanguard`; shown in the preview, placed only after your consent, and put back as
+  before if reading it back fails (with its permissions, or this is said). The state of each window shown is part
+  of the consent: if it changes between the preview and the click, nothing is done.
+- **A window that cannot be read no longer blocks updating the program.** If the window here cannot be read
+  (permissions, a folder with its name), if the copy is a link, or if the window on the key cannot be checked, the
+  program is updated alone: its window is not touched, this is shown in the preview as a separate step, and said
+  again in the result as "not verified". A folder that the launch refuses is said, with no repair offered (placing
+  it again would fix nothing). Temporary files get a random name, never a guessable one.
+- **Window Console: ten more readings, and a typed value.** agent, camera-micro, logiciels, nettoyer, desinstaller,
+  sites-dangereux, parametres, blocage, verifier-sauvegarde and ordinateurs can be typed in the Console, always run
+  read-only (`--json`); every word that acts (on, off, annuler, --appliquer…) is refused there. These commands, with
+  `--liste` when they have one, give a JSON alone without changing anything; `--json` is refused (code 2) as soon as
+  it goes with a change, including at the tail of a `parametres` setting, where it was swallowed and let the
+  language change. Eight readings take a value (`vanguard console <command> -- <value>`: chercher, lien, evenements
+  --incident, dernieres-failles, journaux-windows, verifier-fichier, courriel-suspect, verifier-moi): the value is
+  bounded and judged twice, by the window then by `vanguard`, with no leading dash, control character or direction
+  override; a path is only allowed after resolving its real path, for a regular file under the account's Downloads,
+  Desktop or Documents, or on a removable drive; the rest is offline and the value is masked in the log. A given file
+  is opened only once, and what is checked is exactly what is read (no more gap between the two).
+- **Console: linked or declared folders, judged more accurately.** On Linux, an allowed place that is a symbolic
+  link (~/Documents to ~/Nextcloud/Documents) is followed once, when the places are built, and only if its target is
+  a visible folder under the home folder: a link changed afterwards is not followed, a link leading out of the home
+  folder is never followed, not even to check its target, and a link to a hidden folder or to the home folder is
+  refused with that reason. A folder declared in ~/.config/user-dirs.dirs only counts if its name, regardless of
+  case, is one of those xdg-user-dirs gives to Downloads, Desktop or Documents (a closed list, taken from
+  xdg-user-dirs 0.20): `XDG_DESKTOP_DIR="$HOME/Projects"` no longer makes a project an allowed place. A home folder at
+  the root ("/") yields no allowed place, and a path on a removable drive is refused with its cause when the account
+  is not in /etc/passwd. On Windows, these three folders come from Windows itself (SHGetKnownFolderPath); Desktop and
+  Documents backed up to OneDrive are accepted, but the whole of OneDrive (even moved under another name), Pictures,
+  Videos, Music and the other known folders are never allowed; each folder on the way is opened under the previous
+  one and held so that nobody renames it while it is read (checked under Wine, not yet on a real Windows).
+- **Linux: a `journalctl` witness cut in the middle of an accented letter no longer looks empty.** Before, every
+  entry of the journal files seemed hidden by journalctl (a false alarm). An unreadable witness is said "not
+  verified", never counted as healthy.
 - **Vanguard's principle, rewritten: Vanguard acts, you stay in control.** What protects, maintains or improves the
   computer will be done on its own, with the previous state recorded, logged, exactly undoable and reported
   afterwards; only lowering a protection waits for your choice, and any action that cuts a connection, deletes or
