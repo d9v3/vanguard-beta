@@ -149,6 +149,10 @@ example, finds it, to rebuild it if needed.
   Documents backed up to OneDrive are accepted, but the whole of OneDrive (even moved under another name), Pictures,
   Videos, Music and the other known folders are never allowed; each folder on the way is opened under the previous
   one and held so that nobody renames it while it is read (checked under Wine, not yet on a real Windows).
+- **Linux: an update that cannot be checked says why.** Firmware: an error returned by fwupd is named, otherwise
+  fwupd is said to be unreachable, with its cause; the often wrong "fwupdmgr refresh" remedy is no longer given.
+  Flatpak: "offline?" becomes the real reason (no answer within 40 s, return code and first line of flatpak's error,
+  for example an unreachable remote). Never "up to date" on an error, as before.
 - **Linux: a `journalctl` witness cut in the middle of an accented letter no longer looks empty.** Before, every
   entry of the journal files seemed hidden by journalctl (a false alarm). An unreadable witness is said "not
   verified", never counted as healthy.
