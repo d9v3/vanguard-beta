@@ -98,7 +98,8 @@ grep -q "^· Crochets d'essai actifs (VANGUARD_ESSAI) : source, clé de confianc
 # Le verrou hors du cache : un lien .verrou planté dans le cache ne vide pas le fichier au bout. Un dossier partiel
 # laissé par un téléchargement tué part ; un lien au même genre de nom, lui, reste, et ce qu'il vise aussi.
 echo "à garder" >"$ESSAI/garde"
-ln -s "$ESSAI/garde" "$(cache)/.verrou"
+# -f : un .verrou ordinaire laissé là (ancien verrou dans le cache) ne doit pas faire rater la pose du lien.
+ln -sfn "$ESSAI/garde" "$(cache)/.verrou"
 mkdir -p "$(cache)/.2.0.1.Ab12Cd/linux-x64" "$ESSAI/garde-dossier"
 echo partiel >"$(cache)/.2.0.1.Ab12Cd/linux-x64/claude"
 echo x >"$ESSAI/garde-dossier/f"
