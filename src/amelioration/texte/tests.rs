@@ -2041,3 +2041,93 @@ fn requetes_et_fermants_de_la_ronde_5() {
     assert_eq!(masquer("à 12:30:45?vraiment oui"), "à 12:30:45?vraiment oui");
     assert_eq!(masquer("vu /srv/x/a.pdf?nom=Zoé Martin\nfin"), "vu <chemin .pdf>\nfin");
 }
+
+/// Ronde 6 : une coupe « … » suivie de n'importe quel caractère non blanc (sauf « ) » et « ] ») part jusqu'à la fin
+/// de la ligne, dès qu'une barre ou un mot à extension suit (valeurs inventées).
+#[test]
+fn coupes_de_la_ronde_6() {
+    for brut in [
+        r"lancé …~1\Zoé Martin\outil.exe",
+        r"lancé …_archives\Zoé Martin\outil.exe",
+        r"lancé …'Zoé Martin\outil.exe' -x",
+        r"lancé …--dir=Zoé Martin\x y\outil.exe",
+        r"lancé …%USERPROFILE%\Zoé Martin",
+        r"lancé …\\Zoé Martin\\Facture.exe",
+        r"lancé … -File Zoé Martin\outil.ps1",
+    ] {
+        assert_eq!(crate::amelioration::masquer(brut), "lancé <chemin>", "{brut:?}");
+    }
+    // Sans abus : un fermant après « … », ou un « … » collé à un mot, reste.
+    for garde in ["voir (…) puis […] et {…} fin", "Chargement… fini"] {
+        assert_eq!(crate::amelioration::masquer(garde), garde);
+    }
+}
+
+/// Ronde 6 : adresses derrière un accent grave ou un chevron, apostrophe dans un mot, « # » comme « ? », requête
+/// collée à tout marqueur sauf une heure (valeurs inventées).
+#[test]
+fn adresses_de_la_ronde_6() {
+    assert_eq!(
+        sans_urls("voir`//intranet.exemple.test/page?session=abc123def&u=tremblay fin"),
+        "voir`<url> fin"
+    );
+    assert_eq!(sans_urls("voir <//intranet.exemple.test/x> fin"), "voir <<url>> fin");
+    assert_eq!(
+        sans_urls("'https://exemple.test/wiki/L'Avare/tremblay-zoe' fin"),
+        "'<url>' fin"
+    );
+    assert_eq!(
+        sans_urls("'https://exemple.test/cb#access_token=Lune'2Verte9xyzTremblay'"),
+        "'<url>'"
+    );
+    assert_eq!(masquer("vu 192.0.2.7?nom=Tremblay&session=abc123def"), "vu <ip>");
+    assert_eq!(masquer("à 12:30:45?vraiment oui"), "à 12:30:45?vraiment oui");
+    // Sans abus : du code entre accents graves et une balise fermante restent.
+    for garde in ["lancer `ls -l` puis `cargo test`", "fin </div> ici"] {
+        assert_eq!(masquer(garde), garde);
+    }
+}
+
+/// Ronde 6 : « \/ » du JSON de PHP, accent grave devant un chemin, nom long après une maison, et le dernier
+/// guillemet de la ligne qui n'est ni échappé ni collé à un mot (valeurs inventées).
+#[test]
+fn chemins_de_la_ronde_6() {
+    let masque = crate::amelioration::masquer;
+    for brut in [
+        r#"{"path":"\/home\/bob\/Documents\/Impôts Zoé Martin.pdf"}"#,
+        r"ouvrir file:\/\/\/home\/bob\/Documents\/Impôts Zoé Martin.pdf fin",
+        "cmd `~/Zoé Martin Tremblay fin",
+    ] {
+        let w = masque(brut);
+        assert!(
+            !w.contains("Zoé") && !w.contains("Martin") && !w.contains("Tremblay"),
+            "{brut:?} : {w:?}"
+        );
+    }
+    let long = format!("vu /home/alice/{} Zoé Martin", "Lettre ".repeat(30));
+    assert_eq!(masque(&long), "vu <chemin>");
+    for (brut, attendu) in [
+        (
+            "'/home/bob/Documents/Classe de 2019's photos Zoé Martin' fin",
+            "'<chemin>' fin",
+        ),
+        (
+            "\"/home/bob/Documents/Écran 27\" Zoé Martin.pdf\" fin",
+            "\"<chemin .pdf>\" fin",
+        ),
+        (
+            r#""C:\\Users\\bob\\Écran 27\" Zoé Martin.pdf" fin"#,
+            "\"<chemin .pdf>\" fin",
+        ),
+        (
+            "'file:///home/bob/Documents/Classe de 2019's photos Zoé Martin' fin",
+            "'<url>' fin",
+        ),
+        (
+            "\"file:///home/bob/Documents/Écran 27\" Zoé Martin.pdf\" fin",
+            "\"<url>\" fin",
+        ),
+    ] {
+        assert_eq!(masque(brut), attendu, "{brut:?}");
+    }
+}

@@ -280,13 +280,26 @@ pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
                 &variante,
                 "~",
                 |_| true,
-                // Suivie d'une barre, d'une espace, de « : », d'un guillemet ou de la fin seulement : « alice+bob »
-                // ou « alice's » sont un autre nom, que le masquage du chemin prend entier (relecture 0.97, ronde 5).
-                |c| c.is_none_or(|c| c == '/' || c == '\\' || c.is_whitespace() || c == ':' || c == '"'),
+                // Pas suivie d'une lettre, d'un chiffre, de « ._-+ » ni d'une apostrophe collée à une lettre :
+                // « alice+bob » ou « alice's » sont un autre nom, que le masquage du chemin prend entier (ronde 5) ;
+                // toute autre ponctuation ferme la maison (« (dans D:\Profils\Zoé Martin) ») : la ronde 5 ne
+                // permettait que barre, espace, « : » et « " », et la fin du nom restait (relecture 0.97, ronde 6).
+                fin_de_maison,
             );
         }
     }
     t
+}
+
+/// Ce qui suit une maison la ferme-t-il ? Ni lettre, ni chiffre, ni « ._-+ », ni apostrophe (droite ou courbe)
+/// suivie d'une lettre.
+fn fin_de_maison(reste: &str) -> bool {
+    let mut suite = reste.chars();
+    match suite.next() {
+        Some(c) if c.is_alphanumeric() || "._-+".contains(c) => false,
+        Some('\'' | '’') => !suite.next().is_some_and(char::is_alphabetic),
+        None | Some(_) => true,
+    }
 }
 
 /// Le texte sans ces noms (personne, machine, réseaux et appareils de la base, voir `noms_a_retirer`), en mots
@@ -294,7 +307,7 @@ pub(crate) fn sans_maisons_avec(texte: &str, maisons: &[String]) -> String {
 pub(crate) fn sans_noms_avec(texte: &str, noms: &[(String, &str)]) -> String {
     let mut t = texte.to_string();
     for (nom, remplacement) in noms {
-        t = remplacer(&t, nom, remplacement, mot_entier, mot_entier);
+        t = remplacer(&t, nom, remplacement, mot_entier, |r| mot_entier(r.chars().next()));
     }
     t
 }
@@ -305,13 +318,13 @@ fn mot_entier(c: Option<char>) -> bool {
 }
 
 /// `nom` remplacé par `par`, à la casse près (« DESKTOP-AB12 » comme « desktop-ab12 »), là où les caractères d'avant
-/// et d'après conviennent à `avant` et `apres` (None : début ou fin du texte).
+/// et d'après conviennent à `avant` (None : début du texte) et `apres` (ce qui suit, vide à la fin).
 fn remplacer(
     texte: &str,
     nom: &str,
     par: &str,
     avant: impl Fn(Option<char>) -> bool,
-    apres: impl Fn(Option<char>) -> bool,
+    apres: impl Fn(&str) -> bool,
 ) -> String {
     let mut sortie = String::with_capacity(texte.len());
     let mut precedent = None;
@@ -319,7 +332,7 @@ fn remplacer(
     while let Some(c) = reste.chars().next() {
         if let Some(n) = longueur_sans_casse(reste, nom)
             && avant(precedent)
-            && apres(reste[n..].chars().next())
+            && apres(&reste[n..])
         {
             sortie.push_str(par);
             precedent = reste[..n].chars().next_back();
@@ -1420,6 +1433,30 @@ mod tests {
         assert_eq!(
             sans_maisons_avec("/home/alice/x et /home/alice: et \"/home/alice\"", &m),
             "~/x et ~: et \"~\""
+        );
+        // Ronde 6 : toute ponctuation après la maison, sauf « ._-+ » et une apostrophe suivie d'une lettre.
+        let m = [
+            r"D:\Profils\Zoé Martin".to_string(),
+            "/srv/comptes/zoe martin".to_string(),
+        ];
+        assert_eq!(
+            sans_maisons_avec(r"(dans D:\Profils\Zoé Martin) fin", &m),
+            "(dans ~) fin"
+        );
+        assert_eq!(sans_maisons_avec("cd '/srv/comptes/zoe martin, fin", &m), "cd '~, fin");
+        for x in ["'", ")", ",", ";", ">", "]", "?", "|", "!", "*", "}", "…", "’", "`"] {
+            assert_eq!(
+                sans_maisons_avec(&format!("a /srv/comptes/zoe martin{x} b"), &m),
+                format!("a ~{x} b")
+            );
+        }
+        assert_eq!(
+            sans_maisons_avec("a /srv/comptes/zoe martin’s b", &m),
+            "a /srv/comptes/zoe martin’s b"
+        );
+        assert_eq!(
+            sans_maisons_avec("a /srv/comptes/zoe martin.bak b", &m),
+            "a /srv/comptes/zoe martin.bak b"
         );
     }
 

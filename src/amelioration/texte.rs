@@ -380,7 +380,7 @@ pub(crate) const RETIRE: &str = "[texte retiré : masquage instable]";
 /// avant, dans `amelioration::masquer`.
 pub(crate) fn masquer(brut: &str) -> String {
     let borne = borne_entree(brut);
-    let mut t = normaliser(&borne.replace("\r\n", "\n"));
+    let mut t = normaliser(&sans_barres_echappees(&borne.replace("\r\n", "\n")));
     let mut stable = false;
     for _ in 0..PASSES_MAX {
         let mut alertes = 0;
@@ -421,8 +421,32 @@ pub(crate) fn desarme(brut: &str) -> String {
     sans_urls_avec(&t, sans_faux_marqueurs)
 }
 
+/// Le texte, chaque « \/ » (barre échappée d'un JSON, de PHP ou de JavaScript) ramené à « / » ; tous les « \ »
+/// collés devant une barre partent, en une lecture (le point fixe de ce remplacement, sans son coût). Sinon
+/// « "\/home\/bob\/Documents\/Impôts Zoé Martin.pdf" » n'était ni un chemin ni une adresse, et seul le dernier mot
+/// partait (relecture 0.97, ronde 6). Fait au début de `sans_urls`, la première étape de chaque porte, et de
+/// `masquer`.
+fn sans_barres_echappees(texte: &str) -> String {
+    let mut sortie = String::with_capacity(texte.len());
+    let mut barres = 0usize;
+    for x in texte.chars() {
+        if x == '\\' {
+            barres = barres.saturating_add(1);
+            continue;
+        }
+        if x != '/' {
+            sortie.extend(std::iter::repeat_n('\\', barres));
+        }
+        barres = 0;
+        sortie.push(x);
+    }
+    sortie.extend(std::iter::repeat_n('\\', barres));
+    sortie
+}
+
 /// `sans_urls`, en passant `autour` sur chaque morceau de texte entre deux adresses.
 fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
+    let texte = &sans_barres_echappees(texte);
     let bas = texte.to_ascii_lowercase();
     let mut sortie = String::with_capacity(texte.len());
     let mut pos = 0;
@@ -439,6 +463,8 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
         // Jusqu'à une espace ; un fermant ferme au dernier de ce morceau seulement derrière une requête
         // (« 'https://…/L'Avare?lecteur=…' », « <https://…?q=a>b&lecteur=…> » laissaient sinon la requête, ronde 4),
         // au premier sinon : dans « {"url":"https://…","detail":"…"} », le dernier avalait le reste (ronde 5, bas).
+        // Un fragment (« #access_token=… ») compte comme une requête, et une apostrophe entre deux lettres
+        // (« /wiki/L'Avare/… ») n'est jamais le premier fermant : la ronde 5 y coupait l'adresse (ronde 6).
         let blanc = url
             .get(corps..)
             .and_then(|reste| reste.find(char::is_whitespace))
@@ -450,10 +476,10 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
                 .and_then(|f| {
                     let m = url.get(corps..blanc)?;
                     let dernier = m.rfind(f)?;
-                    if m.get(..dernier)?.contains('?') {
+                    if m.get(..dernier)?.contains(['?', '#']) {
                         Some(dernier)
                     } else {
-                        m.find(f)
+                        premier_fermant(m, f)
                     }
                 })
                 .map_or(blanc, |k| k.saturating_add(corps))
@@ -468,9 +494,9 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
 }
 
 /// La fin d'une adresse « file:// » qui pointe dans un dossier personnel (`tete_personnelle`), `None` pour une
-/// autre : comme un chemin personnel (`fin_personnelle`), au guillemet fermant ou à la fin de la ligne, au plus
-/// `2 × SEGMENT_MAX` caractères après la première espace. Rien ne dit où finit un nom à espaces (« file:///home/…/Mes
-/// Documents/Impôts Zoé Martin ») (relecture 0.97, ronde 5, haut).
+/// autre : comme un chemin personnel (`fin_personnelle`), au dernier guillemet fermant de la ligne
+/// (`dernier_fermant`) ou à la fin de la ligne, sans autre borne. Rien ne dit où finit un nom à espaces
+/// (« file:///home/…/Mes Documents/Impôts Zoé Martin ») (relecture 0.97, ronde 5, haut ; ronde 6).
 fn fin_d_un_fichier_personnel(url: &str, corps: usize, blanc: usize, fermant: Option<char>) -> Option<usize> {
     let bas = url.get(..corps)?.to_ascii_lowercase();
     let chemin = url.get(corps..blanc)?.to_lowercase();
@@ -482,27 +508,44 @@ fn fin_d_un_fichier_personnel(url: &str, corps: usize, blanc: usize, fermant: Op
         .get(blanc..)?
         .find('\n')
         .map_or(url.len(), |k| k.saturating_add(blanc));
-    let borne = url
-        .get(blanc..ligne)?
-        .char_indices()
-        .nth(SEGMENT_MAX.saturating_mul(2))
-        .map_or(ligne, |(k, _)| k.saturating_add(blanc));
-    let region = url.get(corps..borne)?;
-    let mut precedent = None;
-    let mut caracteres = region.char_indices().peekable();
-    while let Some((k, x)) = caracteres.next() {
-        let suivant = caracteres.peek().map(|(_, y)| *y);
-        if Some(x) == fermant && !apostrophe_dans_un_mot(x, precedent, suivant) {
-            return Some(k.saturating_add(corps));
-        }
-        precedent = Some(x);
+    let region = url.get(corps..ligne)?;
+    let c: Vec<char> = region.chars().collect();
+    if let Some(k) = fermant.and_then(|f| dernier_fermant(&c, 0, c.len(), f)) {
+        let octets = c.get(..k)?.iter().map(|x| x.len_utf8()).sum::<usize>();
+        return Some(octets.saturating_add(corps));
     }
     Some(region.trim_end().len().saturating_add(corps))
 }
 
-/// Une apostrophe entre deux lettres (« L'Avare », « d'Alice ») : jamais un guillemet fermant.
+/// Le dernier guillemet `f` de `c[debut..fin]` qui ferme : ni échappé (un nombre impair de « \\ » devant, « 27\\" »
+/// d'un JSON), ni suivi d'une lettre ou d'un chiffre (« L'Avare », « 2019's », un guillemet qui ouvre). Le premier
+/// laissait la fin d'un nom qui porte un guillemet (« Écran 27" Zoé Martin.pdf », « Classe de 2019's photos ») :
+/// le dernier de la ligne masque au pire un peu trop (relecture 0.97, ronde 6).
+fn dernier_fermant(c: &[char], debut: usize, fin: usize, f: char) -> Option<usize> {
+    (debut..fin).rev().find(|&k| {
+        let barres = (debut..k).rev().take_while(|&j| car(c, j) == Some('\\')).count();
+        car(c, k) == Some(f) && barres % 2 == 0 && !car(c, suivant(k)).is_some_and(char::is_alphanumeric)
+    })
+}
+
+/// La position du premier `f` de `m` qui n'est pas une apostrophe dans un mot (`apostrophe_dans_un_mot`).
+fn premier_fermant(m: &str, f: char) -> Option<usize> {
+    let mut precedent = None;
+    let mut caracteres = m.char_indices().peekable();
+    while let Some((k, x)) = caracteres.next() {
+        let apres = caracteres.peek().map(|(_, y)| *y);
+        if x == f && !apostrophe_dans_un_mot(x, precedent, apres) {
+            return Some(k);
+        }
+        precedent = Some(x);
+    }
+    None
+}
+
+/// Une apostrophe entre une lettre ou un chiffre et une lettre (« L'Avare », « d'Alice », « 2019's ») : jamais un
+/// guillemet fermant.
 fn apostrophe_dans_un_mot(x: char, avant: Option<char>, apres: Option<char>) -> bool {
-    x == '\'' && avant.is_some_and(char::is_alphabetic) && apres.is_some_and(char::is_alphabetic)
+    x == '\'' && avant.is_some_and(char::is_alphanumeric) && apres.is_some_and(char::is_alphabetic)
 }
 
 /// La prochaine adresse web à partir de `pos` dans le texte en minuscules : son début et la longueur de son schéma
@@ -545,14 +588,16 @@ fn url_a_une_barre(bas: &str, pos: usize) -> Option<(usize, usize)> {
     })
 }
 
-/// La prochaine adresse sans schéma à « // » en tête (« //cdn.exemple.com/… ») : collée derrière « " ' = ( »
+/// La prochaine adresse sans schéma à « // » en tête (« //cdn.exemple.com/… ») : collée derrière « " ' = ( ` < »
 /// (« src=//… », « href="//… ») et un hôte à point juste après (relecture 0.97, ronde 4, bas). Ailleurs, « //hôte/… »
 /// est un partage réseau, donc un chemin : lu comme adresse, il s'arrêtait à la première espace et laissait la fin
 /// du nom (« //nas.local/partage/Zoé Martin/… ») (relecture 0.97, ronde 5, moyen).
 fn url_sans_schema(bas: &str, pos: usize) -> Option<(usize, usize)> {
     bas.get(pos..)?.match_indices("//").find_map(|(k, _)| {
         let k = pos.saturating_add(k);
-        let avant_ok = bas[..k].bytes().next_back().is_some_and(|b| b"\"'(=".contains(&b));
+        // « ` » et « < » aussi, qui ouvrent un fermant (`sans_urls`) : « voir`//intranet…?session=… » gardait sa
+        // requête, ni adresse ni chemin (relecture 0.97, ronde 6).
+        let avant_ok = bas[..k].bytes().next_back().is_some_and(|b| b"\"'(=`<".contains(&b));
         let hote: &str = bas
             .get(k.saturating_add(2)..)?
             .split(|x: char| !(x.is_ascii_alphanumeric() || x == '.' || x == '-'))
@@ -1454,11 +1499,12 @@ fn masquer_arobases(c: &[char]) -> Vec<char> {
 fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
     // Les positions où aucune IPv6 ne peut commencer (`Ip6::RienJusqua`) : chaque suite n'est lue qu'une fois.
     let mut sans_ipv6_avant = 0;
-    // Une requête collée à un marqueur de chemin ou d'adresse (« `<chemin .pdf>`?nom=Zoé Martin ») part avec lui,
-    // jusqu'à la fin de la ligne : une valeur peut porter des espaces (relecture 0.97, ronde 4 et 5, bas). Après une
-    // autre forme (« 12:30:45?vraiment »), le « ? » est de la phrase.
+    // Une requête collée à un marqueur (« `<chemin .pdf>`?nom=Zoé Martin », « `<ip>`?session=… ») part avec lui,
+    // jusqu'à la fin de la ligne : une valeur peut porter des espaces (relecture 0.97, ronde 4 et 5, bas). Une heure
+    // gardée telle quelle (« 12:30:45?vraiment ») n'est pas un marqueur : le « ? » est de la phrase. La ronde 5 ne
+    // l'acceptait qu'après un chemin ou une adresse, et « 192.0.2.7?nom=… » gardait sa requête (ronde 6).
     let avec_requete = |c: &[char], (fin, par): (usize, String)| {
-        if car(c, fin) == Some('?') && (par.starts_with("<chemin") || par == "<url>") {
+        if car(c, fin) == Some('?') && par.ends_with('>') {
             let mut bout = fin_tant_que(c, fin, |x| x != '\n');
             while bout > fin && avant(c, bout).is_some_and(char::is_whitespace) {
                 bout = bout.saturating_sub(1);
@@ -1533,23 +1579,23 @@ fn forme(c: &[char], i: usize, ip: bool, sans_ipv6_avant: &mut usize) -> Option<
 /// Un chemin ou un nom coupé à gauche par « … » (un extrait, `chasse::extrait`, qui écrit « … » et une espace ; un
 /// ancien journal, « …oé Martin\Downloads\Facture.exe »). Son début est perdu, rien ne dit où finit le nom ni s'il
 /// est sous un dossier personnel : tout part, jusqu'à la fin de la ligne ou de l'extrait (« … » suivant). Reconnu à
-/// un « … » sans lettre ni chiffre devant, suivi d'une lettre, d'un chiffre ou d'une barre puis d'un mot (collé, ou
-/// après une espace), et à une barre entre deux caractères non blancs ou un mot à extension (« …ration de Zoé
+/// un « … » sans lettre ni chiffre devant, suivi d'un caractère non blanc autre qu'un fermant (collé, ou après une
+/// espace), et à une barre entre deux caractères non blancs ou un mot à extension (« …ration de Zoé
 /// Martin.exe ») dans les `2 × SEGMENT_MAX` caractères qui suivent. « …et 3 autres. », « (…) », « […] » ou « Chargement… /usr/bin »
 /// restent (relecture 0.97, ronde 4 et 5, moyen et bas).
 fn coupe_a_gauche(c: &[char], i: usize) -> Option<usize> {
     if car(c, i) != Some('…') || avant(c, i).is_some_and(char::is_alphanumeric) {
         return None;
     }
-    // « …oé », « … Martin » ou « …\\Facture » ; jamais « …) » ni « …] ».
+    // « …oé », « … Martin », « …~1\\ », « …'Zoé », « …%USERPROFILE% » ou « …\\\\Facture » : tout caractère non blanc
+    // sauf un fermant ; jamais « …) », « …] » ni « …} ». La ronde 5 exigeait une lettre, un chiffre ou une barre
+    // suivie d'un mot, et un nom court (« …~1\\Zoé Martin\\ ») restait (relecture 0.97, ronde 6).
     let mot = if car(c, suivant(i)) == Some(' ') {
         plus(i, 2)
     } else {
         suivant(i)
     };
-    let barre_puis_mot =
-        car(c, mot).is_some_and(|x| x == '/' || x == '\\') && car(c, suivant(mot)).is_some_and(char::is_alphanumeric);
-    if !(car(c, mot).is_some_and(char::is_alphanumeric) || barre_puis_mot) {
+    if !car(c, mot).is_some_and(|x| !x.is_whitespace() && !")]}".contains(x)) {
         return None;
     }
     let fin = fin_tant_que(c, suivant(i), |x| x != '\n' && x != '…');
@@ -1665,9 +1711,10 @@ fn adresse_web(c: &[char], i: usize) -> Option<usize> {
 }
 
 /// Ce qui peut précéder le début d'un chemin absolu. Ni lettre, ni chiffre, ni `+`, `/`, `-`, `_`, `.` : un « / »
-/// au milieu d'un jeton base64 n'ouvre pas un chemin qui le couperait en deux.
+/// au milieu d'un jeton base64 n'ouvre pas un chemin qui le couperait en deux. L'accent grave (Markdown, PowerShell)
+/// en est : « `~/Zoé Martin… » restait entier (relecture 0.97, ronde 6). Pas « < » : « </div> » n'est pas un chemin.
 fn avant_chemin(p: Option<char>) -> bool {
-    p.is_none_or(|p| p.is_whitespace() || "(\"'=,;:[{>".contains(p))
+    p.is_none_or(|p| p.is_whitespace() || "(\"'=,;:[{>`".contains(p))
 }
 
 /// Ce qui arrête un chemin.
@@ -1761,6 +1808,13 @@ fn chemin(c: &[char], i: usize) -> Option<(usize, usize)> {
         } else {
             nom
         };
+        // Fermé par un guillemet au-delà du nom lu (« "…/Écran 27" Zoé Martin.pdf" ») : le nom va jusqu'à lui, d'où
+        // l'extension montrée (toujours une extension connue, `extension_montree`).
+        let nom = if fin > nom && car(c, fin).is_some() && car(c, fin) == avant(c, i) {
+            fin
+        } else {
+            nom
+        };
         return Some((fin, nom));
     }
 }
@@ -1807,6 +1861,10 @@ fn jusqu_a_l_arret(c: &[char], i: usize, pos: usize, bout: usize, nom: usize, a_
 
 /// Le début d'un chemin, jusqu'à la dernière barre comprise et en minuscules, est-il dans un dossier personnel ? « ~ »,
 /// « $HOME », « %USERPROFILE% » en tête, « /run/media/ », un élément de `DOSSIERS_PERSONNELS` ou « homes ».
+/// Limites connues (CHANGELOG, ronde 6) : une autre variable (« ${HOME}/… », « $env:USERPROFILE\… »,
+/// « %HOMEPATH%\… »), une adresse d'un autre schéma que « file:// » (« smb:// », « sftp:// ») et une autre tête de
+/// compte (« D:\Profils\… », « /srv/comptes/… », hors la maison de cet ordinateur) ne sont pas personnelles : un nom
+/// à espaces peut y garder sa fin.
 fn tete_personnelle(tete: &str) -> bool {
     tete.starts_with('~')
         || tete.starts_with("$home")
@@ -1819,26 +1877,18 @@ fn tete_personnelle(tete: &str) -> bool {
 
 /// La fin d'un chemin sous un dossier personnel dont le nom est lu jusqu'à `nom` : rien ne dit où finit un nom à
 /// espaces (« Impôts Zoé Martin, refusé », « Lettre Zoé; Martin ») et chaque arrêt deviné laissait une fin de nom
-/// après le marqueur (relecture 0.97, ronde 5, haut). Tout part donc jusqu'à la fin de la ligne, au plus
-/// `2 × SEGMENT_MAX` caractères après le nom (le mot coupé à la borne part entier), sauf un vrai guillemet fermant
-/// qui répond à celui d'avant le chemin (« voir '/home/…/Lettre d'Alice Roy' ici ») : une apostrophe entre deux
-/// lettres n'en est jamais un. Le reste de la ligne est perdu : un masque de trop, jamais un nom qui reste.
+/// après le marqueur (relecture 0.97, ronde 5, haut). Tout part donc jusqu'à la fin de la ligne, sans autre borne
+/// (la borne de `2 × SEGMENT_MAX` caractères laissait la fin d'un nom long, ronde 6), sauf le dernier guillemet
+/// fermant de la ligne qui répond à celui d'avant le chemin (`dernier_fermant` : « voir '/home/…/Lettre d'Alice
+/// Roy' ici »). Le reste de la ligne est perdu : un masque de trop, jamais un nom qui reste.
 fn fin_personnelle(c: &[char], i: usize, nom: usize) -> usize {
-    let borne = plus(nom, SEGMENT_MAX.saturating_mul(2));
-    if let Some(f) = avant(c, i).filter(|y| *y == '"' || *y == '\'') {
-        let mut k = i;
-        while let Some(y) = car(c, k).filter(|y| *y != '\n' && k <= borne) {
-            if y == f && !apostrophe_dans_un_mot(y, avant(c, k), car(c, suivant(k))) {
-                return k.max(nom);
-            }
-            k = suivant(k);
-        }
+    let ligne = fin_tant_que(c, nom, |y| y != '\n');
+    if let Some(f) = avant(c, i).filter(|y| *y == '"' || *y == '\'')
+        && let Some(k) = dernier_fermant(c, i, ligne, f)
+    {
+        return k.max(nom);
     }
-    let mut fin = fin_tant_que(c, nom, |y| y != '\n').min(borne);
-    let mot = plus(fin, SEGMENT_MAX);
-    while fin < mot && car(c, fin).is_some_and(|y| !y.is_whitespace()) {
-        fin = suivant(fin);
-    }
+    let mut fin = ligne;
     while fin > nom && avant(c, fin).is_some_and(char::is_whitespace) {
         fin = fin.saturating_sub(1);
     }

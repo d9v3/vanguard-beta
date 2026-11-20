@@ -36,7 +36,7 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   tickets d'erreurs déjà ouverts peuvent revenir sous une nouvelle signature ; un secret fait seulement de mots
   courants (« -p 'maison rouge' ») ou sans mot-clé devant lui peut rester ; dans un texte libre, un nom de fichier à
   espaces sans guillemets, hors d'un dossier personnel, peut garder sa fin, et une adresse web sans schéma, « www. » ni
-  « // » (« exemple.com/page ») reste ; après un chemin personnel, le reste de la ligne est perdu ; le détail est coupé à 3000 octets (une
+  « // » (« exemple.com/page ») reste ; après un chemin personnel, le reste de la ligne est perdu (jusqu'au dernier guillemet fermant de la ligne, s'il était ouvert devant lui) ; ne sont pas lus comme personnels, et un nom à espaces peut y garder sa fin : un dossier personnel écrit par une autre variable que « ~ », « $HOME » et « %USERPROFILE% » (« ${HOME}/… », « $env:USERPROFILE\… », « %HOMEPATH%\… »), une adresse d'un autre schéma que « file:// » (« smb:// », « sftp:// » : elle s'arrête à la première espace) et un dossier de compte sous une autre tête que celles connues (« D:\Profils\… », « /srv/comptes/… », hors la maison de cet ordinateur) ; le détail est coupé à 3000 octets (une
   valeur du brouillon à 4000 caractères) avant le masquage, dont le coût croît vite avec la longueur ; un texte que le
   masquage ne stabilise pas est remplacé en entier par « [texte retiré : masquage instable] ».
 - **Le journal du système est lu en entier, comme `journalctl`.** Après un redémarrage, le journal peut redonner à
