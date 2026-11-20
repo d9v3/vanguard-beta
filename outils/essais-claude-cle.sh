@@ -518,6 +518,236 @@ cp "$ESSAI/cle.asc" "$CLE/Claude/claude-code.asc"
 [[ ! -s $ESSAI/journal-claude ]] && bon "pièges : rien lancé" || rate "piège lancé : $(cat "$ESSAI/journal-claude")"
 [[ -z $(find "$ESSAI/run" -mindepth 1 -maxdepth 1) ]] && bon "refus : dossier temporaire effacé" || rate "refus : restes"
 
+echo "Lanceur Windows (depanner.ps1, sous pwsh)"
+# Le vrai depanner.ps1, lancé par pwsh sous Linux, dans un dossier d'essai ($W) : seuls les appels propres à Windows
+# (droits NTFS, signature Authenticode, format du disque, gardien caché) sont remplacés par des doublures, posées au
+# repère « ESSAIS » ; elles lisent les variables ESSAI_*. Non essayé ainsi sur un vrai Windows.
+PWSH=${VANGUARD_PWSH:-$HOME/.cache/vanguard-dev/pwsh/pwsh}
+[[ -x $PWSH ]] || PWSH=$(command -v pwsh || true)
+if [[ -z $PWSH || ! -x $PWSH ]]; then
+  rate "pwsh introuvable (VANGUARD_PWSH, ~/.cache/vanguard-dev/pwsh/pwsh, PATH) : depanner.ps1 pas essayé"
+else
+  W=$ESSAI/w
+  mkdir -p "$W/Claude/Windows" "$W/runw" "$W/local" "$W/maison"
+  # Le faux claude.exe : un script qui note ce qu'il voit, et écrit son journal là où le vrai le range sous Windows
+  # (%LOCALAPPDATA%\claude-cli-nodejs\Cache\<dossier de travail, chaque signe hors lettres et chiffres devenu « - »>).
+  cat >"$W/Claude/Windows/claude.exe" <<EOF
+#!/bin/sh
+j=$ESSAI/journal-win
+c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "\$c" && echo journal >"\$c/journal.txt"
+if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
+{ echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; } >>"\$j"
+[ -f CLAUDE.md ] && echo consignes >>"\$j"
+echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
+exit 0
+EOF
+  chmod +x "$W/Claude/Windows/claude.exe"
+  cp outils/cle/Claude/CLAUDE.md "$W/Claude/CLAUDE.md"
+  python3 -I - "$W/Claude" <<'EOF'
+import hashlib, json, os, sys
+d = sys.argv[1]
+h = hashlib.sha256(open(os.path.join(d, "Windows", "claude.exe"), "rb").read()).hexdigest()
+json.dump({"version": "2.0.3", "platforms": {"win32-x64": {"binary": "claude.exe", "checksum": h}}},
+          open(os.path.join(d, "manifest.json"), "w"), indent=2)
+EOF
+  cp "$W/Claude/manifest.json" "$ESSAI/manifest-win.bon"
+  # Deux certificats d'essai (clé jetée) : le sujet d'Anthropic, et le même avec un autre numéro d'entreprise.
+  for c in bon:4860621 autre:1234567; do
+    openssl req -x509 -newkey ed25519 -nodes -keyout /dev/null -days 1 -out "$ESSAI/cert-${c%%:*}.pem" \
+      -subj "/jurisdictionC=US/serialNumber=${c#*:}/C=US/O=Anthropic, PBC/CN=Anthropic, PBC" 2>/dev/null ||
+      rate "openssl : certificat d'essai ${c%%:*}"
+  done
+  cat >"$ESSAI/doublures.ps1" <<'EOF'
+function SidDeMoi { 'S-1-5-21-1111-2222-3333-1001' }
+function FormatDuVolume([string]$dossier) { if ($env:ESSAI_FORMAT) { $env:ESSAI_FORMAT } else { 'NTFS' } }
+function CreerDossierPrive([string]$dossier, [string]$moi) { [void][IO.Directory]::CreateDirectory($dossier) }
+function DroitsDuDossier([string]$dossier) {
+    $moi = SidDeMoi
+    $regles = @([pscustomobject]@{ Sid = $moi; Type = 'Allow' })
+    if ($env:ESSAI_DROITS -eq 'autre') { $regles += [pscustomobject]@{ Sid = 'S-1-1-0'; Type = 'Allow' } }
+    if ($env:ESSAI_DROITS -eq 'refus') { $regles = @([pscustomobject]@{ Sid = $moi; Type = 'Deny' }) }
+    if ($env:ESSAI_DROITS -eq 'vide') { $regles = @() }
+    $proprio = if ($env:ESSAI_DROITS -eq 'proprio') { 'S-1-5-32-544' } else { $moi }
+    [pscustomobject]@{ Protege = ($env:ESSAI_DROITS -ne 'herite'); Proprietaire = $proprio; Regles = $regles }
+}
+function ProprietaireDe([string]$dossier) {
+    if (Test-Path -LiteralPath (Join-Path $dossier 'pas-a-moi')) { 'S-1-5-21-1111-2222-3333-1002' } else { SidDeMoi }
+}
+function SignatureDe([string]$exe) {
+    $statut = if ($env:ESSAI_STATUT) { $env:ESSAI_STATUT } else { 'Valid' }
+    [pscustomobject]@{ Statut = $statut; Certificat = [Security.Cryptography.X509Certificates.X509Certificate2]::new($env:ESSAI_CERT) }
+}
+function DossiersGeres { @($env:ESSAI_GERE) }
+function LancerGardien([string]$code64) {
+    [IO.File]::WriteAllText($env:ESSAI_GARDIEN, [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($code64)))
+    [pscustomobject]@{ HasExited = $false }
+}
+# Sous Linux, Start-Process ne connaît pas -WindowStyle : seule différence avec le vrai.
+function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier) {
+    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -PassThru -ErrorAction Stop
+}
+EOF
+  copie_ps() { # le vrai depanner.ps1, doublures posées au repère (absent : l'essai le dit)
+    python3 -I - outils/cle/Claude/depanner.ps1 "$ESSAI/doublures.ps1" "$W/Claude/depanner.ps1" <<'EOF' || rate "repère « # ESSAIS » absent de depanner.ps1"
+import sys
+src, d, dest = sys.argv[1:]
+t = open(src, "rb").read()
+m = b"# ESSAIS : les doublures"
+i = t.find(m)
+if i < 0 or t.count(m) != 1:
+    sys.exit(1)
+j = t.index(b"\n", i) + 1
+open(dest, "wb").write(t[:j] + open(d, "rb").read() + t[j:])
+EOF
+  }
+  copie_ps
+  # pwsh (CoreCLR) tombe parfois sous la charge (SIGABRT/SIGSEGV, sans lien avec le script) : relancé, trois fois au plus.
+  ps_lancer() { # réponse [VAR=valeur…]
+    local r=$1 c n
+    shift
+    for n in 1 2 3; do
+      env TEMP="$W/runw" LOCALAPPDATA="$W/local" USERPROFILE="$W/maison" HOME="$W/maison" ESSAI_CERT="$ESSAI/cert-bon.pem" \
+        ESSAI_GERE="$W/gere" ESSAI_GARDIEN="$ESSAI/gardien.ps1" "$@" \
+        "$PWSH" -NoProfile -File "$W/Claude/depanner.ps1" <<<"$r" >"$ESSAI/sortie-ps" 2>&1
+      c=$?
+      ((c == 134 || c == 139)) || break
+    done
+    cat "$ESSAI/sortie-ps"
+    return "$c"
+  }
+  restes_w() { find "$W/runw" -mindepth 1 -maxdepth 1 -name 'vanguard-claude-*' | tr '\n' ' '; }
+  attendu "Windows, non : rien n'est lancé" 0 ps_lancer n
+  [[ ! -e $ESSAI/journal-win && -z $(restes_w) ]] && bon "Windows, non : claude.exe pas lancé, rien créé" || rate "Windows, non : lancé"
+  # Un journal d'un autre projet de Claude Code, à garder.
+  mkdir -p "$W/local/claude-cli-nodejs/Cache/C--autre-projet"
+  attendu "Windows, oui : lancé puis effacé" 0 ps_lancer o
+  j=$ESSAI/journal-win
+  grep -q "^config=$W/runw/vanguard-claude-[0-9a-f]*/config$" "$j" && grep -qx consignes "$j" && grep -qx "cle=$W" "$j" &&
+    grep -qx maj=1 "$j" && grep -qx trafic=1 "$j" && grep -q "^tmp=$W/runw/vanguard-claude-[0-9a-f]*/tmp$" "$j" &&
+    bon "Windows : connexion dans le dossier temporaire, consignes, sans mise à jour" || rate "Windows, environnement : $(tr '\n' ' ' <"$j")"
+  grep -qx "mcp=0" "$j" && grep -qx "args=--strict-mcp-config" "$j" &&
+    bon "Windows : connecteurs du compte non chargés (ENABLE_CLAUDEAI_MCP_SERVERS=0, --strict-mcp-config)" ||
+    rate "Windows, connecteurs : $(grep -E '^(mcp|args)=' "$j" | tr '\n' ' ')"
+  grep -qx "mcp-journaux=1" "$j" && bon "Windows : pas de journal des serveurs MCP" || rate "Windows : journaux MCP demandés"
+  grep -q "^nav=$W/runw/vanguard-claude-[0-9a-f]*/pas-de-navigateur.exe$" "$j" && bon "Windows : jamais le navigateur du PC" ||
+    rate "Windows, BROWSER : $(grep nav= "$j")"
+  grep -qx logout "$j" && grep -q "^pwd-logout=$W/runw/vanguard-claude-[0-9a-f]*/travail$" "$j" &&
+    bon "Windows : déconnecté en sortant, depuis le dossier de travail" || rate "Windows, déconnexion : $(grep logout "$j" | tr '\n' ' ')"
+  grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "Windows : déconnexion confirmée, dit" || rate "Windows : $(tail -2 "$ESSAI/sortie")"
+  [[ -z $(restes_w) ]] && bon "Windows : dossier temporaire effacé" || rate "Windows : restes $(restes_w)"
+  [[ -z $(find "$W/local" -path '*vanguard-claude*') && -d $W/local/claude-cli-nodejs/Cache/C--autre-projet ]] &&
+    bon "Windows : journaux de la session effacés, ceux d'un autre projet gardés" || rate "Windows, journaux : $(find "$W/local" | tr '\n' ' ')"
+  rm -rf "$W/local/claude-cli-nodejs"
+  : >"$ESSAI/gardien.ps1"
+  attendu "Windows, sans autre journal : lancé" 0 ps_lancer o
+  [[ ! -e $W/local/claude-cli-nodejs ]] && bon "Windows : dossier des journaux vide retiré" || rate "Windows : $(find "$W/local" | tr '\n' ' ')"
+  # -Command joindrait les arguments au code : -File, avec un petit script.
+  cat >"$ESSAI/lire.ps1" <<'EOF'
+$e = $null; $t = $null
+[void][Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$t, [ref]$e)
+$e | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }
+exit $e.Count
+EOF
+  # Le code du gardien, tel qu'il partirait en -EncodedCommand : ses valeurs, et lisible par PowerShell (relancé si
+  # pwsh tombe).
+  for n in 1 2 3; do
+    "$PWSH" -NoProfile -File "$ESSAI/lire.ps1" "$ESSAI/gardien.ps1" >"$ESSAI/lecture" 2>&1
+    c=$?
+    ((c == 134 || c == 139)) || break
+  done
+  ((c == 0)) && grep -q "^\$dossier = '$W/runw/vanguard-claude-[0-9a-f]*'; " "$ESSAI/gardien.ps1" &&
+    grep -q 'Nettoyer \$dossier \$exe \$travail' "$ESSAI/gardien.ps1" && bon "Windows : gardien préparé, code lisible par PowerShell" ||
+    rate "Windows : gardien (lecture $c) $(head -3 "$ESSAI/lecture" | tr '\n' ' ')"
+  : >"$j"
+  # Les variables de l'ordinateur visité : sans effet sur Claude.
+  attendu "Windows, variables piégées : lancé" 0 ps_lancer o ANTHROPIC_BASE_URL=http://piege-essai CLAUDE_CONFIG_DIR="$ESSAI/piege" \
+    HTTPS_PROXY=http://piege-essai GRPC_PROXY=piege-essai ENABLE_CLAUDEAI_MCP_SERVERS=1 BROWSER=piege-essai SESSION_INGRESS_URL=piege-essai
+  grep -qx "url=" "$j" && grep -qx "proxy=" "$j" && grep -qx "mcp=0" "$j" && ! grep -q piege "$j" && [[ ! -e $ESSAI/piege ]] &&
+    bon "Windows : variables piégées retirées" || rate "Windows, pièges : $(tr '\n' ' ' <"$j")"
+  : >"$j"
+  echo 1 >"$ESSAI/code-logout"
+  attendu "Windows, déconnexion ratée : lancé" 0 ps_lancer o
+  grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "Windows : déconnexion ratée, dit" ||
+    rate "Windows, déconnexion ratée : $(tail -2 "$ESSAI/sortie")"
+  rm -f "$ESSAI/code-logout"
+  # Les restes d'une session d'avant : déconnectés (avec leur dossier config) et effacés, journaux compris ; pas ceux
+  # d'un autre compte, ni ceux d'une session en cours.
+  mkdir -p "$W/runw/vanguard-claude-vieux/config" "$W/runw/vanguard-claude-autre/config" "$W/runw/vanguard-claude-encours"
+  mkdir -p "$W/local/claude-cli-nodejs/Cache/C--Temp-vanguard-claude-vieux-travail"
+  touch "$W/runw/vanguard-claude-autre/pas-a-moi"
+  # Une session en cours : son .session tenu ouvert sans partage (sous Linux, .NET le fait par un flock exclusif).
+  touch "$W/runw/vanguard-claude-encours/.session"
+  flock -x "$W/runw/vanguard-claude-encours/.session" sleep 120 &
+  verrou=$!
+  : >"$j"
+  attendu "Windows, restes : lancé" 0 ps_lancer o
+  kill "$verrou" 2>/dev/null
+  wait "$verrou" 2>/dev/null
+  [[ ! -e $W/runw/vanguard-claude-vieux && -d $W/runw/vanguard-claude-autre && -d $W/runw/vanguard-claude-encours ]] &&
+    grep -q "^config-logout=$W/runw/vanguard-claude-vieux/config$" "$j" && grep -q "Restes d'une session" "$ESSAI/sortie" &&
+    bon "Windows : restes à soi déconnectés et effacés, ceux d'un autre compte gardés" || rate "Windows, restes : $(restes_w) $(grep logout "$j" | tr '\n' ' ')"
+  [[ -z $(find "$W/local" -path '*vanguard-claude-vieux*') ]] && bon "Windows : journaux des restes effacés" || rate "Windows : journaux des restes"
+  rm -rf "$W/runw/vanguard-claude-autre" "$W/runw/vanguard-claude-encours" "$W/local/claude-cli-nodejs"
+  mkdir -p "$W/runw/vanguard-claude-vieux/config"
+  echo 1 >"$ESSAI/code-logout"
+  attendu "Windows, restes, déconnexion ratée : lancé" 0 ps_lancer o
+  grep -q "Sa déconnexion n'est PAS confirmée" "$ESSAI/sortie" && bon "Windows : restes, déconnexion ratée, dit" ||
+    rate "Windows, restes : $(grep -i restes "$ESSAI/sortie")"
+  rm -f "$ESSAI/code-logout"
+  # Les refus : code 1, claude.exe jamais lancé (pas même sa déconnexion), rien de créé ne reste.
+  refus_w() { # description motif [VAR=valeur…]
+    local d=$1 m=$2
+    shift 2
+    : >"$j"
+    attendu "Windows, $d : refusé" 1 ps_lancer o "$@"
+    [[ ! -s $j && -z $(restes_w) ]] && grep -q -- "$m" "$ESSAI/sortie" && bon "Windows, $d : rien lancé, rien laissé, dit" ||
+      rate "Windows, $d : $(tr '\n' ' ' <"$j") $(restes_w) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+  }
+  for n in CLAUDE.md CLAUDE.local.md AGENTS.md .mcp.json .claude/CLAUDE.md .claude/rules/a.md .claude/skills/a/SKILL.md \
+    .claude/commands/a.md .claude/agents/a.md .claude/settings.json; do
+    mkdir -p "$(dirname "$W/runw/$n")" && echo "consigne d'essai" >"$W/runw/$n"
+    refus_w "$n au-dessus" "Claude le lirait comme une consigne"
+    rm -rf "${W:?}/runw/${n%%/*}"
+  done
+  # Un lien cassé compte aussi.
+  ln -s "$ESSAI/nulle-part" "$W/CLAUDE.md"
+  refus_w "lien CLAUDE.md cassé plus haut" "Claude le lirait"
+  rm -f "$W/CLAUDE.md"
+  # Le dossier personnel : ses skills sont permis (Claude Code ne les y cherche pas), ses consignes non ; et seulement
+  # si les deux façons de le connaître (USERPROFILE, l'API) tombent d'accord.
+  mkdir -p "$W/runw/.claude/skills/a"
+  echo "skill d'essai" >"$W/runw/.claude/skills/a/SKILL.md"
+  : >"$j"
+  attendu "Windows, .claude/skills dans le dossier personnel : lancé" 0 ps_lancer o USERPROFILE="$W/runw" HOME="$W/runw"
+  grep -qx consignes "$j" && bon "Windows : dossier personnel, skills permis" || rate "Windows, dossier personnel : pas lancé"
+  refus_w "dossier personnel pas confirmé par l'API" "Claude le lirait" USERPROFILE="$W/runw"
+  mkdir -p "$W/runw/.claude/rules"
+  echo "règle d'essai" >"$W/runw/.claude/rules/a.md"
+  refus_w ".claude/rules dans le dossier personnel" "Claude le lirait" USERPROFILE="$W/runw" HOME="$W/runw"
+  rm -rf "$W/runw/.claude"
+  mkdir -p "$W/gere"
+  refus_w "réglages imposés par l'ordinateur" "impose ses réglages"
+  rmdir "$W/gere"
+  refus_w "signature pas valide" "Claude Code refusé" ESSAI_STATUT=NotSigned
+  refus_w "autre numéro d'entreprise au certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-autre.pem"
+  sed -i 's/"checksum": "[0-9a-f]/"checksum": "x/' "$W/Claude/manifest.json"
+  refus_w "empreinte différente du manifeste" "empreinte différente"
+  cp "$ESSAI/manifest-win.bon" "$W/Claude/manifest.json"
+  for d in herite autre proprio refus vide; do refus_w "droits du dossier ($d)" "réservé à vous seul" ESSAI_DROITS=$d; done
+  refus_w "disque FAT32" "sans droits Windows" ESSAI_FORMAT=FAT32
+  mv "$W/Claude/CLAUDE.md" "$ESSAI/CLAUDE.md.w"
+  refus_w "consignes absentes de la clé" "Consignes de dépannage"
+  mv "$ESSAI/CLAUDE.md.w" "$W/Claude/CLAUDE.md"
+  # Un refus passe avant les restes : rien de Claude Code ne tourne (pas même leur déconnexion), les restes restent.
+  mkdir -p "$W/runw/vanguard-claude-vieux/config"
+  echo "consigne d'essai" >"$W/runw/CLAUDE.md"
+  : >"$j"
+  attendu "Windows, refus avec des restes" 1 ps_lancer o
+  [[ ! -s $j && -d $W/runw/vanguard-claude-vieux ]] && bon "Windows : refus avant toute commande de Claude Code, restes gardés" ||
+    rate "Windows, refus et restes : $(tr '\n' ' ' <"$j")"
+  rm -rf "$W/runw/vanguard-claude-vieux" "$W/runw/CLAUDE.md"
+fi
+
 echo "Textes"
 for f in outils/claude-cle.sh outils/cle/Claude/depanner.sh outils/essais-claude-cle.sh; do
   bash -n "$f" || rate "bash -n $f"
