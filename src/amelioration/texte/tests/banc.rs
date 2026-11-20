@@ -351,6 +351,9 @@ banc! {
     r9_ab9a: [], r"sed -e 's|/usr/local|/opt|g' Makefile" => r"sed -e 's|<chemin>|<chemin>|g' Makefile";
     r9_ab9b: [], r"grep -E 'foo|/bar/' fichier" => r"grep -E 'foo|<chemin>' fichier";
     r9_ab9c: [], r"formule \\\hline dans le tableau" => r"formule <chemin> dans le tableau";
+    // Fermeture partielle (ronde 10) : l'apostrophe collée au séparateur reste dans le nom, le prénom est masqué ;
+    // la fin du nom sort encore (r9_ab9d ci-dessous, ouvert).
+    r10_apostrophe_collee: [], r"lecture de /srv/partage/d'Alice Martin refusée" => r"lecture de <chemin> Martin refusée";
     #[ignore = "limite r9 abus-regressions#9 (apostrophe hors dossier personnel, nom à espaces)"]
     r9_ab9d: [], r"lecture de /srv/partage/d'Alice Martin refusée" => r"lecture de <chemin> refusée";
 }
