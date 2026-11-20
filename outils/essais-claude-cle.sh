@@ -536,7 +536,7 @@ else
 j=$ESSAI/journal-win
 c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "\$c" && echo journal >"\$c/journal.txt"
 if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
-{ echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; } >>"\$j"
+{ echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; echo "entree=\$SESSION_INGRESS_URL"; } >>"\$j"
 [ -f CLAUDE.md ] && echo consignes >>"\$j"
 echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
 exit 0
@@ -662,7 +662,7 @@ EOF
   # Les variables de l'ordinateur visité : sans effet sur Claude.
   attendu "Windows, variables piégées : lancé" 0 ps_lancer o ANTHROPIC_BASE_URL=http://piege-essai CLAUDE_CONFIG_DIR="$ESSAI/piege" \
     HTTPS_PROXY=http://piege-essai GRPC_PROXY=piege-essai ENABLE_CLAUDEAI_MCP_SERVERS=1 BROWSER=piege-essai SESSION_INGRESS_URL=piege-essai
-  grep -qx "url=" "$j" && grep -qx "proxy=" "$j" && grep -qx "mcp=0" "$j" && ! grep -q piege "$j" && [[ ! -e $ESSAI/piege ]] &&
+  grep -qx "url=" "$j" && grep -qx "proxy=" "$j" && grep -qx "entree=" "$j" && grep -qx "mcp=0" "$j" && ! grep -q piege "$j" && [[ ! -e $ESSAI/piege ]] &&
     bon "Windows : variables piégées retirées" || rate "Windows, pièges : $(tr '\n' ' ' <"$j")"
   : >"$j"
   echo 1 >"$ESSAI/code-logout"
