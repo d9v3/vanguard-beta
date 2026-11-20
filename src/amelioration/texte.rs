@@ -421,138 +421,18 @@ pub(crate) fn desarme(brut: &str) -> String {
     sans_urls_avec(&t, sans_faux_marqueurs)
 }
 
-/// Le texte, chaque suite « \/élément\/élément » (barres échappées d'un JSON, de PHP ou de JavaScript) ramenée à
-/// « /élément/élément » ; tous les « \ » collés devant une barre de la suite partent. Sinon
-/// « "\/home\/bob\/Documents\/Impôts Zoé Martin.pdf" » n'était ni un chemin ni une adresse, et seul le dernier mot
-/// partait (relecture 0.97, ronde 6). Fait au début de `sans_urls`, la première étape de chaque porte, et de
-/// `masquer`. Une suite compte deux « \/ » au moins et commence au début d'un mot ou derrière « " ' ( = : , [ { » ;
-/// un mot qui a l'air d'une expression de sed (« s/…/…/ ») reste tel quel, comme « ^\/api\/v1 ». La ronde 7
-/// exigeait un guillemet dans le même mot : un chemin derrière une espace (« "open failed: \/home\/bob\/… ») ou un
-/// mot qui portait aussi une « / » seule (une date) restait en clair (ronde 8, haut).
+/// Le texte, chaque « \/ » (une ou plusieurs « \ » collées devant une « / ») ramené à « / », partout et sans
+/// exception : barres échappées d'un JSON, de PHP ou de JavaScript (« "\/home\/bob\/Impôts Zoé Martin.pdf" »).
+/// Fait au début de `sans_urls`, la première étape de chaque porte, et de `masquer`, avant les maisons et tous les
+/// masques. Les rondes 6 à 9 n'y touchaient pas dans un mot qui avait l'air d'une expression de sed ou d'une regex,
+/// ou sans tête personnelle en premier élément : chaque exception ouvrait une fuite (« fopen(\/var\/…\/zoe.martin
+/// \/…) », « `\/mnt\/c\/Users\/… ») (relecture 0.97, ronde 9, moyens). Une expression de sed, une regex ou une
+/// route web écrite en « \/ » y perd ses « \ » : une limite écrite (CHANGELOG), jamais une fuite.
 fn sans_barres_echappees(texte: &str) -> String {
+    let texte = sans_couleurs(texte);
     let mut sortie = String::with_capacity(texte.len());
-    let mut reste = texte;
-    while !reste.is_empty() {
-        let blanc = reste.find(|x: char| !x.is_whitespace()).unwrap_or(reste.len());
-        sortie.push_str(&reste[..blanc]);
-        reste = &reste[blanc..];
-        let mot_fin = reste.find(char::is_whitespace).unwrap_or(reste.len());
-        let mot = &reste[..mot_fin];
-        reste = &reste[mot_fin..];
-        if ressemble_a_sed(mot) {
-            // Une expression qui porte un chemin de maison (« s/\/home\/alice\/…/ », « ~\/ ») est défaite en
-            // entier, pour que le masquage du chemin la prenne : elle restait en clair (ronde 8, moyen).
-            if porte_une_tete_echappee(mot) {
-                sortie.push_str(&sans_barres_devant_les_barres(mot));
-            } else {
-                sortie.push_str(mot);
-            }
-        } else {
-            suites_defaites(mot, &mut sortie);
-        }
-    }
-    sortie
-}
-
-/// Une expression de sed ou de Perl (« 's/\//-/g' », « s\/a\/b\/ », « y/…/…/ », ou un autre délimiteur :
-/// « s,\/a\/b,c, », « s:…:…: », « s=…=…= ») : ses « \/ » sont du code. Avec « , » ou « = », ouvrants de
-/// `suites_defaites`, l'expression était défaite (ronde 8, mutation).
-///
-/// Le délimiteur doit paraître trois fois au moins (« s/a/b/ ») : « s="\/home\/…" », « s:38:"…" » (PHP) ou
-/// « "s_path":"\/…" » n'en ont qu'un ou deux, et leur chemin restait en clair (ronde 8, bas).
-fn ressemble_a_sed(mot: &str) -> bool {
-    let m = mot.trim_start_matches(['\'', '"', '`', '(']);
-    let mut lettres = m.chars();
-    if !matches!(lettres.next(), Some('s' | 'y')) {
-        return false;
-    }
-    let reste = lettres.as_str();
-    match lettres.next() {
-        Some('\\') => lettres.next() == Some('/') && reste.matches("\\/").count() >= 3,
-        Some(d) => d.is_ascii_punctuation() && !"\"'`".contains(d) && reste.matches(d).count() >= 3,
-        None => false,
-    }
-}
-
-/// Le mot porte-t-il une tête de chemin personnel à barres échappées : « \/home\/ », « \/Users\/ », « \/root »
-/// (casse libre, suivi d'une barre ou de la fin), ou « ~\/ » ?
-fn porte_une_tete_echappee(mot: &str) -> bool {
-    mot.contains("~\\/")
-        || mot
-            .match_indices("\\/")
-            .any(|(k, _)| tete_apres(mot, k.saturating_add(2)))
-}
-
-/// L'élément qui commence en `debut` est-il « home », « users » ou « root » (casse libre), suivi d'une barre
-/// (« \ » ou « / ») ou de la fin du mot ?
-fn tete_apres(mot: &str, debut: usize) -> bool {
-    let reste = mot.get(debut..).unwrap_or("");
-    let fin = reste.find(['\\', '/']).unwrap_or(reste.len());
-    let element = reste.get(..fin).unwrap_or("");
-    ["home", "users", "root"]
-        .iter()
-        .any(|t| element.eq_ignore_ascii_case(t))
-}
-
-/// Ajoute `mot` à `sortie`, chaque suite d'au moins deux « \/ » (un ou plusieurs « \ » puis « / ») défaite, si elle
-/// commence au début du mot ou derrière un ouvrant (`sans_barres_echappees`).
-fn suites_defaites(mot: &str, sortie: &mut String) {
-    let o = mot.as_bytes();
-    let mut copie = 0;
-    let mut i = 0;
-    while let Some(k) = mot.get(i..).and_then(|r| r.find("\\/")) {
-        let barre = i.saturating_add(k);
-        let mut debut = barre;
-        while debut > copie && o.get(debut.wrapping_sub(1)) == Some(&b'\\') {
-            debut = debut.saturating_sub(1);
-        }
-        let ouvrant = debut == 0 || o.get(debut.wrapping_sub(1)).is_some_and(|b| b"\"'(=:,[{".contains(b));
-        // La suite : « \…\/ » puis un élément sans barre, tant qu'un autre « \/ » suit.
-        let mut j = debut;
-        let mut suites = 0usize;
-        loop {
-            let mut e = j;
-            while o.get(e) == Some(&b'\\') {
-                e = e.saturating_add(1);
-            }
-            if e == j || o.get(e) != Some(&b'/') {
-                break;
-            }
-            suites = suites.saturating_add(1);
-            j = e.saturating_add(1);
-            while o.get(j).is_some_and(|b| *b != b'\\' && *b != b'/') {
-                j = j.saturating_add(1);
-            }
-        }
-        // Une tête personnelle (« \/home\/ », « \/Users\/ ») défait la suite quel que soit ce qui précède
-        // (« `\/home », « >\/home », « ;\/home ») et dès un seul « \/ » (« \/home/Zoé Martin ») : la ronde 8
-        // ne regardait que le caractère d'avant (ronde 8, moyen). Sans tête, un mot de regex (« ( | ) ^ * »,
-        // « $1 ») reste tel quel : « '\/(bin|sbin)\/' » perdait ses « \ » (ronde 8, bas).
-        let tete = tete_apres(mot, barre.saturating_add(2));
-        if tete || (ouvrant && suites >= 2 && !ressemble_a_une_regex(mot)) {
-            sortie.push_str(&mot[copie..debut]);
-            sortie.push_str(&sans_barres_devant_les_barres(&mot[debut..j]));
-            copie = j;
-        }
-        i = j.max(barre.saturating_add(2));
-    }
-    sortie.push_str(&mot[copie..]);
-}
-
-/// Le mot a-t-il l'air d'une expression régulière : « ( | ) ^ * » ou « $ » suivi d'un chiffre ?
-fn ressemble_a_une_regex(mot: &str) -> bool {
-    mot.contains(['(', '|', ')', '^', '*'])
-        || mot.match_indices('$').any(|(k, _)| {
-            mot.get(k.saturating_add(1)..)
-                .is_some_and(|r| r.starts_with(|x: char| x.is_ascii_digit()))
-        })
-}
-
-/// Le mot sans aucun « \ » collé devant une barre.
-fn sans_barres_devant_les_barres(mot: &str) -> String {
-    let mut sortie = String::with_capacity(mot.len());
     let mut barres = 0usize;
-    for x in mot.chars() {
+    for x in texte.chars() {
         if x == '\\' {
             barres = barres.saturating_add(1);
             continue;
@@ -564,6 +444,45 @@ fn sans_barres_devant_les_barres(mot: &str) -> String {
         sortie.push(x);
     }
     sortie.extend(std::iter::repeat_n('\\', barres));
+    sortie
+}
+
+/// Le texte, chaque couleur de terminal (« [01;34m » derrière le caractère d'échappement, vrai ou écrit
+/// « \u001b », « \x1b », « \e », « \033 », sans tenir compte de la casse) remplacée par une espace : un chemin collé
+/// derrière en est séparé. « \u001b[01;34m/mnt/nas/Zoé Martin/… » restait entier, et « \x1b[0m » collé au nom
+/// en gardait la fin (ronde 9, bas).
+fn sans_couleurs(texte: &str) -> String {
+    // `to_ascii_lowercase` garde chaque position : les indices de `bas` valent pour `texte`.
+    let bas = texte.to_ascii_lowercase();
+    let mut sortie = String::with_capacity(texte.len());
+    let mut copie = 0;
+    let mut k = 0;
+    while let Some(p) = bas
+        .get(k..)
+        .and_then(|r| r.find(['\u{1b}', '\\']))
+        .map(|p| p.saturating_add(k))
+    {
+        let reste = bas.get(p..).unwrap_or("");
+        let fin = ["\u{1b}[", "\\u001b[", "\\x1b[", "\\e[", "\\033["]
+            .iter()
+            .find_map(|e| {
+                let apres = reste.strip_prefix(e)?;
+                let n = apres.find(|y: char| !y.is_ascii_digit() && y != ';')?;
+                apres
+                    .get(n..)?
+                    .starts_with('m')
+                    .then(|| p.saturating_add(e.len()).saturating_add(n).saturating_add(1))
+            });
+        if let Some(fin) = fin {
+            sortie.push_str(texte.get(copie..p).unwrap_or(""));
+            sortie.push(' ');
+            copie = fin;
+            k = fin;
+        } else {
+            k = p.saturating_add(1);
+        }
+    }
+    sortie.push_str(texte.get(copie..).unwrap_or(""));
     sortie
 }
 
@@ -620,14 +539,23 @@ fn sans_urls_avec(texte: &str, autour: impl Fn(&str) -> String) -> String {
                     let echappe = texte[..i]
                         .strip_suffix(f)
                         .is_some_and(|t| t.bytes().rev().take_while(|b| *b == b'\\').count() % 2 == 1);
+                    // « ": » ne ferme qu'une adresse ouverte à une place de clé (derrière « { » ou « , ») : derrière
+                    // « curl " » ou « GET " », « ?where={"owner":"zoe"} » fermait au premier « ": » et la valeur
+                    // restait (ronde 9, moyen).
+                    let cle = texte[..i]
+                        .strip_suffix(f)
+                        .map(|t| t.trim_end_matches('\\').trim_end())
+                        .is_some_and(|t| t.ends_with(['{', ',']));
                     let ferme = |k: usize, impair: bool| {
                         m[..k].bytes().rev().take_while(|b| *b == b'\\').count() % 2 == usize::from(impair)
                             && m.get(k.saturating_add(f.len_utf8())..).is_some_and(|r| {
                                 r.is_empty()
                                     || r.starts_with([',', '}', ']'])
-                                    || r.strip_prefix(':').is_some_and(|v| {
-                                        v.starts_with(['"', '{', '[']) || v.starts_with(|x: char| x.is_ascii_digit())
-                                    })
+                                    || (cle
+                                        && r.strip_prefix(':').is_some_and(|v| {
+                                            v.starts_with(['"', '{', '['])
+                                                || v.starts_with(|x: char| x.is_ascii_digit())
+                                        }))
                             })
                     };
                     let indices = || m.match_indices(f).map(|(k, _)| k);
@@ -1705,11 +1633,12 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
     // l'acceptait qu'après un chemin ou une adresse, et « 192.0.2.7?nom=… » gardait sa requête (ronde 6).
     // Une requête commence par un non-blanc après le « ? » : un « ? » de phrase (« 192.0.2.7? Check the network… »)
     // faisait perdre le reste de la ligne (ronde 7, bas). Sans clé (« ?zoe.martin »), elle part jusqu'à la fin de son
-    // mot seulement ; la ronde 7 exigeait un « = » et la laissait en clair (ronde 8, bas). Elle commence par une
-    // lettre, un chiffre, « % » ou « _ » : « Supprimer /var/cache/app?","defaut":… » perdait le reste du JSON
+    // mot seulement ; la ronde 7 exigeait un « = » et la laissait en clair (ronde 8, bas). Un guillemet ou une
+    // virgule après le « ? » la ferme : « Supprimer /var/cache/app?","defaut":… » perdait le reste du JSON. La ronde 9
+    // exigeait une lettre, un chiffre, « % » ou « _ », et « ?&nom=… », « ?[nom]=… » ou « ?-… » restaient en clair
     // (ronde 9, bas).
     let requete = |c: &[char], fin: usize| {
-        car(c, fin) == Some('?') && car(c, suivant(fin)).is_some_and(|x| x.is_alphanumeric() || x == '%' || x == '_')
+        car(c, fin) == Some('?') && car(c, suivant(fin)).is_some_and(|x| !x.is_whitespace() && !"\"',".contains(x))
     };
     let avec_requete = |c: &[char], (fin, par): (usize, String)| {
         let mot = fin_tant_que(c, suivant(fin), |x| !x.is_whitespace());
@@ -1811,15 +1740,15 @@ fn coupe_a_gauche(c: &[char], i: usize) -> Option<usize> {
         suivant(i)
     };
     // Ni ponctuation seule : « Attente …: échec de usr/bin/… » ou « "…" puis … src/… » perdaient la ligne (ronde 7).
-    // Une ponctuation doit être suivie d'une lettre : « (2/3) », « (3 essais) » ou « #3 » ne sont pas des noms
-    // (ronde 9, bas).
+    // Une ponctuation suivie d'une lettre ou d'un chiffre ouvre un nom : la ronde 9 voulait une lettre, puis une
+    // capitale après une paire fermée, et « …(2) Zoé Martin\… » ou « …[2024-11] Zoé… » gardaient le nom (ronde 9,
+    // moyen). « …(2/3) terminé » ou « …[info] voir src/… » y perdent leur fin : une limite écrite.
     let ouvre_un_nom = |x: char| {
         x.is_alphanumeric()
             || "~\\/%$_.-".contains(x)
-            || ("'\"([{&#@+".contains(x) && car(c, suivant(mot)).is_some_and(char::is_alphabetic))
+            || ("'\"([{&#@+".contains(x) && car(c, suivant(mot)).is_some_and(char::is_alphanumeric))
     };
-    let ouvrant = car(c, mot)?;
-    if !ouvre_un_nom(ouvrant) {
+    if !car(c, mot).is_some_and(ouvre_un_nom) {
         return None;
     }
     let fin = fin_tant_que(c, suivant(i), |x| x != '\n' && x != '…');
@@ -1836,24 +1765,7 @@ fn coupe_a_gauche(c: &[char], i: usize) -> Option<usize> {
             && (1..=EXTENSION_MAX).contains(&entre(suivant(k), e))
             && morceau(c, suivant(k), e).iter().any(char::is_ascii_alphabetic)
     };
-    let indice = (mot..borne).find(|&k| barre(k) || extension(k))?;
-    // Une paire fermée avant la barre ou l'extension (« [info] voir src/… », « "ok" pour vanguard.exe ») n'ouvre un
-    // nom que si le mot qui suit commence par une capitale (« [Privé] Zoé Martin\… ») (ronde 9, bas).
-    let fermant = match ouvrant {
-        '(' => Some(')'),
-        '[' => Some(']'),
-        '{' => Some('}'),
-        '"' => Some('"'),
-        '\'' => Some('\''),
-        _ => None,
-    };
-    if let Some(k) = fermant.and_then(|f| (suivant(mot)..indice).find(|&k| car(c, k) == Some(f))) {
-        let suite = fin_tant_que(c, suivant(k), |x| x == ' ');
-        if !car(c, suite).is_some_and(char::is_uppercase) {
-            return None;
-        }
-    }
-    Some(fin)
+    (mot..borne).any(|k| barre(k) || extension(k)).then_some(fin)
 }
 
 /// Le texte sans les chemins coupés à gauche (`coupe_a_gauche`), pour une réduction qui ne passe pas par
@@ -1976,27 +1888,11 @@ fn avant_chemin(p: Option<char>) -> bool {
 /// de chemin, et le nom restait (relecture 0.97, ronde 7, moyens).
 fn debut_de_chemin(c: &[char], i: usize) -> bool {
     let barre = |k: usize| matches!(car(c, k), Some('/' | '\\'));
-    // Derrière « \n » écrit, une barre en tête ouvre un chemin seulement s'il a deux barres au moins avant le prochain
-    // arrêt, sans « // » : « sed 's/\r//g' » ou « replace(/\n/g, "") » perdaient leur fin (ronde 8, bas). Un partage
-    // (« \\\\nas\\… », « //nas/… ») ou une forme étendue (« \\\\?\\UNC\\… ») en est un aussi : la ronde 8 les
-    // refusait pour leur double barre, et le partage, le compte et le nom restaient (ronde 9, moyens). Les barres se
-    // comptent jusqu'à l'arrêt, espaces comprises : « \n/Zoé Martin/Lettre… » (ronde 9).
-    let partage = || {
-        barres_de_partage(c, i).is_some()
-            || apres_prefixe_etendu(c, i).is_some()
-            || (commence_par(c, i, "//") && {
-                let hote = fin_tant_que(c, plus(i, 2), caractere_de_chemin);
-                hote > plus(i, 2) && barre(hote)
-            })
-    };
-    let echappe = longueur_d_echappe(c, i).is_some()
-        && (!barre(i)
-            || partage()
-            || (!barre(suivant(i))
-                && (i..fin_tant_que(c, i, |y| y != '\n' && !arret_de_chemin(y)))
-                    .filter(|&k| barre(k))
-                    .count()
-                    >= 2));
+    // Derrière une coupure écrite (`coupure_ecrite` : « \n », « \u000A », « `n », une couleur…), tout chemin peut
+    // commencer, sans autre condition : la ronde 9 exigeait deux barres, un partage, ou un mot d'avant qui n'était
+    // pas un chemin, et chaque condition laissait un nom en clair (ronde 9, moyens). « sed 's/\r//g' » ou une
+    // panique de Windows (« src\nettoyer\mod.rs ») y perdent leur fin : une limite écrite, jamais une fuite.
+    let echappe = coupure_ecrite(c, i);
     let maison = car(c, i) == Some('~') && barre(suivant(i));
     // « $HOME/… » ou « %USERPROFILE%\… » collé à une option (« -I$HOME/projets/… ») : une variable en capitales
     // (ronde 8, bas).
@@ -2009,25 +1905,50 @@ fn debut_de_chemin(c: &[char], i: usize) -> bool {
         }
         _ => false,
     };
-    // Une variable seulement derrière un ouvrant ou une lettre d'option (« -I$HOME/… ») : « 10$US/mois » ou
-    // « s/$PREFIX/usr/ » n'en sont pas (ronde 9, bas).
-    let option = avant(c, i).is_some_and(|p| p.is_ascii_alphabetic()) && avant(c, i.saturating_sub(1)) == Some('-');
-    let variable = variable && option;
-    avant_chemin(avant(c, i)) || echappe || maison || variable
+    // Une variable ouvre un chemin derrière tout caractère : la ronde 9 n'en voulait que derrière une lettre d'option
+    // d'un seul caractère, et « -isystem$HOME/… », « -cp$HOME/… » ou « <$HOME/… » gardaient le nom (ronde 9,
+    // moyen). « 10$US/mois » ou « s/$PREFIX/usr/ » y perdent leur fin : une limite écrite.
+    // La seconde barre de « // » (« sed 's//home/Zoé Martin/…/x/' », une fois les « \/ » défaits) : la première
+    // suit une lettre et n'ouvre rien, et le nom restait (ronde 9, bas).
+    let double = car(c, i) == Some('/') && avant(c, i) == Some('/');
+    avant_chemin(avant(c, i)) || echappe || maison || variable || double
 }
 
-/// Un saut de ligne, un retour, une tabulation, un saut de page ou une tabulation verticale écrits finissent-ils
-/// juste avant `i` (« \n », « \r », « \t », « \f », « \v », ou « \u000a », « \u000d », « \u0009 », « \u000c »
-/// d'un JSON) ? Sa longueur, 2 ou 6. La ronde 8 ne lisait que « \n », « \r » et « \t » (ronde 9, bas).
-fn longueur_d_echappe(c: &[char], i: usize) -> Option<usize> {
-    if i >= 2 && avant(c, i).is_some_and(|p| "nrtfv".contains(p)) && avant(c, i.saturating_sub(1)) == Some('\\') {
-        return Some(2);
-    }
-    (i >= 6
-        && ["\\u000a", "\\u000d", "\\u0009", "\\u000c"]
-            .iter()
-            .any(|m| commence_par(c, i.saturating_sub(6), m)))
-    .then_some(6)
+/// Une coupure écrite finit-elle juste avant `i` ? Un saut de ligne, un retour, une tabulation, un saut de page ou une
+/// tabulation verticale écrits d'un JSON, de Rust, de Python ou de PowerShell (« \n », « \r », « \t », « \f »,
+/// « \v », « \u000a », « \x0A », « \u{c} », « `n »), ou une couleur de terminal (« \u001b[01;34m », « \x1b[0m »,
+/// « \e[1m », ou « [0m » derrière le vrai caractère d'échappement, devenu une espace). Elle compte comme une
+/// frontière de mot : un chemin collé derrière elle en est un. La ronde 9 ne lisait ni les capitales, ni « \x », ni
+/// « \u{…} », ni « `n », ni les couleurs, et le nom restait (ronde 9, bas).
+fn coupure_ecrite(c: &[char], i: usize) -> bool {
+    let debut = i.saturating_sub(12);
+    let avant: String = morceau(c, debut, i).iter().collect::<String>().to_ascii_lowercase();
+    let controle = |h: &str| ["a", "d", "9", "c", "b", "0a", "0d", "09", "0c", "0b"].contains(&h);
+    let apres = |k: usize, n: usize| avant.get(k.saturating_add(n)..).unwrap_or("");
+    let lettre = avant
+        .strip_suffix(['n', 'r', 't', 'f', 'v'])
+        .is_some_and(|r| r.ends_with(['\\', '`']));
+    let hexa = ["\\u00", "\\x"]
+        .iter()
+        .any(|p| avant.rfind(p).is_some_and(|k| controle(apres(k, p.len()))));
+    let rust = avant.rfind("\\u{").is_some_and(|k| {
+        apres(k, 3)
+            .strip_suffix('}')
+            .is_some_and(|h| controle(h.trim_start_matches('0')))
+    });
+    // Une couleur : « [ », des chiffres et des « ; », « m ». Seul ce qui touche le « [ » compte : le morceau lu peut
+    // commencer au milieu d'un mot.
+    let couleur = avant.strip_suffix('m').is_some_and(|r| {
+        r.rfind('[').is_some_and(|k| {
+            let devant = r.get(..k).unwrap_or("");
+            r.get(k.saturating_add(1)..)
+                .is_some_and(|n| n.chars().all(|y| y.is_ascii_digit() || y == ';'))
+                && ((devant.is_empty() && debut == 0)
+                    || devant.ends_with(char::is_whitespace)
+                    || ["\\u001b", "\\x1b", "\\e", "\\033"].iter().any(|e| devant.ends_with(e)))
+        })
+    });
+    lettre || hexa || rust || couleur
 }
 
 /// Derrière la forme étendue de Windows en `i` (« \\?\ », « \\.\ », « \??\ » de NT, « //?/ », « //./ », ou
@@ -2136,8 +2057,21 @@ fn chemin(c: &[char], i: usize) -> Option<(usize, usize)> {
     // l'arrêt, le saut de ligne ou SEGMENT_MAX caractères : « /var/lib/vanguard n'existe pas : … » avalait la phrase
     // jusqu'au « : » (ronde 9, bas).
     let ouvert = avant(c, i).is_some_and(|p| "'\"(,".contains(p));
+    // Une apostrophe collée au séparateur d'avant, sans blanc entre eux (« /srv/partage/d'Alice Martin »), est
+    // dans le nom : la ronde 9 y coupait, et « 'Alice Martin » restait (ronde 9, bas).
+    let collee = |k: usize| {
+        let mut j = k;
+        loop {
+            match avant(c, j) {
+                Some(y) if separateur(y) => break true,
+                Some(y) if y.is_whitespace() || entre(j, k) > SEGMENT_MAX => break false,
+                None => break false,
+                Some(_) => j = j.saturating_sub(1),
+            }
+        }
+    };
     let apostrophe_permise = |k: usize| {
-        ouvert || {
+        ouvert || collee(k) || {
             let mut j = suivant(k);
             loop {
                 match car(c, j) {
@@ -2191,10 +2125,17 @@ fn chemin(c: &[char], i: usize) -> Option<(usize, usize)> {
         let partage = commence_par(c, i, "//")
             || commence_par(c, i, "\\\\")
             || chaine(c, i, debut).to_lowercase().contains("unc");
+        // Derrière une coupure écrite (« ligne 1\n/Zoé Martin" »), un nom à espaces sans extension ni arrêt ne dit pas
+        // où il finit : comme sous un dossier personnel, jusqu'à la fin de la ligne (ronde 9, bas).
         let fin = if tete_personnelle(&chaine(c, i, pos).to_lowercase()) || (partage && espace_au_milieu) {
             fin_personnelle(c, i, nom)
         } else if espace.is_some() {
-            jusqu_a_l_arret(c, i, pos, bout, nom, a_extension)
+            let fin = jusqu_a_l_arret(c, i, pos, bout, nom, a_extension);
+            if fin == nom && !a_extension && coupure_ecrite(c, i) {
+                fin_personnelle(c, i, nom)
+            } else {
+                fin
+            }
         } else {
             nom
         };
@@ -2535,21 +2476,6 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, usize)> {
     if !debut_de_chemin(c, i) || !car(c, i).is_some_and(caractere_de_chemin) {
         return None;
     }
-    // Un début qui ne tient qu'à un « \n » écrit est refusé si le mot d'avant est déjà un chemin (« src\nettoyer »,
-    // « .\src\reseau ») ou un dossier du dépôt (« target\release ») : sous Windows, une ligne « panicked at
-    // src\nettoyer\mod.rs » était coupée en deux (ronde 9, bas).
-    if let Some(n) = longueur_d_echappe(c, i).filter(|_| !avant_chemin(avant(c, i))) {
-        let fin_mot = i.saturating_sub(n);
-        let mut debut_mot = fin_mot;
-        while debut_mot > 0 && avant(c, debut_mot).is_some_and(|y| !y.is_whitespace() && !"\"'(=,;:[{>`|".contains(y)) {
-            debut_mot = debut_mot.saturating_sub(1);
-        }
-        let mot = chaine(c, debut_mot, fin_mot);
-        let premier = mot.split(['\\', '/']).next().unwrap_or("").to_lowercase();
-        if mot.contains(['\\', '/']) || premier == "." || DOSSIERS_DU_DEPOT.contains(&premier.as_str()) {
-            return None;
-        }
-    }
     let separateur = |y: char| y == '/' || y == '\\';
     let arret = |y: char| separateur(y) || arret_de_chemin(y);
     let mut elements: Vec<(usize, usize)> = Vec::new();
@@ -2584,10 +2510,11 @@ fn chemin_relatif(c: &[char], i: usize) -> Option<(usize, usize)> {
                 bout = k;
             }
         }
-        // Une barre doublée (JSON, « {:?} » de Rust) compte comme une seule : « Documents\\\\Zoé Martin\\\\… » ne
-        // gardait que son dernier mot (ronde 8, moyen). Pas « // » : « sed 's/Documents//g' » ou
-        // « total.size//chunk.size » ne sont pas des chemins (ronde 9, bas).
-        if bout == pos && !elements.is_empty() && car(c, pos) == Some('\\') && avant(c, pos) == Some('\\') {
+        // Une barre doublée (JSON, « {:?} » de Rust, « // ») compte comme une seule : « Documents\\\\Zoé Martin\\\\… »
+        // ne gardait que son dernier mot (ronde 8, moyen). La ronde 9 refusait « // », et « Documents//Zoé Martin//… »
+        // gardait le nom (ronde 9, moyen) : « sed 's/Documents//g' » ou « total.size//chunk.size » y sont masqués, une
+        // limite écrite.
+        if bout == pos && !elements.is_empty() && car(c, pos).is_some_and(separateur) && avant(c, pos) == car(c, pos) {
             pos = suivant(pos);
             continue;
         }
