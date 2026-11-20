@@ -713,6 +713,12 @@ EOF
   ln -s "$ESSAI/nulle-part" "$W/CLAUDE.md"
   refus_w "lien CLAUDE.md cassé plus haut" "Claude le lirait"
   rm -f "$W/CLAUDE.md"
+  # Garde-fou de texte : pwsh 7 (ici) voit un lien cassé avec Test-Path, Windows PowerShell 5.1 (celui de la clé) non.
+  # L'essai ci-dessus ne peut donc pas voir un retour à Test-Path ; ce contrôle-ci, oui.
+  grep -E '^function Existe' outils/cle/Claude/depanner.ps1 | grep -q 'Get-Item -LiteralPath $chemin -Force' &&
+    ! grep -E '^function Existe' outils/cle/Claude/depanner.ps1 | grep -q 'Test-Path' &&
+    bon "Existe : Get-Item -Force, pas Test-Path (lien cassé vu sous PowerShell 5.1)" ||
+    rate "Existe passe par Test-Path : un lien cassé échapperait sous PowerShell 5.1"
   # Le dossier personnel : ses skills sont permis (Claude Code ne les y cherche pas), ses consignes non ; et seulement
   # si les deux façons de le connaître (USERPROFILE, l'API) tombent d'accord.
   mkdir -p "$W/runw/.claude/skills/a"
