@@ -290,14 +290,12 @@ fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
 }
 
 fn bilan(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) -> Bilan {
-    let graves: Vec<&crate::machine::Constat> = audit
-        .map(|a| {
-            a.constats
-                .iter()
-                .filter(|c| c.probleme.is_some_and(|n| n >= Niveau::Moyen))
-                .collect()
-        })
-        .unwrap_or_default();
+    let graves: Vec<&crate::machine::Constat> = audit.map_or_default(|a| {
+        a.constats
+            .iter()
+            .filter(|c| c.probleme.is_some_and(|n| n >= Niveau::Moyen))
+            .collect()
+    });
     let cles: Vec<Option<String>> = graves.iter().map(|c| c.cle().map(|k| k.to_string())).collect();
     Bilan {
         date: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),

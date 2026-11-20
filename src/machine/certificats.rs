@@ -485,7 +485,7 @@ pub fn certificats() -> Vec<Constat> {
 #[cfg(any(windows, test))]
 fn juger_racines(sortie: &str, du_compte: Option<&str>) -> Vec<Constat> {
     let (racines, total) = racines_ajoutees(sortie);
-    let propres: Vec<RacineAjoutee> = du_compte.map(|t| lignes_de_racines(t).collect()).unwrap_or_default();
+    let propres: Vec<RacineAjoutee> = du_compte.map_or_default(|t| lignes_de_racines(t).collect());
     // Une empreinte illisible (champ vide) ne désigne aucune racine : elle ne fait sauter aucune ligne.
     let dites: std::collections::HashSet<String> = propres
         .iter()

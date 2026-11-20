@@ -408,8 +408,7 @@ fn lire_politique(texte: &str) -> Option<(Vec<String>, Option<bool>)> {
     let installes: Vec<String> = certificats
         .get("Install")
         .and_then(serde_json::Value::as_array)
-        .map(|t| t.iter().filter_map(|c| c.as_str()).map(affichable).collect())
-        .unwrap_or_default();
+        .map_or_default(|t| t.iter().filter_map(|c| c.as_str()).map(affichable).collect());
     Some((
         installes,
         certificats
@@ -1023,8 +1022,7 @@ fn bilan(m: &Mesure, e: &Entree) -> Bilan {
         let attendues = NOMS_STABLES
             .iter()
             .find(|(n, _)| n == nom)
-            .map(|(_, a)| a.to_vec())
-            .unwrap_or_default();
+            .map_or_default(|(_, a)| a.to_vec());
         // Ce que les résolveurs publics ont répondu pour ce nom : l'attendu vivant, si le service a changé d'adresse.
         let publiques: Vec<Ipv4Addr> = e
             .mesures
@@ -1403,8 +1401,7 @@ fn constat_chiffrement(e: &Entree) -> Constat {
     let serveurs_utilises: Vec<String> = e
         .utilise
         .as_ref()
-        .map(|u| u.serveurs.iter().map(|(ip, _)| ip.to_string()).collect())
-        .unwrap_or_default();
+        .map_or_default(|u| u.serveurs.iter().map(|(ip, _)| ip.to_string()).collect());
     if c.doh_windows
         .iter()
         .any(|d| d.drapeaux != 0 && serveurs_utilises.iter().any(|s| s.eq_ignore_ascii_case(&d.serveur)))

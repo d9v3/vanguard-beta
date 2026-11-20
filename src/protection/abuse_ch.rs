@@ -258,9 +258,7 @@ pub(crate) fn donner() -> bool {
     // Sans écho : la clé collée ne paraît pas à l'écran (ni dans l'historique du terminal). Entrée redirigée (pas de
     // terminal) : lue telle quelle, il n'y a rien à cacher.
     let cle = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        rpassword::prompt_password(question)
-            .map(|c| c.trim().to_string())
-            .unwrap_or_default()
+        rpassword::prompt_password(question).map_or_default(|c| c.trim().to_string())
     } else {
         demander(question)
     };

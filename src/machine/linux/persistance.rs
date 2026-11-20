@@ -1179,9 +1179,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     // adverse, B6). Les deux se lisent.
     let session_de_systemd = de_systemd.filter(|d| Some(d) != session.as_ref());
     let liste = |nom: &str| -> Vec<std::path::PathBuf> {
-        variable(nom)
-            .map(|v| std::env::split_paths(&v).filter(|p| p.is_absolute()).collect())
-            .unwrap_or_default()
+        variable(nom).map_or_default(|v| std::env::split_paths(&v).filter(|p| p.is_absolute()).collect())
     };
     // W-3 (contrôle 2 du sous-lot c2-uwsm, 0.95) : uwsm coupe ces variables sans guillemets (prepare-env.sh,
     // « for __item__ in $1 ») : le shell développe un morceau à joker (« * », « ? », « [ ») en dossiers que Vanguard
@@ -3169,20 +3167,18 @@ fn noms_poses(l: &str, sorte: Variables) -> Vec<String> {
         Variables::Systemd => ["DefaultEnvironment=", "ManagerEnvironment="]
             .iter()
             .find_map(|c| net.strip_prefix(c))
-            .map(|v| {
+            .map_or_default(|v| {
                 v.split([' ', '\t'])
                     .filter_map(|m| m.trim_matches(['"', '\'']).split_once('=').map(|(n, _)| n.to_string()))
                     .collect()
-            })
-            .unwrap_or_default(),
+            }),
         Variables::Hypr => net
             .strip_prefix("env")
             .map(|v| v.trim_start_matches([' ', '\t']))
             .and_then(|v| v.strip_prefix('='))
             .map(|v| v.split(',').next().unwrap_or_default().trim_matches([' ', '\t']))
             .filter(|n| identifiant(n))
-            .map(|n| vec![n.to_string()])
-            .unwrap_or_default(),
+            .map_or_default(|n| vec![n.to_string()]),
         Variables::Cles => match mots.first().copied() {
             Some(premier) => match premier.split_once('=') {
                 Some((n, _)) if identifiant(n) => vec![n.to_string()],
@@ -3210,8 +3206,7 @@ fn noms_poses(l: &str, sorte: Variables) -> Vec<String> {
             Some("setenv") => mots
                 .get(1)
                 .filter(|n| identifiant(n))
-                .map(|n| vec![(*n).to_string()])
-                .unwrap_or_default(),
+                .map_or_default(|n| vec![(*n).to_string()]),
             Some(c @ ("export" | "declare" | "typeset")) => {
                 if c != "export" && !mots.iter().any(|m| m.starts_with('-') && m.contains('x')) {
                     return Vec::new();
@@ -3344,8 +3339,7 @@ fn environnement(
                     .unwrap_or_default()
                     .iter()
                     .find(|(_, h)| *h == Variables::Hypr)
-                    .map(|(c, _)| r.montre(c))
-                    .unwrap_or_default();
+                    .map_or_default(|(c, _)| r.montre(c));
                 hypr_non_suivies.push((premier.clone(), premier, NonSuivi::Borne(coupes)));
             }
             break;
@@ -4675,7 +4669,7 @@ fn forme_finale_de_systemd(
         None => valeur.to_string(),
     };
     for mots in commandes_de_systemd(&developpee).ok_or(())? {
-        let programme = mots.first().map(String::as_str).unwrap_or_default();
+        let programme = mots.first().map_or_default(String::as_str);
         let lit = designes::lit_un_script(programme) || enveloppe(programme);
         if programme.contains(CODE_INCONNU) || (lit && mots.iter().any(|m| m.contains(CODE_INCONNU))) {
             return Err(());
@@ -5105,10 +5099,7 @@ fn noms_de_l_unite(dossiers: &[std::path::PathBuf], nom: &str) -> Option<Vec<Str
                 continue;
             }
             let vise = std::fs::read_link(e.path()).ok()?;
-            let vise = vise
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let vise = vise.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
             liens.push((e.file_name().to_string_lossy().into_owned(), vise));
         }
     }
@@ -6916,9 +6907,7 @@ fn lire_ajout(r: &Releveur, f: &Path) -> Result<(temoins::Etat, String), temoins
         let masque = temoins::Etat::Lien {
             vers: "/dev/null".into(),
             puis: Box::new(temoins::Etat::Absent),
-            vu: std::fs::symlink_metadata(f)
-                .map(|m| temoins::Vu::de_dans(&m, f))
-                .unwrap_or_default(),
+            vu: std::fs::symlink_metadata(f).map_or_default(|m| temoins::Vu::de_dans(&m, f)),
         };
         return Ok((masque, String::new()));
     }
@@ -7054,10 +7043,7 @@ fn unite(
     let (nom, dossier, ajout) = match nom_du_parent.as_deref().and_then(|n| n.strip_suffix(".d")) {
         Some(n) => (n.to_string(), parent.parent().unwrap_or(Path::new("/")), true),
         None => (
-            fichier
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            fichier.file_name().map_or_default(|n| n.to_string_lossy().into_owned()),
             parent,
             false,
         ),
@@ -11653,7 +11639,7 @@ fn charge_sous_un_autre_nom(r: &Releveur, f: &Path) -> bool {
     let premier_niveau = f
         .parent()
         .is_some_and(|p| etats.iter().any(|e| DOSSIERS.iter().any(|d| p == e.join(d))));
-    let nom = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let nom = f.file_name().map_or_default(|n| n.to_string_lossy());
     premier_niveau && nom.strip_suffix(".lua").is_some_and(|tige| tige.contains('.'))
 }
 
@@ -14448,10 +14434,7 @@ fn temoin_de_service(r: &mut Releveur, f: &Path) -> Result<temoins::Temoin, temo
     // Les lignes Exec du fichier sont liées ci-dessus ; `unite` lie celles de ses ajouts.
     cibles_liees.extend(unite(r, f, texte, false, None)?);
     cibles_liees.push(environnement_lie(r)?);
-    let nom = f
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom = f.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     Ok(temoins::temoin(
         &f.to_string_lossy(),
         montre,
@@ -14550,7 +14533,7 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
     let reinstaller = {
         let mut paquets: Vec<&str> = modifies.iter().map(|(_, p)| p.as_str()).collect();
         paquets.dedup();
-        gestion.map(|g| g.reinstaller(&paquets.join(" "))).unwrap_or_default()
+        gestion.map_or_default(|g| g.reinstaller(&paquets.join(" ")))
     };
     let path = std::env::var("PATH").unwrap_or_default();
     let path_dangereux = path_dangereux(&path, |d| std::fs::metadata(d).ok().map(|m| m.permissions().mode()));

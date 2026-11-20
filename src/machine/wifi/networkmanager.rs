@@ -90,8 +90,7 @@ fn balise(proprietes: &Valeur, actif: bool) -> Option<Balise> {
     let mhz = u32::try_from(entier(Some(proprietes), "Frequency")).ok()?;
     let octets: Vec<u8> = proprietes
         .champ("Ssid")
-        .map(Valeur::elements)
-        .unwrap_or_default()
+        .map_or_default(Valeur::elements)
         .iter()
         .filter_map(|o| u8::try_from(o.entier()?).ok())
         .collect();
@@ -156,7 +155,7 @@ fn lecture_des_objets(objets: &[(String, Valeur)], maintenant_ms: u64) -> Option
     let mut lecture = Lecture::default();
     for carte in &cartes {
         let active = carte.champ("ActiveAccessPoint").and_then(Valeur::texte).unwrap_or("/");
-        for chemin in carte.champ("AccessPoints").map(Valeur::textes).unwrap_or_default() {
+        for chemin in carte.champ("AccessPoints").map_or_default(Valeur::textes) {
             let Some(b) = point(&chemin).and_then(|p| balise(p, chemin == active)) else {
                 continue;
             };

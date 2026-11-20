@@ -506,7 +506,7 @@ fn bail_du_registre(c: &CarteRegistre, maintenant: u64) -> Option<Bail> {
             .dhcp_default_gateway
             .first()
             .and_then(|t| adresses(t).first().copied()),
-        dns: c.dhcp_name_server.as_deref().map(adresses).unwrap_or_default(),
+        dns: c.dhcp_name_server.as_deref().map_or_default(adresses),
         domaine: c.dhcp_domain.clone().filter(|d| !d.is_empty()),
         expire: c.lease_terminates_time.map(u64::from),
     };

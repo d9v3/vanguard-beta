@@ -620,9 +620,7 @@ fn noms_detournes(hosts: &str) -> std::collections::HashSet<String> {
 
 /// Ceux du hosts de cet ordinateur ; illisible, aucun.
 pub(crate) fn noms_bloques_ici() -> std::collections::HashSet<String> {
-    std::fs::read_to_string(fichier_hosts())
-        .map(|h| noms_detournes(&h))
-        .unwrap_or_default()
+    std::fs::read_to_string(fichier_hosts()).map_or_default(|h| noms_detournes(&h))
 }
 
 #[allow(

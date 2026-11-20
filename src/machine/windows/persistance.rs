@@ -177,8 +177,8 @@ fn valeur_texte_selon(valeur: &winreg::RegValue, variable: &dyn Fn(&str) -> Opti
     match valeur.vtype {
         REG_SZ | REG_MULTI_SZ => texte().replace('\n', " "),
         REG_EXPAND_SZ => developper(&texte(), variable),
-        REG_DWORD => u32::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
-        REG_QWORD => u64::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
+        REG_DWORD => u32::from_reg_value(valeur).map_or_default(|n| n.to_string()),
+        REG_QWORD => u64::from_reg_value(valeur).map_or_default(|n| n.to_string()),
         _ => String::new(),
     }
 }

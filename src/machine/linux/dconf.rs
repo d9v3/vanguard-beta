@@ -52,13 +52,12 @@ impl Lieux {
         // GLib : GSETTINGS_SCHEMA_DIR (plusieurs dossiers possibles) d'abord, puis les données de l'utilisateur,
         // puis celles du système dans l'ordre de XDG_DATA_DIRS.
         let schemas = variable("GSETTINGS_SCHEMA_DIR")
-            .map(|v| {
+            .map_or_default(|v| {
                 v.split(':')
                     .filter(|d| !d.is_empty())
                     .map(PathBuf::from)
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
             .into_iter()
             .chain(
                 std::iter::once(&donnees)

@@ -704,8 +704,7 @@ fn rejuger_valeur(av: &AvecValeur, compte: &Compte) -> Result<AvecValeur, Refus>
     let declares = compte
         .config
         .as_deref()
-        .map(|c| lire_declares(&c.join("user-dirs.dirs")))
-        .unwrap_or_default();
+        .map_or_default(|c| lire_declares(&c.join("user-dirs.dirs")));
     let racines = crate::valeur::racines_linux(maison, &declares, compte.nom.as_deref());
     let reel = crate::valeur::juger_chemin(av.valeur(), maison, &racines)?;
     AvecValeur::nouvelle(av.commande(), reel.to_str().ok_or(Refus::Forme)?)

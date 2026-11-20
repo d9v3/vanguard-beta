@@ -439,7 +439,7 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
         champs.next()?,
         champs.next()?,
     );
-    let chemin = champs.next().map(str::trim).unwrap_or_default().to_string();
+    let chemin = champs.next().map_or_default(str::trim).to_string();
     let (debut, fin) = adresses.split_once('-')?;
     let (debut, fin) = (u64::from_str_radix(debut, 16).ok()?, u64::from_str_radix(fin, 16).ok()?);
     let (majeur, mineur) = peripherique.split_once(':')?;

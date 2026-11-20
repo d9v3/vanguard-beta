@@ -66,8 +66,7 @@ fn lancable(chemin: &Path, m: &std::fs::Metadata) -> bool {
     let extension = chemin
         .extension()
         .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
+        .map_or_default(str::to_ascii_lowercase);
     if matches!(extension.as_str(), "ps1" | "py") || (cfg!(unix) && matches!(extension.as_str(), "sh" | "bash")) {
         return true;
     }

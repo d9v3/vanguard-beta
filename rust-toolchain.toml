@@ -6,7 +6,7 @@
 # version de Rust y est essayée sur tout le code avant d'en compiler un programme publié. Le banc de fuzzing garde
 # la chaîne nightly (cargo +nightly, outils/fuzz.sh).
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
 targets = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu"]

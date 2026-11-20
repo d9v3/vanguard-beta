@@ -74,11 +74,7 @@ fn lire_natif() -> Option<String> {
             // « SVCM » : signalé, mais à corriger à la main (variable inconnue, programme introuvable).
             let sorte = if j.a_la_main.is_some() { "SVCM" } else { "SVC" };
             // Sans dossier piège (chemin inconnu), le champ reste vide.
-            let dossier = j
-                .dossier
-                .as_deref()
-                .map(|d| d.display().to_string())
-                .unwrap_or_default();
+            let dossier = j.dossier.as_deref().map_or_default(|d| d.display().to_string());
             lignes.push(format!("{sorte}|{nom}|{}|{dossier}|{}", j.exe, j.suite));
         }
     }

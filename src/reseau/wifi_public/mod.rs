@@ -969,7 +969,7 @@ fn allumer() {
         return;
     }
     // L'état d'avant est écrit avant toute commande : un plantage en route laisse de quoi tout remettre.
-    let anciens = ancien.as_ref().map(|a| a.elements.clone()).unwrap_or_default();
+    let anciens = ancien.as_ref().map_or_default(|a| a.elements.clone());
     let prevus: Vec<Element> = plan.lots.iter().flat_map(|l| l.elements.clone()).collect();
     let mut e = Etat {
         version: etat::VERSION,

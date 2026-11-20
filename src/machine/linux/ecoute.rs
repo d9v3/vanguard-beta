@@ -99,7 +99,7 @@ pub(super) fn par_netlink() -> Option<Vec<Ecoute>> {
     let groupes = if prises.is_empty() {
         HashMap::new()
     } else {
-        racine_cgroup2().map(|r| groupes_par_numero(&r)).unwrap_or_default()
+        racine_cgroup2().map_or_default(|r| groupes_par_numero(&r))
     };
     Some(
         prises

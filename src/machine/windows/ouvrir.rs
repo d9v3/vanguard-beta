@@ -119,7 +119,7 @@ pub(crate) fn ouvrir(cible: &str, parametres: Option<&str>) {
 /// Laisse aux ouvertures en cours jusqu'à `delai` pour aboutir : à la fin du programme, un fil encore en route
 /// disparaîtrait avec le processus, et la page ne s'ouvrirait jamais.
 pub(crate) fn attendre(delai: Duration) {
-    let fils = EN_COURS.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default();
+    let fils = EN_COURS.lock().map_or_default(|mut f| std::mem::take(&mut *f));
     let fin = Instant::now() + delai;
     for fil in fils {
         while !fil.is_finished() && Instant::now() < fin {

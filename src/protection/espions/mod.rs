@@ -261,7 +261,7 @@ fn connexions_espions(r: &mut Releve, ind: &Indicateurs, connexions: &[Connexion
             (Some(p), true) => (Niveau::Moyen, crate::machine::chasse::nom_montre(p)),
             (Some(p), false) => (Niveau::Eleve, crate::machine::chasse::nom_montre(p)),
         };
-        let pid = c.pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+        let pid = c.pid.map_or_default(|p| format!(" (pid {p})"));
         let objet = match genre {
             Genre::Serveur => format!("connexion-serveur:{entree}"),
             Genre::Site => format!("connexion-site:{entree}"),

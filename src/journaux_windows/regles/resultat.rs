@@ -127,8 +127,7 @@ fn partiel(f: &BilanFichier, b: &Bilan) -> Vec<String> {
     let nom = f
         .chemin
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let mut v: Vec<String> = Vec::new();
     let mut compte = |n: u64, fr: &str, en: &str| {
         if n > 0 {
@@ -195,8 +194,7 @@ fn etats_du_dossier(fichiers: &[BilanFichier]) -> Vec<EtatJournal> {
                 let nom = f
                     .chemin
                     .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                    .map_or_default(|n| n.to_string_lossy().into_owned());
                 Lecture::Illisible(crate::trf!("{nom} : {}", "{nom}: {}", erreur_fichier(*e)))
             }
         };

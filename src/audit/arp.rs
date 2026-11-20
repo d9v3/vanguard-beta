@@ -54,7 +54,7 @@ fn mac_de_la_box_changee(e: &Entree) -> Constat {
         };
     }
     let nom = crate::ui::affichable(nom.unwrap_or_default());
-    let boite = ip.map(|i| i.to_string()).unwrap_or_default();
+    let boite = ip.map_or_default(|i| i.to_string());
     let liste = liste_courte(anciennes.into_iter());
     Constat {
         regle: "COM-ARP-002",
@@ -272,8 +272,7 @@ fn mac_pour_plusieurs_adresses(e: &Entree) -> Constat {
             let titre = appareils
                 .iter()
                 .find(|a| !a.titre.is_empty())
-                .map(|a| format!(" ({})", crate::ui::affichable(&a.titre)))
-                .unwrap_or_default();
+                .map_or_default(|a| format!(" ({})", crate::ui::affichable(&a.titre)));
             format!("{mac}{titre} → {}", ips.join(", "))
         })
         .collect();

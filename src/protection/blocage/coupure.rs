@@ -271,15 +271,13 @@ mod linux {
 
     /// Les numéros des cgroups vivants sous vanguard.slice (les scopes de coupure encore là).
     fn cgroupes_vivants() -> Vec<u64> {
-        std::fs::read_dir(format!("{RACINE_DES_CGROUPES}/{TRANCHE_DES_COUPURES}"))
-            .map(|d| {
-                d.flatten()
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                    .filter(|e| systeme::est_nom_de_coupure(&e.file_name().to_string_lossy()))
-                    .filter_map(|e| e.metadata().ok().map(|m| m.ino()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        std::fs::read_dir(format!("{RACINE_DES_CGROUPES}/{TRANCHE_DES_COUPURES}")).map_or_default(|d| {
+            d.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter(|e| systeme::est_nom_de_coupure(&e.file_name().to_string_lossy()))
+                .filter_map(|e| e.metadata().ok().map(|m| m.ino()))
+                .collect()
+        })
     }
 
     /// Retire de nf_tables les cgroups morts (leur processus fini, le scope ramassé) et leurs notes : un numéro de

@@ -146,11 +146,7 @@ fn note_markdown(d: &crate::audit::DomaineAudite) -> String {
 
 /// La section « Audit du réseau » en Markdown : les six notes, puis chaque domaine et ses constats.
 fn audit_markdown(m: &mut String, a: &AuditReseau) {
-    let nom = a
-        .nom_reseau
-        .as_deref()
-        .map(|n| trf!(" « {n} »", " “{n}”"))
-        .unwrap_or_default();
+    let nom = a.nom_reseau.as_deref().map_or_default(|n| trf!(" « {n} »", " “{n}”"));
     let _ = trwln!(m, "\n## Audit du réseau{nom}\n", "\n## Network audit{nom}\n");
     if a.reseau.is_none() {
         let _ = trwln!(
@@ -514,8 +510,7 @@ fn audit_html(h: &mut String, a: &AuditReseau) {
     let nom = a
         .nom_reseau
         .as_deref()
-        .map(|n| trf!(" « {} »", " “{}”", esc(n)))
-        .unwrap_or_default();
+        .map_or_default(|n| trf!(" « {} »", " “{}”", esc(n)));
     let _ = trw!(h, "<h2>Audit du réseau{nom}</h2>", "<h2>Network audit{nom}</h2>");
     if a.reseau.is_none() {
         h.push_str(tr!(
@@ -735,13 +730,11 @@ fn examens_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
             .map_or(r.outil.as_str(), |o| {
                 if crate::langue::anglais() { o.sujet.1 } else { o.sujet.0 }
             });
-        let quand = chrono::DateTime::parse_from_rfc3339(&r.debut)
-            .map(|d| {
-                d.with_timezone(&chrono::Local)
-                    .format(tr!("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"))
-                    .to_string()
-            })
-            .unwrap_or_default();
+        let quand = chrono::DateTime::parse_from_rfc3339(&r.debut).map_or_default(|d| {
+            d.with_timezone(&chrono::Local)
+                .format(tr!("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"))
+                .to_string()
+        });
         let (badge_verdict, phrase) = match r.verdict() {
             "probleme" => (badge(r.pire()), tr!("problème(s) trouvé(s)", "problem(s) found")),
             "sain" => (badge(None), tr!("rien trouvé", "nothing found")),
@@ -815,13 +808,11 @@ fn journaux_windows_html(
         return;
     }
     let locale = |d: &str| {
-        chrono::DateTime::parse_from_rfc3339(d)
-            .map(|d| {
-                d.with_timezone(&chrono::Local)
-                    .format(tr!("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"))
-                    .to_string()
-            })
-            .unwrap_or_default()
+        chrono::DateTime::parse_from_rfc3339(d).map_or_default(|d| {
+            d.with_timezone(&chrono::Local)
+                .format(tr!("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"))
+                .to_string()
+        })
     };
     let fuseau = chrono::Local::now().format("UTC%:z").to_string();
     let (badge_verdict, phrase) = match r.verdict() {
@@ -1063,8 +1054,7 @@ fn reseau_html(h: &mut String, r: &Rapport) {
     let nom = r
         .nom_reseau
         .as_deref()
-        .map(|n| trf!(" « {} »", " “{}”", esc(n)))
-        .unwrap_or_default();
+        .map_or_default(|n| trf!(" « {} »", " “{}”", esc(n)));
     let _ = trw!(
         h,
         "<h2>Réseau{nom} — {} appareils</h2>",
@@ -1079,10 +1069,7 @@ fn reseau_html(h: &mut String, r: &Rapport) {
 
 /// La carte d'un appareil du réseau : adresse, nom, rôle, ports ouverts et alertes.
 fn hote_html(h: &mut String, hote: &crate::reseau::Hote) {
-    let role = hote
-        .role
-        .map(|r| format!(" · {}", crate::langue::role(r)))
-        .unwrap_or_default();
+    let role = hote.role.map_or_default(|r| format!(" · {}", crate::langue::role(r)));
     let neuf = if hote.nouvelle {
         tr!(
             " <span class=neuf>NOUVEL APPAREIL</span>",
@@ -1120,19 +1107,15 @@ fn hote_html(h: &mut String, hote: &crate::reseau::Hote) {
             let ban = p
                 .banniere
                 .as_deref()
-                .map(|b| format!("<div class=ban>{}</div>", esc(b)))
-                .unwrap_or_default();
+                .map_or_default(|b| format!("<div class=ban>{}</div>", esc(b)));
             let ban = ban
-                + &p.programme
-                    .as_deref()
-                    .map(|n| {
-                        trf!(
-                            "<div class=ban>programme : {}</div>",
-                            "<div class=ban>program: {}</div>",
-                            esc(n)
-                        )
-                    })
-                    .unwrap_or_default();
+                + &p.programme.as_deref().map_or_default(|n| {
+                    trf!(
+                        "<div class=ban>programme : {}</div>",
+                        "<div class=ban>program: {}</div>",
+                        esc(n)
+                    )
+                });
             let _ = write!(
                 h,
                 "<tr><td>{}</td><td>{}{ban}</td><td>{}</td></tr>",
@@ -1166,8 +1149,7 @@ fn absents_html(h: &mut String, r: &Rapport) {
         let quand = a
             .dernier_vu
             .as_deref()
-            .map(|d| trf!(" — vu le {}", " — seen on {}", esc(&crate::reseau::date_fr(d))))
-            .unwrap_or_default();
+            .map_or_default(|d| trf!(" — vu le {}", " — seen on {}", esc(&crate::reseau::date_fr(d))));
         let _ = write!(h, "<li>{} {}{}</li>", a.ip, esc(&a.titre), quand);
     }
     *h += "</ul></div>";

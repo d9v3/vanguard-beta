@@ -480,10 +480,7 @@ fn isoler_dans(
     let mode = Some(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o7777);
     #[cfg(windows)]
     let mode = None;
-    let nom_origine = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom_origine = chemin.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let horodatage = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

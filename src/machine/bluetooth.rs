@@ -109,7 +109,7 @@ pub fn constats() -> Vec<Constat> {
 /// Les constats, et la liste des appareils vus à garder. `avant` vaut `None` au premier passage : tout ce qui est là
 /// est connu d'avant.
 fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Constat>, Vus) {
-    let mut vus = avant.map(|v| v.vus.clone()).unwrap_or_default();
+    let mut vus = avant.map_or_default(|v| v.vus.clone());
     for a in &etat.appareils {
         let date = if avant.is_some() {
             aujourd_hui.format("%Y-%m-%d").to_string()
@@ -391,25 +391,21 @@ fn lire() -> Option<Etat> {
     let parametres = RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey(r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters")
         .ok()?;
-    let appareils = parametres
-        .open_subkey("Devices")
-        .map(|d| {
-            d.enum_keys()
-                .flatten()
-                .filter_map(|cle| {
-                    let nom = d
-                        .open_subkey(&cle)
-                        .and_then(|k| k.get_raw_value("Name"))
-                        .map(|v| nom_utf8(&v.bytes))
-                        .unwrap_or_default();
-                    Some(Appareil {
-                        adresse: adresse(&cle)?,
-                        nom,
-                    })
+    let appareils = parametres.open_subkey("Devices").map_or_default(|d| {
+        d.enum_keys()
+            .flatten()
+            .filter_map(|cle| {
+                let nom = d
+                    .open_subkey(&cle)
+                    .and_then(|k| k.get_raw_value("Name"))
+                    .map_or_default(|v| nom_utf8(&v.bytes));
+                Some(Appareil {
+                    adresse: adresse(&cle)?,
+                    nom,
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+            })
+            .collect()
+    });
     Some(Etat {
         allume: true,
         adaptateurs: 1,

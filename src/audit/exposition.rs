@@ -112,8 +112,7 @@ fn nom_de_box(d: &igd::Description) -> String {
         .into_iter()
         .flatten()
         .next()
-        .map(|n| format!(" ({n})"))
-        .unwrap_or_default()
+        .map_or_default(|n| format!(" ({n})"))
 }
 
 /// D'autres appareils que la passerelle ont répondu comme une box IGD : écartés, et dits. `box_aussi` : la vraie box a

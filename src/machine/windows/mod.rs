@@ -1838,8 +1838,7 @@ fn ports_udp(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
             r"SOFTWARE\Policies\Microsoft\Windows NT\DNSClient",
             "EnableMulticast",
         )
-        .map(|v| v.to_string())
-        .unwrap_or_default();
+        .map_or_default(|v| v.to_string());
         let mut liste = format!("LLMNR|{llmnr}\n{}\n", ligne_netbios());
         for e in ecoutes.iter().filter(|e| !e.tcp) {
             let _ = writeln!(liste, "{}|{}|{}", e.adresse, e.port, e.nom);

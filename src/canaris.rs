@@ -202,8 +202,7 @@ fn canaris_kev() {
     let hier: std::collections::HashSet<String> = std::env::var_os("VANGUARD_CANARIS_AVANT")
         .and_then(|f| std::fs::read(f).ok())
         .and_then(|o| crate::protection::kev::analyser(&o))
-        .map(|l| l.into_iter().map(|e| e.cve).collect())
-        .unwrap_or_default();
+        .map_or_default(|l| l.into_iter().map(|e| e.cve).collect());
     // Sans copie d'hier (première nuit), rien n'est « nouveau » : la copie du jour sert de point de départ.
     let nouvelles: Vec<_> = if hier.is_empty() {
         Vec::new()

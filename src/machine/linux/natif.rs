@@ -673,11 +673,7 @@ fn disques_sous(racine: &Path) -> Vec<Disque> {
         .filter_map(|e| {
             let nom = e.file_name().to_str()?.to_string();
             let d = e.path();
-            let lire = |f: &str| {
-                std::fs::read_to_string(d.join(f))
-                    .map(|t| t.trim().to_string())
-                    .unwrap_or_default()
-            };
+            let lire = |f: &str| std::fs::read_to_string(d.join(f)).map_or_default(|t| t.trim().to_string());
             let udev = proprietes_udev(
                 &std::fs::read_to_string(sous(racine, &format!("/run/udev/data/b{}", lire("dev")))).unwrap_or_default(),
             );

@@ -517,7 +517,7 @@ fn rendre_le_reseau(pid: Option<u32>) {
                 affichable(&r.chemin)
             ),
         };
-        let reessai = r.pid.map(|p| format!(" {p}")).unwrap_or_default();
+        let reessai = r.pid.map_or_default(|p| format!(" {p}"));
         match r.issue {
             Ok(None) => trp!(
                 "  {VERT}✔{RESET} Rendu : {quoi}.",
@@ -634,9 +634,7 @@ fn reprendre_les_suspendus(pid: Option<u32>) {
 /// La première lettre en capitale.
 fn capitale(s: &str) -> String {
     let mut c = s.chars();
-    c.next()
-        .map(|p| p.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+    c.next().map_or_default(|p| p.to_uppercase().chain(c).collect())
 }
 
 /// L'état des quatre catégories, et de la protection active.
@@ -1547,9 +1545,7 @@ fn dire_les_autres_gestes(d: &enchainer::Deroule) {
 /// La première lettre en capitale (une raison écrite pour suivre « : »).
 fn capitaliser(t: &str) -> String {
     let mut c = t.chars();
-    c.next()
-        .map(|p| p.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+    c.next().map_or_default(|p| p.to_uppercase().chain(c).collect())
 }
 
 /// L'alerte d'un blocage fait tout seul, ou manqué. Une menace certaine n'est jamais tue (`menaces::chercher`) :
@@ -1590,8 +1586,7 @@ fn alerter_blocage_avec(m: &Menace, titre: &str, texte: &str, notifier: bool) {
 fn signalees_lues(lu: crate::sceau::Juge) -> BTreeSet<String> {
     // Acceptées telles quelles après des sceaux refaits, elles ne taisent rien non plus (`sceau::juge`).
     lu.cru()
-        .map(|o| String::from_utf8_lossy(&o).lines().map(str::to_string).collect())
-        .unwrap_or_default()
+        .map_or_default(|o| String::from_utf8_lossy(&o).lines().map(str::to_string).collect())
 }
 
 /// Dans la surveillance horaire : le certain des catégories automatiques seulement, sans jamais rien demander ; chaque

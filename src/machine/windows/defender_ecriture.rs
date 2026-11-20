@@ -100,7 +100,7 @@ fn liste_de(id: IdChoix) -> Option<Vec<String>> {
         }
         IdChoix::DossiersAutorise(_) => {
             let l = preferences(&[PERMIS_DOSSIERS])?;
-            let liste = l.get(PERMIS_DOSSIERS).map(Valeur::textes).unwrap_or_default();
+            let liste = l.get(PERMIS_DOSSIERS).map_or_default(Valeur::textes);
             (!liste.iter().any(|x| x.trim_start().starts_with("N/A"))).then_some(liste)
         }
         IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..) => None,
@@ -278,7 +278,7 @@ pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
         // Ce que la note désignera, relu ici et montré : l'élément exact, ou le nom de la règle.
         let designes: Option<Vec<String>> = match id {
             IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => {
-                Some(liste_de(id).map(|l| elements_de(&l, id)).unwrap_or_default())
+                Some(liste_de(id).map_or_default(|l| elements_de(&l, id)))
             }
             IdChoix::PareFeuRegle(..) => Some(super::pare_feu::nom_regle(id).into_iter().collect()),
             IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) => None,
@@ -609,14 +609,14 @@ fn action_asr(id: &str) -> LectureAsr {
     let Some(l) = preferences(&[IDS_ASR, ACTIONS_ASR]) else {
         return LectureAsr::Illisible;
     };
-    let ids = l.get(IDS_ASR).map(Valeur::textes).unwrap_or_default();
+    let ids = l.get(IDS_ASR).map_or_default(Valeur::textes);
     // Un élément qui n'est pas un texte décalerait les règles par rapport à leurs actions (`textes` l'écarte) :
     // illisible, plutôt que l'action d'une autre règle.
     let decalee = matches!(l.get(IDS_ASR), Some(Valeur::Liste(v)) if v.len() != ids.len());
     if decalee || ids.iter().any(|x| x.starts_with("N/A")) {
         return LectureAsr::Illisible;
     }
-    let actions = l.get(ACTIONS_ASR).map(Valeur::liste).unwrap_or_default();
+    let actions = l.get(ACTIONS_ASR).map_or_default(Valeur::liste);
     LectureAsr::Lue(
         ids.iter()
             .position(|x| x.eq_ignore_ascii_case(id))

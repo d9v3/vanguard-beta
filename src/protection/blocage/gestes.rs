@@ -792,7 +792,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                 .join(format!(
                     "{}-{}",
                     changements::nouvel_id(),
-                    fichier.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                    fichier.file_name().map_or_default(|n| n.to_string_lossy())
                 ));
             let ecrit = copie
                 .parent()

@@ -254,16 +254,12 @@ fn evenement(genre: &str) -> Evenement {
 
 /// Le chemin d'un descripteur, tel que le noyau le donne (readlink n'ouvre rien).
 fn chemin_de(fd: i32) -> String {
-    std::fs::read_link(format!("/proc/self/fd/{fd}"))
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    std::fs::read_link(format!("/proc/self/fd/{fd}")).map_or_default(|c| c.to_string_lossy().into_owned())
 }
 
 /// Le nom (comm) d'un processus, pour l'affichage seulement : le processus le choisit (`prctl`), il ne décide rien.
 fn nom_de(pid: i32) -> String {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .map(|n| n.trim_end().to_string())
-        .unwrap_or_default()
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).map_or_default(|n| n.trim_end().to_string())
 }
 
 /// Un lecteur de `fichier` par position (pread), borné à sa taille : la position du descripteur n'est jamais partagée.
@@ -812,8 +808,8 @@ impl Relecture {
             ));
         }
         let empreintes = |v: &[String]| v.iter().filter_map(|e| super::empreinte_de(e)).collect();
-        c.permises = lus.as_ref().map(|r| empreintes(&r.permises)).unwrap_or_default();
-        c.vanguard = lus.as_ref().map(|r| empreintes(&r.vanguard)).unwrap_or_default();
+        c.permises = lus.as_ref().map_or_default(|r| empreintes(&r.permises));
+        c.vanguard = lus.as_ref().map_or_default(|r| empreintes(&r.vanguard));
         c.reglages = lus;
         drop(c);
         verrou(&p.cache).vider();

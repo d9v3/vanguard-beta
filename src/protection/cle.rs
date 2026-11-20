@@ -1331,7 +1331,7 @@ mod tests {
     fn joue_vanguard_de_la_fenetre() {
         if std::env::var_os(JOUER).is_some() {
             println!("copie:{}", dans_une_copie());
-            let origine = exe_d_origine().map(|p| p.display().to_string()).unwrap_or_default();
+            let origine = exe_d_origine().map_or_default(|p| p.display().to_string());
             println!("origine:{origine}");
             // Le vrai câblage de la reconnaissance de soi (bilan, veilleur, dissimulation, quarantaine) dans cette image.
             let soi = soi::Soi::courant();

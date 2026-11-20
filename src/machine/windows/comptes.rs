@@ -521,8 +521,7 @@ fn date_et_heure_locales(secondes: i64) -> String {
     chrono::Local
         .timestamp_opt(secondes, 0)
         .single()
-        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+        .map_or_default(|d| d.format("%Y-%m-%d %H:%M").to_string())
 }
 
 /// Les lignes des comptes pour les traces, dans l'ordre de Get-LocalUser : nom, activé, dernière connexion, mot de
@@ -540,8 +539,7 @@ fn lignes_des_comptes(comptes: &[Compte], separateur: char, maintenant: i64) -> 
                 c.age_mot_de_passe
                     .map(i64::from)
                     .filter(|&age| age < maintenant)
-                    .map(|age| date_et_heure_locales(maintenant - age))
-                    .unwrap_or_default(),
+                    .map_or_default(|age| date_et_heure_locales(maintenant - age)),
                 c.sid.clone(),
                 champ_de_trace(&c.description, separateur),
             ]
@@ -648,8 +646,7 @@ fn date_locale(secondes: u32) -> String {
     chrono::Local
         .timestamp_opt(i64::from(secondes), 0)
         .single()
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default()
+        .map_or_default(|d| d.format("%Y-%m-%d").to_string())
 }
 
 /// Les sections de la lecture des comptes (USR, MOI, LBP, CPT, ADM), écrites comme le script PowerShell d'avant les

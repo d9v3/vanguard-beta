@@ -926,11 +926,7 @@ fn sortie_wmi() -> (bool, String) {
         requete(ABONNEMENTS, "__FilterToConsumerBinding", "", &["Filter", "Consumer"]).map(|l| {
             l.iter()
                 .map(|b| {
-                    let filtre = b["Filter"]
-                        .texte()
-                        .and_then(reference)
-                        .map(|(_, n)| n)
-                        .unwrap_or_default();
+                    let filtre = b["Filter"].texte().and_then(reference).map_or_default(|(_, n)| n);
                     let (classe, nom) = b["Consumer"].texte().and_then(reference).unwrap_or_default();
                     format!(
                         "{}|{}|{}",

@@ -283,9 +283,7 @@ pub(super) fn lecteurs() -> (Vec<Lecteur>, usize) {
         claviers.dedup();
         lecteurs.push(Lecteur {
             pid,
-            programme: crate::socle::processus::nom_court(pid)
-                .map(|n| crate::ui::affichable(&n))
-                .unwrap_or_default(),
+            programme: crate::socle::processus::nom_court(pid).map_or_default(|n| crate::ui::affichable(&n)),
             chemin: crate::socle::processus::programme(pid).map(|c| c.to_string_lossy().into_owned()),
             claviers,
         });

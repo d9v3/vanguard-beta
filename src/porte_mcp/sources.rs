@@ -758,7 +758,7 @@ impl Lecteur<'_> {
             // admis, ou de son paquet pour une macro d'essais (7e passe ; 9e passe, R9-SOURCES-2 et 3 :
             // `use m::jette as tr;`, `use m::chemin as concat;`).
             if reserve(&nom) {
-                let racine = complet.first().map(String::as_str).unwrap_or_default();
+                let racine = complet.first().map_or_default(String::as_str);
                 // Le message dit quoi faire : les deux formes qu'il propose sont lues (7e passe, R7-SOURCES-4).
                 l.note_ui(&complet);
                 if nom != origine || complet.len() < 2 || !origine_permise(&nom, racine) || par_un_detour(&complet) {
@@ -833,7 +833,7 @@ impl Lecteur<'_> {
 /// Vrai si cette macro (son chemin, dernier nom compris) est de la liste blanche : un nom admis, seul ou sous un
 /// paquet admis.
 fn admise(chemin: &[String]) -> bool {
-    let nom = chemin.last().map(String::as_str).unwrap_or_default();
+    let nom = chemin.last().map_or_default(String::as_str);
     MACROS_ADMISES.contains(&nom) && (chemin.len() == 1 || RACINES_ADMISES.contains(&chemin[0].as_str()))
 }
 
@@ -1660,7 +1660,7 @@ impl<'ast> Visit<'ast> for Lecteur<'_> {
         if self.essai {
             return;
         }
-        let nom = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        let nom = m.path.segments.last().map_or_default(|s| s.ident.to_string());
         let nom = sans_r(&nom);
         let chemin: Vec<String> = m
             .path

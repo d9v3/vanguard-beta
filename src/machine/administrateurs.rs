@@ -83,7 +83,7 @@ fn cle_vue(vus: &BTreeMap<String, String>, nom: &str, sans_casse: bool) -> Strin
 }
 
 fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Constat, Vus) {
-    let mut vus = avant.map(|v| v.vus.clone()).unwrap_or_default();
+    let mut vus = avant.map_or_default(|v| v.vus.clone());
     let cles: Vec<String> = admins.iter().map(|a| cle_vue(&vus, a, cfg!(windows))).collect();
     // Un administrateur sorti du groupe est oublié : remis plus tard (par un intrus, souvent un compte dormant), il
     // repart de la date du jour et se signale comme un nouveau. Gardé, sa vieille date le faisait passer pour connu.

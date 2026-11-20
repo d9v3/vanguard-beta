@@ -183,7 +183,7 @@ fn anomalies(m: &Message) -> (Vec<Signe>, Vec<String>) {
 fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
     let mut c = Constats::default();
     let de = entetes::expediteur(&m.entetes);
-    let domaine = de.as_ref().map(|a| a.domaine.clone()).unwrap_or_default();
+    let domaine = de.as_ref().map_or_default(|a| a.domaine.clone());
     c.expediteur = entetes::examiner_expediteur(&m.entetes);
     let (auth, signes) = entetes::lire_authentification(&m.entetes);
     let (jugement, manques) = entetes::juger_authentification(auth.as_ref(), &domaine);
@@ -652,9 +652,7 @@ fn afficher_liens(c: &Constats) {
             });
             continue;
         }
-        let ou = origine(source)
-            .map(|o| format!(" {GRIS}({o}){RESET}"))
-            .unwrap_or_default();
+        let ou = origine(source).map_or_default(|o| format!(" {GRIS}({o}){RESET}"));
         let nom = if site.is_empty() {
             couper(&affichable(exemple), 50)
         } else {
@@ -854,10 +852,7 @@ pub fn verifier(fichier: Option<&Path>) {
     if let Some(d) = decode("date") {
         montrer_entete(tr!("Date", "Date"), &d);
     }
-    let nom_fichier = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom_fichier = chemin.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     montrer_entete(
         tr!("Fichier", "File"),
         &format!(

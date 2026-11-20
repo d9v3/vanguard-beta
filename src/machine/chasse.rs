@@ -1031,7 +1031,7 @@ pub(crate) fn montrer(p: &EnMarche, s: &Soupcon) -> String {
     } else {
         ""
     };
-    let suite = s.extrait.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
+    let suite = s.extrait.as_deref().map_or_default(|e| format!(" ({e})"));
     trf!(
         "« {} » (PID {}) {}{efface}{suite}",
         "“{}” (PID {}) {}{efface}{suite}",

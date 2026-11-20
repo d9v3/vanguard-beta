@@ -152,8 +152,7 @@ fn famille(os_release: &str) -> Option<Paquets> {
         os_release
             .lines()
             .find_map(|l| l.strip_prefix(cle)?.strip_prefix('='))
-            .map(|v| v.trim().trim_matches('"').to_lowercase())
-            .unwrap_or_default()
+            .map_or_default(|v| v.trim().trim_matches('"').to_lowercase())
     };
     format!("{} {}", valeur("ID"), valeur("ID_LIKE"))
         .split_whitespace()

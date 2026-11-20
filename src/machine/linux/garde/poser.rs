@@ -263,8 +263,8 @@ fn poser(compte: u32, dossier: &str) -> Result<Option<String>, Echec> {
         listes: dossier.to_string(),
         refus: avant.as_ref().is_some_and(|a| a.refus),
         pause_jusqu_a: None,
-        permises: avant.as_ref().map(|a| a.permises.clone()).unwrap_or_default(),
-        vanguard: avant.map(|a| a.vanguard).unwrap_or_default(),
+        permises: avant.as_ref().map_or_default(|a| a.permises.clone()),
+        vanguard: avant.map_or_default(|a| a.vanguard),
     };
     garder_empreinte(&mut r, empreinte);
     ecrire_reglages(&r)?;

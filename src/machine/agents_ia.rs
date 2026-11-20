@@ -195,8 +195,7 @@ const PAQUET_JS: [&str; 2] = ["--package", "-p"];
 fn nom_du_lanceur(commande: &str) -> String {
     Path::new(commande)
         .file_stem()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
+        .map_or_default(|s| s.to_string_lossy().to_lowercase())
 }
 
 /// Le paquet lancé par un lanceur (`npx`, `bunx`, `pnpm dlx`, `uvx`, `pipx run`), s'il n'a pas de version fixée.
@@ -366,8 +365,7 @@ fn lire_serveurs(outil: &str, serveurs: &serde_json::Map<String, Value>, t: &mut
             let args: Vec<&str> = s
                 .get("args")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).collect())
-                .unwrap_or_default();
+                .map_or_default(|a| a.iter().filter_map(Value::as_str).collect());
             if let Some(paquet) = paquet_non_epingle(commande, &args) {
                 t.non_epingles.push(format!("{qui} ({paquet})"));
             }

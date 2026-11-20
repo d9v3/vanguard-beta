@@ -128,7 +128,7 @@ pub fn genre(a: &Appareil) -> Option<Genre> {
     }
     let fabricant = a.fabricant.as_deref().unwrap_or_default().to_lowercase();
     let annonces: Vec<String> = a.annonces.iter().map(|t| t.to_lowercase()).collect();
-    let nom = a.nom.as_deref().map(mots).unwrap_or_default();
+    let nom = a.nom.as_deref().map_or_default(mots);
     let tcp = |p: &u16| a.tcp.contains(p);
     let camera = a.fabricant.as_deref().and_then(cameras::fabricant_camera).is_some()
         || a.annonces.iter().any(|t| cameras::web_camera(t))
@@ -297,11 +297,8 @@ pub fn montrer() {
         .iter()
         .filter_map(|a| a.dernier_vu.as_deref())
         .max()
-        .map(|d| trf!(" du {}", " of {}", date_fr(d)))
-        .unwrap_or_default();
-    let reseau = nom_reseau
-        .map(|n| trf!(", réseau « {n} »", ", network “{n}”"))
-        .unwrap_or_default();
+        .map_or_default(|d| trf!(" du {}", " of {}", date_fr(d)));
+    let reseau = nom_reseau.map_or_default(|n| trf!(", réseau « {n} »", ", network “{n}”"));
     afficher_aligne(
         "  ",
         &trf!(

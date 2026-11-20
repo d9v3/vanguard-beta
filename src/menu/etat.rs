@@ -32,13 +32,10 @@ pub(crate) fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec
     };
     let connexion = reseau::connexion::historique().last().map(|c| {
         let debit = |d: Option<f64>| d.map_or_else(|| "?".to_string(), |d| format!("{d:.0}"));
-        let bufferbloat = c
-            .hausse_ms
-            .map(|h| {
-                let (n, niveau) = reseau::connexion::note_bufferbloat(h);
-                format!("{}{n}{RESET}", couleur(niveau))
-            })
-            .unwrap_or_default();
+        let bufferbloat = c.hausse_ms.map_or_default(|h| {
+            let (n, niveau) = reseau::connexion::note_bufferbloat(h);
+            format!("{}{n}{RESET}", couleur(niveau))
+        });
         trf!(
             "  {GRIS}Connexion{RESET}      {:.0} ms · ↓ {} ↑ {} Mbit/s · bufferbloat {bufferbloat}",
             "  {GRIS}Connection{RESET}     {:.0} ms · ↓ {} ↑ {} Mbit/s · bufferbloat {bufferbloat}",

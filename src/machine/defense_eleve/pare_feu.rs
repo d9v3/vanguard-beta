@@ -510,7 +510,7 @@ fn couper_nftables(a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
         champs: vec![
             ("tables".into(), tables_en_lignes(&tables).into_bytes()),
             ("sauvegarde".into(), sauve.into_bytes()),
-            ("service".into(), service.map(|e| e.0).unwrap_or_default().into_bytes()),
+            ("service".into(), service.map_or_default(|e| e.0).into_bytes()),
         ],
         action: Action::Suite(actions),
     }))

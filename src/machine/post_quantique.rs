@@ -1040,13 +1040,12 @@ fn lire_wireguard() -> Wireguard {
     use winreg::enums::HKEY_LOCAL_MACHINE;
     let noms: Vec<String> = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey(super::windows::CLE_SERVICES)
-        .map(|k| {
+        .map_or_default(|k| {
             k.enum_keys()
                 .flatten()
                 .filter_map(|n| n.strip_prefix("WireGuardTunnel$").map(str::to_string))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     if noms.is_empty() {
         return Wireguard::Aucun(Absence::Inactif);
     }

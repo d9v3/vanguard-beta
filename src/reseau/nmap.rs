@@ -100,7 +100,7 @@ pub fn lire(xml: &str, ip: Ipv4Addr) -> BTreeMap<u16, String> {
         .hotes
         .into_iter()
         .filter(|h| h.adresses.iter().any(|a| a.sorte == "ipv4" && a.adresse == voulue))
-        .flat_map(|h| h.ports.map(|p| p.ports).unwrap_or_default())
+        .flat_map(|h| h.ports.map_or_default(|p| p.ports))
         .filter(|p| p.protocole == "tcp" && p.state.etat == "open")
         .filter_map(|p| {
             let s = p.service?;
@@ -150,8 +150,7 @@ pub fn versions(ip: Ipv4Addr, ports: &[u16]) -> BTreeMap<u16, String> {
         delai,
     )
     .filter(|r| r.code == Some(0))
-    .map(|r| lire(&r.sortie, ip))
-    .unwrap_or_default()
+    .map_or_default(|r| lire(&r.sortie, ip))
 }
 
 #[allow(

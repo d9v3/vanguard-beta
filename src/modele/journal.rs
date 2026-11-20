@@ -517,7 +517,7 @@ fn ecrire_dans(
     // suivis : un fichier posé au nom de 2099 ferait écrire là, et partir les vrais mois de la lecture bornée.
     let plafond = match &lue {
         TeteLue::Lue(t, _) => {
-            let annonce = t.annonce.as_ref().map(|a| a.segment.clone()).unwrap_or_default();
+            let annonce = t.annonce.as_ref().map_or_default(|a| a.segment.clone());
             t.segment.clone().max(annonce).max(mois_de(maintenant))
         }
         _ => mois_de(maintenant),
@@ -1380,6 +1380,12 @@ fn sans_plafond_de_taille() -> bool {
     if PORTE_PLAFOND.get() {
         return false;
     }
+    plafond_illimite()
+}
+
+/// Le plafond de taille de fichier du processus, à part : hors Linux, la réponse fixe `true` suivait le `if` des
+/// essais, et clippy 1.100 (`needless_bool`), qui ne voit qu'une cible à la fois, réduisait le tout à `!porte`.
+fn plafond_illimite() -> bool {
     #[cfg(target_os = "linux")]
     {
         matches!(crate::socle::processus::plafond_de_fichier(), Ok(u64::MAX))
@@ -1806,8 +1812,7 @@ fn constat_de_rupture(
     // Une date hors de chrono : limite vide, toute rupture compte (l'alerte dure plus, jamais moins).
     let limite = maintenant
         .checked_sub_signed(chrono::Duration::days(RUPTURE_DITE_JOURS))
-        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_default();
+        .map_or_default(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
     // Jamais après maintenant : une rupture datée de l'avenir (horloge avancée) ne tiendrait l'alerte que plus longtemps.
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let dans_le_mois =
@@ -1941,8 +1946,7 @@ fn dernier_evenement_dans(
 ) -> Option<Evenement> {
     let limite = maintenant
         .checked_sub_signed(fenetre)
-        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_default();
+        .map_or_default(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let plafond = mois_de(maintenant);
     let presents = segments(&dossier.join(DOSSIER));

@@ -276,10 +276,7 @@ pub(crate) fn mettre_de_cote(windows: &Path, cache: ACoter, date: &str) -> Resul
     let Lieu::Ici(source) = lieu else {
         return Ok(tr!("absent : rien à mettre de côté", "missing: nothing to set aside").to_string());
     };
-    let nom = source
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom = source.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let cible = source.with_file_name(format!("{nom}.{date}"));
     // Deux fois dans la même minute : l'ancien mis de côté n'est jamais remplacé.
     if std::fs::symlink_metadata(&cible).is_ok() {

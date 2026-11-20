@@ -38,8 +38,7 @@ pub(super) fn verrouillage() -> Constat {
         r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
         "InactivityTimeoutSecs",
     )
-    .map(|s| s.to_string())
-    .unwrap_or_default();
+    .map_or_default(|s| s.to_string());
     let sortie = format!(
         "INACTIF|{inactif}\nECRAN|{}\nECRAN_STRATEGIE|{}\nVEILLE|{veille}\nCONNEXION|{connexion}\n",
         ecran(HKEY_CURRENT_USER, r"Control Panel\Desktop"),
@@ -71,10 +70,8 @@ pub(super) fn delai(sortie: &str) -> u64 {
         delais.push(s);
     }
     // Écran de veille : la stratégie passe avant le réglage du compte, valeur par valeur.
-    let ecran: Vec<&str> = champ("ECRAN").map(|v| v.split('|').collect()).unwrap_or_default();
-    let strategie: Vec<&str> = champ("ECRAN_STRATEGIE")
-        .map(|v| v.split('|').collect())
-        .unwrap_or_default();
+    let ecran: Vec<&str> = champ("ECRAN").map_or_default(|v| v.split('|').collect());
+    let strategie: Vec<&str> = champ("ECRAN_STRATEGIE").map_or_default(|v| v.split('|').collect());
     let valeur = |i: usize| {
         strategie
             .get(i)

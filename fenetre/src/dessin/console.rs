@@ -702,10 +702,7 @@ fn dessiner_bloc(
                     )
                 }
                 Etat::Fini | Etat::Echec => {
-                    let d = b
-                        .duree
-                        .map(|d| crate::langue::secondes(d.as_secs_f32()))
-                        .unwrap_or_default();
+                    let d = b.duree.map_or_default(|d| crate::langue::secondes(d.as_secs_f32()));
                     // Le résumé à l'encre : la couleur du bloc est déjà dans sa bande et son icône.
                     (format!("{d} · {}", b.resume), encre_ton(b.ton))
                 }

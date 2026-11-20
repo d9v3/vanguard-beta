@@ -672,7 +672,7 @@ impl Lieux {
             f
         };
         Lieux {
-            telechargements: telechargements.map(formes).unwrap_or_default(),
+            telechargements: telechargements.map_or_default(formes),
             temporaires: temporaires.iter().flat_map(|t| formes(t)).collect(),
             maisons: formes_de(maison),
         }
@@ -805,10 +805,7 @@ pub(crate) fn examiner_ouvert(
     sources: &Sources<'_>,
     bornes: Bornes,
 ) -> Result<Resultat, ()> {
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom = chemin.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let mut fichier = Some(fichier);
     examiner_par(chemin, sources, bornes, &mut |bornes, visiteur| {
         let f = fichier.take().ok_or_else(|| std::io::Error::other("fichier déjà lu"))?;

@@ -166,7 +166,7 @@ fn dire_retrait(faits: &[(PathBuf, Fait)], ou: &Path) {
             "  {VERT}✔{RESET} Shortcut removed."
         ),
         (None, Some(Fait::Retire)) => {
-            let montre = icone.map(|(p, _)| chemin_affichable(p)).unwrap_or_default();
+            let montre = icone.map_or_default(|(p, _)| chemin_affichable(p));
             trp!(
                 "  {VERT}✔{RESET} Icône de Vanguard retirée ({montre}).",
                 "  {VERT}✔{RESET} Vanguard's icon removed ({montre})."

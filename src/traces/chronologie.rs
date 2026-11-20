@@ -284,8 +284,7 @@ pub(crate) struct FichierRecent {
 pub(crate) fn parlant(chemin: &str, relatif: &Path, executable: bool, cache: bool) -> bool {
     let extension = Path::new(chemin)
         .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|e| e.to_string_lossy().to_lowercase());
     let cache = cache
         || relatif
             .components()
@@ -928,7 +927,7 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
             }
             "shutdown" | "runlevel" => {}
             _ => {
-                let hote = mots.get(2..i).map(|h| h.join(" ")).unwrap_or_default();
+                let hote = mots.get(2..i).map_or_default(|h| h.join(" "));
                 if hote_distant(&hote) {
                     v.push(Evenement::new(
                         quand,

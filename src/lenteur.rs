@@ -455,7 +455,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
                 "Disk busy {occupe:.0}% of the time, mostly by {} ({}/s){}.",
                 p.nom,
                 taille(debit(p)),
-                passager(&p.nom).map(|r| format!(" : {r}")).unwrap_or_default()
+                passager(&p.nom).map_or_default(|r| format!(" : {r}"))
             ),
             None => trf!(
                 "Disque occupé {occupe:.0} % du temps : tout ce qui le lit ou l'écrit attend son tour.",
@@ -983,7 +983,7 @@ mod systeme {
             let p = bus.proprietes(dbus::SYSTEMD, chemin, dbus::UNITE)?;
             let instant = |cle: &str| p.champ(cle).and_then(Valeur::entier).unwrap_or(0);
             Ok(Some(UniteDemarrage {
-                apres: p.champ("After").map(Valeur::textes).unwrap_or_default(),
+                apres: p.champ("After").map_or_default(Valeur::textes),
                 debut: instant("InactiveExitTimestampMonotonic"),
                 active: instant("ActiveEnterTimestampMonotonic"),
                 inactive: instant("InactiveEnterTimestampMonotonic"),
@@ -1230,9 +1230,8 @@ fn instantane_windows(l: LectureWindows) -> Instantane {
                 .apres_ms
                 .filter(|&a| a > 0)
                 .map(|a| secondes_lisibles(crate::socle::nombres::flottant(a) / 1000.0));
-            let etapes = apres
-                .map(|a| trf!("dont {} après l'ouverture de session", "including {} after login", a))
-                .unwrap_or_default();
+            let etapes =
+                apres.map_or_default(|a| trf!("dont {} après l'ouverture de session", "including {} after login", a));
             Ok(Demarrage { total, etapes, lents })
         }
         (None, true) => Err(tr!(
@@ -1467,8 +1466,7 @@ mod systeme {
                 };
                 let programme = std::path::Path::new(programme)
                     .file_stem()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                    .map_or_default(|n| n.to_string_lossy().into_owned());
                 Some(DemarrageWindows {
                     nom: texte("Caption"),
                     programme,

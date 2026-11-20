@@ -77,8 +77,7 @@ fn heure_locale(secondes: u64) -> String {
     i64::try_from(secondes)
         .ok()
         .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_default()
+        .map_or_default(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 /// Les tops d'horloge par seconde du noyau (`_SC_CLK_TCK`), l'unité des temps de `/proc/<pid>/stat` ; 100 si le
@@ -116,20 +115,17 @@ pub(super) fn processus(dossier: &Path) -> Partie {
             continue;
         };
         let (ppid, uid, nom) = lire_status(&status);
-        let ligne = std::fs::read(racine.join("cmdline"))
-            .map(|o| {
-                String::from_utf8_lossy(&o)
-                    .split('\0')
-                    .filter(|a| !a.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default();
+        let ligne = std::fs::read(racine.join("cmdline")).map_or_default(|o| {
+            String::from_utf8_lossy(&o)
+                .split('\0')
+                .filter(|a| !a.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
         let debut = std::fs::read_to_string(racine.join("stat"))
             .ok()
             .and_then(|s| debut_du_processus(&s, demarrage, tops))
-            .map(heure_locale)
-            .unwrap_or_default();
+            .map_or_default(heure_locale);
         let (programme, etat, empreinte) = match std::fs::read_link(racine.join("exe")) {
             Ok(lien) => {
                 let lien = lien.to_string_lossy().into_owned();
@@ -166,9 +162,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
         liste.push(Processus {
             pid,
             ppid,
-            compte: uid
-                .map(|u| comptes.get(&u).cloned().unwrap_or_else(|| u.to_string()))
-                .unwrap_or_default(),
+            compte: uid.map_or_default(|u| comptes.get(&u).cloned().unwrap_or_else(|| u.to_string())),
             debut,
             programme,
             etat,
@@ -424,7 +418,7 @@ fn releve_systemd(f: &mut Feuille, utilisateur: bool) -> Option<Vec<String>> {
         if t == 0 {
             "-".to_string()
         } else {
-            i64::try_from(t / 1_000_000).map(date).unwrap_or_default()
+            i64::try_from(t / 1_000_000).map_or_default(date)
         }
     };
     let mut texte = String::from("# fichiers / unit files\n");
@@ -685,7 +679,7 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
         )?;
         let mut lignes = Vec::new();
         let mut ids = Vec::new();
-        let toutes = liste.first().map(dbus::Valeur::elements).unwrap_or_default();
+        let toutes = liste.first().map_or_default(dbus::Valeur::elements);
         coupees = toutes.len().saturating_sub(SESSIONS_MAX);
         for s in toutes.iter().take(SESSIONS_MAX) {
             let m = s.elements();
@@ -723,7 +717,7 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
                 t("Type"),
                 t("Class"),
                 t("State"),
-                debut.map(crate::machine::linux::connexions::date).unwrap_or_default()
+                debut.map_or_default(crate::machine::linux::connexions::date)
             ));
             ids.push(id.to_string());
         }

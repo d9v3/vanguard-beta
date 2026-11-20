@@ -1034,8 +1034,7 @@ impl Bus {
         let corps = self.appeler(destination, racine, OBJETS, "GetManagedObjects", "", Vec::new())?;
         let mut objets: Vec<(String, Valeur)> = corps
             .first()
-            .map(Valeur::entrees)
-            .unwrap_or_default()
+            .map_or_default(Valeur::entrees)
             .iter()
             .filter_map(|(chemin, interfaces)| Some((chemin.texte()?.to_string(), interfaces.clone())))
             .collect();
@@ -1117,8 +1116,7 @@ fn nom_present(bus: &mut Bus, nom: &str) -> Option<bool> {
     Some(
         activables
             .first()
-            .map(Valeur::elements)
-            .unwrap_or_default()
+            .map_or_default(Valeur::elements)
             .iter()
             .any(|n| n.texte() == Some(nom)),
     )
@@ -1157,8 +1155,7 @@ pub(crate) fn unites_chargees(bus: &mut Bus) -> Result<HashMap<String, String>, 
     let corps = bus.appeler(SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "ListUnits", "", Vec::new())?;
     Ok(corps
         .first()
-        .map(Valeur::elements)
-        .unwrap_or_default()
+        .map_or_default(Valeur::elements)
         .iter()
         .filter_map(|u| {
             let m = u.elements();
@@ -1260,8 +1257,7 @@ pub(crate) fn condition_refusee(bus: &mut Bus, nom: &str) -> Result<bool, crate:
 /// `sans_suivies` : sans celles qui en suivent une autre.
 fn noms_d_unites(liste: Option<&Valeur>, sans_suivies: bool) -> Vec<String> {
     let mut noms: Vec<String> = liste
-        .map(Valeur::elements)
-        .unwrap_or_default()
+        .map_or_default(Valeur::elements)
         .iter()
         .filter(|u| !sans_suivies || u.elements().get(5).and_then(Valeur::texte).is_none_or(str::is_empty))
         .filter_map(|u| u.elements().first()?.texte().map(String::from))

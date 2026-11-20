@@ -729,7 +729,7 @@ pub(crate) fn sauf_lien_mort(chemin: &std::path::Path, e: std::io::Error) -> std
 #[cfg(unix)]
 pub(crate) fn etat_du_contenant(f: &std::path::Path, octets: &[u8]) -> Result<Etat, Refus> {
     par_un_chemin_fixe(f)?;
-    let vu = |m: std::io::Result<std::fs::Metadata>| m.as_ref().map(|m| Vu::de_dans(m, f)).unwrap_or_default();
+    let vu = |m: std::io::Result<std::fs::Metadata>| m.as_ref().map_or_default(|m| Vu::de_dans(m, f));
     let contenu = Etat::Fichier {
         empreinte: sha2::Sha256::digest(octets).into(),
         apercu: None,

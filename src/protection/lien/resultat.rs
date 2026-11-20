@@ -66,7 +66,7 @@ pub(super) fn resultat(lien: &Lien, signes: &[Signe], en_ligne: &EnLigneVu, debu
     match en_ligne {
         EnLigneVu::Faites(verifications) => {
             for v in *verifications {
-                let note = v.note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default();
+                let note = v.note.as_deref().map_or_default(|n| format!(" ({n})"));
                 match (&v.reponse, &v.signe) {
                     (Inscription::Impossible(raison), _) => {
                         constats.push(impossible_par(

@@ -523,14 +523,12 @@ impl Banc {
     }
 
     fn tickets(&self) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(self.d.join("tickets"))
-            .map(|r| {
-                r.filter_map(Result::ok)
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|n| n != "noms-vus.json")
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut v: Vec<String> = std::fs::read_dir(self.d.join("tickets")).map_or_default(|r| {
+            r.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "noms-vus.json")
+                .collect()
+        });
         v.sort();
         v
     }

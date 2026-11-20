@@ -110,8 +110,7 @@ impl Programme {
     fn nom(&self) -> String {
         self.chemin
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .map_or_default(|n| n.to_string_lossy().into_owned())
     }
 
     /// La garde (`refus_chemin`), rejouée juste avant chaque lancement : la fenêtre reste ouverte des heures et relit

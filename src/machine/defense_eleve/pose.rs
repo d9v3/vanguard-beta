@@ -86,7 +86,7 @@ pub(super) fn juger_remise(c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     if a.version_signee(&e).map_err(|x| pas_lisible(&x))?.is_some() {
         return Ok(None);
     }
-    let nom = p.file_name().map(|n| echappe(n.as_bytes())).unwrap_or_default();
+    let nom = p.file_name().map_or_default(|n| echappe(n.as_bytes()));
     let q = PathBuf::from(format!("{QUARANTAINE}/{}-{nom}", hex(e.get(..8).unwrap_or_default())));
     let mut actions = Vec::new();
     // /var/lib/vanguard : relu s'il est là ; sinon la note d'« avant », écrite avant le geste, le crée (le créer ici

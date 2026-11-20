@@ -529,9 +529,8 @@ pub async fn auditer(scan: &Rapport, machine: Option<Vec<Constat>>, invite: bool
     let mesurer_internet = !rapide && !hors_ligne();
     let lectures = tokio::task::spawn_blocking(move || {
         std::thread::scope(|s| {
-            let carnet = crate::socle::fil::dans_ou_ici(s, "carnet", || {
-                reseau::carnet_du_reseau().map(|(_, a)| a).unwrap_or_default()
-            });
+            let carnet =
+                crate::socle::fil::dans_ou_ici(s, "carnet", || reseau::carnet_du_reseau().map_or_default(|(_, a)| a));
             let botnets = crate::socle::fil::dans_ou_ici(s, "botnets", crate::protection::sortantes::botnets_en_cours);
             let internet = crate::socle::fil::dans_ou_ici(s, "internet", move || mesurer_internet.then(internet));
             (
@@ -623,11 +622,7 @@ fn afficher_references(d: &DomaineAudite) {
 }
 
 pub fn afficher(a: &AuditReseau) {
-    let nom = a
-        .nom_reseau
-        .as_deref()
-        .map(|n| trf!(" « {n} »", " “{n}”"))
-        .unwrap_or_default();
+    let nom = a.nom_reseau.as_deref().map_or_default(|n| trf!(" « {n} »", " “{n}”"));
     titre(&trf!("Audit du réseau{nom}", "Network audit{nom}"));
     if a.invite {
         afficher_aligne(

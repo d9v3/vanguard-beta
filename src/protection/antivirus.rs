@@ -76,9 +76,11 @@ impl Examen {
                     "{moteur} : suspect, rien de connu ({}){}.",
                     "{moteur}: suspicious, nothing known ({}){}.",
                     affichable(&resume(signes, 2, " ; ")),
-                    self.non_verifie_du_suspect()
-                        .map(|n| trf!(" ; non vérifié : {}", "; not checked: {}", affichable(&n)))
-                        .unwrap_or_default()
+                    self.non_verifie_du_suspect().map_or_default(|n| trf!(
+                        " ; non vérifié : {}",
+                        "; not checked: {}",
+                        affichable(&n)
+                    ))
                 ),
             ),
             // La raison peut porter un nom d'entrée d'archive, choisi par qui a fait le fichier : sans `affichable`,
@@ -375,8 +377,7 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
         crate::commande::par_le_systeme("lsblk").args(["-Pno", "RM,HOTPLUG,LABEL,SIZE,MOUNTPOINT"]),
         10,
     )
-    .map(|o| lire_lsblk(&o.sortie))
-    .unwrap_or_default()
+    .map_or_default(|o| lire_lsblk(&o.sortie))
 }
 
 /// Un chemin absolu du système, rattaché à `racine` (les tests passent la leur).
@@ -1794,7 +1795,7 @@ fn detections_de_defender() -> Option<Vec<Detection>> {
     use crate::machine::windows::wmi::{Valeur, requete};
     const ESPACE: &str = r"root\Microsoft\Windows\Defender";
     // Un tableau, ou une valeur seule ; une date CIM revient en texte.
-    let textes = |v: Option<&Valeur>| -> Vec<String> { v.map(Valeur::textes).unwrap_or_default() };
+    let textes = |v: Option<&Valeur>| -> Vec<String> { v.map_or_default(Valeur::textes) };
     if let Some(lignes) = requete(
         ESPACE,
         "MSFT_MpThreatDetection",
@@ -1841,8 +1842,7 @@ fn detections_de_defender() -> Option<Vec<Detection>> {
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
     let chaines = |x: Option<&serde_json::Value>| -> Vec<String> {
         x.and_then(serde_json::Value::as_array)
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
-            .unwrap_or_default()
+            .map_or_default(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
     };
     Some(
         v.as_array()?

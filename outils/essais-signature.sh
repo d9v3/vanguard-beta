@@ -908,8 +908,8 @@ apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un 
 # Non vérifié ici, dit : src/ qui lirait un fichier de la liste autrement que par son nom écrit en clair (cites ne
 # voit ni include_str!(concat!(…)) ni une macro renommée), une macro procédurale d'un paquet ordinaire qui lirait le
 # disque, et la configuration de cargo hors du dépôt (~/.cargo). Sans cargo ou sans jq : « non vérifié », un échec.
-EMPREINTES_COMPILATION='f35d6cdc58877cd63d2319e807d99dc321062bec88c8d0cd021ba454055aacb9 build.rs
-6df0b42f9629b6e8193570259e67e43d234cc8ee2b74b4b718196f18e40bc905 src/porte_mcp/sources.rs
+EMPREINTES_COMPILATION='c03a2da2136931bfa0e3082db8bb5b761cc14ef7e8f29d75364a2986115da657 build.rs
+0f816f8a4bea78c08d696f5f11aa596c7a057e49fb7e2e7ea9e813e1c185d693 src/porte_mcp/sources.rs
 a132b1fdb1a4e6ce3f3e4de078e3c048a0b8f7f040081fd8fac351e0185eb651 .cargo/config.toml'
 REGISTRE='registry+https://github.com/rust-lang/crates.io-index'
 garde_compilation() { # $1 : racine d'un dépôt ; écrit chaque écart, rien si tout est permis

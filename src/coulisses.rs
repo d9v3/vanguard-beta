@@ -197,7 +197,7 @@ pub(crate) fn lancements() -> usize {
 
 /// Les dernières commandes, de la plus ancienne à la plus récente.
 pub(crate) fn dernieres() -> Vec<Trace> {
-    TRACES.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default()
+    TRACES.lock().map_or_default(|t| t.iter().cloned().collect())
 }
 
 /// `vanguard parametres coulisses voir` : les dernières commandes de ce processus. Un nouveau lancement repart à vide :

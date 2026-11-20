@@ -111,13 +111,12 @@ fn lignes_processus() -> Option<String> {
         .filter_map(|p| {
             let texte = |c: &str| sur_une_ligne(p[c].texte().unwrap_or_default());
             let pid = u32::try_from(p["ProcessId"].entier()?).ok()?;
-            let parent = p["ParentProcessId"].entier().map(|n| n.to_string()).unwrap_or_default();
+            let parent = p["ParentProcessId"].entier().map_or_default(|n| n.to_string());
             // La date CIM est à l'heure de l'ordinateur : « yyyy-MM-dd HH:mm:ss », comme le script.
             let debut = p["CreationDate"]
                 .texte()
                 .and_then(|d| chrono::NaiveDateTime::parse_from_str(d.get(..14)?, "%Y%m%d%H%M%S").ok())
-                .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
-                .unwrap_or_default();
+                .map_or_default(|d| d.format("%Y-%m-%d %H:%M:%S").to_string());
             let compte = sur_une_ligne(&crate::machine::windows::processus::compte_de(pid));
             Some(format!(
                 "PRC|{pid}{SEP}{parent}{SEP}{compte}{SEP}{debut}{SEP}{}{SEP}{}",
@@ -477,10 +476,7 @@ fn cle_registre(chemin: &str, seule: Option<&str>) -> Result<(String, Option<i64
     })?;
     let mut texte = String::new();
     let valeurs: Vec<(String, winreg::RegValue)> = match seule {
-        Some(nom) => cle
-            .get_raw_value(nom)
-            .map(|v| vec![(nom.to_string(), v)])
-            .unwrap_or_default(),
+        Some(nom) => cle.get_raw_value(nom).map_or_default(|v| vec![(nom.to_string(), v)]),
         None => cle.enum_values().flatten().collect(),
     };
     for (nom, valeur) in valeurs {

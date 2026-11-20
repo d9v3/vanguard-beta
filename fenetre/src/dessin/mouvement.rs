@@ -354,16 +354,12 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let lus = sortie
-            .platform_output
-            .accesskit_update
-            .map(|u| {
-                u.nodes
-                    .iter()
-                    .filter_map(|(_, n)| n.value().or(n.label()).map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let lus = sortie.platform_output.accesskit_update.map_or_default(|u| {
+            u.nodes
+                .iter()
+                .filter_map(|(_, n)| n.value().or(n.label()).map(str::to_owned))
+                .collect()
+        });
         (peints, place, lus)
     }
 

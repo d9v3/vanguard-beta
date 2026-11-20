@@ -267,7 +267,7 @@ pub(super) fn droits(c: &CibleSsh, personne: Option<&str>) -> Resultat {
     match rejuger(c, &f) {
         Ok(true) => {}
         Ok(false) => {
-            let lu = super::securite::droits_poignee(&f).map(|(_, s)| s).unwrap_or_default();
+            let lu = super::securite::droits_poignee(&f).map_or_default(|(_, s)| s);
             return resultat(Issue::Rien(lu));
         }
         Err(r) => return refus(r),

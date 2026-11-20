@@ -105,9 +105,7 @@ fn par_choix_element(id: IdChoix, notes: &Notes) -> Option<u64> {
 
 fn majuscule(t: &str) -> String {
     let mut c = t.chars();
-    c.next()
-        .map(|p| p.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+    c.next().map_or_default(|p| p.to_uppercase().chain(c).collect())
 }
 
 /// Un texte en gris, coupé à la largeur de l'écran sous un retrait de deux colonnes.

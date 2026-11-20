@@ -425,7 +425,7 @@ fn fichiers_du_pc(dossiers: &[PathBuf], max: usize, taille_max: u64, garder: imp
 }
 
 fn dossiers_du_pc() -> Vec<PathBuf> {
-    let maison = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let maison = std::env::var_os("HOME").map_or_default(PathBuf::from);
     [
         PathBuf::from("/usr/bin"),
         PathBuf::from("/usr/lib"),

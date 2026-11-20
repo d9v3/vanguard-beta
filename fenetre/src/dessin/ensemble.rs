@@ -136,8 +136,7 @@ fn dernier_bilan(appli: &Appli, ui: &mut Ui) {
     let p = pal();
     let heure = appli
         .resultat(Commande::Bilan)
-        .map(|r| crate::trf!("à {}", "at {}", r.heure))
-        .unwrap_or_default();
+        .map_or_default(|r| crate::trf!("à {}", "at {}", r.heure));
     titre(
         ui,
         crate::tr!("Dernier bilan, par sujet", "Last check, by topic"),

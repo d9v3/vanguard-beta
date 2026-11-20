@@ -57,8 +57,7 @@ fn pouvoirs(permissions: &[&str]) -> Vec<&'static str> {
 
 fn chaines(v: &Value) -> Vec<&str> {
     v.as_array()
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default()
+        .map_or_default(|a| a.iter().filter_map(Value::as_str).collect())
 }
 
 /// Extensions actives d'un `extensions.json` de la famille Firefox (installées par l'utilisateur seulement :
@@ -74,11 +73,8 @@ fn lire_firefox(texte: &str) -> Vec<Extension> {
             continue;
         }
         // Sans la clé, aucune permission : ce que disait déjà l'index (Null, lu comme une liste vide).
-        let permissions = a
-            .pointer("/userPermissions/permissions")
-            .map(chaines)
-            .unwrap_or_default();
-        let origines = a.pointer("/userPermissions/origins").map(chaines).unwrap_or_default();
+        let permissions = a.pointer("/userPermissions/permissions").map_or_default(chaines);
+        let origines = a.pointer("/userPermissions/origins").map_or_default(chaines);
         let origine_suspecte = if a
             .pointer("/installTelemetryInfo/method")
             .is_some_and(|m| m == "sideload")

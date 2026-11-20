@@ -473,12 +473,7 @@ mod registre {
 
     /// Le dernier morceau d'un dossier de profil : le nom du compte.
     fn compte_de(dossier: &Path) -> String {
-        crate::ui::affichable(
-            &dossier
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        )
+        crate::ui::affichable(&dossier.file_name().map_or_default(|n| n.to_string_lossy().into_owned()))
     }
 
     /// Les dossiers à lire : `Program Files` (64 et 32 bits), le profil de ce compte, et en administrateur ceux des

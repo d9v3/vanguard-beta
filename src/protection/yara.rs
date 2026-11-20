@@ -263,8 +263,7 @@ fn analyser_fichiers(sources: &Sources<'_>, liste: &[PathBuf]) -> (Vec<Trouve>, 
         |f| {
             sources
                 .malwarebazaar
-                .map(|e| empreintes::connus(e, std::slice::from_ref(f)))
-                .unwrap_or_default()
+                .map_or_default(|e| empreintes::connus(e, std::slice::from_ref(f)))
                 .into_iter()
                 .map(|(chemin, e)| {
                     Trouve::de(

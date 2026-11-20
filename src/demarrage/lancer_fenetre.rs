@@ -1093,7 +1093,7 @@ mod tests {
         assert!(verifier(&dossier, &bonne).is_err(), "un dossier");
         // Tenue, elle se lance quand même (Windows ouvre l'image en lecture, permise par ce partage) : un vrai
         // programme, `cmd.exe` copié, joue la fenêtre.
-        let systeme = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_default();
+        let systeme = std::env::var_os("SystemRoot").map_or_default(PathBuf::from);
         let Ok(cmd) = std::fs::read(systeme.join("System32").join("cmd.exe")) else {
             let _ = std::fs::remove_dir_all(&dossier);
             return crate::essais::saute("pas de cmd.exe");

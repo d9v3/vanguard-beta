@@ -49,13 +49,12 @@ fn noms_de(cle: &RegKey) -> Vec<String> {
 pub(crate) fn paquets_store() -> Vec<String> {
     RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(PAQUETS)
-        .map(|cle| {
+        .map_or_default(|cle| {
             cle.enum_keys()
                 .flatten()
                 .filter_map(|complet| nom_du_paquet(&complet))
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// « Microsoft.WindowsTerminal_1.21.3231.0_x64__8wekyb3d8bbwe » → « Microsoft.WindowsTerminal » : le nom d'un paquet

@@ -94,8 +94,7 @@ impl Menace {
                 let script = fichier
                     .as_ref()
                     .filter(|f| *f != c)
-                    .map(|f| format!("{}|", f.to_string_lossy()))
-                    .unwrap_or_default();
+                    .map_or_default(|f| format!("{}|", f.to_string_lossy()));
                 format!("{detection}|{script}{}", c.to_string_lossy())
             }
             _ => self.cle.clone(),
@@ -686,7 +685,7 @@ fn connexions(t: &mut Trouvees) {
             || tr!("programme d'un autre compte", "another account's program").to_string(),
             |p| chasse::nom_montre(&p),
         );
-        let pid = c.pid.map(|p| format!(" (PID {p})")).unwrap_or_default();
+        let pid = c.pid.map_or_default(|p| format!(" (PID {p})"));
         t.menaces.push(Menace {
             categorie: Categorie::Connexions,
             certaine: true,

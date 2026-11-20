@@ -245,8 +245,7 @@ pub(crate) fn resoudre_serveurs() -> Vec<IpAddr> {
         let _ = std::thread::Builder::new().name("isolement-dns".into()).spawn(move || {
             let adresses: Vec<IpAddr> = (*hote, 443)
                 .to_socket_addrs()
-                .map(|a| a.map(|s| s.ip()).collect())
-                .unwrap_or_default();
+                .map_or_default(|a| a.map(|s| s.ip()).collect());
             let _ = envoi.send(adresses);
         });
     }
@@ -270,9 +269,7 @@ pub(crate) fn resoudre_serveurs() -> Vec<IpAddr> {
 /// Les serveurs DNS en place (`DNS_MAX` au plus), sans la boucle locale (déjà permise).
 pub(crate) fn dns_en_place() -> Vec<IpAddr> {
     let mut v = trier(
-        crate::machine::dns::actuel()
-            .map(|a| a.serveurs.into_iter().map(|(ip, _)| ip).collect::<Vec<_>>())
-            .unwrap_or_default(),
+        crate::machine::dns::actuel().map_or_default(|a| a.serveurs.into_iter().map(|(ip, _)| ip).collect::<Vec<_>>()),
     );
     v.truncate(DNS_MAX);
     v
@@ -945,12 +942,11 @@ pub(crate) fn banniere() -> Option<String> {
     let depuis = en_place()?;
     let quand = chrono::DateTime::from_timestamp(depuis, 0)
         .filter(|_| depuis > 0)
-        .map(|d| {
+        .map_or_default(|d| {
             d.with_timezone(&chrono::Local)
                 .format(tr!(" depuis le %Y-%m-%d à %H:%M", " since %Y-%m-%d at %H:%M"))
                 .to_string()
-        })
-        .unwrap_or_default();
+        });
     Some(trf!(
         "Cet ordinateur est isolé du réseau par Vanguard{quand} : seuls la connexion gardée de la session à distance (aucune nouvelle), le DNS et, si vous l'avez isolé vous-même, les serveurs de Vanguard en HTTPS passent (aucun après un rançongiciel). Pour le lever : « vanguard blocage annuler ».",
         "This computer is isolated from the network by Vanguard{quand}: only the kept connection of the remote session (no new one), DNS and, if you isolated it yourself, Vanguard's servers over HTTPS get through (none after a ransomware). To lift it: “vanguard blocking undo”."

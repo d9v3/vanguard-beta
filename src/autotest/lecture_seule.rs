@@ -305,9 +305,7 @@ pub(crate) fn empreinte_dossier(dossier: &Path) -> Empreinte {
             let valeur = if m.file_type().is_symlink() {
                 format!(
                     "lien:{}",
-                    std::fs::read_link(&chemin)
-                        .map(|c| c.to_string_lossy().into_owned())
-                        .unwrap_or_default()
+                    std::fs::read_link(&chemin).map_or_default(|c| c.to_string_lossy().into_owned())
                 )
             } else if m.is_file() {
                 octets = octets.saturating_add(m.len().min(OCTETS_PAR_FICHIER));

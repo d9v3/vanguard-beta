@@ -69,11 +69,7 @@ struct Refus {
 /// La liste ; changée hors de Vanguard (ou acceptée sans sceau, ce fichier étant né avec eux) ou illisible : le refus.
 fn charger() -> Result<Liste, Refus> {
     use crate::sceau::Lecture;
-    let dit = |o: &[u8]| {
-        serde_json::from_slice::<Liste>(o)
-            .map(|l| l.suspendus)
-            .unwrap_or_default()
-    };
+    let dit = |o: &[u8]| serde_json::from_slice::<Liste>(o).map_or_default(|l| l.suspendus);
     match crate::sceau::lire(crate::sceau::SUSPENDUS) {
         Lecture::Absent | Lecture::Inconnu => Ok(Liste::default()),
         Lecture::Intact(o) => serde_json::from_slice(&o).map_err(|_| Refus {
@@ -607,9 +603,7 @@ fn dire_liste_remplacee(r: &Refus) {
 /// La première lettre en capitale (« la liste… » → « La liste… »).
 fn capitale(s: &str) -> String {
     let mut c = s.chars();
-    c.next()
-        .map(|p| p.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+    c.next().map_or_default(|p| p.to_uppercase().chain(c).collect())
 }
 
 /// La liste se lit-elle (pas changée hors de Vanguard) ? Sinon, pourquoi.
@@ -620,7 +614,7 @@ fn lisible() -> Result<(), &'static str> {
 
 #[cfg(test)]
 fn suspendus() -> Vec<Suspendu> {
-    charger().map(|l| l.suspendus).unwrap_or_default()
+    charger().map_or_default(|l| l.suspendus)
 }
 
 /// Ce qu'une reprise a fait.

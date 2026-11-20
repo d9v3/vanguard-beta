@@ -84,8 +84,7 @@ impl Prise {
             self.inode,
             self.programme
                 .as_ref()
-                .map(|(pid, nom)| format!("pid {pid} ({nom})"))
-                .unwrap_or_default()
+                .map_or_default(|(pid, nom)| format!("pid {pid} ({nom})"))
         )
     }
 }
@@ -256,7 +255,7 @@ fn lire_voisins(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
             Some(format!(
                 "{ip}\tdev {}\tlladdr {}\t{}",
                 nom_interface(noms, index),
-                a.get(&2).map(|m| adresse_mac(m)).unwrap_or_default(),
+                a.get(&2).map_or_default(|m| adresse_mac(m)),
                 etats.join(",")
             ))
         })
@@ -290,9 +289,9 @@ fn lire_adresses(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
                 "{}\t{ip}/{}\tscope {portee}\t{}",
                 nom_interface(noms, index),
                 c[1],
-                a.get(&3)
-                    .map(|l| String::from_utf8_lossy(l.split(|&o| o == 0).next().unwrap_or_default()).into_owned())
-                    .unwrap_or_default()
+                a.get(&3).map_or_default(
+                    |l| String::from_utf8_lossy(l.split(|&o| o == 0).next().unwrap_or_default()).into_owned()
+                )
             ))
         })
         .collect()

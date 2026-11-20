@@ -466,9 +466,7 @@ mod systeme {
         .collect::<Vec<_>>()
         .join(" · ");
         if !modele.is_empty() {
-            let bios = valeur("/sys/class/dmi/id/bios_version")
-                .map(|b| format!(" · BIOS {b}"))
-                .unwrap_or_default();
+            let bios = valeur("/sys/class/dmi/id/bios_version").map_or_default(|b| format!(" · BIOS {b}"));
             systeme.push(ligne(tr!("Modèle", "Model"), format!("{modele}{bios}")));
         }
         if let Some(s) = lire("/proc/uptime").and_then(|t| t.split('.').next().and_then(|s| s.parse::<u64>().ok())) {
@@ -502,8 +500,7 @@ mod systeme {
             let pilote = lire("/proc/driver/nvidia/version")
                 .filter(|_| nom.contains("NVIDIA"))
                 .and_then(|v| version_nvidia(&v))
-                .map(|v| trf!(" · pilote NVIDIA {v}", " · NVIDIA driver {v}"))
-                .unwrap_or_default();
+                .map_or_default(|v| trf!(" · pilote NVIDIA {v}", " · NVIDIA driver {v}"));
             materiel.push(ligne(tr!("Carte graphique", "Graphics card"), format!("{nom}{pilote}")));
         }
         for d in crate::machine::linux::natif::disques() {
@@ -684,7 +681,7 @@ mod systeme {
                     Some(format!(
                         "{}|{}",
                         date_locale(date).unwrap_or_default(),
-                        valeurs.first().map(String::as_str).unwrap_or_default()
+                        valeurs.first().map_or_default(String::as_str)
                     ))
                 },
             )

@@ -261,7 +261,7 @@ fn relire(jeton: &str) -> Result<(Apercu, String, Remise), Refus> {
             chemin: crate::optimiser::annulables::chemin_montre(&chemin.to_string_lossy()),
             actuel: format!("{actuel:04o}"),
             avant: format!("{avant:04o}"),
-            pose: pose.map(|m| format!("{m:04o}")).unwrap_or_default(),
+            pose: pose.map_or_default(|m| format!("{m:04o}")),
             // Encore à sa valeur d'avant : jamais touchée (une ligne interrompue avant d'être posée), pas « changée ».
             change_depuis: actuel != *avant && pose != Some(actuel),
         });

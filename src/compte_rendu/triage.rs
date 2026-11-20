@@ -372,9 +372,7 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Triage, Echec> {
         relu |= rl && suivi_avant.is_some();
     }
     let traitees = match d.traitees {
-        Some(p) => lire_borne(p, ETAT_MAX)?
-            .map(|o| traitees(&String::from_utf8_lossy(&o)))
-            .unwrap_or_default(),
+        Some(p) => lire_borne(p, ETAT_MAX)?.map_or_default(|o| traitees(&String::from_utf8_lossy(&o))),
         None => BTreeSet::new(),
     };
     let mut t = trier(&avant, &apres, &traitees);

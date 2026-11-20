@@ -278,14 +278,13 @@ pub(crate) fn reglages_poses() -> Vec<String> {
     match crate::sceau::lire_dans(&crate::reseau::dossier_local(), crate::sceau::REGLAGES) {
         Lecture::Intact(o) | Lecture::Adopte(o) => {
             serde_json::from_str::<Historique>(String::from_utf8_lossy(&o).trim_start_matches('\u{feff}'))
-                .map(|h| {
+                .map_or_default(|h| {
                     h.reglages
                         .into_iter()
                         .flat_map(|(id, a)| std::iter::once(id).chain(a.gestes))
                         .chain(h.protections)
                         .collect()
                 })
-                .unwrap_or_default()
         }
         _ => Vec::new(),
     }

@@ -225,8 +225,7 @@ pub(crate) fn noter_altere_au_journal() {
     }
     if let Some(heure) = altere_a_dire() {
         let quand = chrono::DateTime::from_timestamp_millis(heure)
-            .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_default();
+            .map_or_default(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
         crate::modele::journal::noter(crate::modele::evenement::Evenement::alerte(
             crate::modele::evenement::Source::Vanguard,
             "carnet-altere",

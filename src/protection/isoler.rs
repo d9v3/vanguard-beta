@@ -277,11 +277,8 @@ fn lancer(source: &Path) {
         );
         return;
     }
-    let dossier = source.parent().map(|d| d.display().to_string()).unwrap_or_default();
-    let nom = source
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let dossier = source.parent().map_or_default(|d| d.display().to_string());
+    let nom = source.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     let Ok(jetable) = dossier_jetable() else {
         trp!(
             "  ✖ Configuration impossible à écrire.",

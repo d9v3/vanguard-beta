@@ -49,8 +49,7 @@ pub(crate) fn unites(bus: &mut Bus) -> Result<Vec<Unite>, Echec> {
 
 fn lire_unites(liste: Option<&Valeur>) -> Vec<Unite> {
     let mut v: Vec<Unite> = liste
-        .map(Valeur::elements)
-        .unwrap_or_default()
+        .map_or_default(Valeur::elements)
         .iter()
         .filter_map(|u| {
             let m = u.elements();
@@ -79,8 +78,7 @@ pub(crate) fn fichiers(bus: &mut Bus) -> Result<Vec<(String, String)>, Echec> {
 
 fn lire_fichiers(liste: Option<&Valeur>) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = liste
-        .map(Valeur::elements)
-        .unwrap_or_default()
+        .map_or_default(Valeur::elements)
         .iter()
         .filter_map(|f| {
             let m = f.elements();

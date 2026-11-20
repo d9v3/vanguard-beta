@@ -362,8 +362,7 @@ pub fn lancer_borne_ou_pourquoi(
     // Un petit-enfant resté hors de l'arbre peut garder un canal ouvert : on n'attend pas plus que DELAI_LECTURE.
     let texte = |r: mpsc::Receiver<Vec<u8>>| {
         r.recv_timeout(DELAI_LECTURE)
-            .map(|o| String::from_utf8_lossy(&o).into_owned())
-            .unwrap_or_default()
+            .map_or_default(|o| String::from_utf8_lossy(&o).into_owned())
     };
     let (sortie, erreurs) = (texte(sortie), texte(erreurs));
     Ok(Borne {
@@ -1271,7 +1270,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn lancer_en_anglais_remplace_la_langue_de_la_personne() {
-        let langue = |r: Option<Resultat>| r.map(|r| r.sortie.trim().to_string()).unwrap_or_default();
+        let langue = |r: Option<Resultat>| r.map_or_default(|r| r.sortie.trim().to_string());
         let en_francais = || {
             let mut c = Command::new("sh");
             c.args(["-c", "echo \"$LC_ALL|${LANGUAGE-aucune}\""])

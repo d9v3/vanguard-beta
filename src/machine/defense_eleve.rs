@@ -1778,20 +1778,18 @@ fn scripts_nommes(textes: &[String], a: &dyn Acces) -> Vec<String> {
 /// (lancement et arrêt, chemin et arguments), chaque mot de son fichier, pas seulement des lignes `Exec…=` (une ligne
 /// continuée ou un commentaire comptent aussi, au prix d'un refus de trop), et les scripts qu'ils nomment, un niveau.
 fn service_de_pare_feu(lu: Option<&ArretCharge>, fichier: &[u8], a: &dyn Acces) -> bool {
-    let mut textes: Vec<String> = lu
-        .map(|lu| {
-            lu.lancement
-                .iter()
-                .chain(&lu.arret)
-                .map(|c| {
-                    std::iter::once(c.chemin.as_str())
-                        .chain(c.arguments.iter().map(String::as_str))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut textes: Vec<String> = lu.map_or_default(|lu| {
+        lu.lancement
+            .iter()
+            .chain(&lu.arret)
+            .map(|c| {
+                std::iter::once(c.chemin.as_str())
+                    .chain(c.arguments.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    });
     textes.push(String::from_utf8_lossy(fichier).into_owned());
     let scripts = scripts_nommes(&textes, a);
     textes

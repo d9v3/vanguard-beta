@@ -469,7 +469,7 @@ impl Table {
 
     fn fourche(&mut self, parent: u32, enfant: u32, vivant: &dyn Fn(u32) -> bool) {
         self.oublier_si_pertes();
-        let nom = self.fiches.get(&parent).map(|f| f.nom.clone()).unwrap_or_default();
+        let nom = self.fiches.get(&parent).map_or_default(|f| f.nom.clone());
         self.inserer(enfant, Some(parent), &nom, false, vivant);
         if let Some(f) = self.fiches.get_mut(&enfant) {
             f.nee_vue = true;
@@ -577,7 +577,7 @@ impl Table {
             && (enfants_vus || self.a_des_enfants(pid) || ancienne.as_ref().is_none_or(|f| f.entree <= self.oubli));
         let parent = lu.and_then(|p| p.parent).or(ancienne.as_ref().and_then(|f| f.parent));
         let nom = lu.map_or_else(
-            || ancienne.as_ref().map(|f| f.nom.clone()).unwrap_or_default(),
+            || ancienne.as_ref().map_or_default(|f| f.nom.clone()),
             |p| p.nom.clone(),
         );
         match self.fiches.get_mut(&pid) {
@@ -1006,8 +1006,7 @@ fn root() -> bool {
 fn jeton_d_abonnement() -> u32 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
+        .map_or_default(|d| d.subsec_nanos());
     ((std::process::id() ^ nanos) | 0x8000_0000).min(u32::MAX - 1)
 }
 
@@ -1205,7 +1204,7 @@ impl Veilleur {
         let soi = crate::protection::cle::soi::Soi::courant();
         let moi = std::process::id();
         let moi_porteur = crate::socle::processus::enfants_d_avant().is_none_or(|e| !e.is_empty());
-        let liste = chasse::en_marche().map(|(l, _)| l).unwrap_or_default();
+        let liste = chasse::en_marche().map_or_default(|(l, _)| l);
         let table = table_au_depart(
             &liste,
             moi,
@@ -2442,17 +2441,14 @@ fn servir() -> i32 {
         // Un redémarrage (Restart=on-failure, mise à jour, « rancongiciel on ») ne doit pas oublier un programme resté
         // gelé : seul ce fichier permet à « off » ou au retrait de le reprendre. Un PID mort, ou repris par un
         // processus qui n'est pas gelé, est écarté.
-        pids_geles: encore_geles(avant.as_ref().map(|e| e.pids_geles.clone()).unwrap_or_default()),
+        pids_geles: encore_geles(avant.as_ref().map_or_default(|e| e.pids_geles.clone())),
         // Gardé tel quel jusqu'à ce que la relecture du démarrage soit finie : un arrêt pendant elle repartira du
         // même point.
         fichiers_a_jour: avant.as_ref().map_or(0, |e| e.fichiers_a_jour),
         // Une perte abandonnée (dossier trop grand) reste dite après un redémarrage, et y est retentée.
         fichiers: fichiers::Releve {
-            abandons: avant.as_ref().map(|e| e.fichiers.abandons.clone()).unwrap_or_default(),
-            abandons_chemins: avant
-                .as_ref()
-                .map(|e| e.fichiers.abandons_chemins.clone())
-                .unwrap_or_default(),
+            abandons: avant.as_ref().map_or_default(|e| e.fichiers.abandons.clone()),
+            abandons_chemins: avant.as_ref().map_or_default(|e| e.fichiers.abandons_chemins.clone()),
             ..fichiers::Releve::default()
         },
         ..Etat::default()
@@ -2715,8 +2711,7 @@ fn cle_de_fichier(x: &fichiers::Examine) -> String {
         .resultat
         .sha256
         .as_ref()
-        .map(crate::protection::empreintes::hex)
-        .unwrap_or_default();
+        .map_or_default(crate::protection::empreintes::hex);
     format!("fichier-en-direct|{hex}|{}", x.chemin.display())
 }
 
@@ -2877,7 +2872,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
     };
     // Défense R5 : l'ordinateur isolé du réseau entre le gel et l'arrêt, avec la protection active et l'accord.
     let (issue, isolement) = reponse::geler_isoler_et_arreter(&cible, || veille::lignee_de(groupe));
-    let isolement = isolement.phrase().map(|p| format!(" {p}")).unwrap_or_default();
+    let isolement = isolement.phrase().map_or_default(|p| format!(" {p}"));
     match issue {
         reponse::Issue::Arrete(_) => {
             etat.rancon_gels = etat.rancon_gels.saturating_add(1);
@@ -4366,8 +4361,7 @@ fn juger_etat(
         (true, _, None) => {
             let raison = doute
                 .or_else(|| etat.and_then(|e| e.raison_arret.as_deref()))
-                .map(|r| format!(" ({r})"))
-                .unwrap_or_default();
+                .map_or_default(|r| format!(" ({r})"));
             Constat {
                 verifie: false,
                 ..alerte(
@@ -5268,8 +5262,7 @@ mod tests {
                         &[nom, "node", "sh"],
                         false,
                     ))
-                    .map(|a| a.texte)
-                    .unwrap_or_default()
+                    .map_or_default(|a| a.texte)
                 });
                 let lu = lu_par_la_porte(&texte);
                 assert!(lu.contains(suite_lignee), "{texte:?} : {lu:?}");

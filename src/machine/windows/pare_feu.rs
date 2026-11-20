@@ -289,8 +289,7 @@ fn poser(v: Voulue) -> Resultat {
                     .filter(|_| v.programme.is_some())
                     // SAFETY: objet COM valide ; la lecture rend une copie.
                     .and_then(|regle| unsafe { regle.ApplicationName() }.ok())
-                    .map(|a| trf!(" (programme relu : {a})", " (program read back: {a})"))
-                    .unwrap_or_default();
+                    .map_or_default(|a| trf!(" (programme relu : {a})", " (program read back: {a})"));
                 // Comptée en échec, donc sans note pour l'annuler : retirée aussitôt.
                 let _ = retirer_toutes(r, &v.nom);
                 Resultat::echec(trf!(

@@ -283,8 +283,7 @@ pub(crate) mod lecture {
                 .args(&presentes),
             10,
         )
-        .map(|r| r.sortie)
-        .unwrap_or_default();
+        .map_or_default(|r| r.sortie);
         let actives: Vec<bool> = actives.lines().map(|l| l.trim() == "active").collect();
         presentes
             .into_iter()
@@ -301,9 +300,7 @@ pub(crate) mod lecture {
 
     /// Le démarrage en cours du système.
     pub(crate) fn demarrage() -> String {
-        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .map(|t| t.trim().to_string())
-            .unwrap_or_default()
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_or_default(|t| t.trim().to_string())
     }
 
     /// systemd-resolved répond aux noms (NetworkManager lui confie alors le DNS de chaque carte) : seul lui sait

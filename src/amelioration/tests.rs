@@ -24,9 +24,9 @@ fn faux_marqueurs_desarmes() {
         "échec \u{FF1C}url\u{FF1E}suite banale fin",
         "échec <\u{200B}chemin>suite banale fin",
     ] {
-        let t = texte(brut).map(String::from).unwrap_or_default();
+        let t = texte(brut).map_or_default(String::from);
         assert!(!t.contains('<') && !t.contains('>'), "{brut:?} donne {t:?}");
-        let n = nom(brut).map(String::from).unwrap_or_default();
+        let n = nom(brut).map_or_default(String::from);
         assert!(!n.contains('<') && !n.contains('>'), "{brut:?} donne {n:?}");
     }
 }

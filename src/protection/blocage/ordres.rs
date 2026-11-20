@@ -551,8 +551,7 @@ fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, geste: SurPr
     // n'est fait.
     let fichier = std::path::Path::new(&actuel)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     #[cfg(target_os = "linux")]
     let noms = [Some(fichier), crate::socle::processus::nom_court(pid)];
     #[cfg(not(target_os = "linux"))]

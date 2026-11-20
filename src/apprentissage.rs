@@ -702,7 +702,7 @@ fn appliquer_avec(
         if !en_vigueur(choix, niveau, jour) {
             continue;
         }
-        let le = date(&choix.le).map(affichee).unwrap_or_default();
+        let le = date(&choix.le).map_or_default(affichee);
         // Une alerte à témoins ne se tait que pour l'état exact déclaré normal ; un relevé refusé aujourd'hui (un
         // fichier devenu illisible, une ligne devenue ambiguë), jamais. Un choix qui lie un état ne tait pas non plus
         // une alerte qui n'en relève plus. Revenue, elle dit pourquoi.
@@ -752,7 +752,7 @@ fn lignes_ajoutees(appris: &Appris, c: &Constat) -> Option<(String, String)> {
     if reste > 0 {
         dit.push_str(&trf!(" et {reste} autre(s)", " and {reste} more"));
     }
-    Some((dit, date(&choix.le).map(affichee).unwrap_or_default()))
+    Some((dit, date(&choix.le).map_or_default(affichee)))
 }
 
 /// Le message d'une alerte sans ce qu'`appliquer_avec` y ajoute quand elle revient : le choix retient l'alerte, pas

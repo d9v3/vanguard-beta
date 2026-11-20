@@ -79,13 +79,11 @@ pub(crate) fn classeur(flux: &[u8]) -> Classeur {
                 let nom = if large {
                     n.checked_mul(2)
                         .and_then(|t| texte.get(..t))
-                        .map(super::lecture::utf16le)
-                        .unwrap_or_default()
+                        .map_or_default(super::lecture::utf16le)
                 } else {
                     texte
                         .get(..n)
-                        .map(|b| b.iter().map(|&o| char::from(o)).collect())
-                        .unwrap_or_default()
+                        .map_or_default(|b| b.iter().map(|&o| char::from(o)).collect())
                 };
                 c.feuilles.push(Feuille { nom, masquage, sorte });
             }

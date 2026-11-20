@@ -346,8 +346,7 @@ pub(crate) mod windows {
     /// `webcam` ou `microphone`, pour ce compte.
     pub(super) fn lire(appareil: &str) -> Vec<super::Usage> {
         let entrees: Vec<(String, u64, u64)> = consentement(false, appareil)
-            .map(|c| c.entrees.into_iter().map(|e| (e.nom, e.debut, e.fin)).collect())
-            .unwrap_or_default();
+            .map_or_default(|c| c.entrees.into_iter().map(|e| (e.nom, e.debut, e.fin)).collect());
         super::juger_windows(&entrees)
     }
 }

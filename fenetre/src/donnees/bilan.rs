@@ -230,7 +230,7 @@ impl From<ConstatBrut> for Constat {
             regle: crate::nettoyage::nom(b.regle.as_str(), 40),
             objet: crate::nettoyage::nom(b.objet.as_str(), 120),
             message: b.message.0,
-            action: b.correctif.map(|c| c.action.0).unwrap_or_default(),
+            action: b.correctif.map_or_default(|c| c.action.0),
             gravite,
             rang,
             correction,
@@ -279,17 +279,14 @@ pub fn lire(sortie: &[u8]) -> Result<Vue, String> {
     let b: Brut = super::lire(sortie)?;
     let note = b.score.and_then(|s| u32::try_from(s).ok()).filter(|s| *s <= 100);
     let fiable = b.fiable == Some(true) && !b.constats.elements.is_empty();
-    let manques = b
-        .couverture
-        .map(|c| {
-            c.non_verifies
-                .into_iter()
-                .take(super::ELEMENTS_MAX)
-                .map(|t| t.0)
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let manques = b.couverture.map_or_default(|c| {
+        c.non_verifies
+            .into_iter()
+            .take(super::ELEMENTS_MAX)
+            .map(|t| t.0)
+            .filter(|t| !t.is_empty())
+            .collect()
+    });
     Ok(Vue {
         systeme: crate::nettoyage::nom(b.systeme.as_str(), 80),
         outil: crate::nettoyage::nom(b.outil.as_str(), 40),

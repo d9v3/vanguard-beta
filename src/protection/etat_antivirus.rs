@@ -278,10 +278,7 @@ fn bases(r: &Releve, maintenant: chrono::DateTime<chrono::Local>) -> Vec<(bool, 
             ),
         )),
     }
-    let commit = r
-        .commit_yara
-        .map(|c| trf!(", commit {c}", ", commit {c}"))
-        .unwrap_or_default();
+    let commit = r.commit_yara.map_or_default(|c| trf!(", commit {c}", ", commit {c}"));
     bases.push(match r.yara {
         Ok((n, 0)) => (
             true,

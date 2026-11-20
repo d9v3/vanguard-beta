@@ -532,7 +532,7 @@ pub fn temps_reel() {
             if c.is_dir() {
                 c.clone()
             } else {
-                c.parent().map(Path::to_path_buf).unwrap_or_default()
+                c.parent().map_or_default(Path::to_path_buf)
             }
         })
         .filter(|d| d.is_dir())

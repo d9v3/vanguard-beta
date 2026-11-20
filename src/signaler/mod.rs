@@ -844,15 +844,13 @@ fn ecrire_dans(dossier: &Path, nom: &str, texte: &str, sure: bool) -> Result<Pat
 
 /// Les brouillons de `dossier/signalements/` : seulement les simples fichiers `.md`, jamais un lien ni autre chose.
 fn brouillons_dans(dossier: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dossier.join(DOSSIER))
-        .map(|l| {
-            l.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "md"))
-                .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dossier.join(DOSSIER)).map_or_default(|l| {
+        l.flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+            .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
+            .collect()
+    });
     v.sort();
     v
 }

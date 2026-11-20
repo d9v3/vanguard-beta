@@ -177,8 +177,7 @@ fn hote_du_port(port: &str) -> String {
                 .iter()
                 .find_map(|v| c.get_value::<String, _>(v).ok().filter(|h| !h.trim().is_empty()))
         })
-        .map(|h| h.trim().to_string())
-        .unwrap_or_default()
+        .map_or_default(|h| h.trim().to_string())
 }
 
 #[cfg(test)]

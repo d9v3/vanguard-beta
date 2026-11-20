@@ -403,7 +403,7 @@ pub(crate) fn garder_de(liste: &str) -> Option<Vec<SessionGardee>> {
 
 /// Le départ en fin de ligne d'une suspension ou d'une reprise : absent, ou un entier non nul.
 fn avec_depart(d: Option<u64>) -> String {
-    d.map(|d| format!(" {d}")).unwrap_or_default()
+    d.map_or_default(|d| format!(" {d}"))
 }
 
 /// Le départ relu : aucun mot (`Ok(None)`), ou un entier non nul ; autre chose, `Err` (ligne refusée).

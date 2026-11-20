@@ -288,8 +288,7 @@ fn distribution(os_release: &str) -> Systeme {
         os_release
             .lines()
             .find_map(|l| l.trim().strip_prefix(cle)?.strip_prefix('='))
-            .map(|v| v.trim().trim_matches(['"', '\'']).to_lowercase())
-            .unwrap_or_default()
+            .map_or_default(|v| v.trim().trim_matches(['"', '\'']).to_lowercase())
     };
     let (id, semblables) = (valeur("ID"), valeur("ID_LIKE"));
     std::iter::once(id.as_str())
@@ -533,9 +532,8 @@ fn installe_ici(executable: &str) -> bool {
     if executable.starts_with('/') {
         return existe(Path::new(executable));
     }
-    let mut dossiers: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|chemins| std::env::split_paths(&chemins).collect())
-        .unwrap_or_default();
+    let mut dossiers: Vec<PathBuf> =
+        std::env::var_os("PATH").map_or_default(|chemins| std::env::split_paths(&chemins).collect());
     if cfg!(unix) {
         dossiers.extend(["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/local/bin"].map(PathBuf::from));
     }

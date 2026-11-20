@@ -228,11 +228,7 @@ pub(crate) fn cartes_graphiques() -> Vec<CartePci> {
 
 #[cfg(target_os = "linux")]
 fn cartes_graphiques_sous(racine: &std::path::Path) -> Vec<CartePci> {
-    let lire = |chemin: &std::path::Path| {
-        std::fs::read_to_string(chemin)
-            .map(|t| t.trim().to_string())
-            .unwrap_or_default()
-    };
+    let lire = |chemin: &std::path::Path| std::fs::read_to_string(chemin).map_or_default(|t| t.trim().to_string());
     let hexa = |t: String| u32::from_str_radix(t.trim_start_matches("0x"), 16).ok();
     let mut appareils: Vec<(String, u16, u16, String)> = std::fs::read_dir(racine.join("sys/bus/pci/devices"))
         .into_iter()
@@ -268,8 +264,7 @@ fn cartes_graphiques_sous(racine: &std::path::Path) -> Vec<CartePci> {
     let ids = LISTES_PCI
         .iter()
         .find_map(|f| std::fs::read(racine.join(f.trim_start_matches('/'))).ok())
-        .map(|o| String::from_utf8_lossy(&o).into_owned())
-        .unwrap_or_default();
+        .map_or_default(|o| String::from_utf8_lossy(&o).into_owned());
     appareils
         .into_iter()
         .map(|(_, fabricant, appareil, pilote)| {
@@ -663,8 +658,7 @@ fn lire_directement() -> Option<serde_json::Value> {
     let ubr = cv
         .as_ref()
         .and_then(|k| k.get_value::<u32, _>("UBR").ok())
-        .map(|u| u.to_string())
-        .unwrap_or_default();
+        .map_or_default(|u| u.to_string());
     // Un champ comme `"$($x.Champ)"` l'écrit : vide s'il manque ; un nombre comme `[uint64]` (0 s'il manque).
     let texte = |l: &Ligne, c: &str| match l.get(c) {
         Some(wmi::Valeur::Texte(t)) => t.clone(),
@@ -680,8 +674,7 @@ fn lire_directement() -> Option<serde_json::Value> {
     let date = |l: &Ligne, c: &str| {
         let d = texte(l, c);
         chrono::NaiveDate::parse_from_str(d.get(..8).unwrap_or_default(), "%Y%m%d")
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_default()
+            .map_or_default(|d| d.format("%Y-%m-%d").to_string())
     };
     let somme = |c: &str| cpu.iter().map(|p| nombre(p, c)).sum::<u64>();
     let barrettes: Vec<serde_json::Value> = toutes(
@@ -757,7 +750,7 @@ fn lire_directement() -> Option<serde_json::Value> {
         "fabricant": texte(&cs, "Manufacturer"), "modele": texte(&cs, "Model"),
         "carte_fabricant": texte(&bb, "Manufacturer"), "carte": texte(&bb, "Product"),
         "bios": texte(&bios, "SMBIOSBIOSVersion"), "bios_date": date(&bios, "ReleaseDate"),
-        "processeur": cpu.first().map(|c| texte(c, "Name")).unwrap_or_default().trim(),
+        "processeur": cpu.first().map_or_default(|c| texte(c, "Name")).trim(),
         "coeurs": somme("NumberOfCores"), "fils": somme("NumberOfLogicalProcessors"),
         "memoire": nombre(&cs, "TotalPhysicalMemory"),
         "barrettes": barrettes, "graphique": graphique, "disques": disques,

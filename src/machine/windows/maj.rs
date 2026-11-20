@@ -114,7 +114,7 @@ fn windows_update_com() -> Option<Recherche> {
                 let mut lignes = Vec::new();
                 for i in 0..trouvees.Count()? {
                     let maj = trouvees.get_Item(i)?;
-                    let mut gravite = maj.MsrcSeverity().map(|g| g.to_string()).unwrap_or_default();
+                    let mut gravite = maj.MsrcSeverity().map_or_default(|g| g.to_string());
                     // La mise à jour cumulative de sécurité arrive souvent sans gravité (vu dans la VM) : sa catégorie
                     // la classe alors « Important », comme dans le script.
                     if gravite.is_empty() {
@@ -309,10 +309,7 @@ fn peripheriques_wmi() -> Option<Vec<String>> {
         lignes
             .iter()
             .map(|l| {
-                let code = l["ConfigManagerErrorCode"]
-                    .entier()
-                    .map(|c| c.to_string())
-                    .unwrap_or_default();
+                let code = l["ConfigManagerErrorCode"].entier().map_or_default(|c| c.to_string());
                 let nom = l["Name"]
                     .texte()
                     .filter(|n| !n.is_empty())
@@ -346,8 +343,7 @@ fn cartes_graphiques_wmi() -> Option<Vec<String>> {
                 let jours = l["DriverDate"]
                     .texte()
                     .and_then(|d| jours_depuis(d, aujourd_hui))
-                    .map(|j| j.to_string())
-                    .unwrap_or_default();
+                    .map_or_default(|j| j.to_string());
                 format!(
                     "GPU|{}|{}|{jours}",
                     l["Name"].texte().unwrap_or_default(),
@@ -771,7 +767,7 @@ pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
         let winget = voulu(&["Programmes"]).then(|| crate::socle::fil::dans_ou_ici(portee, "winget", programmes));
         let lectures = lectures_rapides();
         let l = lectures.as_deref();
-        let mut constats = wu.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
+        let mut constats = wu.map_or_default(|t| t.join().unwrap_or_default());
         constats.push(redemarrage_en_attente(l));
         constats.extend(signatures_defender(l));
         constats.extend(winget.map(|t| t.join().unwrap_or_else(|_| illisible("Programmes"))));

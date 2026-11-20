@@ -149,8 +149,7 @@ fn carte_principale() -> Option<String> {
         cartes
             .iter()
             .find(|c| c.index == index)
-            .map(|c| format!("CARTE|{}|{}", c.guid, if c.ipv6 { "True" } else { "False" }))
-            .unwrap_or_default(),
+            .map_or_default(|c| format!("CARTE|{}|{}", c.guid, if c.ipv6 { "True" } else { "False" })),
     )
 }
 
@@ -793,13 +792,12 @@ pub fn releve_demarrage() -> (Vec<Programme>, Vec<String>, bool) {
     let etats = |machine: bool, liste: &str| -> std::collections::HashMap<String, String> {
         ruche(machine)
             .open_subkey_with_flags(format!(r"{APPROUVES}\{liste}"), KEY_READ)
-            .map(|k| {
+            .map_or_default(|k| {
                 k.enum_values()
                     .flatten()
                     .map(|(n, v)| (n.to_lowercase(), hex(&v.bytes)))
                     .collect()
             })
-            .unwrap_or_default()
     };
     let mut l = Vec::new();
     let mut manques = Vec::new();

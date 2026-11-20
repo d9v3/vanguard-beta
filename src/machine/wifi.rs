@@ -446,15 +446,12 @@ pub(crate) fn protection_connectee(l: &Lecture, visibles: &[Visible]) -> Option<
 /// `admin` : commandes pour ouvrir l'administration de la box.
 pub(super) fn bilan(l: &Lecture, admin: &[&str]) -> Vec<Constat> {
     let Some(c) = &l.connexion else {
-        return l
-            .note
-            .map(|n| {
-                vec![impossible(
-                    "Wi-Fi",
-                    &trf!("réseau connecté : {n}", "connected network: {n}"),
-                )]
-            })
-            .unwrap_or_default();
+        return l.note.map_or_default(|n| {
+            vec![impossible(
+                "Wi-Fi",
+                &trf!("réseau connecté : {n}", "connected network: {n}"),
+            )]
+        });
     };
     let nom = if c.ssid.is_empty() {
         tr!("réseau caché", "hidden network").to_string()

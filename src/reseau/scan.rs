@@ -145,9 +145,7 @@ fn choisir_reseau(candidats: &[(Ipv4Addr, Ipv4Addr)], gw: Option<u32>) -> Option
 
 #[cfg(not(target_os = "linux"))]
 fn commande(cmd: &str, args: &[&str]) -> String {
-    crate::commande::lancer(crate::commande::systeme(cmd).args(args), 10)
-        .map(|r| r.sortie)
-        .unwrap_or_default()
+    crate::commande::lancer(crate::commande::systeme(cmd).args(args), 10).map_or_default(|r| r.sortie)
 }
 
 /// Passerelle par défaut (la box / le routeur).

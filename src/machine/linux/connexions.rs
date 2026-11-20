@@ -145,7 +145,7 @@ pub(crate) fn ligne(e: &Enregistrement) -> String {
         e.compte,
         e.ligne,
         e.hote,
-        e.adresse.map(|a| a.to_string()).unwrap_or_default(),
+        e.adresse.map_or_default(|a| a.to_string()),
         e.pid
     )
 }

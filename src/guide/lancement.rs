@@ -360,7 +360,7 @@ fn abreger(dossier: &Path) -> String {
 /// Lance la commande sous les yeux : son dossier et sa ligne comme à l'invite d'un terminal, sa sortie au fil de
 /// l'eau (une attente qui avance, Échap pour arrêter), puis comment elle a fini. Revient après Entrée, le temps de lire.
 pub(super) fn lancer_ici(c: &Commande) {
-    let dossier = std::env::current_dir().map(|d| abreger(&d)).unwrap_or_default();
+    let dossier = std::env::current_dir().map_or_default(|d| abreger(&d));
     println!(
         "  {GRIS}{}{RESET} {ACCENT}›{RESET} {GRAS}{}{RESET}\n",
         affichable(&dossier),

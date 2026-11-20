@@ -106,10 +106,7 @@ pub(crate) fn analyser_fichier(
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let fichier = options.open(chemin)?;
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let nom = chemin.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     analyser_ouvert(fichier, nom, bornes, visiteur)
 }
 
@@ -980,11 +977,10 @@ impl Etat<'_> {
                     let cible = octets
                         .get(position..)
                         .and_then(|e| e.get(157..257))
-                        .map(|c| {
+                        .map_or_default(|c| {
                             // Jusqu'au premier nul (le champ entier sans nul).
                             String::from_utf8_lossy(c.split(|&o| o == 0).next().unwrap_or(c)).into_owned()
-                        })
-                        .unwrap_or_default();
+                        });
                     self.fait(i, Fait::Lien(format!("{nom} -> {cible}")));
                 }
                 // Tout le reste qui a un contenu : GNU tar et libarchive extraient un type inconnu comme un fichier

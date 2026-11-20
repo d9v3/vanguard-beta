@@ -856,7 +856,7 @@ pub fn liste() -> Vec<Reparation> {
         l.push(paquets_casses(g, atomique, machine::linux::omarchy()));
     }
 
-    let installer_smart = gestion.map(|g| g.installer("smartmontools")).unwrap_or_default();
+    let installer_smart = gestion.map_or_default(|g| g.installer("smartmontools"));
     let mut disque = vec![];
     if !present("smartctl") && !installer_smart.is_empty() {
         disque.push(installer_smart.as_str());
@@ -959,8 +959,7 @@ fn etat_windows_natif() -> Option<EtatWindows> {
         .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections")
         .ok()
         .and_then(|c| c.get_raw_value("WinHttpSettings").ok())
-        .map(|v| proxy_winhttp(&v.bytes))
-        .unwrap_or_default();
+        .map_or_default(|v| proxy_winhttp(&v.bytes));
     Some(EtatWindows {
         proxy: if actif { texte("ProxyServer") } else { String::new() },
         pac: texte("AutoConfigURL"),

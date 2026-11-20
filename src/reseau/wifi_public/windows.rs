@@ -152,9 +152,7 @@ pub(crate) mod lecture {
     }
 
     pub(crate) fn lire() -> super::Lu {
-        crate::machine::windows::ps(super::LECTURE)
-            .map(|s| super::lire_sortie(&s))
-            .unwrap_or_default()
+        crate::machine::windows::ps(super::LECTURE).map_or_default(|s| super::lire_sortie(&s))
     }
 
     /// La catégorie d'un profil réseau dans le registre (0 Public, 1 Private, 2 DomainAuthenticated).

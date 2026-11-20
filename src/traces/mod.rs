@@ -440,11 +440,9 @@ impl Feuille {
                 self.noter_date(c, m);
             }
             let (taille, date) = m.as_ref().map_or((0, String::new()), |m| {
-                (m.len(), m.modified().ok().map(date_iso).unwrap_or_default())
+                (m.len(), m.modified().ok().map_or_default(date_iso))
             });
-            let lien = std::fs::read_link(c)
-                .map(|l| format!(" -> {}", champ(&l.to_string_lossy())))
-                .unwrap_or_default();
+            let lien = std::fs::read_link(c).map_or_default(|l| format!(" -> {}", champ(&l.to_string_lossy())));
             let _ = writeln!(
                 self.texte,
                 "{date}  {taille:>10}  {}{lien}",
@@ -851,7 +849,7 @@ const A_EMPREINTER: &[&str] = &[
 /// Ce fichier mérite-t-il une empreinte ? Un programme ou un script (d'après son nom, ses premiers octets ou le droit
 /// d'exécution), une archive, un document à macros, un lanceur.
 pub(crate) fn a_empreinter(nom: &str, debut: &[u8], executable: bool) -> bool {
-    let extension = nom.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+    let extension = nom.rsplit_once('.').map_or_default(|(_, e)| e.to_lowercase());
     let programme = matches!(
         debut,
         [b'M', b'Z', ..]
@@ -889,7 +887,7 @@ pub(crate) const ENTETE_FICHIERS: &str =
 /// Une ligne du fichier des fichiers récents, à la manière d'un « bodyfile » : champs séparés par « | », dates en UTC,
 /// « 0 » à la place d'une empreinte non calculée (fichier qui n'est ni programme ni script, ou trop gros).
 pub(crate) fn ligne_fichier(e: &Entree) -> String {
-    let date = |t: Option<SystemTime>| t.map(date_iso).unwrap_or_default();
+    let date = |t: Option<SystemTime>| t.map_or_default(date_iso);
     format!(
         "{}|{}|{}|{}|{}|{}|{}",
         e.empreinte.as_ref().map_or_else(|| "0".to_string(), Empreinte::champ),
@@ -1062,10 +1060,7 @@ fn fichiers_recents(dossier: &Path) -> Partie {
             continue;
         }
         let chemin = Path::new(&e.chemin);
-        let nom = chemin
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let nom = chemin.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
         let executable = u32::from_str_radix(&e.mode, 8).is_ok_and(|m| m & 0o111 != 0);
         if a_empreinter(&nom, &premiers_octets(chemin), executable) {
             if Instant::now() > fin {

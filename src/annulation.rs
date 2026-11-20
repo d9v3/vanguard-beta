@@ -133,7 +133,7 @@ fn ligne(e: &Element) -> String {
                 "Turn back on: {}",
                 crate::options_defense::nom_choix(*id)
             ),
-            sure.map(|s| format!(" {GRIS}({s}){RESET}")).unwrap_or_default()
+            sure.map_or_default(|s| format!(" {GRIS}({s}){RESET}"))
         ),
     }
 }
@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(groupes, [vec!["vanguard:debloquer-sortie ufw 203.0.113.7".to_string()]]);
         assert!(groupes.iter().flatten().all(|c| !c.contains("sh -c")), "{groupes:?}");
         let refus = prepares.iter().find(|(b, _)| b.id == "forge").map(|(_, p)| p.clone());
-        let refus = refus.and_then(Result::err).map(String::from).unwrap_or_default();
+        let refus = refus.and_then(Result::err).map_or_default(String::from);
         assert!(refus.contains("à la main") || refus.contains("by hand"), "{refus}");
         // Le port à oublier vient des champs typés (une règle sortante n'en retient pas), pas du relevé.
         let typee = prepares.iter().find(|(b, _)| b.id == "type").map(|(_, p)| p.clone());

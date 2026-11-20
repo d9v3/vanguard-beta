@@ -60,9 +60,7 @@ fn recentes() -> Vec<Maj> {
     if let Ok(t) = std::fs::read_to_string("/var/log/pacman.log") {
         return lire_pacman(&t, 12);
     }
-    std::fs::read_to_string("/var/log/apt/history.log")
-        .map(|t| lire_apt(&t, 12))
-        .unwrap_or_default()
+    std::fs::read_to_string("/var/log/apt/history.log").map_or_default(|t| lire_apt(&t, 12))
 }
 
 /// Windows : les mises à jour de Windows (KB) les plus récentes.

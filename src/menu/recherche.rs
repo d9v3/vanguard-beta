@@ -115,8 +115,7 @@ pub(crate) async fn chercher(requete: &str, premier: bool, json: bool) -> bool {
         outil_au_chemin(touche)
             .map(|a| a.outil().commande)
             .filter(|c| !c.is_empty())
-            .map(|c| format!("vanguard {c}"))
-            .unwrap_or_default()
+            .map_or_default(|c| format!("vanguard {c}"))
     };
     if json {
         let liste: Vec<serde_json::Value> = trouves
@@ -332,14 +331,13 @@ pub(crate) fn programmes_vanguard() -> &'static [guide::Programme] {
                     .map(|c| {
                         let nom = c.get_name();
                         let anglais = c.get_visible_aliases().next().unwrap_or(nom);
-                        let aide_fr = c.get_about().map(ToString::to_string).unwrap_or_default();
+                        let aide_fr = c.get_about().map_or_default(ToString::to_string);
                         let aide_en = AIDES_EN
                             .iter()
                             .find(|(n, _)| *n == nom)
                             .map_or(aide_fr.clone(), |(_, a)| (*a).to_string());
-                        let place = place_de_commande(nom)
-                            .map(|t| (format!(" (menu {t})"), format!(" (menu {t})")))
-                            .unwrap_or_default();
+                        let place =
+                            place_de_commande(nom).map_or_default(|t| (format!(" (menu {t})"), format!(" (menu {t})")));
                         guide::traduite(
                             garder(format!("vanguard {nom}")),
                             garder(format!("vanguard {anglais}")),

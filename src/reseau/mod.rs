@@ -446,7 +446,7 @@ impl Base {
                 }
             }
         });
-        let dossier_local = local.parent().map(PathBuf::from).unwrap_or_default();
+        let dossier_local = local.parent().map_or_default(PathBuf::from);
         let donnees = match &cle {
             Some((racine, true)) => racine.join("donnees"),
             _ => dossier_local.clone(),
@@ -1274,11 +1274,7 @@ fn afficher(r: &Rapport) {
 /// Le cadre, la note du réseau, le résumé des comptes et les alertes qui valent pour tout le réseau (carnet pas
 /// cru, usurpation de la box).
 fn afficher_entete(r: &Rapport) {
-    let nom = r
-        .nom_reseau
-        .as_deref()
-        .map(|n| trf!(" « {n} »", " “{n}”"))
-        .unwrap_or_default();
+    let nom = r.nom_reseau.as_deref().map_or_default(|n| trf!(" « {n} »", " “{n}”"));
     println!();
     cadre(
         &format!(
@@ -1382,7 +1378,7 @@ fn afficher_a_regarder(r: &Rapport) {
     if !a_regarder.is_empty() {
         section(tr!("À REGARDER", "WORTH A LOOK"));
         for h in a_regarder {
-            let mac = h.mac.as_deref().map(|m| format!(" · {m}")).unwrap_or_default();
+            let mac = h.mac.as_deref().map_or_default(|m| format!(" · {m}"));
             let depuis = match (&h.premier_vu, h.nouvelle) {
                 (Some(d), false) => trf!(" · connu depuis le {}", " · known since {}", date_fr(d)),
                 (_, true) => tr!(" · vu pour la première fois", " · seen for the first time").to_string(),
@@ -1408,8 +1404,7 @@ fn afficher_a_regarder(r: &Rapport) {
                 let programme = p
                     .programme
                     .as_deref()
-                    .map(|n| format!("  {DISCRET}{n}{RESET}"))
-                    .unwrap_or_default();
+                    .map_or_default(|n| format!("  {DISCRET}{n}{RESET}"));
                 println!(
                     "    {:>9}  {}{}{:<8}{RESET}{nouveau}{programme}",
                     p.libelle(),
@@ -1463,8 +1458,7 @@ fn afficher_absents(r: &Rapport) {
             let quand = a
                 .dernier_vu
                 .as_deref()
-                .map(|d| trf!("vu le {}", "seen on {}", date_fr(d)))
-                .unwrap_or_default();
+                .map_or_default(|d| trf!("vu le {}", "seen on {}", date_fr(d)));
             println!(
                 "  {DISCRET}○ {:<15} {}  {quand}{RESET}",
                 a.ip.to_string(),

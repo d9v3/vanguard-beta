@@ -2616,7 +2616,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         None if e.id == 4698 || tronque || non_lue => (
             Gravite::Info,
             ("une tâche planifiée a été créée", "a scheduled task was created"),
-            actions.first().map(|(c, a)| format!("{c} {a}")).unwrap_or_default(),
+            actions.first().map_or_default(|(c, a)| format!("{c} {a}")),
         ),
         None => return None,
     };

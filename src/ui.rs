@@ -275,7 +275,7 @@ pub fn commande_affichable(commande: &str) -> String {
         .map(|c| match c {
             '\n' => " ⏎ ".to_string(),
             '\t' => c.to_string(),
-            _ => rendu(c).map(String::from).unwrap_or_default(),
+            _ => rendu(c).map_or_default(String::from),
         })
         .collect()
 }

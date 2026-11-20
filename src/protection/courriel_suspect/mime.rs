@@ -237,9 +237,8 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                 m.noter(Anomalie::SansCorps);
             }
         }
-        let encodage = valeur(&entetes, "content-transfer-encoding")
-            .map(|e| e.texte().trim().to_ascii_lowercase())
-            .unwrap_or_default();
+        let encodage =
+            valeur(&entetes, "content-transfer-encoding").map_or_default(|e| e.texte().trim().to_ascii_lowercase());
 
         if let Some(sorte) = type_mime.strip_prefix("multipart/") {
             match preparer_multipart(&params, &t, b) {

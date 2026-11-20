@@ -32,9 +32,7 @@ pub(crate) fn trouver(nom: &str) -> Option<PathBuf> {
     } else {
         nom.to_string()
     };
-    let mut dossiers: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
+    let mut dossiers: Vec<PathBuf> = std::env::var_os("PATH").map_or_default(|p| std::env::split_paths(&p).collect());
     if cfg!(windows) {
         for (variable, sous) in [
             ("LOCALAPPDATA", r"Microsoft\WinGet\Links"),

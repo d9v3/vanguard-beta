@@ -36,13 +36,14 @@ pub(crate) struct ConfigurationDeChargement {
 /// Taille annoncée : jusqu'à GuardFlags compris (sans le bourrage final de la structure Rust).
 const TAILLE: u32 = 148;
 
-// Le nom est imposé par l'éditeur de liens ; `#[used]` le garde même si rien ne le lit.
-#[allow(non_upper_case_globals)]
-// `#[unsafe(no_mangle)]` : le nom _load_config_used est imposé par l'éditeur de liens de Windows.
+// Le symbole _load_config_used est imposé par l'éditeur de liens de Windows ; il est posé par `export_name`, pour
+// garder un nom Rust ordinaire (clippy refuse qu'un essai lise un nom commençant par `_`). `#[used]` le garde même si
+// rien ne le lit.
+// `#[unsafe(export_name)]` : le nom du symbole est imposé par l'éditeur de liens de Windows.
 #[allow(unsafe_code)]
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "_load_config_used")]
 #[used]
-pub(crate) static _load_config_used: ConfigurationDeChargement = ConfigurationDeChargement {
+pub(crate) static CONFIGURATION_DE_CHARGEMENT: ConfigurationDeChargement = ConfigurationDeChargement {
     taille: TAILLE,
     horodatage: 0,
     versions: [0; 2],
@@ -84,6 +85,6 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(ConfigurationDeChargement, drapeaux_de_garde), 144);
         assert!(std::mem::size_of::<ConfigurationDeChargement>() >= TAILLE as usize);
-        assert_eq!(_load_config_used.drapeaux_des_dependances, 0x800);
+        assert_eq!(CONFIGURATION_DE_CHARGEMENT.drapeaux_des_dependances, 0x800);
     }
 }

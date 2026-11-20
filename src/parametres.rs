@@ -1330,8 +1330,7 @@ fn choisir_temps_reel() {
     for (i, d) in Duree::TOUTES.iter().enumerate() {
         let precision = coupure
             .filter(|c| c.duree() == *d)
-            .map(|c| format!("← {}", temps_reel::echeance(&c)))
-            .unwrap_or_default();
+            .map_or_default(|c| format!("← {}", temps_reel::echeance(&c)));
         lignes.push(Ligne::choix(
             &i.saturating_add(2).to_string(),
             &format!("{}, {}", mot_oui_non(false), d.libelle()),

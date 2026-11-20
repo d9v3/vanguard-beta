@@ -128,7 +128,7 @@ pub(crate) fn lire_de(octets: &[u8]) -> Mesures {
     serde_json::from_slice::<Mesures>(octets)
         .ok()
         .filter(|m| m.v <= 1 && m.jours.len() <= 400 && m.en_cours.len() <= 2_000)
-        .map(|mut m| {
+        .map_or_default(|mut m| {
             m.cache.retain(|r, _| super::cache::en_cache(r).is_some());
             for c in m.cache.values_mut() {
                 let trop = c.recentes.len().saturating_sub(RECENTES_MAX);
@@ -136,7 +136,6 @@ pub(crate) fn lire_de(octets: &[u8]) -> Mesures {
             }
             m
         })
-        .unwrap_or_default()
 }
 
 fn lire_dans(dossier: &std::path::Path) -> Mesures {

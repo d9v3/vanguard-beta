@@ -155,9 +155,7 @@ pub(crate) fn ajouter(chemin: &str, empreinte: &[u8; 32], quoi: &str) -> Result<
 #[cfg(target_os = "linux")]
 pub(crate) fn en_cours() -> Vec<Surveille> {
     let quand = maintenant();
-    charger()
-        .map(|l| l.surveilles.into_iter().filter(|s| en_vigueur(s, quand)).collect())
-        .unwrap_or_default()
+    charger().map_or_default(|l| l.surveilles.into_iter().filter(|s| en_vigueur(s, quand)).collect())
 }
 
 /// Pour le veilleur : la liste relue au plus une fois par minute.
@@ -173,7 +171,7 @@ pub(crate) fn designe_par(chemin: Option<&str>, empreinte: Option<&[u8; 32]>) ->
     if !fraiche {
         *garde = Some((Instant::now(), en_cours()));
     }
-    let l = garde.as_ref().map(|(_, l)| l.as_slice()).unwrap_or_default();
+    let l = garde.as_ref().map_or_default(|(_, l)| l.as_slice());
     let empreinte = empreinte.map(hex);
     designe(l, chemin, empreinte.as_deref(), maintenant()).cloned()
 }

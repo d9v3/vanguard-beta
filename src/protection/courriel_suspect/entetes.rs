@@ -71,8 +71,7 @@ fn une_adresse(morceau: &str) -> Option<Adresse> {
     // un tel nom n'est jamais envoyé en ligne (`domaines_en_ligne` n'accepte que lettres, chiffres, points, tirets).
     let domaine = adresse
         .rsplit_once('@')
-        .map(|(_, d)| crate::ui::affichable(&d.trim().trim_end_matches(['.', '>']).to_lowercase()))
-        .unwrap_or_default();
+        .map_or_default(|(_, d)| crate::ui::affichable(&d.trim().trim_end_matches(['.', '>']).to_lowercase()));
     if adresse.is_empty() && nom.is_empty() {
         return None;
     }

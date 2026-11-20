@@ -373,7 +373,7 @@ impl Constat {
 
     pub(crate) fn corriger(mut self, action: impl Into<String>, commandes: &[impl ToString]) -> Self {
         // Une correction posée par-dessus une autre (`defense::corriger` après `manuel`) garde les témoins relevés.
-        let temoins = self.correctif.take().map(|k| k.temoins).unwrap_or_default();
+        let temoins = self.correctif.take().map_or_default(|k| k.temoins);
         self.correctif = Some(Correctif {
             action: action.into(),
             commandes: commandes.iter().map(ToString::to_string).collect(),
@@ -1579,7 +1579,7 @@ pub(super) fn lire_inclus_ssh(
 ) -> Vec<Inclus> {
     use std::io::ErrorKind::NotFound;
     use std::os::unix::ffi::OsStrExt;
-    let nom = chemin.file_name().map(OsStrExt::as_bytes).unwrap_or_default();
+    let nom = chemin.file_name().map_or_default(OsStrExt::as_bytes);
     let mut trouves = Vec::new();
     let mut inclus: Vec<Inclus> = Vec::new();
     if nom.contains(&b'*') || nom.contains(&b'?') {
@@ -1840,8 +1840,7 @@ fn base64_decoder(texte: &str) -> Option<Vec<u8>> {
 fn blocages_dans(dossier: &std::path::Path) -> std::collections::HashSet<String> {
     crate::sceau::juge_dans(dossier, crate::sceau::PORTS_BLOQUES)
         .cru()
-        .map(|o| lire_blocages(&String::from_utf8_lossy(&o)))
-        .unwrap_or_default()
+        .map_or_default(|o| lire_blocages(&String::from_utf8_lossy(&o)))
 }
 
 fn lire_blocages(texte: &str) -> std::collections::HashSet<String> {

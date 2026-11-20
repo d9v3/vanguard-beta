@@ -265,8 +265,7 @@ impl Porte {
         let maintenant = chrono::Utc::now();
         let il_y_a_30_jours = maintenant
             .checked_sub_signed(chrono::Duration::days(30))
-            .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-            .unwrap_or_default();
+            .map_or_default(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
         let j = self.journal();
         let mut alertes = std::collections::BTreeMap::from([
             ("info", 0u32),
@@ -412,7 +411,7 @@ impl Porte {
             m.insert("verifies".into(), json!(r.map(|r| r.couverture.verifies)));
             m.insert("non_verifies".into(), json!(r.map(|r| r.couverture.non_verifies.len())));
             let mut liste = Vec::new();
-            for c in r.map(|r| r.constats.as_slice()).unwrap_or_default() {
+            for c in r.map_or_default(|r| r.constats.as_slice()) {
                 if niveau_min.is_some_and(|n| c.niveau.is_none_or(|x| x < n)) {
                     continue;
                 }

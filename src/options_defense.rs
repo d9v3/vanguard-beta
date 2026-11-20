@@ -223,7 +223,7 @@ pub(crate) enum ModeDefender {
 
 impl ModeDefender {
     pub(crate) fn depuis(mode: Option<&str>, antivirus: Option<bool>) -> ModeDefender {
-        let mode = mode.map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default();
+        let mode = mode.map_or_default(|m| m.trim().to_ascii_lowercase());
         match mode.as_str() {
             "" => match antivirus {
                 Some(true) => ModeDefender::Actif,
@@ -2493,12 +2493,11 @@ mod tests {
             lignes(e)
                 .into_iter()
                 .find(|x| x.contains("Programmes permis (dossiers)"))
-                .map(|x| {
+                .map_or_default(|x| {
                     [RESET, VERT, GRIS, ACCENT, DISCRET]
                         .iter()
                         .fold(x, |t, c| t.replace(c, ""))
                 })
-                .unwrap_or_default()
         };
         let mut e = courant();
         for (compte, attendu) in [

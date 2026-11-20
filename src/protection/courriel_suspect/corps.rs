@@ -306,8 +306,7 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
                                 None => reste.to_string(),
                             }
                         })
-                        .map(|c| adresse_attribut(c.trim_matches(['"', '\''])))
-                        .unwrap_or_default();
+                        .map_or_default(|c| adresse_attribut(c.trim_matches(['"', '\''])));
                     if !cible.is_empty() {
                         r.rafraichit = Some(cible);
                     }
@@ -1039,7 +1038,7 @@ fn deballer(cible: &str) -> String {
                 .map(|(_, v)| v.to_string())
         })
     };
-    let hote = lien::examiner_lien(cible).map(|(s, _)| s).unwrap_or_default();
+    let hote = lien::examiner_lien(cible).map_or_default(|(s, _)| s);
     if hote == "proofpoint.com" && bas.contains("urldefense.proofpoint.com/v2/url") {
         // Proofpoint v2 : « - » tient lieu de « % » et « _ » de « / » (« https-3A__site.example_page »).
         if let Some(u) = brut("u") {

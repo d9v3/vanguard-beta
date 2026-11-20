@@ -123,6 +123,8 @@ example, finds it, to rebuild it if needed.
   `deny.toml` no longer stops the audit of the other crates: only its own advisories all count.
 - **Dependency security.** wasmtime 48.0.9 (advisories RUSTSEC-2026-0566 to RUSTSEC-2026-0573: unbounded memory
   growth in wasi, aborts on missing features, stale garbage-collector pointer, panics), brought in by YARA-X.
+- **Rust 1.100.0.** The programs are now built with the latest Rust release, which brings its fixes; its new
+  clippy remarks are fixed in the code, without silencing any of them.
 
 ## November 15, 2026: version 0.96.0
 

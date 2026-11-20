@@ -549,8 +549,7 @@ fn raccourci(l: &Lieux, p: &Path, r: &mut Recensement) {
         });
         let avec = icone
             .as_deref()
-            .map(|i| trf!(" et son icône {}", " and its icon {}", chemin_affichable(i)))
-            .unwrap_or_default();
+            .map_or_default(|i| trf!(" et son icône {}", " and its icon {}", chemin_affichable(i)));
         r.elements.push(Element {
             genre: Genre::Raccourci,
             texte: if menu {
@@ -1620,8 +1619,7 @@ fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec
     // La copie en marche n'est promise effacée que si son lanceur vit encore pour le faire ; sinon, son chemin exact.
     let note_copie = copie
         .as_deref()
-        .map(|c| note_de_la_copie(c, lanceur_vivant(c)))
-        .unwrap_or_default();
+        .map_or_default(|c| note_de_la_copie(c, lanceur_vivant(c)));
     if !gardes.is_empty() {
         let liste: Vec<String> = gardes
             .iter()

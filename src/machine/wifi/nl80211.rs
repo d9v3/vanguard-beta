@@ -406,8 +406,7 @@ fn famille() -> Result<u16, &'static str> {
 fn stations(famille: u16) -> Vec<Interface> {
     let liste = demande(famille, NLM_F_REQUEST | NLM_F_DUMP, NL80211_CMD_GET_INTERFACE, &[]);
     echanger(&liste)
-        .map(|r| interfaces(&r, famille))
-        .unwrap_or_default()
+        .map_or_default(|r| interfaces(&r, famille))
         .into_iter()
         .filter(|i| i.station)
         .collect()
@@ -435,7 +434,7 @@ pub(crate) fn lire() -> Result<Lecture, &'static str> {
             NL80211_CMD_GET_SCAN,
             &[(NL80211_ATTR_IFINDEX, &i.index.to_ne_bytes())],
         );
-        let bornes = echanger(&scan).map(|r| balises_vues(&r, famille)).unwrap_or_default();
+        let bornes = echanger(&scan).map_or_default(|r| balises_vues(&r, famille));
         if lecture.connexion.is_none() {
             let seules: Vec<Balise> = bornes.iter().map(|(b, _)| b.clone()).collect();
             lecture.connexion = connexion(i, &seules);

@@ -225,15 +225,12 @@ fn strategies_de(nom: &str, sid: Option<&str>) -> Strategies {
             let pq = k.get_value::<u32, _>("PostQuantumKeyAgreementEnabled").ok();
             // REG_SZ ou REG_MULTI_SZ (lignes jointes par winreg) : le JSON de la stratégie Preferences.
             let texte = k.get_value::<String, _>("Preferences").ok();
-            let anciennes: Vec<(String, u32)> = k
-                .open_subkey("Preferences")
-                .map(|p| {
-                    PREFS_PQ
-                        .into_iter()
-                        .filter_map(|n| Some((n.to_string(), p.get_value::<u32, _>(n).ok()?)))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let anciennes: Vec<(String, u32)> = k.open_subkey("Preferences").map_or_default(|p| {
+                PREFS_PQ
+                    .into_iter()
+                    .filter_map(|n| Some((n.to_string(), p.get_value::<u32, _>(n).ok()?)))
+                    .collect()
+            });
             let (objet, illisible) = firefox_du_registre(pq, texte.as_deref(), &anciennes);
             if illisible {
                 s.illisibles.push(format!(r"{court}\{cle}\Preferences"));
@@ -516,7 +513,7 @@ pub fn navigateurs() -> Vec<Constat> {
             let s = strategies(nom);
             let (imposee, recommandee) = if firefox {
                 let (imposee, defaut) = s.firefox.as_ref().map_or((None, None), |(v, _)| firefox_coupe(v));
-                let ou = s.firefox.as_ref().map(|(_, ou)| ou.clone()).unwrap_or_default();
+                let ou = s.firefox.as_ref().map_or_default(|(_, ou)| ou.clone());
                 (imposee.map(|p| (format!("Preferences : {p} = false"), ou)), defaut)
             } else {
                 let recommandee = safe_browsing_coupe(&s.recommandees).map(|_| "safebrowsing.enabled");

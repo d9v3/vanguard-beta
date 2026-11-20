@@ -280,8 +280,7 @@ pub fn lancer(programme: impl AsRef<OsStr>, arguments: &[&str], delai: Duration)
     };
     let texte = |r: mpsc::Receiver<Vec<u8>>| {
         r.recv_timeout(Duration::from_secs(2))
-            .map(|o| String::from_utf8_lossy(&o).into_owned())
-            .unwrap_or_default()
+            .map_or_default(|o| String::from_utf8_lossy(&o).into_owned())
     };
     // Arrêté par SIGPIPE quand la lecture a cessé à la borne : tronqué aussi.
     tronque |= plein.load(Ordering::Relaxed);

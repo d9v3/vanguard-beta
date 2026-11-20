@@ -160,8 +160,7 @@ const REFERENCES: &str = crate::sceau::MANIFESTES_CLE;
 fn emplacement(reference: &Path) -> (PathBuf, String) {
     let fichier = reference
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let parent = reference.parent().unwrap_or(Path::new("."));
     if parent.file_name().is_some_and(|n| n == REFERENCES) {
         let base = parent.parent().unwrap_or(Path::new(".")).to_path_buf();

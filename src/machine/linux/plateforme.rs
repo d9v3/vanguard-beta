@@ -94,8 +94,7 @@ pub(super) fn lire_attributs(json: &str) -> Option<Vec<Attribut>> {
                 let drapeaux: Vec<&str> = a
                     .get("Flags")
                     .and_then(|f| f.as_array())
-                    .map(|f| f.iter().filter_map(|x| x.as_str()).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|f| f.iter().filter_map(|x| x.as_str()).collect());
                 (!drapeaux.contains(&"obsoleted")).then(|| Attribut {
                     niveau,
                     id: a
@@ -309,7 +308,7 @@ fn attributs_par_dbus() -> Result<Vec<Attribut>, crate::modele::Echec> {
             Vec::new(),
         )
         .map_err(echec)?;
-    Ok(corps.first().map(lire_attributs_dbus).unwrap_or_default())
+    Ok(corps.first().map_or_default(lire_attributs_dbus))
 }
 
 /// La sécurité de la plateforme d'après fwupd, sans droits : par D-Bus d'abord, `fwupdmgr security --json` en

@@ -730,8 +730,7 @@ pub(crate) fn relever_dans(
     }
     let mut b = crate::sceau::juge_dans(dossier, &nom)
         .cru()
-        .map(|o| Brouillon::de(&releve::lire(&o)))
-        .unwrap_or_default();
+        .map_or_default(|o| Brouillon::de(&releve::lire(&o)));
     b.fusionner(&m.brouillon);
     if !m.brouillon.est_vide() || crate::sceau::juge_dans(dossier, &nom) == crate::sceau::Juge::Absent {
         ecrire_si_permis(dossier, &nom, &b.ecrire())?;
@@ -769,8 +768,7 @@ pub(crate) fn purger_dans(dossier: &Path, jour: chrono::NaiveDate) -> std::io::R
     // Une date hors de chrono : limite vide, rien n'est purgé par l'âge.
     let limite = jour
         .checked_sub_signed(chrono::Duration::days(releve::JOURS_GARDES))
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
+        .map_or_default(|d| d.format("%Y-%m-%d").to_string());
     let garde = jour.format("%Y-%m-%d").to_string();
     let autres = taille(dossier, SUIVI).saturating_add(taille(dossier, MATERIEL));
     for j in releve::a_purger(&jours_dans(dossier), &limite, &garde, autres) {

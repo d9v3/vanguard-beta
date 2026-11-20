@@ -200,7 +200,7 @@ pub(crate) fn actives() -> Result<Vec<(String, Vec<String>)>, Echec> {
             continue;
         };
         let mut cartes = Vec::new();
-        for appareil in p.champ("Devices").map(Valeur::textes).unwrap_or_default() {
+        for appareil in p.champ("Devices").map_or_default(Valeur::textes) {
             if let Ok(nom) = bus.propriete(NM, &appareil, "org.freedesktop.NetworkManager.Device", "Interface")
                 && let Some(n) = nom.texte()
             {

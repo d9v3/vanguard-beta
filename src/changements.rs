@@ -929,7 +929,7 @@ fn ligne(c: &Changement, a_sa_note: &dyn Fn(&String) -> bool) -> Ligne {
                 .filter(|p| !p.is_empty()),
         };
     }
-    let premiere = c.commandes.first().map(String::as_str).unwrap_or_default();
+    let premiere = c.commandes.first().map_or_default(String::as_str);
     let suite = if c.commandes.len() > 1 {
         trf!(
             " (+{} commande(s))",

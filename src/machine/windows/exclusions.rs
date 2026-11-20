@@ -171,7 +171,7 @@ pub(crate) fn lecture_wmi() -> Option<([Vec<String>; 3], Politiques)> {
     // sont jugées quand même (un `None` pour toutes les trois tairait leurs exclusions). Un texte seul compte
     // pour une liste d'un élément : un « N/A… » rendu ainsi garde la liste cachée, au lieu de la faire passer
     // pour lue et vide.
-    let liste = |cle: &str| -> Vec<String> { l.get(cle).map(Valeur::textes).unwrap_or_default() };
+    let liste = |cle: &str| -> Vec<String> { l.get(cle).map_or_default(Valeur::textes) };
     // Une politique que ce Windows n'a pas (plateforme plus ancienne) arrive nulle (`requete` lit `*` puis
     // chaque champ) : elle ne cache rien.
     let vraie = |cle: &str| l.get(cle).is_some_and(politique_vraie);
@@ -203,8 +203,7 @@ pub(crate) fn programmes_permis() -> Option<Vec<String>> {
     .and_then(|l| l.into_iter().next())?;
     Some(
         l.get("ControlledFolderAccessAllowedApplications")
-            .map(Valeur::textes)
-            .unwrap_or_default(),
+            .map_or_default(Valeur::textes),
     )
 }
 
@@ -215,8 +214,7 @@ fn lire_json(v: &serde_json::Value) -> ([Vec<String>; 3], Politiques) {
     let liste = |cle: &str| -> Vec<String> {
         v.get(cle)
             .and_then(serde_json::Value::as_array)
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-            .unwrap_or_default()
+            .map_or_default(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
     };
     let vraie = |cle: &str| match v.get(cle) {
         Some(serde_json::Value::Bool(b)) => *b,

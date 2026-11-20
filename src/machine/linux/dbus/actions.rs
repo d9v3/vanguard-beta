@@ -171,7 +171,7 @@ pub(crate) fn session() -> Result<Bus, Echec> {
 /// La prise du bus de la session d'après DBUS_SESSION_BUS_ADDRESS (`adresse`), sinon $XDG_RUNTIME_DIR/bus (le défaut
 /// de sd-bus) : la première qui appartient au compte `uid` et dont le compte d'en face est `uid`.
 fn prise_de_session(adresse: Option<&str>, runtime: Option<&std::ffi::OsStr>, uid: u32) -> Option<UnixStream> {
-    let mut prises = adresse.map(prises_de).unwrap_or_default();
+    let mut prises = adresse.map_or_default(prises_de);
     if prises.is_empty()
         && let Some(d) = runtime
     {

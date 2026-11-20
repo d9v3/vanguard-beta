@@ -1653,9 +1653,8 @@ pub(crate) fn executer_analyse(d: &Demande<'_>) -> Result<(Comptes, Option<Analy
                 None
             }
         };
-        let mut jours: BTreeMap<Jour, JourFlotte> = ancien
-            .map(|e| e.jours.into_iter().filter(|(j, _)| fige(j)).collect())
-            .unwrap_or_default();
+        let mut jours: BTreeMap<Jour, JourFlotte> =
+            ancien.map_or_default(|e| e.jours.into_iter().filter(|(j, _)| fige(j)).collect());
         if let Some(n) = neufs.get(&v) {
             jours.extend(n.iter().filter(|(j, _)| !fige(j)).map(|(j, x)| (j.clone(), x.clone())));
         }
@@ -1709,8 +1708,7 @@ fn ecrire_releve(
         }
     };
     let mut fichiers: BTreeMap<Jour, ReleveJour> = ancien
-        .map(|e| e.fichiers)
-        .unwrap_or_default()
+        .map_or_default(|e| e.fichiers)
         .into_iter()
         .filter(|(j, _)| date(j).is_some_and(|x| x >= moins(t, RELEVE_GARDE) && x < moins(t, FICHIERS_AVANT)))
         .collect();

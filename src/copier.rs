@@ -320,7 +320,7 @@ pub(crate) fn disques() -> Vec<Disque> {
     let natifs: Vec<String> = crate::machine::windows::lecteurs::lecteurs()
         .iter()
         .map(|l| {
-            let disque = l.disque.map(|n| n.to_string()).unwrap_or_default();
+            let disque = l.disque.map_or_default(|n| n.to_string());
             let etiquette = l.etiquette.replace('|', " ");
             format!("{}|{etiquette}|{}|{}|{disque}", l.racine.display(), l.libre, l.total)
         })

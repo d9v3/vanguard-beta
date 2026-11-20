@@ -1277,8 +1277,7 @@ mod tests {
 
     fn gardees(ctx: &egui::Context) -> HashMap<Cle, Arc<Galley>> {
         ctx.data(|d| d.get_temp::<Memoire>(id_memoire()))
-            .map(|m| m.textes.into_iter().map(|(cle, mise)| (cle, mise.galley)).collect())
-            .unwrap_or_default()
+            .map_or_default(|m| m.textes.into_iter().map(|(cle, mise)| (cle, mise.galley)).collect())
     }
 
     /// Vérification de Fable n° 4, N6 : la feuille met en page ses textes de Vanguard une fois, puis les reprend ; elle

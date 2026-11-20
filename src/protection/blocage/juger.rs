@@ -161,8 +161,7 @@ fn juger_processus(pid: u32, ctx: &Contexte) {
     let nom = chemin
         .as_deref()
         .and_then(|c| Path::new(c).file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     match chemin.as_deref() {
         Some(c) => {
             trp!("  Processus {pid} : {c}", "  Process {pid}: {c}");

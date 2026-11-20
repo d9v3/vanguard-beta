@@ -1060,10 +1060,11 @@ fn analyser_avant_accord(examen: &crate::protection::antivirus::Examen) -> Resul
             "⚠ suspect, rien de connu ({}){} : à regarder avant d'accepter",
             "⚠ suspicious, nothing known ({}){}: look before accepting",
             affichable(&signes.join(" ; ")),
-            examen
-                .non_verifie_du_suspect()
-                .map(|n| trf!(" ; non vérifié : {}", "; not checked: {}", affichable(&n)))
-                .unwrap_or_default()
+            examen.non_verifie_du_suspect().map_or_default(|n| trf!(
+                " ; non vérifié : {}",
+                "; not checked: {}",
+                affichable(&n)
+            ))
         )),
         Examen::Impossible(pourquoi) => Ok(trf!(
             "⚠ analyse impossible ({}) : rien ne dit qu'il est sain",
@@ -1949,8 +1950,7 @@ fn liste(racine: &Path) {
         let titre = p
             .manifeste
             .as_ref()
-            .map(|m| format!(" — {}", affichable(m.titre())))
-            .unwrap_or_default();
+            .map_or_default(|m| format!(" — {}", affichable(m.titre())));
         afficher_aligne(&format!("  {marque} "), &format!("{}{titre}", p.nom), 4, GRAS);
         afficher_aligne("    ", &etat, 4, GRIS);
     }

@@ -215,7 +215,7 @@ fn url_reduite(url: &str) -> String {
     } else {
         "<site>".to_string()
     };
-    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let port = port.map_or_default(|p| format!(":{p}"));
     format!("{schema}://{hote}{port}{chemin}")
 }
 
@@ -273,8 +273,7 @@ pub(crate) fn reduire_chemin(chemin: &str, maisons: &[String]) -> String {
         .rsplit_once('.')
         .map(|(_, e)| e)
         .filter(|e| !e.is_empty() && e.len() <= 8 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-        .map(|e| format!(".{}", e.to_ascii_lowercase()))
-        .unwrap_or_default();
+        .map_or_default(|e| format!(".{}", e.to_ascii_lowercase()));
     let separateur = if chemin.contains('\\') { '\\' } else { '/' };
     format!("~{separateur}…{separateur}<fichier>{extension}")
 }

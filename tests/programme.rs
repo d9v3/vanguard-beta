@@ -853,9 +853,7 @@ fn instantane(racine: &Path) -> std::collections::BTreeMap<String, Entree> {
         } else if m.file_type().is_symlink() {
             format!(
                 "-> {}",
-                std::fs::read_link(&p)
-                    .map(|c| c.display().to_string())
-                    .unwrap_or_default()
+                std::fs::read_link(&p).map_or_default(|c| c.display().to_string())
             )
         } else {
             String::new()
@@ -9943,13 +9941,13 @@ mod porte_mcp {
         ];
         let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &(lire.join("\n") + "\n"), 60);
         let r = reponses(&s);
-        let sessions = r.get(1).map(ToString::to_string).unwrap_or_default();
+        let sessions = r.get(1).map_or_default(ToString::to_string);
         // La session servie : sa note d'ouverture et sa note de fin. Le client hostile, sans appel servi : son
         // alerte seule.
         assert!(sessions.contains(r#""fin":"ouverte""#), "{sessions}");
         assert!(sessions.contains(r#""fin":"fin-du-flot""#), "{sessions}");
         assert!(!sessions.contains(r#""fin":"hostile""#), "{sessions}");
-        let alertes = r.get(2).map(ToString::to_string).unwrap_or_default();
+        let alertes = r.get(2).map_or_default(ToString::to_string);
         assert!(alertes.contains(r#""famille":"porte-mcp""#), "{alertes}");
     }
 
@@ -10007,7 +10005,7 @@ mod porte_mcp {
             appel(1, "evenements", &serde_json::json!({ "genre": "session-porte" }))
         );
         let s = vanguard_dans(programme(), &maison, "fr", &["mcp"], &lire, 60);
-        let sessions = reponses(&s).get(1).map(ToString::to_string).unwrap_or_default();
+        let sessions = reponses(&s).get(1).map_or_default(ToString::to_string);
         assert!(sessions.contains(r#""fin":"ouverte""#), "{sessions}");
         assert!(sessions.contains(r#""fin":"signal""#), "{sessions}");
     }

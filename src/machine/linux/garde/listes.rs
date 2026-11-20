@@ -198,15 +198,12 @@ pub(crate) fn charger_croissance(dossier: &Path, nom: &str) -> (Option<Croissanc
     let chemin = dossier.join(nom);
     match crate::socle::lire_ordinaire(&chemin, 128) {
         Ok(octets) => {
-            let nombres: Option<Vec<u64>> = std::str::from_utf8(&octets)
-                .ok()
-                .map(|t| {
-                    t.split_ascii_whitespace()
-                        .map(str::parse)
-                        .collect::<Result<_, _>>()
-                        .ok()
-                })
-                .unwrap_or_default();
+            let nombres: Option<Vec<u64>> = std::str::from_utf8(&octets).ok().map_or_default(|t| {
+                t.split_ascii_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .ok()
+            });
             match nombres.as_deref() {
                 Some(&[anormale]) => (
                     Some(Croissance {

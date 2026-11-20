@@ -580,10 +580,7 @@ fn sortir_en_json(r: &crate::modele::resultat::Resultat, v: &Verification) {
 /// Le nom tel quel sert à juger (un caractère qui retourne la fin du nom est justement le piège à trouver) ; montré,
 /// il est rendu inoffensif, comme le dossier.
 fn nom_du_fichier(chemin: &Path) -> String {
-    chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default()
+    chemin.file_name().map_or_default(|n| n.to_string_lossy().to_string())
 }
 
 fn antivirus_du_systeme() -> &'static str {
@@ -740,7 +737,7 @@ fn montrer_le_fichier(chemin: &Path, nom: &str, octets: u64) {
     );
     afficher_aligne(
         &format!("  {GRIS}{}{RESET} ", ajuster(tr!("Dossier", "Folder"), 8)),
-        &chemin.parent().map(affiche).unwrap_or_default(),
+        &chemin.parent().map_or_default(affiche),
         11,
         "",
     );
@@ -1070,10 +1067,7 @@ fn arrivee(meta: &std::fs::Metadata) -> u64 {
 fn signalement(nom: &str, debut: &[u8]) -> Option<(String, String)> {
     let signes = nature(nom, debut);
     // Un installateur sans signature d'en-tête connue (.msi, .dmg, .pkg, .apk…) reste un programme, d'après son nom.
-    let extension = nom
-        .rsplit_once('.')
-        .map(|(_, e)| e.trim().to_lowercase())
-        .unwrap_or_default();
+    let extension = nom.rsplit_once('.').map_or_default(|(_, e)| e.trim().to_lowercase());
     let pire = signes
         .iter()
         .map(|(n, _)| *n)

@@ -948,8 +948,7 @@ pub(super) fn redemarrage() -> Constat {
     } else {
         let nouveau = plus_recent
             .filter(|n| *n != noyau)
-            .map(|n| format!(" ({n})"))
-            .unwrap_or_default();
+            .map_or_default(|n| format!(" ({n})"));
         alerte(
             "Noyau",
             Niveau::Moyen,
@@ -983,11 +982,7 @@ fn status_dkms_dans(racine: &Path) -> Option<String> {
         v.sort();
         v
     };
-    let nom = |p: &Path| {
-        p.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
+    let nom = |p: &Path| p.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     std::fs::read_dir(racine).ok()?;
     let mut lignes = Vec::new();
     for module in dossiers(racine) {
@@ -1133,7 +1128,7 @@ pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
             })
             .into_iter()
             .collect();
-        constats.extend(autres.map(|t| t.join().unwrap_or_default()).unwrap_or_default());
+        constats.extend(autres.map_or_default(|t| t.join().unwrap_or_default()));
         constats.extend(dkms.and_then(|t| t.join().ok().flatten()));
         constats.push(noyau);
         constats

@@ -120,8 +120,7 @@ fn lire_etat() -> Option<Etat> {
         ),
         alimentation: crate::commande::lancer(crate::commande::systeme("powercfg").arg("/getactivescheme"), 15)
             .filter(|r| r.code == Some(0))
-            .map(|r| r.sortie.trim().to_string())
-            .unwrap_or_default(),
+            .map_or_default(|r| r.sortie.trim().to_string()),
     })
 }
 

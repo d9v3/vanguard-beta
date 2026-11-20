@@ -306,7 +306,7 @@ fn cameras_du_reseau(e: &Entree) -> Vec<Constat> {
             i.force() == Some(cameras::Force::Probable) && Some(**ip) != e.passerelle && Some(**ip) != e.adresse_locale
         })
         .map(|(ip, i)| {
-            let titre = e.hotes.iter().find(|h| h.ip == *ip).map(Hote::titre).unwrap_or_default();
+            let titre = e.hotes.iter().find(|h| h.ip == *ip).map_or_default(Hote::titre);
             let qui = nom(*ip, &titre);
             let details: Vec<String> = cameras::lignes_indices(i).into_iter().map(|(t, _)| t).collect();
             let details = details.join(" ; ");

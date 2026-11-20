@@ -187,7 +187,7 @@ fn reseau<'a>(e: &'a Entree, sujet: &str) -> Result<(&'a Connexion, Vec<&'a Bali
         .filter(|b| (!c.ssid.is_empty() && b.borne.ssid == c.ssid) || (!c.bssid.is_empty() && b.borne.bssid == c.bssid))
         .collect();
     if siennes.is_empty() {
-        let note = e.note.map(|n| format!(" ; {n}")).unwrap_or_default();
+        let note = e.note.map_or_default(|n| format!(" ; {n}"));
         return Err(Box::new(impossible(
             CATEGORIE,
             &trf!(

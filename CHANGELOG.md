@@ -133,6 +133,8 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Sécurité des dépendances.** wasmtime 48.0.9 (avis RUSTSEC-2026-0566 à RUSTSEC-2026-0573 : mémoire qui
   grossit sans borne dans wasi, arrêts sur des fonctions absentes, pointeur périmé du ramasse-miettes, paniques), amené
   par YARA-X.
+- **Rust 1.100.0.** Les programmes sont maintenant compilés avec la dernière version de Rust, qui apporte ses
+  correctifs ; ses nouvelles remarques de clippy sont réglées dans le code, sans en faire taire aucune.
 
 ## 15 novembre 2026 : version 0.96.0
 

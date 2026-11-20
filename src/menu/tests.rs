@@ -450,7 +450,7 @@ fn l_aide_promet_la_fenetre_seulement_quand_elle_est_livree() {
             .find(|a| a.get_id() == "menu")
             .and_then(|a| a.get_help().map(ToString::to_string))
             .unwrap_or_default();
-        let entete = c.get_about().map(ToString::to_string).unwrap_or_default();
+        let entete = c.get_about().map_or_default(ToString::to_string);
         [aide_longue_selon(livree), aide_courte_selon(livree), entete, menu]
     };
     assert!(!crate::demarrage::lancer_fenetre::fenetre_livree());
@@ -1809,7 +1809,7 @@ fn chaque_commande_a_son_aide() {
         .get_subcommands()
         .filter(|s| !s.is_hide_set() && s.get_name() != "help")
     {
-        let aide = s.get_about().map(ToString::to_string).unwrap_or_default();
+        let aide = s.get_about().map_or_default(ToString::to_string);
         assert!(!aide.trim().is_empty(), "vanguard {} : sans aide", s.get_name());
     }
     // Celle de « dernieres-failles » parle des failles, pas du veilleur ni des sites.
@@ -1871,8 +1871,7 @@ fn le_mode_d_emploi_de_la_cle_cite_chaque_outil() {
         let alias = commandes
             .iter()
             .find(|(n, _)| n == o.commande)
-            .map(|(_, a)| a.clone())
-            .unwrap_or_default();
+            .map_or_default(|(_, a)| a.clone());
         let cite_fr = lisezmoi.contains(o.titre[0])
             || (!o.commande.is_empty() && lisezmoi.contains(&format!("vanguard {}", o.commande)));
         let cite_en = readme.contains(o.titre[1])

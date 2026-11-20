@@ -1053,8 +1053,7 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
         let nom_exe = exe
             .as_ref()
             .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         let Some(i) = reconnu(&comm).or_else(|| reconnu(&nom_exe)) else {
             continue;
         };
@@ -1458,7 +1457,7 @@ fn processus_et_connexions(sortie: &mut String) -> bool {
         // à une autre machine : rangé dans le dossier d'un outil, un auxiliaire tient peut-être sa session.
         let connecte = connectes.as_ref().is_some_and(|c| c.contains(&p.pid));
         let chemin = if connecte || reconnu(&p.nom).is_some() {
-            processus::chemin(p.pid).map(|c| sur_une_ligne(&c)).unwrap_or_default()
+            processus::chemin(p.pid).map_or_default(|c| sur_une_ligne(&c))
         } else {
             String::new()
         };
@@ -1540,15 +1539,11 @@ fn fichiers_poses_windows(sortie: &mut String) -> bool {
                 if type_.is_dir() && niveau == 0 {
                     a_lire.push((chemin, 1));
                 } else if type_.is_file() && a_garder(&chemin) {
-                    let date = entree
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .map(|t| {
-                            chrono::DateTime::<chrono::Local>::from(t)
-                                .format("%Y-%m-%d")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
+                    let date = entree.metadata().and_then(|m| m.modified()).map_or_default(|t| {
+                        chrono::DateTime::<chrono::Local>::from(t)
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    });
                     let _ = writeln!(sortie, "FIC|{}|{date}", sur_une_ligne(&chemin.to_string_lossy()));
                 }
             }

@@ -1104,7 +1104,7 @@ impl Appli {
 
     /// À chaque image : les messages de la tâche, la suivante de la file, le sondage du journal.
     pub fn avancer(&mut self) {
-        let messages = self.tache.as_ref().map(Tache::recevoir).unwrap_or_default();
+        let messages = self.tache.as_ref().map_or_default(Tache::recevoir);
         for m in messages {
             match m {
                 Message::Ligne(l) => {

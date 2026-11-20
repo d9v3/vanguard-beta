@@ -269,8 +269,7 @@ fn recentes(
     // Une date hors de chrono (impossible depuis l'horloge) : toutes les alertes passent pour récentes.
     let limite = jour
         .checked_sub_signed(chrono::Duration::days(JOURS_RECENTS))
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
+        .map_or_default(|d| d.format("%Y-%m-%d").to_string());
     let mut vues = std::collections::HashSet::new();
     alertes
         .iter()

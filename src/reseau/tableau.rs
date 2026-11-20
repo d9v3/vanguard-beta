@@ -260,8 +260,7 @@ fn ajouter(fichier: &Path, alerte: Alerte, maintenant: NaiveDateTime) -> std::io
 /// limite vide laisse tout passer, rien n'est retiré.
 fn jours_avant(t: NaiveDateTime, jours: i64, format: &str) -> String {
     t.checked_sub_signed(chrono::Duration::days(jours))
-        .map(|d| d.format(format).to_string())
-        .unwrap_or_default()
+        .map_or_default(|d| d.format(format).to_string())
 }
 
 /// Les alertes de moins de 90 jours, les 500 plus récentes au plus.
@@ -832,7 +831,7 @@ fn etat(d: &Donnees, nouveaux: usize) -> String {
                 "<span class=\"badge moyen\">EN PAUSE</span> Surveillance toutes les heures en pause : la protection en temps réel de Vanguard est coupée ({}), aucune passe ne se fait et rien n'est notifié{}.<div class=fix>Pour la remettre : <code>vanguard parametres temps-reel oui</code>.</div>",
                 "<span class=\"badge moyen\">PAUSED</span> Hourly monitoring paused: Vanguard's real-time protection is off ({}), no run happens and nothing is notified{}.<div class=fix>To turn it back on: <code>vanguard settings real-time yes</code>.</div>",
                 esc(quand),
-                passe.map(|p| format!(" ({p})")).unwrap_or_default()
+                passe.map_or_default(|p| format!(" ({p})"))
             );
         }
         (true, Some(p), None) => {
@@ -853,7 +852,7 @@ fn etat(d: &Donnees, nouveaux: usize) -> String {
                 h,
                 "<span class=\"badge moyen\">COUPÉE</span> La surveillance horaire n'est pas active{} : rien de nouveau n'est noté.<div class=fix>{}</div>",
                 "<span class=\"badge moyen\">OFF</span> Hourly monitoring is not on{}: nothing new is recorded.<div class=fix>{}</div>",
-                passe.map(|p| format!(" ({p})")).unwrap_or_default(),
+                passe.map_or_default(|p| format!(" ({p})")),
                 comment_activer()
             );
         }
@@ -1041,8 +1040,7 @@ fn connexions_suspectes(d: &Donnees, vues: &[&Alerte]) -> String {
             .is_some_and(|v| d.maintenant.signed_duration_since(v) <= chrono::Duration::hours(BOTNETS_RECENTS_HEURES));
         let vues = d
             .botnets_vus
-            .map(|v| quand(&v.format(FORMAT_DATE).to_string()))
-            .unwrap_or_default();
+            .map_or_default(|v| quand(&v.format(FORMAT_DATE).to_string()));
         let _ = if recentes {
             trw!(
                 h,
@@ -1366,8 +1364,8 @@ fn graphique(d: &Donnees) -> String {
             )
         );
     }
-    let premier = jours.first().map(|j| date_fr(j)).unwrap_or_default();
-    let milieu = jours.get(15).map(|j| date_fr(j)).unwrap_or_default();
+    let premier = jours.first().map_or_default(|j| date_fr(j));
+    let milieu = jours.get(15).map_or_default(|j| date_fr(j));
     let _ = write!(
         h,
         "</div><div class=axe><span>{premier}</span><span>{milieu}</span><span>{}</span></div><div class=cles><span><i></i>{}</span><span><i class=g></i>{}</span></div></div>",
@@ -1466,8 +1464,7 @@ fn toutes_les_fonctions(fonctions: &[Rubrique]) -> String {
                 esc(&f.precision),
                 f.commande
                     .as_deref()
-                    .map(|c| format!("<code>{}</code>", esc(c)))
-                    .unwrap_or_default()
+                    .map_or_default(|c| format!("<code>{}</code>", esc(c)))
             );
         }
         h += "</details>";

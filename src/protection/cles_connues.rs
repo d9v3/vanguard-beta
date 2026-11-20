@@ -443,7 +443,7 @@ mod tests {
     fn cle_en_double() {
         let c = constat_en_double();
         assert_eq!((c.probleme, c.verifie), (Some(Niveau::Moyen), false));
-        let action = |c: &Constat| c.correctif.as_ref().map(|k| k.action.clone()).unwrap_or_default();
+        let action = |c: &Constat| c.correctif.as_ref().map_or_default(|k| k.action.clone());
         let a = action(&c);
         assert!(a.contains("Débranchez") || a.contains("Unplug"), "{a}");
         // Le constat d'une clé inconnue, lui, conseille de redéployer : redéployer une copie ne la rendrait pas sûre.

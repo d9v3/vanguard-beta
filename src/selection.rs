@@ -182,7 +182,7 @@ pub fn correspond(recherche: &str, texte: &str) -> bool {
 /// par rang, et à rang égal gardent l'ordre du menu : les outils restent devant les commandes du guide.
 fn rang(recherche: &str, nom: &str) -> u8 {
     let nom = nom.trim_start_matches(|c: char| !c.is_alphanumeric());
-    let premier = recherche.split_whitespace().next().map(simplifier).unwrap_or_default();
+    let premier = recherche.split_whitespace().next().map_or_default(simplifier);
     if !premier.is_empty() && nom.starts_with(premier.as_str()) {
         0
     } else if correspond(recherche, nom) {
@@ -1487,12 +1487,11 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
     let zones: Vec<Zone> = crossterm::cursor::position()
         .ok()
         .and_then(|(_, rangee)| usize::from(rangee).checked_sub(toutes.len()))
-        .map(|premiere| {
+        .map_or_default(|premiere| {
             (0..toutes.len())
                 .map(|i| Zone::ligne(premiere.saturating_add(i), i))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     loop {
         let k = match event::read() {
             Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => k,

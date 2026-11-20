@@ -653,7 +653,7 @@ fn examiner(
     } else {
         None
     };
-    let mut fuites = natif.map(|(f, _)| f).unwrap_or_default();
+    let mut fuites = natif.map_or_default(|(f, _)| f);
     for f in autre.unwrap_or_default() {
         if !fuites
             .iter()
@@ -728,8 +728,7 @@ pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur:
             .is_some_and(|v| garde_par_l_environnement(&v.sortie));
     let complement = gitleaks.filter(|_| !r.gitleaks_ecarte).and_then(|gitleaks| {
         let aide = crate::commande::lancer(Command::new(&gitleaks).arg("--help"), 10)
-            .map(|r| r.sortie + &r.erreurs)
-            .unwrap_or_default();
+            .map_or_default(|r| r.sortie + &r.erreurs);
         let rapports = crate::protection::isoler::dossier_jetable().ok()?;
         Some(Complement {
             gitleaks,

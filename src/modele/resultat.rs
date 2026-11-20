@@ -379,7 +379,7 @@ fn derniers_dans(dossier: &std::path::Path) -> Vec<Resultat> {
                 outil: (*id).to_string(),
                 dossier: None,
                 schema: SCHEMA,
-                debut: o.and_then(|o| relu(&o, id)).map(|r| r.debut).unwrap_or_default(),
+                debut: o.and_then(|o| relu(&o, id)).map_or_default(|r| r.debut),
                 duree_ms: 0,
                 couverture: Couverture {
                     verifies: 0,

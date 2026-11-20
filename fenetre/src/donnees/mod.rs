@@ -52,9 +52,7 @@ impl<'de> Deserialize<'de> for Texte {
 
 /// Un nombre écrit comme serde_json l'écrit (1.0 reste « 1.0 »).
 pub(super) fn nombre(n: f64) -> String {
-    serde_json::Number::from_f64(n)
-        .map(|n| n.to_string())
-        .unwrap_or_default()
+    serde_json::Number::from_f64(n).map_or_default(|n| n.to_string())
 }
 
 struct VersTexte;
