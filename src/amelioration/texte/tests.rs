@@ -2295,3 +2295,11 @@ fn detail_long_croissance_lineaire() {
 
 /// Banc de non-régression : toutes les entrées des relecteurs, sortie exacte.
 mod banc;
+
+/// Ronde 10, bas : une barre échappée suivie d'un invisible (« \<U+200B>/ ») échappait au retrait des « \ », et
+/// `normaliser` recréait ensuite un « \/ » que plus rien ne défaisait (valeurs inventées).
+#[test]
+fn barre_echappee_suivie_d_un_invisible() {
+    let sortie = masquer("lecture de \\\u{200B}/home\\\u{200B}/alice\\\u{200B}/Zoé Martin refusée");
+    assert!(!sortie.contains("Martin"), "{sortie}");
+}
