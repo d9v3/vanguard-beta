@@ -449,24 +449,50 @@ for panne in "TMPDIR=$ESSAI/r3/tmp-ro" "VANGUARD_CLAUDE_CLE_GPG=$ESSAI/r3/cle-ab
     echo 2.0.8 >"$ESSAI/serveur/stable"
   done
 done
+# --etat pendant une vérification impossible : ni « bonne » ni « ne se vérifie plus », code 3 (jamais compté sain).
+attendu "--etat, vérification impossible : code 3" 3 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --etat
+grep -q "vérification impossible sur cet ordinateur" "$ESSAI/sortie" && ! grep -q "ne se vérifie plus\|bonnes" "$ESSAI/sortie" &&
+  bon "--etat, vérification impossible : dit tel quel, pas « ne se vérifie plus »" || rate "--etat impossible : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# Une vérification réussie entre deux pannes : la même panne qui revient est notifiée de nouveau, sans le message
+# doublé « impossible (vérification impossible ici : …) ».
+attendu "succès entre deux pannes" 0 r3 bash outils/claude-cle.sh --chercher
+rm -f "$ESSAI/notifications"
+attendu "la même panne revient : code 1" 1 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --chercher
+grep -q "vérification impossible" "$ESSAI/notifications" 2>/dev/null &&
+  ! grep -q "(vérification impossible ici" "$ESSAI/sortie" "$ESSAI/notifications" &&
+  bon "panne qui revient après un succès : notifiée de nouveau, message pas doublé" ||
+  rate "panne qui revient : $(cat "$ESSAI/notifications" 2>/dev/null | tr '\n' ' ') $(grep -m1 impossible "$ESSAI/sortie")"
 chmod 700 "$ESSAI/r3/tmp-ro"
 attendu "r3 : 2.0.8 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
 # Un autre ordinateur pose la 2.0.9 sur la même clé ; de retour ici (cache et note à 2.0.8), la clé n'est pas
-# redescendue : elle garde sa version signée plus récente, et la note monte.
+# redescendue : elle garde sa version signée plus récente. Mais ses binaires ne viennent pas d'un dépôt d'ici (posés
+# ailleurs, ou remplacés pendant le voyage par une autre version signée) : c'est dit (code 2). La note anti-retour ne
+# monte pas : elle ne monte que par --chercher, sinon chaque pose suivante (et la recherche) serait refusée.
 echo 2.0.9 >"$ESSAI/serveur/stable"
 r3b() { env XDG_CACHE_HOME="$ESSAI/r3/cache-b" XDG_STATE_HOME="$ESSAI/r3/etat-b" "$@"; }
 attendu "autre ordinateur : 2.0.9 dans son cache" 0 r3b bash outils/claude-cle.sh --chercher
 attendu "autre ordinateur : 2.0.9 posée (sans note de dépôt chez lui)" 2 r3b bash outils/claude-cle.sh --cle "$R3K"
 rm -f "$ESSAI/notifications"
-attendu "clé plus récente que le cache : gardée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+attendu "clé plus récente que le cache, pas posée d'ici : gardée, dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
 cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" &&
-  cmp -s "$R3K/Claude/manifest.json" "$ESSAI/serveur/2.0.9/manifest.json" && [[ $(cat "$R3N") == 2.0.9 ]] &&
-  ! grep -q "piège" "$ESSAI/sortie" && grep -q "plus récent sur la clé" "$ESSAI/notifications" 2>/dev/null &&
-  bon "clé plus récente : 2.0.9 gardée, note montée, pas de fausse alerte" ||
+  cmp -s "$R3K/Claude/manifest.json" "$ESSAI/serveur/2.0.9/manifest.json" && [[ $(cat "$R3N") == 2.0.8 ]] &&
+  grep -q "ne vient pas de cet ordinateur" "$ESSAI/sortie" && grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "clé plus récente : 2.0.9 gardée, note pas montée, provenance dite" ||
   rate "clé plus récente : $(cat "$R3N") $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
-attendu "clé plus récente, pose suivante : le cache plus ancien est refusé" 1 r3 bash outils/claude-cle.sh --cle "$R3K"
-cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" && bon "pose suivante : clé laissée en 2.0.9" ||
-  rate "pose suivante : clé redescendue"
+# La pose suivante : la 2.0.9 est maintenant notée comme déposée d'ici, gardée sans alerte ; le lanceur abîmé entre
+# les deux est remis (avant, chaque pose était refusée et le lanceur jamais remis à jour).
+printf 'abime\r\n' >"$R3K/Depanner avec Claude.bat"
+rm -f "$ESSAI/notifications"
+attendu "clé plus récente, pose suivante : gardée sans alerte (code 0)" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" &&
+  cmp -s "$R3K/Depanner avec Claude.bat" "outils/cle/Depanner avec Claude.bat" && [[ $(cat "$R3N") == 2.0.8 ]] &&
+  grep -q "plus récent sur la clé" "$ESSAI/notifications" 2>/dev/null && ! grep -q "changé sur la clé" "$ESSAI/notifications" &&
+  bon "pose suivante : clé laissée en 2.0.9, lanceur remis, pas de fausse alerte" ||
+  rate "pose suivante : $(cat "$R3N") $(cat "$ESSAI/notifications" 2>/dev/null | tr '\n' ' ')"
+# La recherche, le serveur encore à 2.0.8 : pas refusée (la note n'a pas monté avec la clé).
+echo 2.0.8 >"$ESSAI/serveur/stable"
+attendu "clé plus récente : la recherche suivante n'est pas refusée" 0 r3 bash outils/claude-cle.sh --chercher
+echo 2.0.9 >"$ESSAI/serveur/stable"
 attendu "r3 : 2.0.9 dans le cache" 0 r3 bash outils/claude-cle.sh --chercher
 attendu "r3 : 2.0.9 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
 # Une version plus récente sur la clé dont un binaire a changé (même taille) n'est pas gardée : elle ne se vérifie
@@ -495,6 +521,76 @@ grep -q "PAS retiré" "$ESSAI/sortie" && ! grep -q ": retiré\.$" "$ESSAI/sortie
   rate "dossier à la place : $(grep 'retiré' "$ESSAI/sortie" | tr '\n' ' ')"
 rm -rf "$R3K/Claude/Linux/claude"
 attendu "dossier effacé à la main : reposé" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+# Débloquer une note montée trop haut (une version retirée par Anthropic, le serveur redescendu pour de bon) : par
+# --accepter-version seulement, au clavier, avec une confirmation tapée ; les versions plus hautes sont déplacées
+# (pas effacées), tout est noté, et --annuler-acceptation remet tout. Un ordinateur à part (r5) et sa clé.
+r5() { env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" "$@"; }
+R5C=$ESSAI/r5/cache/vanguard/claude-cle R5E=$ESSAI/r5/etat/vanguard R5K=$ESSAI/r5/cle
+R5N=$R5E/claude-cle-version
+mkdir -p "$R5K"
+echo cle >"$R5K/vanguard.cle"
+echo 0123abcd0123abcd0123abcd0123abcd >"$R5K/vanguard.jeton"
+# Une commande lancée dans un vrai pseudo-terminal ; la réponse est tapée quand la question (« taper ») est affichée.
+au_clavier() { # réponse commande…
+  python3 -I - "$@" <<'EOF'
+import os, pty, sys
+rep, cmd = sys.argv[1], sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+vu, tape = b"", False
+while True:
+    try:
+        b = os.read(fd, 4096)
+    except OSError:
+        break
+    if not b:
+        break
+    vu += b
+    if not tape and b"taper" in vu:
+        os.write(fd, rep.encode() + b"\n")
+        tape = True
+sys.stdout.write(vu.decode(errors="replace"))
+_, st = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(st))
+EOF
+}
+publier 2.1.1
+attendu "r5 : 2.1.1 dans le cache" 0 r5 bash outils/claude-cle.sh --chercher
+publier 2.4.0
+attendu "r5 : 2.4.0 dans le cache" 0 r5 bash outils/claude-cle.sh --chercher
+attendu "r5 : 2.4.0 posée" 0 r5 bash outils/claude-cle.sh --cle "$R5K"
+publier 2.1.2
+attendu "r5 : le serveur redescend à 2.1.2 : refusé" 1 r5 bash outils/claude-cle.sh --chercher
+etat_r5() { echo "$(cat "$R5N") $(ls "$R5C" | tr '\n' ' ')"; }
+avant=$(etat_r5)
+attendu "--accepter-version sans terminal : refusé" 1 r5 bash outils/claude-cle.sh --accepter-version 2.1.2 </dev/null
+[[ $(etat_r5) == "$avant" ]] && grep -q "seulement dans un terminal" "$ESSAI/sortie" && bon "sans terminal : rien changé" ||
+  rate "sans terminal : $(etat_r5)"
+attendu "--accepter-version, réponse « non » : pas confirmé" 1 au_clavier non env XDG_CACHE_HOME="$ESSAI/r5/cache" \
+  XDG_STATE_HOME="$ESSAI/r5/etat" bash outils/claude-cle.sh --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $R5E/claude-cle-journal ]] && grep -q "2.4.0 → 2.1.2" "$ESSAI/sortie" &&
+  grep -q "Pas confirmé" "$ESSAI/sortie" && bon "réponse « non » : ce qui change montré, rien changé" || rate "« non » : $(etat_r5)"
+attendu "--accepter-version, « ACCEPTER 2.1.2 » tapé : accepté" 0 au_clavier "ACCEPTER 2.1.2" env XDG_CACHE_HOME="$ESSAI/r5/cache" \
+  XDG_STATE_HOME="$ESSAI/r5/etat" bash outils/claude-cle.sh --accepter-version 2.1.2
+de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
+[[ $(cat "$R5N") == 2.1.2 && ! -e $R5C/2.4.0 && -f $de_cote/2.4.0/.verifiee && -f $R5C/2.1.1/.verifiee ]] &&
+  grep -q "accepter-version 2.1.2 : note 2.4.0 → 2.1.2" "$R5E/claude-cle-journal" && grep -qx 2.4.0 "$R5E/claude-cle-ecartees" &&
+  grep -q -- "--annuler-acceptation" "$ESSAI/sortie" &&
+  bon "accepté : note 2.1.2, 2.4.0 déplacée (pas effacée), journal écrit, annulation dite" || rate "accepté : $(etat_r5)"
+attendu "r5 : la 2.1.2 maintenant acceptée" 0 r5 bash outils/claude-cle.sh --chercher
+[[ -f $R5C/2.1.2/.verifiee ]] && bon "2.1.2 téléchargée et vérifiée" || rate "2.1.2 : $(etat_r5)"
+attendu "r5 : la 2.4.0 de la clé, mise de côté, remplacée" 0 r5 bash outils/claude-cle.sh --cle "$R5K"
+cmp -s "$R5K/Claude/Linux/claude" "$ESSAI/serveur/2.1.2/linux-x64/claude" && grep -q "mise de côté" "$ESSAI/sortie" &&
+  bon "clé : 2.4.0 mise de côté remplacée par la 2.1.2" || rate "clé : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+publier 2.4.0
+attendu "r5 : le serveur réannonce la 2.4.0 mise de côté" 0 r5 bash outils/claude-cle.sh --chercher
+[[ ! -e $R5C/2.4.0 && $(cat "$R5N") == 2.1.2 ]] && grep -q "mise de côté par --accepter-version" "$ESSAI/sortie" &&
+  bon "2.4.0 réannoncée : pas reprise tant que l'acceptation tient" || rate "réannoncée : $(etat_r5)"
+attendu "--annuler-acceptation" 0 r5 bash outils/claude-cle.sh --annuler-acceptation
+[[ $(cat "$R5N") == 2.4.0 && -f $R5C/2.4.0/.verifiee && ! -e $de_cote && ! -e $R5E/claude-cle-ecartees ]] &&
+  grep -q "annuler-acceptation : remis 2.4.0" "$R5E/claude-cle-journal" &&
+  bon "annulé : 2.4.0 remise, note 2.4.0, liste des écartées vidée, journal écrit" || rate "annulé : $(etat_r5)"
 echo 2.0.5 >"$ESSAI/serveur/stable"
 
 echo "Lanceur Linux (depanner.sh)"
@@ -832,6 +928,27 @@ attendu "restes avec un disque monté : lancé" 0 bash "$CLE/Claude/depanner-mon
 [[ -n $lettre && -f $lettre ]] && grep -q "PAS effacés en entier" "$ESSAI/sortie" &&
   bon "restes avec un disque monté : fichiers intacts, dit" || rate "restes avec un disque monté : $(grep -c Restes "$ESSAI/sortie")"
 rm -rf "$ESSAI"/run/vanguard-claude.* "$ESSAI/montages"
+# Le dossier passager sous un chemin qui porte une barre oblique inverse (« \t ») : l'empreinte de Claude Code se lit
+# quand même (sha256sum, le chemin en argument, préfixait sa ligne d'une « \ ») et le disque monté dessous est reconnu
+# (awk -v décodait « \t » en tabulation : le disque n'était plus vu, donc effacé).
+RUN_BS="$ESSAI/r\\tun"
+mkdir -m 700 "$RUN_BS"
+sed -i "s|^MONTAGES=.*|MONTAGES=$ESSAI/montages|" "$CLE/Claude/depanner-monte.sh"
+{
+  printf 'M=%s\n' "'$ESSAI/montages'"
+  cat <<'EOF'
+mkdir -p "disque du proche/Documents" && echo "lettre inventée" >"disque du proche/Documents/lettre.txt"
+{ cat /proc/self/mountinfo; printf '999 1 0:99 / %s/disque\\040du\\040proche rw - ext4 /dev/essai rw\n' "$(pwd -P | sed 's/\\/\\134/g')"; } >"$M"
+EOF
+} >"$ESSAI/pendant"
+: >"$ESSAI/journal-claude"
+attendu "dossier passager avec « \\ » : lancé" 0 env XDG_RUNTIME_DIR="$RUN_BS" TMPDIR="$RUN_BS" bash "$CLE/Claude/depanner-monte.sh" <<<"o"
+rm -f "$ESSAI/pendant"
+lettre=$(find "$RUN_BS" -path '*/travail/disque du proche/Documents/lettre.txt' 2>/dev/null)
+grep -qx logout "$ESSAI/journal-claude" && [[ -n $lettre ]] && grep -q "encore monté" "$ESSAI/sortie" &&
+  bon "dossier passager avec « \\ » : empreinte lue, disque monté reconnu, fichiers intacts" ||
+  rate "dossier passager avec « \\ » : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+rm -rf "$RUN_BS" "$ESSAI/montages"
 # Liste des montages illisible : le dossier de travail est laissé (un disque pourrait y être), la connexion effacée.
 sed -i "s|^MONTAGES=.*|MONTAGES=$ESSAI/montages-absent|" "$CLE/Claude/depanner-monte.sh"
 attendu "montages illisibles : lancé" 0 bash "$CLE/Claude/depanner-monte.sh" <<<"o"
@@ -875,6 +992,8 @@ c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$n; mkdir -p "\$c" && echo journal >"\
 [ -f "$ESSAI/journal-verrou" ] && mkdir -p "\$c/sous" && echo journal >"\$c/sous/f" && chmod 555 "\$c/sous"
 # Plus lançable ensuite (pour la déconnexion), sur demande.
 [ -f "$ESSAI/exe-casse" ] && chmod -x "\$0"
+# Un enfant qui survit à « auth logout » et garde ses sorties ouvertes, sur demande.
+[ "\$1 \$2" = "auth logout" ] && [ -f "$ESSAI/enfant-logout" ] && { sleep 47 & echo \$! >"$ESSAI/enfant-logout"; }
 if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; echo "entree=\$SESSION_INGRESS_URL"; } >>"\$j"
 env >"$ESSAI/env-win"
@@ -904,7 +1023,9 @@ EOF
     "etat:/jurisdictionC=US/jurisdictionST=Nevada/serialNumber=4860621/C=US/O=Anthropic, PBC/CN=Anthropic, PBC" \
     "jpays:/jurisdictionC=CA/jurisdictionST=Delaware/serialNumber=4860621/C=US/O=Anthropic, PBC/CN=Anthropic, PBC" \
     "nonev:/serialNumber=4860621/C=US/O=Anthropic, PBC/CN=Anthropic, PBC" \
-    "double:$ev/serialNumber=4860621/C=US/O=Anthropic, PBC/O=Exemple Inventé/CN=Anthropic, PBC"; do
+    "double:$ev/serialNumber=4860621/C=US/O=Anthropic, PBC/O=Exemple Inventé/CN=Anthropic, PBC" \
+    "zwnom:$ev/serialNumber=4860621/C=US/O=Anthropic, PBC/CN=Anthro$(printf '\u200b')pic, PBC" \
+    "zworg:$ev/serialNumber=4860621/C=US/O=Anthropic, P$(printf '\u00ad')BC/CN=Anthropic, PBC"; do
     openssl req -x509 -newkey ed25519 -nodes -keyout /dev/null -days 1 -out "$ESSAI/cert-${c%%:*}.pem" -utf8 \
       -subj "${c#*:}" 2>/dev/null || rate "openssl : certificat d'essai ${c%%:*}"
   done
@@ -1127,6 +1248,18 @@ EOF
       rate "Windows, révocation${avec:+, succès dit aussi} : $(tail -2 "$ESSAI/sortie")"
   done
   rm -f "$ESSAI/sortie-logout"
+  # La déconnexion laisse un enfant qui garde les tuyaux de sortie ouverts : la lecture est bornée (avant, attente sans
+  # fin, et la session pas effacée). Pas confirmée, puisque sa sortie n'est pas lue jusqu'au bout.
+  touch "$ESSAI/enfant-logout"
+  : >"$j"
+  debut=$SECONDS
+  attendu "Windows, enfant laissé par la déconnexion : lancé" 0 ps_lancer o
+  duree=$((SECONDS - debut))
+  kill "$(cat "$ESSAI/enfant-logout")" 2>/dev/null
+  rm -f "$ESSAI/enfant-logout"
+  ((duree < 30)) && grep -qx logout "$j" && [[ -z $(restes_w) ]] && grep -q "NON confirmée" "$ESSAI/sortie" &&
+    bon "Windows : enfant laissé par la déconnexion : fini en ${duree} s, session effacée, NON confirmée" ||
+    rate "Windows, enfant laissé : ${duree} s, restes $(restes_w) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
   # Une version qui ne sait pas la dire : le même succès, jamais « Déconnecté ».
   attendu "Windows, version qui ne dit pas la révocation : lancé" 0 ps_lancer o ESSAI_REVOCATION="texte que ce binaire n'a pas"
   grep -q "NON confirmée" "$ESSAI/sortie" && ! grep -q "Déconnecté ;" "$ESSAI/sortie" &&
@@ -1270,6 +1403,10 @@ EOF
   refus_w "certificat sans registre (pas EV)" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-nonev.pem"
   refus_w "organisation en double au certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-double.pem"
   refus_w "saut de ligne dans le sujet du certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-nl.pem"
+  # Un caractère invisible (U+200B, U+00AD) dans le nom ou l'organisation : -cne compare selon la langue et les
+  # ignore ; la comparaison est octet par octet.
+  refus_w "espace invisible dans le nom du certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-zwnom.pem"
+  refus_w "trait d'union invisible dans l'organisation du certificat" "Claude Code refusé" ESSAI_CERT="$ESSAI/cert-zworg.pem"
   mv "$W/Claude/CLAUDE.md" "$ESSAI/CLAUDE.md.w"
   refus_w "consignes absentes de la clé" "Consignes de dépannage"
   : >"$W/Claude/CLAUDE.md"
@@ -1320,6 +1457,29 @@ EOF
   ! grep -q "propriétaire de cet ordinateur" "$ESSAI/sortie" && bon "Windows : module déjà chargé, refusé avant la question" ||
     rate "Windows, module chargé : question posée"
   rm -rf "$W/maison/.local" "$tm"
+  # Une applet compilée en mémoire (Add-Type, puis Import-Module -Assembly) déjà chargée : sa bibliothèque n'a pas
+  # d'emplacement, jamais pris pour « de Windows ». Les vrais modules chargés d'abord : sinon l'import par chemin du
+  # lanceur repasserait devant, et l'essai ne prouverait rien.
+  cat >"$ESSAI/memoire.psm1" <<'EOF'
+Import-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility, Microsoft.PowerShell.Security -Global
+Add-Type -TypeDefinition @"
+using System; using System.Management.Automation;
+[Cmdlet("Get","Content")]
+public class FauxLireEssai : PSCmdlet {
+  [Parameter] public string LiteralPath { get; set; }
+  [Parameter] public SwitchParameter Raw { get; set; }
+  protected override void ProcessRecord() {
+    System.IO.File.AppendAllText(Environment.GetEnvironmentVariable("ESSAI_TEMOIN_MODULE"), "faux Get-Content\n");
+    WriteObject(System.IO.File.ReadAllText(LiteralPath));
+  }
+}
+"@
+Import-Module -Assembly ([FauxLireEssai].Assembly) -Global
+EOF
+  PRECHARGE=$ESSAI/memoire.psm1 refus_w "applet compilée en mémoire déjà chargée" "Get-Content (bibliothèque en mémoire)" \
+    ESSAI_TEMOIN_MODULE="$tm"
+  [[ ! -e $tm ]] && bon "Windows : applet en mémoire, jamais appelée" || rate "Windows, applet en mémoire : $(tr '\n' ' ' <"$tm")"
+  rm -f "$tm" "$ESSAI/memoire.psm1"
   # F2 : claude.exe coupe le nom de ses journaux à 200 caractères (le dossier de travail, signes devenus « - ») ; le
   # nom de la session n'y est plus, le journal resterait. À 200 tout juste : lancé, journal effacé ; à 201 : refusé
   # avant de rien créer. Le nom fait la longueur de TEMP plus 57 (/vanguard-claude-<32>/travail).
