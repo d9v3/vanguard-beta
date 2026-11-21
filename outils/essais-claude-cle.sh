@@ -463,6 +463,21 @@ grep -q "vérification impossible" "$ESSAI/notifications" 2>/dev/null &&
   ! grep -q "(vérification impossible ici" "$ESSAI/sortie" "$ESSAI/notifications" &&
   bon "panne qui revient après un succès : notifiée de nouveau, message pas doublé" ||
   rate "panne qui revient : $(cat "$ESSAI/notifications" 2>/dev/null | tr '\n' ' ') $(grep -m1 impossible "$ESSAI/sortie")"
+# --etat dit la raison de la panne sur sa sortie, pas seulement sur la sortie d'erreur.
+attendu "--etat, vérification impossible, sortie seule" 3 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --etat
+grep -q "impossible sur cet ordinateur (dossier temporaire" <<<"$(r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --etat 2>/dev/null)" &&
+  bon "--etat, vérification impossible : la raison dite" || rate "--etat impossible, raison : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# Une vérification allée au bout mais fausse (binaires du cache abîmés) compte aussi comme « plus impossible » : la
+# même panne qui revient après est notifiée de nouveau.
+n=0
+for f in "$R3C"/*/linux-x64/claude; do n=$((n + 1)); cp -p "$f" "$ESSAI/r3/a1-$n"; printf 'X' >>"$f"; done
+attendu "--etat, binaires du cache abîmés : ne se vérifient plus" 1 r3 bash outils/claude-cle.sh --etat
+n=0
+for f in "$R3C"/*/linux-x64/claude; do n=$((n + 1)); mv -f "$ESSAI/r3/a1-$n" "$f"; done
+rm -f "$ESSAI/notifications"
+attendu "la même panne après une vérification fausse : code 1" 1 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --chercher
+grep -q "vérification impossible" "$ESSAI/notifications" 2>/dev/null && bon "panne après une vérification fausse : notifiée de nouveau" ||
+  rate "panne après une vérification fausse : pas notifiée"
 chmod 700 "$ESSAI/r3/tmp-ro"
 attendu "r3 : 2.0.8 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
 # Un autre ordinateur pose la 2.0.9 sur la même clé ; de retour ici (cache et note à 2.0.8), la clé n'est pas
@@ -473,6 +488,16 @@ echo 2.0.9 >"$ESSAI/serveur/stable"
 r3b() { env XDG_CACHE_HOME="$ESSAI/r3/cache-b" XDG_STATE_HOME="$ESSAI/r3/etat-b" "$@"; }
 attendu "autre ordinateur : 2.0.9 dans son cache" 0 r3b bash outils/claude-cle.sh --chercher
 attendu "autre ordinateur : 2.0.9 posée (sans note de dépôt chez lui)" 2 r3b bash outils/claude-cle.sh --cle "$R3K"
+# Une copie ratée au premier retour (la racine de la clé en lecture seule : le lanceur abîmé ne s'y remet pas) : la
+# provenance est dite quand même (code 2), et la note de dépôt pas écrite : le dépôt suivant la redit (plus bas).
+printf 'abime\r\n' >"$R3K/Depanner avec Claude.bat"
+chmod a-w "$R3K"
+rm -f "$ESSAI/notifications"
+attendu "clé plus récente, pas posée d'ici, copie ratée : dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
+chmod u+w "$R3K"
+grep -q "pas copié sur la clé" "$ESSAI/sortie" && grep -q "ne vient pas de cet ordinateur" "$ESSAI/sortie" &&
+  grep -q "redit au dépôt suivant" "$ESSAI/sortie" && grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "copie ratée : provenance dite et notifiée, dépôt pas fini" || rate "copie ratée : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
 rm -f "$ESSAI/notifications"
 attendu "clé plus récente que le cache, pas posée d'ici : gardée, dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
 cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" &&
@@ -490,6 +515,11 @@ cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" &&
   grep -q "plus récent sur la clé" "$ESSAI/notifications" 2>/dev/null && ! grep -q "changé sur la clé" "$ESSAI/notifications" &&
   bon "pose suivante : clé laissée en 2.0.9, lanceur remis, pas de fausse alerte" ||
   rate "pose suivante : $(cat "$R3N") $(cat "$ESSAI/notifications" 2>/dev/null | tr '\n' ' ')"
+# Le même couple (2.0.9 sur la clé, 2.0.8 au cache) au dépôt d'après : dit, plus notifié.
+rm -f "$ESSAI/notifications"
+attendu "clé plus récente, troisième dépôt : gardée (code 0)" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+grep -q "plus récent que le cache" "$ESSAI/sortie" && ! grep -q "plus récent sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "clé plus récente, même couple : dit, pas notifié de nouveau" || rate "même couple : $(cat "$ESSAI/notifications" 2>/dev/null)"
 # La recherche, le serveur encore à 2.0.8 : pas refusée (la note n'a pas monté avec la clé).
 echo 2.0.8 >"$ESSAI/serveur/stable"
 attendu "clé plus récente : la recherche suivante n'est pas refusée" 0 r3 bash outils/claude-cle.sh --chercher
@@ -532,10 +562,13 @@ mkdir -p "$R5K"
 echo cle >"$R5K/vanguard.cle"
 echo 0123abcd0123abcd0123abcd0123abcd >"$R5K/vanguard.jeton"
 # Une commande lancée dans un vrai pseudo-terminal ; la réponse est tapée quand la question (« taper ») est affichée.
+# AU_CLAVIER_PENDANT (variable) : une commande lancée pendant que la question attend, avant la réponse ; son code est
+# écrit dans $ESSAI/code-pendant.
 au_clavier() { # réponse commande…
-  python3 -I - "$@" <<'EOF'
-import os, pty, sys
-rep, cmd = sys.argv[1], sys.argv[2:]
+  python3 -I - "$ESSAI/code-pendant" "$@" <<'EOF'
+import os, pty, subprocess, sys
+code_pendant, rep, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
+pendant = os.environ.get("AU_CLAVIER_PENDANT")
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp(cmd[0], cmd)
@@ -549,12 +582,41 @@ while True:
         break
     vu += b
     if not tape and b"taper" in vu:
+        if pendant:
+            c = subprocess.run(["bash", "-c", pendant], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL).returncode
+            open(code_pendant, "w").write(str(c))
         os.write(fd, rep.encode() + b"\n")
         tape = True
 sys.stdout.write(vu.decode(errors="replace"))
 _, st = os.waitpid(pid, 0)
 sys.exit(os.waitstatus_to_exitcode(st))
 EOF
+}
+# Une COPIE de claude-cle.sh, où la fenêtre polkit (/usr/bin/pkexec) est remplacée par un faux qui note son appel et
+# répond le code de $ESSAI/pkexec-code : la vraie n'est jamais lancée par les essais, et le vrai script n'a ni
+# variable ni option pour la sauter (vérifié ici). Toute --accepter-version passe par la copie.
+CC=$ESSAI/copie/outils/claude-cle.sh
+mkdir -p "$ESSAI/copie/outils"
+for f in cle cles-images systemd; do ln -s "$DEPOT/outils/$f" "$ESSAI/copie/outils/$f"; done
+printf '#!/bin/sh\necho "$*" >>"%s/pkexec.log"\nexit "$(cat "%s/pkexec-code" 2>/dev/null || echo 1)"\n' "$ESSAI" "$ESSAI" \
+  >"$ESSAI/faux-pkexec"
+chmod +x "$ESSAI/faux-pkexec"
+sed "s|/usr/bin/pkexec|$ESSAI/faux-pkexec|g" outils/claude-cle.sh >"$CC"
+if grep -q /usr/bin/pkexec "$CC"; then
+  rate "copie de claude-cle.sh : /usr/bin/pkexec encore là, essais d'acceptation arrêtés"
+  exit 1
+fi
+accord=$(sed -n '/^accord_fort() {/,/^}/p' outils/claude-cle.sh)
+[[ $(grep -c '^  /usr/bin/pkexec --keep-cwd /usr/bin/true$' <<<"$accord") == 1 && $accord != *'$'* ]] &&
+  bon "accord polkit : /usr/bin/pkexec --keep-cwd /usr/bin/true, chemins fixes, aucune variable pour le sauter" ||
+  rate "accord polkit : appel absent, ou une variable dans accord_fort"
+r5x() { env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" "$@"; }
+accepter_r5() { # réponse version
+  au_clavier "$1" env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" bash "$CC" --accepter-version "$2"
+}
+annuler_r5() { # réponse
+  au_clavier "$1" env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" bash outils/claude-cle.sh --annuler-acceptation
 }
 publier 2.1.1
 attendu "r5 : 2.1.1 dans le cache" 0 r5 bash outils/claude-cle.sh --chercher
@@ -563,35 +625,110 @@ attendu "r5 : 2.4.0 dans le cache" 0 r5 bash outils/claude-cle.sh --chercher
 attendu "r5 : 2.4.0 posée" 0 r5 bash outils/claude-cle.sh --cle "$R5K"
 publier 2.1.2
 attendu "r5 : le serveur redescend à 2.1.2 : refusé" 1 r5 bash outils/claude-cle.sh --chercher
-etat_r5() { echo "$(cat "$R5N") $(ls "$R5C" | tr '\n' ' ')"; }
+etat_r5() { echo "$(cat "$R5N") $(ls -A "$R5C" | tr '\n' ' ') $(ls -A "$R5E" | tr '\n' ' ')"; }
 avant=$(etat_r5)
-attendu "--accepter-version sans terminal : refusé" 1 r5 bash outils/claude-cle.sh --accepter-version 2.1.2 </dev/null
-[[ $(etat_r5) == "$avant" ]] && grep -q "seulement dans un terminal" "$ESSAI/sortie" && bon "sans terminal : rien changé" ||
-  rate "sans terminal : $(etat_r5)"
-attendu "--accepter-version, réponse « non » : pas confirmé" 1 au_clavier non env XDG_CACHE_HOME="$ESSAI/r5/cache" \
-  XDG_STATE_HOME="$ESSAI/r5/etat" bash outils/claude-cle.sh --accepter-version 2.1.2
-[[ $(etat_r5) == "$avant" && ! -e $R5E/claude-cle-journal ]] && grep -q "2.4.0 → 2.1.2" "$ESSAI/sortie" &&
-  grep -q "Pas confirmé" "$ESSAI/sortie" && bon "réponse « non » : ce qui change montré, rien changé" || rate "« non » : $(etat_r5)"
-attendu "--accepter-version, « ACCEPTER 2.1.2 » tapé : accepté" 0 au_clavier "ACCEPTER 2.1.2" env XDG_CACHE_HOME="$ESSAI/r5/cache" \
-  XDG_STATE_HOME="$ESSAI/r5/etat" bash outils/claude-cle.sh --accepter-version 2.1.2
+echo 0 >"$ESSAI/pkexec-code"
+attendu "--accepter-version sans terminal : refusé" 1 r5 bash "$CC" --accepter-version 2.1.2 </dev/null
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "seulement dans un terminal" "$ESSAI/sortie" &&
+  bon "sans terminal : rien changé, polkit pas demandé" || rate "sans terminal : $(etat_r5)"
+# La minuterie (--chercher) pendant la question : pas bloquée par le verrou, qui n'est pas tenu au clavier.
+rm -f "$ESSAI/code-pendant"
+AU_CLAVIER_PENDANT="timeout 5 env XDG_CACHE_HOME='$ESSAI/r5/cache' XDG_STATE_HOME='$ESSAI/r5/etat' bash outils/claude-cle.sh --chercher" \
+  attendu "--accepter-version, réponse « non » : pas confirmé" 1 accepter_r5 non 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $R5E/claude-cle-journal && ! -e $ESSAI/pkexec.log ]] && grep -q "2.4.0 → 2.1.2" "$ESSAI/sortie" &&
+  grep -q "Pas confirmé" "$ESSAI/sortie" && bon "réponse « non » : ce qui change montré, rien changé, polkit pas demandé" ||
+  rate "« non » : $(etat_r5)"
+[[ $(cat "$ESSAI/code-pendant" 2>/dev/null) == 1 ]] && bon "--chercher pendant la question : pas bloqué par le verrou" ||
+  rate "--chercher pendant la question : code $(cat "$ESSAI/code-pendant" 2>/dev/null) (124 : bloqué)"
+# Une version qui n'existe pas, ou écrite autrement (2.01.2 : sort -V la mettrait sous la 2.1.2) : rien changé.
+for faute in 2.01.2 2.1.9; do
+  attendu "--accepter-version $faute (faute de frappe) : refusé" 1 accepter_r5 "ACCEPTER $faute" "$faute"
+  [[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && bon "$faute : rien changé, polkit pas demandé" ||
+    rate "$faute : $(etat_r5) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+done
+# La fenêtre polkit refusée, ou pkexec absent : rien changé, même après la confirmation tapée.
+echo 126 >"$ESSAI/pkexec-code"
+attendu "--accepter-version, polkit refusé : rien changé" 1 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+[[ $(etat_r5) == "$avant" && $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true" ]] &&
+  grep -q "polkit) pas donné : rien changé" "$ESSAI/sortie" && bon "polkit refusé : demandé une fois, rien changé" ||
+  rate "polkit refusé : $(etat_r5) $(cat "$ESSAI/pkexec.log" 2>/dev/null)"
+echo 0 >"$ESSAI/pkexec-code"
+mv "$ESSAI/faux-pkexec" "$ESSAI/faux-pkexec.de-cote"
+attendu "--accepter-version, pkexec absent : rien changé" 1 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+mv "$ESSAI/faux-pkexec.de-cote" "$ESSAI/faux-pkexec"
+[[ $(etat_r5) == "$avant" ]] && grep -q "pkexec absent" "$ESSAI/sortie" && bon "pkexec absent : rien changé" ||
+  rate "pkexec absent : $(etat_r5)"
+# Le journal qui ne peut pas s'écrire (un dossier à sa place) : la baisse n'est pas faite.
+rm -f "$ESSAI/pkexec.log"
+mkdir "$R5E/claude-cle-journal"
+avant=$(etat_r5)
+attendu "--accepter-version, journal impossible : rien changé" 1 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+[[ $(etat_r5) == "$avant" ]] && grep -q "Journal (.*) pas écrit : rien changé" "$ESSAI/sortie" && ! grep -q "✔" "$ESSAI/sortie" &&
+  bon "journal impossible : rien changé, pas de ✔" || rate "journal impossible : $(etat_r5)"
+rmdir "$R5E/claude-cle-journal"
+avant=$(etat_r5)
+# Le cache qui change pendant la question (recalculé sous le verrou) : rien changé.
+AU_CLAVIER_PENDANT="mkdir '$R5C/2.9.0'" attendu "--accepter-version, cache changé pendant la question : refusé" 1 \
+  accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+rmdir "$R5C/2.9.0"
+[[ $(etat_r5) == "$avant" ]] && grep -q "a changé pendant la question" "$ESSAI/sortie" && bon "cache changé pendant la question : rien changé" ||
+  rate "cache changé pendant la question : $(etat_r5)"
+rm -f "$ESSAI/pkexec.log" "$ESSAI/notifications"
+attendu "--accepter-version, « ACCEPTER 2.1.2 » tapé, polkit accordé : accepté" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
 de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
 [[ $(cat "$R5N") == 2.1.2 && ! -e $R5C/2.4.0 && -f $de_cote/2.4.0/.verifiee && -f $R5C/2.1.1/.verifiee ]] &&
-  grep -q "accepter-version 2.1.2 : note 2.4.0 → 2.1.2" "$R5E/claude-cle-journal" && grep -qx 2.4.0 "$R5E/claude-cle-ecartees" &&
+  grep -q "accepter-version 2.1.2 : début ; note 2.4.0 → 2.1.2" "$R5E/claude-cle-journal" &&
+  grep -q "accepter-version 2.1.2 : fait" "$R5E/claude-cle-journal" && grep -qx 2.4.0 "$R5E/claude-cle-ecartees" &&
+  [[ $(cat "$R5E/claude-cle-acceptations/${de_cote##*/}" 2>/dev/null | tr '\n' ' ') == "2.4.0 2.4.0 " ]] &&
   grep -q -- "--annuler-acceptation" "$ESSAI/sortie" &&
-  bon "accepté : note 2.1.2, 2.4.0 déplacée (pas effacée), journal écrit, annulation dite" || rate "accepté : $(etat_r5)"
+  bon "accepté : note 2.1.2, 2.4.0 déplacée (pas effacée), trace hors du cache, journal avant et après" || rate "accepté : $(etat_r5)"
+[[ $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true" ]] &&
+  grep -q "protection baissée" "$ESSAI/notifications" 2>/dev/null && bon "accepté : polkit demandé, baisse notifiée" ||
+  rate "accepté : polkit $(cat "$ESSAI/pkexec.log" 2>/dev/null), notifications $(cat "$ESSAI/notifications" 2>/dev/null)"
 attendu "r5 : la 2.1.2 maintenant acceptée" 0 r5 bash outils/claude-cle.sh --chercher
 [[ -f $R5C/2.1.2/.verifiee ]] && bon "2.1.2 téléchargée et vérifiée" || rate "2.1.2 : $(etat_r5)"
 attendu "r5 : la 2.4.0 de la clé, mise de côté, remplacée" 0 r5 bash outils/claude-cle.sh --cle "$R5K"
 cmp -s "$R5K/Claude/Linux/claude" "$ESSAI/serveur/2.1.2/linux-x64/claude" && grep -q "mise de côté" "$ESSAI/sortie" &&
   bon "clé : 2.4.0 mise de côté remplacée par la 2.1.2" || rate "clé : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# La 2.4.0 écartée de nouveau annoncée : pas reprise, notifiée une fois (la minuterie repasse chaque jour), dite par
+# --etat.
 publier 2.4.0
+rm -f "$ESSAI/notifications"
 attendu "r5 : le serveur réannonce la 2.4.0 mise de côté" 0 r5 bash outils/claude-cle.sh --chercher
+attendu "r5 : la 2.4.0 réannoncée, deuxième passage" 0 r5 bash outils/claude-cle.sh --chercher
 [[ ! -e $R5C/2.4.0 && $(cat "$R5N") == 2.1.2 ]] && grep -q "mise de côté par --accepter-version" "$ESSAI/sortie" &&
   bon "2.4.0 réannoncée : pas reprise tant que l'acceptation tient" || rate "réannoncée : $(etat_r5)"
-attendu "--annuler-acceptation" 0 r5 bash outils/claude-cle.sh --annuler-acceptation
+[[ $(grep -c "2.4.0 pas reprise" "$ESSAI/notifications" 2>/dev/null) == 1 ]] &&
+  grep -q -- "--annuler-acceptation" "$ESSAI/notifications" && bon "2.4.0 réannoncée : notifiée une fois, annulation dite" ||
+  rate "réannoncée, notifications : $(cat "$ESSAI/notifications" 2>/dev/null | tr '\n' ' ')"
+attendu "r5 : --etat avec une version écartée" 0 r5 bash outils/claude-cle.sh --etat
+grep -q "mises de côté par --accepter-version (pas reprises) : 2.4.0" "$ESSAI/sortie" && bon "--etat : version écartée dite" ||
+  rate "--etat écartée : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# --annuler-acceptation : au clavier seulement, confirmé ; d'après la trace du dossier d'état, jamais d'après un
+# dossier mis-de-cote-… planté dans le cache (note-avant énorme, version vide).
+avant=$(etat_r5)
+attendu "--annuler-acceptation sans terminal : refusé" 1 r5 bash outils/claude-cle.sh --annuler-acceptation </dev/null
+[[ $(etat_r5) == "$avant" ]] && bon "annuler sans terminal : rien changé" || rate "annuler sans terminal : $(etat_r5)"
+attendu "--annuler-acceptation, réponse « non » : pas confirmé" 1 annuler_r5 non
+[[ $(etat_r5) == "$avant" ]] && grep -q "Pas confirmé" "$ESSAI/sortie" && bon "annuler, « non » : rien changé" ||
+  rate "annuler « non » : $(etat_r5)"
+mkdir -p "$R5C/mis-de-cote-99999999-zz/9999.0.0"
+echo 9999.9999.999999 >"$R5C/mis-de-cote-99999999-zz/note-avant"
+attendu "--annuler-acceptation" 0 annuler_r5 ANNULER
 [[ $(cat "$R5N") == 2.4.0 && -f $R5C/2.4.0/.verifiee && ! -e $de_cote && ! -e $R5E/claude-cle-ecartees ]] &&
-  grep -q "annuler-acceptation : remis 2.4.0" "$R5E/claude-cle-journal" &&
-  bon "annulé : 2.4.0 remise, note 2.4.0, liste des écartées vidée, journal écrit" || rate "annulé : $(etat_r5)"
+  [[ -z $(ls -A "$R5E/claude-cle-acceptations") ]] && grep -q "annuler-acceptation .* : remis 2.4.0" "$R5E/claude-cle-journal" &&
+  bon "annulé : 2.4.0 remise, note 2.4.0, liste des écartées vidée, trace retirée, journal écrit" || rate "annulé : $(etat_r5)"
+[[ ! -e $R5C/9999.0.0 && -d $R5C/mis-de-cote-99999999-zz/9999.0.0 ]] && ! grep -q 9999 "$R5N" &&
+  bon "annulé : le faux dossier mis de côté du cache ignoré" || rate "faux dossier mis de côté : $(etat_r5)"
+rm -rf "$R5C/mis-de-cote-99999999-zz"
+# Une version de la trace qui ne se vérifie plus dans le dossier mis de côté : pas remise dans le cache, dite.
+attendu "r5 : accepter de nouveau la 2.1.2" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
+printf 'X' >>"$de_cote/2.4.0/linux-x64/claude"
+attendu "--annuler-acceptation, version abîmée de côté" 0 annuler_r5 ANNULER
+[[ ! -e $R5C/2.4.0 && -d $de_cote/2.4.0 && $(cat "$R5N") == 2.4.0 ]] && grep -q "2.4.0 (ne se vérifie pas" "$ESSAI/sortie" &&
+  bon "version abîmée de côté : pas remise, dite ; note d'avant remise (trace)" || rate "version abîmée : $(etat_r5)"
+rm -rf "$de_cote"
 echo 2.0.5 >"$ESSAI/serveur/stable"
 
 echo "Lanceur Linux (depanner.sh)"
@@ -1120,8 +1257,12 @@ EOF
   grep -qx "mcp-journaux=1" "$j" && bon "Windows : pas de journal des serveurs MCP" || rate "Windows : journaux MCP demandés"
   grep -q "^nav=$W/runw/vanguard-claude-[0-9a-f]*/pas-de-navigateur.exe$" "$j" && bon "Windows : jamais le navigateur du PC" ||
     rate "Windows, BROWSER : $(grep nav= "$j")"
-  grep -qx logout "$j" && grep -q "^pwd-logout=$W/runw/vanguard-claude-[0-9a-f]*/travail$" "$j" &&
-    bon "Windows : déconnecté en sortant, depuis le dossier de travail" || rate "Windows, déconnexion : $(grep logout "$j" | tr '\n' ' ')"
+  # Depuis un dossier à côté de la session (…-fin), pas de dedans : un enfant laissé vivant par la déconnexion n'y
+  # garde rien d'ouvert (sous Windows, il empêchait d'effacer travail\ ; sous Linux, rien ne l'empêche : seul le
+  # dossier est vérifié ici). Les journaux nommés d'après lui partent aussi (restes_w plus bas), et lui avec.
+  grep -qx logout "$j" && grep -q "^pwd-logout=$W/runw/vanguard-claude-[0-9a-f]*-fin$" "$j" &&
+    [[ -z $(find "$W/runw" -maxdepth 1 -name '*-fin') ]] &&
+    bon "Windows : déconnecté en sortant, depuis hors de la session" || rate "Windows, déconnexion : $(grep logout "$j" | tr '\n' ' ')"
   grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "Windows : déconnexion confirmée, dit" || rate "Windows : $(tail -2 "$ESSAI/sortie")"
   [[ -z $(restes_w) ]] && bon "Windows : dossier temporaire effacé" || rate "Windows : restes $(restes_w)"
   [[ -z $(find "$W/local" -path '*vanguard-claude*') && -d $W/local/claude-cli-nodejs/Cache/C--autre-projet ]] &&
@@ -1173,6 +1314,7 @@ EOF
   gardien_essai "" "$W/runw"
   # La liste des commandes dont la provenance est vérifiée n'en oublie aucune : chaque commande du lanceur et de son
   # gardien (code tel qu'il partirait) est une fonction qu'ils définissent, ou est dans $Commandes / $CommandesWindows.
+  # Un nom complet du noyau (Microsoft.PowerShell.Core\Import-Module) compte pour la commande de la liste.
   cat >"$ESSAI/couverture.ps1" <<'EOF'
 $def = @(); $cmd = @(); $liste = @()
 foreach ($f in $args) {
@@ -1180,7 +1322,7 @@ foreach ($f in $args) {
     $a = [Management.Automation.Language.Parser]::ParseFile($f, [ref]$t, [ref]$e)
     if ($e) { "illisible : $f"; exit 99 }
     $def += @($a.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
-    $cmd += @($a.FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+    $cmd += @($a.FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() -replace '^Microsoft\.PowerShell\.Core\\', '' } | Where-Object { $_ })
     $liste += @($a.FindAll({ $args[0] -is [Management.Automation.Language.AssignmentStatementAst] -and "$($args[0].Left)" -match '^\$Commandes(Windows)?$' }, $true) |
         ForEach-Object { $_.Right.FindAll({ $args[0] -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) } | ForEach-Object Value)
 }
@@ -1308,12 +1450,17 @@ EOF
   grep -q "PAS tout effacé" "$ESSAI/sortie" && ! grep -q "sont effacés de cet ordinateur" "$ESSAI/sortie" &&
     bon "Windows : journal resté, jamais « effacés » annoncé" || rate "Windows, journal resté : $(grep -i 'effac' "$ESSAI/sortie" | tr '\n' ' ')"
   find "$W/local" -type d -exec chmod 755 {} + && rm -rf "$W/local/claude-cli-nodejs"
+  # L'arrêt de claude.exe et de ses enfants : taskkill /T /F par le dossier système que donne Windows, pas %SystemRoot%
+  # (une variable du compte) ; taskkill n'existe pas sous Linux : seul le texte est vérifié ici.
+  grep -qF "[IO.Path]::Combine([Environment]::GetFolderPath('System'), 'taskkill.exe')" outils/cle/Claude/depanner.ps1 &&
+    grep -qF '"/T /F /PID $($p.Id)"' outils/cle/Claude/depanner.ps1 && grep -q '^ *else { ArreterArbre \$p ;' outils/cle/Claude/depanner.ps1 &&
+    bon "Windows : déconnexion bloquée, l'arbre arrêté (taskkill /T /F, chemin de Windows)" || rate "Windows : arrêt de l'arbre absent"
   # Un TEMP à crochets (lus comme des jokers par Start-Process) : la déconnexion est quand même lancée et confirmée.
   t="$W/runw/a[1]b"
   mkdir -p "$t"
   : >"$j"
   attendu "Windows, TEMP à crochets : lancé" 0 ps_lancer o TEMP="$t"
-  grep -qx logout "$j" && grep -qF "pwd-logout=$t/vanguard-claude-" "$j" && grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+  grep -qx logout "$j" && grep -q "^pwd-logout=.*/vanguard-claude-[0-9a-f]*-fin$" "$j" && grep -q "Déconnecté ;" "$ESSAI/sortie" &&
     [[ -z $(find "$t" -mindepth 1) ]] && bon "Windows, TEMP à crochets : déconnecté, effacé" ||
     rate "Windows, TEMP à crochets : $(grep -c logout "$j") déconnexion, $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
   rm -rf "$t"
@@ -1481,6 +1628,19 @@ EOF
     ESSAI_TEMOIN_MODULE="$tm"
   [[ ! -e $tm ]] && bon "Windows : applet en mémoire, jamais appelée" || rate "Windows, applet en mémoire : $(tr '\n' ' ' <"$tm")"
   rm -f "$tm" "$ESSAI/memoire.psm1"
+  # R5-A4 : Set-StrictMode et Import-Module tournent avant la relecture des commandes ; une fonction du même nom déjà
+  # chargée passerait devant elles. Appelées par leur nom complet (Microsoft.PowerShell.Core\…) : la fonction ne tourne
+  # jamais, et la relecture la refuse ensuite.
+  for f in Set-StrictMode Import-Module; do
+    printf 'function %s { [IO.File]::AppendAllText($env:ESSAI_TEMOIN_MODULE, "%s`n"); Microsoft.PowerShell.Core\%s @args }\n' "$f" "$f" "$f"
+  done >"$ESSAI/noyau.psm1"
+  rm -f "$tm"
+  PRECHARGE=$ESSAI/noyau.psm1 refus_w "fonctions Set-StrictMode et Import-Module déjà chargées" "Import-Module (Function noyau)" \
+    ESSAI_TEMOIN_MODULE="$tm"
+  [[ ! -e $tm ]] && grep -q "Set-StrictMode (Function noyau)" "$ESSAI/sortie" &&
+    bon "Windows : Set-StrictMode et Import-Module du noyau appelés par leur nom complet, les fonctions jamais lancées" ||
+    rate "Windows, noyau : $( [[ -e $tm ]] && tr '\n' ' ' <"$tm")"
+  rm -f "$tm" "$ESSAI/noyau.psm1"
   # F2 : claude.exe coupe le nom de ses journaux à 200 caractères (le dossier de travail, signes devenus « - ») ; le
   # nom de la session n'y est plus, le journal resterait. À 200 tout juste : lancé, journal effacé ; à 201 : refusé
   # avant de rien créer. Le nom fait la longueur de TEMP plus 57 (/vanguard-claude-<32>/travail).
