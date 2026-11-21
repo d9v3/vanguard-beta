@@ -11,6 +11,89 @@ example, finds it, to rebuild it if needed.
 
 ## 0.97 (in preparation)
 
+- **Troubleshoot with Claude, from the key: an option, off by default, and a verified download.** Claude Code,
+  Anthropic's assistant, can travel on the key to troubleshoot a relative's computer; `CLAUDE_CLE=oui` in
+  `~/.config/vanguard/images-cle.conf` turns it on. Every day (vanguard-claude-cle.timer, turned on by itself at the
+  next placement if it is missing), Vanguard takes the version Anthropic announces as "stable" and checks it:
+  Anthropic's signature on the checksum list, with the key pinned in Vanguard and recognised by its fingerprint, never
+  a key read from the server (a key expired or revoked in this copy is refused), then the size and checksum of each
+  binary. A version older than the last verified one is refused, at download as on the key, and notified once per
+  announcement. `outils/claude-cle.sh --etat` tells what the cache holds and tells "no longer verifies" (code 1) from
+  "verification impossible here" (code 3, a full temporary folder for example), which erases nothing; a failure that
+  comes back after a success is notified again. The placement puts Claude Code on the key with its troubleshooting
+  instructions: diagnose read-only, explain the cause before fixing, change nothing without consent, never lower
+  security, respect the relative's privacy.
+- **On the visited computer, the launcher checks before running, then erases.** "Depanner avec Claude.bat" on Windows
+  (10 version 1809 or later), `bash -p …/Claude/depanner.sh` on Linux or on SystemRescue booted from the key. The
+  launcher first asks the computer owner's consent, then checks the copied program again: on Linux, Anthropic's
+  signature on the checksum list and the checksum; on Windows, the Authenticode signature checked by Windows, made by
+  "Anthropic, PBC" (name, country, company number and Delaware registry, read field by field from the certificate's
+  bytes, each exactly once and with its exact value), and the checksum. Nothing is installed: the program runs from a
+  temporary folder of one's own, erased on exit, and the login to the Claude account is never written to the key. The
+  account's connectors and MCP servers are not loaded, this computer's browser does not open (the login address is
+  opened on the phone), and Claude Code's logs of the session go away with the folder. On exit (/exit, Ctrl+C, closed
+  terminal; on Windows, a watchdog if the window is closed with its cross), the launcher logs the account out, within
+  a time limit: "Logged out" is only shown if Anthropic confirmed that the login ended, otherwise it asks to end it on
+  claude.ai. Whatever could not be erased is named, never counted as erased; a relative's disk mounted in the session
+  folder is never erased, and this is said. A session left unfinished (crash, killed terminal) is logged out and then
+  erased at the next launch.
+- **What the launcher refuses.** A shared temporary folder (/tmp, /var/tmp), or one under a folder another account
+  can write to; instructions left for Claude above the work folder (CLAUDE.md, CLAUDE.local.md, AGENTS.md, .mcp.json,
+  a .claude folder); settings imposed on Claude Code by the computer (/etc/claude-code, C:\Program Files\ClaudeCode,
+  registry policies). Only exception: the .claude folder of the home folder (Claude Code already used on this
+  computer), where only instructions cause a refusal; on Windows, only if the path from the home folder to the session
+  folder goes through no link or junction. On Windows, these are refused too: a temporary folder outside a local NTFS
+  or ReFS drive, a TEMP longer than about 140 characters (Claude Code would cut the name of its log there, and the log
+  would stay behind), and any PowerShell command that does not come from Windows: the checks go through the Windows
+  modules, taken by their path, and a module placed in the account or a command loaded in memory causes a refusal.
+  Before any Claude Code command, the PC's environment that would choose the server, the account, the proxy, the
+  certificates, the tracing or code to load is removed, and this computer's Anthropic profile is not read. On Linux,
+  the launcher restarts itself with `bash -p`: no bash function or option exported by the PC is followed, nor given to
+  Claude Code and its commands, and its own commands (gpg, sha256sum…) come from the system folders, never from the
+  PC's PATH. Under WSL, settings imposed by Windows cause a refusal; the registry policy is not read from there: this
+  is said, and consent is asked.
+- **On the key, each binary is read again on return, and only one outcome is reported.** Each binary put there is
+  noted (its checksum) and read again in full at the next placement, as before resuming a stopped deployment. A binary
+  changed during the trip is reported and notified before the copy, even if the placement then stops, then replaced by
+  the verified copy; with no copy to put back, it is removed, unless it belongs to a signed version that verifies in
+  full ("signed and verified, left"). A binary with no placement note is reported "left on the key, NOT checked or
+  replaced". Each binary gets a single outcome (replaced, removed, left or kept), never a "replaced" that did not
+  happen. A key carrying a signed version newer than the cache, placed from another computer, is kept without raising
+  this computer's protection against going back; with the cache missing or empty, a signed version on the key is
+  checked against its own signed manifest and reported signed and verified, but not placed from here. These alerts
+  exit with code 2, which `outils/deployer.sh` reports as an alert on a binary of Claude/, without claiming "replaced".
+  When turned off, only what Vanguard put there is removed from the key, and only if this key's note exists.
+- **Lifting a version block: `outils/claude-cle.sh --accepter-version X`, and `--annuler-acceptation`.** The "stable"
+  pointer is not signed: a newer authentic version, taken once, then blocks the older ones. Only the owner lifts this
+  block. In a terminal only, the command requires a version written plainly (2.0.6, not 2.00.6), present in the cache
+  or the last refused announcement; it shows what changes, asks you to type "ACCEPTER X", then for the administrator
+  password (polkit window that shows "Vanguard : baisse de protection, Claude Code X"); a refusal changes nothing. The
+  log (~/.local/state/vanguard) is written before lowering, otherwise nothing changes; the cache's higher versions are
+  moved aside, never deleted, and no longer taken back if the server announces them again (notified once, shown by
+  `--etat`); every lowering is notified. `--annuler-acceptation`, in a terminal by typing "ANNULER", with no polkit
+  since it raises the protection, puts back, from a trace kept outside the cache, the previous note and the versions
+  that still verify; a check that is not possible for now makes the undo "partial" (code 2), the trace is kept and the
+  command must be run again; an empty or damaged note is never rewritten. Both commands first go through a gate, at
+  the very top of the script, made only of assignments, expansions and `[[ ]]` (no function replaces it) and read in
+  the C locale: an exported bash function, BASH_ENV, ENV, SHELLOPTS, BASHOPTS or an unreadable environment cause a
+  refusal, nothing changed, no polkit window asked. They then restart in a clean bash (`env -i`, a closed list of
+  variables) and check it: any other variable, a bash option, a function, an alias, a trap or a disabled builtin
+  cause a refusal as well.
+- **Limits stated, also in the key's instructions.** On the visited computer, the launcher proves "signed by
+  Anthropic", not "latest version": a key left in a drawer, or reloaded with an older but signed version, passes;
+  Vanguard sees it on return. A revocation published later by Anthropic is only known with a Vanguard update. The
+  launcher travels with the program: it sees a damaged copy, not a key rewritten in full. On Linux, run without `-p`,
+  what the PC exported for tracing or BASH_ENV runs before the first line; without gpg, Anthropic's signature cannot be
+  checked: this is said, and consent is asked. On Windows, the checksum list is not checked by a signature (only the
+  program's Authenticode signature is), Claude Code trusts the certificates installed in Windows, a C:\.claude that
+  appears during the session is not seen, and Set-StrictMode and Import-Module, taken through their .NET type, were
+  tried under PowerShell 7, not yet under Windows PowerShell 5.1 on a real Windows. A virus already running under the
+  same account can read the login during the session. The `--accepter-version` gate stops a trapped environment,
+  inherited or set by mistake, a timer or a program started with nobody at the screen, not a program that already has
+  the account: it can move the cache folders by hand, and such a lowering is neither reported nor logged (only those
+  made by the command are); the polkit window is pkexec's general request, which a program of the same account can
+  imitate. Windows and Linux 64-bit (x86-64) only. The batch went through several adversarial reviews and an attack
+  campaign, and the Windows launcher was tested on a real Windows 11, as well as PowerShell on Linux with stand-ins.
 - **The error log and the `vanguard signaler` draft go through the common masker**, the same as sent texts: serial
   numbers, passwords after `-p` or `--password`, `net use`, Wi-Fi keys, tokens, MAC and IP addresses (all of them, as
   "<mac>" and "<ip>"), paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written and then

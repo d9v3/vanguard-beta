@@ -11,6 +11,92 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 ## 0.97 (en préparation)
 
+- **Dépanner avec Claude, depuis la clé : une option, coupée par défaut, et un téléchargement vérifié.** Claude Code,
+  l'assistant d'Anthropic, peut voyager sur la clé pour dépanner l'ordinateur d'un proche ; `CLAUDE_CLE=oui` dans
+  `~/.config/vanguard/images-cle.conf` l'allume. Chaque jour (minuterie vanguard-claude-cle.timer, allumée seule au
+  dépôt suivant si elle manque), Vanguard prend la version qu'Anthropic annonce « stable » et la vérifie : la signature
+  d'Anthropic sur la liste des empreintes, avec la clé fixée dans Vanguard et reconnue par son empreinte, jamais une
+  clé lue sur le serveur (une clé expirée ou révoquée dans cette copie est refusée), puis la taille et l'empreinte de
+  chaque binaire. Une version plus ancienne que la dernière vérifiée est refusée, au téléchargement comme sur la clé,
+  et notifiée une fois par annonce. `outils/claude-cle.sh --etat` dit ce que contient le cache et distingue « ne se
+  vérifie plus » (code 1) de « vérification impossible ici » (code 3, un dossier temporaire plein par exemple), qui
+  n'efface rien ; une panne qui revient après un succès est notifiée de nouveau. Le dépôt pose Claude Code sur la clé
+  avec ses consignes de dépannage : diagnostiquer en lecture seule, expliquer la cause avant de corriger, ne rien
+  changer sans accord, ne jamais baisser la sécurité, respecter la vie privée du proche.
+- **Sur l'ordinateur visité, le lanceur vérifie avant de lancer, puis efface.** « Depanner avec Claude.bat » sous
+  Windows (10 version 1809 ou plus récent), `bash -p …/Claude/depanner.sh` sous Linux ou sur SystemRescue démarré
+  depuis la clé. Le lanceur demande d'abord l'accord du propriétaire de l'ordinateur, puis revérifie le programme
+  copié : sous Linux, la signature d'Anthropic sur la liste des empreintes et l'empreinte ; sous Windows, la signature
+  Authenticode contrôlée par Windows, faite par « Anthropic, PBC » (nom, pays, numéro d'entreprise et registre du
+  Delaware, lus champ par champ dans les octets du certificat, chacun une seule fois et à sa valeur exacte), et
+  l'empreinte. Rien n'est installé : le programme tourne d'un dossier temporaire à soi, effacé en sortant, et la
+  connexion au compte Claude n'est jamais écrite sur la clé. Les connecteurs du compte et les serveurs MCP ne sont pas
+  chargés, le navigateur de cet ordinateur ne s'ouvre pas (l'adresse de connexion s'ouvre sur le téléphone), et les
+  journaux de Claude Code de la session partent avec le dossier. En sortant (/exit, Ctrl+C, terminal fermé ; sous
+  Windows, un gardien si la fenêtre est fermée par sa croix), le lanceur déconnecte le compte, en temps borné :
+  « Déconnecté » n'est dit que si Anthropic a confirmé la fin de la connexion, sinon il demande de la terminer sur
+  claude.ai. Ce qui n'a pas pu être effacé est nommé, jamais compté comme effacé ; un disque du proche monté dans le
+  dossier de la session n'est jamais effacé, et c'est dit. Une session laissée en plan (panne, terminal tué) est
+  déconnectée puis effacée au lancement suivant.
+- **Ce que le lanceur refuse.** Un dossier temporaire partagé (/tmp, /var/tmp), ou sous un dossier qu'un autre compte
+  peut écrire ; des consignes posées pour Claude au-dessus du dossier de travail (CLAUDE.md, CLAUDE.local.md,
+  AGENTS.md, .mcp.json, un dossier .claude) ; des réglages imposés à Claude Code par l'ordinateur (/etc/claude-code,
+  C:\Program Files\ClaudeCode, stratégies du registre). Seule exception : le dossier .claude du dossier personnel
+  (Claude Code déjà utilisé sur cet ordinateur), où seules des consignes font refuser ; sous Windows, seulement si le
+  chemin du dossier personnel au dossier de session ne passe par aucun lien ni jonction. Sous Windows sont aussi
+  refusés un dossier temporaire hors d'un disque local en NTFS ou ReFS, un TEMP de plus d'environ 140 caractères
+  (Claude Code y couperait le nom de son journal, qui resterait), et toute commande de PowerShell qui ne vient pas de
+  Windows : les vérifications passent par les modules de Windows, pris par leur chemin, et un module posé dans le
+  compte ou une commande chargée en mémoire font refuser. Avant toute commande de Claude Code, l'environnement du PC
+  qui choisirait le serveur, le compte, le mandataire, les certificats, le traçage ou du code à charger est retiré, et
+  le profil Anthropic de cet ordinateur n'est pas lu. Sous Linux, le lanceur se relance avec `bash -p` : ni une
+  fonction ni une option de bash exportée par le PC n'est suivie, ni donnée à Claude Code et à ses commandes, et ses
+  propres commandes (gpg, sha256sum…) viennent des dossiers du système, jamais du PATH du PC. Sous WSL, les réglages
+  imposés de Windows font refuser ; la politique du registre n'est pas lue d'ici : c'est dit, et l'accord est demandé.
+- **Sur la clé, chaque binaire est relu au retour, et un seul sort est dit.** Chaque binaire posé est noté (son
+  empreinte) et relu entier au dépôt suivant, comme avant la reprise d'un déploiement arrêté. Un binaire changé
+  pendant le voyage est dit et notifié avant la copie, même si le dépôt s'arrête ensuite, puis remplacé par la copie
+  vérifiée ; sans copie à remettre, il est retiré, sauf s'il fait partie d'une version signée qui se vérifie entière
+  (« signé et vérifié, laissé »). Un binaire sans note de dépôt est dit « laissé sur la clé, PAS vérifié ni
+  remplacé ». Chaque binaire a un seul sort (remplacé, retiré, laissé ou gardé), jamais un « remplacé » qui n'a pas eu
+  lieu. Une clé qui porte une version signée plus récente que le cache, posée d'un autre ordinateur, est gardée sans
+  faire monter la protection contre le retour de cet ordinateur ; cache absent ou vide, une version signée de la clé
+  est vérifiée par son propre manifeste signé et dite signée et vérifiée, mais pas posée d'ici. Ces alertes sortent en
+  code 2, que `outils/deployer.sh` dit comme une alerte sur un binaire de Claude/, sans prétendre « remplacé ».
+  Réglage coupé, seul ce que Vanguard a posé est retiré de la clé, et seulement si la note de cette clé existe.
+- **Lever un blocage de version : `outils/claude-cle.sh --accepter-version X`, et `--annuler-acceptation`.** Le
+  pointeur « stable » n'est pas signé : une version authentique plus récente, prise une fois, bloque ensuite les plus
+  anciennes. Seul le propriétaire lève ce blocage. Dans un terminal seulement, la commande exige une version écrite
+  simplement (2.0.6, pas 2.00.6), présente dans le cache ou dernière annonce refusée ; elle montre ce qui change,
+  demande de taper « ACCEPTER X », puis le mot de passe d'administrateur (fenêtre polkit qui affiche « Vanguard :
+  baisse de protection, Claude Code X ») ; un refus ne change rien. Le journal (~/.local/state/vanguard) est écrit
+  avant la baisse, sans quoi rien ne change ; les versions plus hautes du cache sont déplacées de côté, jamais
+  effacées, et plus reprises si le serveur les annonce de nouveau (notifié une fois, dit par `--etat`) ; chaque baisse
+  est notifiée. `--annuler-acceptation`, dans un terminal en tapant « ANNULER », sans polkit puisqu'elle remonte la
+  protection, remet d'après une trace gardée hors du cache la note d'avant et les versions qui se vérifient encore ;
+  une vérification impossible pour l'instant rend l'annulation « partielle » (code 2), la trace est gardée et la
+  commande est à relancer ; une note vide ou abîmée n'est jamais réécrite. Les deux commandes passent d'abord une
+  porte, tout en haut du script, faite seulement d'affectations, d'expansions et de `[[ ]]` (aucune fonction ne la
+  remplace) et lue en locale C : une fonction de bash exportée, BASH_ENV, ENV, SHELLOPTS, BASHOPTS ou un environnement
+  illisible font refuser, rien changé, fenêtre polkit pas demandée. Elles se relancent ensuite dans un bash propre
+  (`env -i`, une liste fermée de variables) et le vérifient : toute autre variable, une option de bash, une fonction,
+  un alias, un piège (trap) ou un builtin coupé font refuser de même.
+- **Limites dites, aussi dans le mode d'emploi de la clé.** Sur l'ordinateur visité, le lanceur prouve « signé par
+  Anthropic », pas « dernière version » : une clé restée au tiroir, ou rechargée avec une version plus ancienne mais
+  signée, passe ; Vanguard la voit au retour. Une révocation publiée plus tard par Anthropic n'est connue qu'avec une
+  mise à jour de Vanguard. Le lanceur voyage avec le programme : il voit une copie abîmée, pas une clé réécrite en
+  entier. Sous Linux, lancé sans `-p`, ce que le PC a exporté pour le traçage ou BASH_ENV tourne avant la première
+  ligne ; sans gpg, la signature d'Anthropic ne se vérifie pas : c'est dit, et l'accord est demandé. Sous Windows, la
+  liste des empreintes n'est pas vérifiée par une signature (seule la signature Authenticode du programme l'est),
+  Claude Code se fie aux certificats installés dans Windows, un C:\.claude apparu pendant la session n'est pas vu, et
+  Set-StrictMode et Import-Module, pris par leur type .NET, ont été essayés sous PowerShell 7, pas encore sous Windows
+  PowerShell 5.1 d'un vrai Windows. Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la
+  session. La porte de `--accepter-version` arrête un environnement piégé, hérité ou posé par mégarde, une minuterie ou
+  un programme lancé sans personne devant l'écran, pas un programme qui a déjà le compte : il peut déplacer les
+  dossiers du cache à la main, et une telle baisse n'est ni signalée ni notée (seules celles de la commande le sont) ;
+  la fenêtre polkit est la demande générale de pkexec, qu'un programme du même compte peut imiter. Windows et Linux
+  64 bits (x86-64) seulement. Le lot a passé plusieurs relectures adverses et une campagne d'attaque, et le lanceur
+  Windows a été essayé sur un vrai Windows 11, en plus de PowerShell sous Linux avec des doublures.
 - **Le journal des erreurs et le brouillon de `vanguard signaler` passent par le masquage commun**, le même que les
   textes envoyés : numéros de série, mots de passe après `-p` ou `--password`, `net use`, clés Wi-Fi, jetons, adresses
   MAC et IP (toutes, en « <mac> » et « <ip> »), chemins (« <chemin .ext> ») et adresses web (« <url> »). Le texte
