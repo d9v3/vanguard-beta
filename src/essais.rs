@@ -42,9 +42,9 @@ pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
 /// même temps) faisait tomber de tels essais pour rien, sans que le code soit plus lent. Le temps de calcul, lui, ne
 /// grandit qu'avec le travail fait.
 #[cfg(unix)]
+#[allow(dead_code)]
 // FFI de libc : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
 // fichier sans s'en servir.
-#[allow(dead_code)]
 #[allow(unsafe_code)]
 pub fn calcul_du_fil() -> std::time::Duration {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -60,9 +60,9 @@ pub fn calcul_du_fil() -> std::time::Duration {
 /// Le temps de calcul du fil en cours (Windows : `GetThreadTimes`, noyau et utilisateur, par pas de 100 ns ; sous
 /// Wine, lu du noyau Linux au tic d'horloge près). Voir la version Linux pour le pourquoi.
 #[cfg(windows)]
+#[allow(dead_code)]
 // FFI de Windows : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
 // fichier sans s'en servir.
-#[allow(dead_code)]
 #[allow(unsafe_code)]
 pub fn calcul_du_fil() -> std::time::Duration {
     use windows::Win32::Foundation::FILETIME;
