@@ -4,8 +4,9 @@
 #
 # - Rien n'est installé : claude.exe est copié dans un dossier temporaire à soi (%TEMP%\vanguard-claude-…, créé avec
 #   des droits pour l'utilisateur seul, relus ensuite ; refusé sur un disque sans droits Windows, FAT ou réseau),
-#   vérifié là (signature Authenticode valide, signataire « Anthropic, PBC » reconnu par son nom, son pays et son
-#   numéro d'entreprise ; empreinte égale à celle du manifeste de la clé), puis lancé de là.
+#   vérifié là (signature Authenticode valide, signataire « Anthropic, PBC » reconnu par son nom, son pays, son
+#   numéro d'entreprise et son registre (Delaware), lus champ par champ ; empreinte égale à celle du manifeste de la
+#   clé), puis lancé de là.
 # - Le jeton de connexion à Claude et la conversation restent dans ce dossier (CLAUDE_CONFIG_DIR), jamais sur la clé
 #   ni dans le profil du proche. En sortant : déconnexion (claude auth logout, son résultat est dit), puis le dossier
 #   et les journaux de Claude Code de cette session sont effacés. Fenêtre fermée par sa croix : un gardien caché,
@@ -13,7 +14,8 @@
 #   fenêtre fermée avant le gardien : le prochain lancement efface d'abord ce qui est resté.
 # - Pas de mise à jour automatique, pas de trafic non essentiel, pas de connecteurs du compte (courriel, fichiers en
 #   ligne), jamais le navigateur de ce PC. L'environnement de l'ordinateur visité ne choisit ni le serveur, ni le
-#   compte, ni le mandataire (ANTHROPIC_*, CLAUDE_*, NODE_*, *_PROXY… retirées, avant toute commande de Claude Code).
+#   compte, ni le mandataire, ni le traçage (ANTHROPIC_*, CLAUDE_*, NODE_*, *_PROXY… retirées, avant toute commande
+#   de Claude Code).
 #   Limite, dite : les variables de certificats sont retirées, mais le magasin de certificats de Windows reste cru
 #   par Claude Code, comme par le navigateur.
 # - Claude demande avant toute commande qui change quelque chose (CLAUDE.md, à côté, lui donne les consignes).
@@ -29,9 +31,18 @@ $Ici = $PSScriptRoot                      # <clé>\Claude
 $Cle = Split-Path -Parent $Ici            # <clé>
 $Source = Join-Path (Join-Path $Ici 'Windows') 'claude.exe'
 $Signataire = 'Anthropic, PBC'
-# Le sujet du certificat d'Anthropic (certificat « EV » : le numéro est celui de l'entreprise au Delaware, il reste
-# le même d'un certificat à l'autre). L'émetteur n'est pas fixé : Windows vérifie déjà la chaîne jusqu'à une racine.
-$SujetAttendu = 'CN=Anthropic, PBC', 'O=Anthropic, PBC', 'C=US', 'SERIALNUMBER=4860621'
+# Le sujet du certificat d'Anthropic (certificat « EV » : le numéro est celui de l'entreprise au registre du
+# Delaware, il reste le même d'un certificat à l'autre ; ce registre est écrit dans le certificat, et exigé aussi).
+# Chaque champ par son OID (en octets DER), présent une seule fois, avec cette valeur exacte. L'émetteur n'est pas
+# fixé : Windows vérifie déjà la chaîne jusqu'à une racine.
+$SujetAttendu = [ordered]@{
+    '550403'                 = 'Anthropic, PBC'   # CN, nom commun
+    '55040A'                 = 'Anthropic, PBC'   # O, organisation
+    '550406'                 = 'US'               # C, pays
+    '550405'                 = '4860621'          # serialNumber, numéro d'entreprise
+    '2B0601040182373C020103' = 'US'               # jurisdictionC, pays du registre
+    '2B0601040182373C020102' = 'Delaware'         # jurisdictionST, État du registre
+}
 
 function Dire([string]$fr, [string]$en) { Write-Host "  $fr"; if ($en) { Write-Host "  $en" -ForegroundColor DarkGray } }
 function Arret([string]$fr, [string]$en) {
@@ -40,41 +51,91 @@ function Arret([string]$fr, [string]$en) {
     if ($en) { Write-Host "    $en" -ForegroundColor DarkGray }
     exit 1
 }
+# Les champs du sujet d'un certificat lus un par un dans ses octets (DER), pas dans un texte rendu par Windows : une
+# valeur qui porte un saut de ligne ne fabrique pas de faux champ. Rend des paires « OID=valeur » (OID en octets,
+# hexadécimal) ; une structure inattendue, un type de texte inconnu ou un caractère de contrôle lève une erreur.
+function LireTlv([byte[]]$o, [int]$i) {
+    if ($i + 2 -gt $o.Length) { throw 'sujet tronqué' }
+    $tag = [int]$o[$i]; $n = [int]$o[$i + 1]; $i += 2
+    if ($n -ge 0x80) {
+        $k = $n - 0x80
+        if ($k -lt 1 -or $k -gt 3 -or $i + $k -gt $o.Length) { throw 'longueur illisible' }
+        $n = 0
+        for ($j = 0; $j -lt $k; $j++) { $n = $n * 256 + [int]$o[$i + $j] }
+        $i += $k
+    }
+    if ($i + $n -gt $o.Length) { throw 'sujet tronqué' }
+    , @($tag, $i, $n)
+}
+function ChampsDuSujet([byte[]]$o) {
+    $nom = LireTlv $o 0
+    if ($nom[0] -ne 0x30 -or $nom[1] + $nom[2] -ne $o.Length) { throw 'sujet illisible' }
+    $champs = @()
+    for ($i = $nom[1]; $i -lt $o.Length; $i = $ens[1] + $ens[2]) {
+        $ens = LireTlv $o $i
+        if ($ens[0] -ne 0x31) { throw 'sujet illisible' }
+        for ($k = $ens[1]; $k -lt $ens[1] + $ens[2]; $k = $paire[1] + $paire[2]) {
+            $paire = LireTlv $o $k
+            $oid = LireTlv $o $paire[1]
+            $val = LireTlv $o ($oid[1] + $oid[2])
+            if ($paire[0] -ne 0x30 -or $oid[0] -ne 0x06 -or $val[1] + $val[2] -ne $paire[1] + $paire[2]) { throw 'sujet illisible' }
+            # UTF8String, PrintableString, IA5String : les seuls attendus ici.
+            if (@(0x0C, 0x13, 0x16) -notcontains $val[0]) { throw 'type de texte inattendu' }
+            $texte = [Text.Encoding]::UTF8.GetString($o, $val[1], $val[2])
+            if ($texte -match '[\x00-\x1F\x7F\u0080-\u009F\u2028\u2029]') { throw 'caractère de contrôle dans le sujet' }
+            $champs += ([BitConverter]::ToString($o, $oid[1], $oid[2]) -replace '-', '') + '=' + $texte
+        }
+    }
+    $champs
+}
 # Existe, même caché, même lien cassé (Test-Path dit non pour un lien qui ne mène nulle part).
 function Existe([string]$chemin) { [bool](Get-Item -LiteralPath $chemin -Force -ErrorAction SilentlyContinue) }
 
-# Déconnexion, délai borné (hors ligne, ou si la commande attendait une réponse : arrêtée au bout de 20 s), depuis le
-# dossier de travail de la session (ses journaux y sont nommés), puis effacement du dossier et des journaux de Claude
-# Code à son nom (%LOCALAPPDATA%\claude-cli-nodejs\Cache\…vanguard-claude-…). [IO.Directory]::Delete ne suit pas les
-# jonctions : il retire le lien, jamais ce qui est au bout. Le même texte sert au gardien (plus bas) : une seule façon
-# de nettoyer. Rend Efface (le dossier n'existe plus) et Deconnexion ('oui' : confirmée par le serveur ; 'non' :
-# tentée sans cette preuve ; '' : pas tentée).
+# Déconnexion, délai borné (hors ligne, ou si la commande attendait une réponse : entrée fermée, arrêtée au bout de
+# 20 s), depuis le dossier de travail de la session (ses journaux y sont nommés), puis effacement du dossier et des
+# journaux de Claude Code à son nom (%LOCALAPPDATA%\claude-cli-nodejs\Cache\…vanguard-claude-…), relus ensuite.
+# [IO.Directory]::Delete ne suit pas les jonctions : il retire le lien, jamais ce qui est au bout. Le même texte sert
+# au gardien (plus bas) : une seule façon de nettoyer. Rend Efface (le dossier n'existe plus), JournauxLaisses (les
+# journaux de la session encore là) et Deconnexion ('oui' : confirmée par le serveur ; 'non' : tentée sans cette
+# preuve ; 'pas lancée' : claude.exe n'a pas pu être lancé ; '' : pas tentée).
+# Lancé par .NET (ProcessStartInfo), pas par Start-Process : celui-ci lit les crochets d'un chemin ([, ]) comme des
+# jokers, et un TEMP « a[1]b » empêchait la déconnexion.
 # « auth logout » sort avec le code 0 même hors ligne (le jeton de ce PC est effacé, le serveur n'a rien révoqué). Une
 # version récente le dit (« … didn't confirm the login was revoked », $revocation) ; une ancienne affiche le même succès
 # dans les deux cas. 'oui' seulement sur preuve : code 0, le texte de succès, pas l'avertissement, et un binaire
 # vérifié qui sait l'écrire ($sait : l'appelant a trouvé l'avertissement dans ses octets). Le gardien ne le passe
 # pas : son résultat n'est jamais dit.
 $TexteNettoyer = @'
-function LancerCache([string]$exe, [string[]]$arguments, [string]$dossier, [string]$sortie, [string]$erreurs) {
-    Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $dossier -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $sortie -RedirectStandardError $erreurs -ErrorAction Stop
+function LancerCache([string]$exe, [string]$arguments, [string]$dossier) {
+    $i = New-Object Diagnostics.ProcessStartInfo
+    $i.FileName = $exe
+    $i.Arguments = $arguments
+    $i.WorkingDirectory = $dossier
+    $i.UseShellExecute = $false
+    $i.CreateNoWindow = $true
+    $i.RedirectStandardInput = $true
+    $i.RedirectStandardOutput = $true
+    $i.RedirectStandardError = $true
+    [Diagnostics.Process]::Start($i)
 }
 function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait = $false) {
     $deconnexion = ''
-    if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; Deconnexion = '' } }
+    if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; JournauxLaisses = @(); Deconnexion = '' } }
     $config = [IO.Path]::Combine($dossier, 'config')
     if ($exe -and [IO.File]::Exists($exe) -and [IO.Directory]::Exists($config) -and $travail -and [IO.Directory]::Exists($travail)) {
         $deconnexion = 'non'
         $avant = $env:CLAUDE_CONFIG_DIR
         $env:CLAUDE_CONFIG_DIR = $config
-        $sortie = [IO.Path]::Combine($dossier, 'deconnexion.txt')
-        $erreurs = [IO.Path]::Combine($dossier, 'deconnexion-erreurs.txt')
-        try {
-            $p = LancerCache $exe @('auth', 'logout') $travail $sortie $erreurs
-            [void]$p.Handle   # sans lui, ExitCode reste vide sous PowerShell 5.1
+        $p = $null
+        try { $p = LancerCache $exe 'auth logout' $travail } catch { $deconnexion = 'pas lancée' }
+        if ($p) { try {
+            $p.StandardInput.Close()   # une question attendrait une réponse qui ne vient jamais
+            # Lues en même temps : un tuyau plein bloquerait claude.exe.
+            $sortie = $p.StandardOutput.ReadToEndAsync()
+            $erreurs = $p.StandardError.ReadToEndAsync()
             if ($p.WaitForExit(20000)) {
-                $p.WaitForExit()   # les fichiers de sortie fermés
-                $dit = [IO.File]::ReadAllText($sortie) + [IO.File]::ReadAllText($erreurs)
+                $p.WaitForExit()   # les sorties lues jusqu'au bout
+                $dit = $sortie.Result + $erreurs.Result
                 if ($p.ExitCode -eq 0 -and $sait -and
                     $dit.Contains('Successfully logged out from your Anthropic account.') -and
                     -not $dit.Contains("didn't confirm the login was revoked")) {
@@ -82,21 +143,30 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
                 }
             }
             else { try { $p.Kill() } catch { } ; Start-Sleep -Seconds 1 }
-        } catch { }
+        } catch { } }
         $env:CLAUDE_CONFIG_DIR = $avant
     }
     $local = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath('LocalApplicationData') }
     $journaux = [IO.Path]::Combine($local, 'claude-cli-nodejs', 'Cache')
     $nom = [IO.Path]::GetFileName($dossier)
+    $laisses = @()
     if ($nom -and [IO.Directory]::Exists($journaux)) {
-        foreach ($j in [IO.Directory]::GetDirectories($journaux, "*$nom*")) { try { [IO.Directory]::Delete($j, $true) } catch { } }
+        # Repris quelques fois (un fichier encore ouvert), puis relus : ce qui reste est rendu, pas tu.
+        for ($i = 0; $i -lt 5; $i++) {
+            try {
+                foreach ($j in [IO.Directory]::GetDirectories($journaux, "*$nom*")) { try { [IO.Directory]::Delete($j, $true) } catch { } }
+                $laisses = @([IO.Directory]::GetDirectories($journaux, "*$nom*"))
+            } catch { $laisses = @([IO.Path]::Combine($journaux, "*$nom*")) }
+            if ($laisses.Count -eq 0) { break }
+            Start-Sleep -Seconds 1
+        }
         # Vides, ils ne servaient qu'à cette session ; sinon gardés (Claude Code est peut-être installé ici).
         foreach ($v in $journaux, [IO.Path]::GetDirectoryName($journaux)) { try { [IO.Directory]::Delete($v, $false) } catch { } }
     }
     for ($i = 0; $i -lt 10; $i++) {
         try { [IO.Directory]::Delete($dossier, $true); break } catch { Start-Sleep -Seconds 1 }
     }
-    [pscustomobject]@{ Efface = -not [IO.Directory]::Exists($dossier); Deconnexion = $deconnexion }
+    [pscustomobject]@{ Efface = -not [IO.Directory]::Exists($dossier); JournauxLaisses = $laisses; Deconnexion = $deconnexion }
 }
 '@
 . ([ScriptBlock]::Create($TexteNettoyer))
@@ -181,11 +251,16 @@ $r = Read-Host '  Le propriétaire de cet ordinateur est d''accord ? / Does the 
 if ("$r".Trim() -notmatch '^(o|oui|y|yes)$') { Write-Host '  Rien n''a été lancé. / Nothing was started.'; exit 0 }
 
 # L'environnement de Claude, et du gardien qui en hérite : celui de l'ordinateur visité ne choisit ni le serveur, ni
-# le compte, ni les certificats, ni le mandataire, ni le code chargé. Retiré d'abord, avant toute commande de Claude
-# Code (même la déconnexion des restes d'une session).
+# le compte, ni les certificats que Claude Code sait lire par variable, ni le mandataire, ni le traçage, ni le code
+# chargé par un shell (BASH_ENV, ENV), ni ses réglages (XDG_CONFIG_HOME). Retiré d'abord, avant toute commande de
+# Claude Code (même la déconnexion des restes d'une session). La même liste que le lanceur Linux, plus XDG_CONFIG_HOME.
 Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(ANTHROPIC_|CLAUDE_|NODE_|BUN_|SSL_CERT_|AWS_|GOOGLE_|VERTEX_|OTEL_|GIT_)' -or
-    $_.Name -match '^((HTTPS?|ALL|NO|GRPC)_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|BROWSER|SESSION_INGRESS_URL|ENABLE_CLAUDEAI_MCP_SERVERS)$'
+    $_.Name -match '^(ANTHROPIC_|CLAUDE_|NODE_|BUN_|SSL_CERT_|AWS_|GOOGLE_|VERTEX_|OTEL_|GIT_|ANT_|CCR_|AZURE_)' -or
+    $_.Name -match '^((HTTPS?|ALL|NO|GRPC)_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|BROWSER|SESSION_INGRESS_URL|ENABLE_CLAUDEAI_MCP_SERVERS)$' -or
+    $_.Name -match '^(BASH_ENV|ENV|XDG_CONFIG_HOME|SSLKEYLOGFILE|GRPC_DEFAULT_SSL_ROOTS_FILE_PATH|NIX_SSL_CERT_FILE|DENO_CERT|PIP_CERT)$' -or
+    $_.Name -match '^(CARGO_HTTP_CAINFO|HTTPLIB2_CA_CERTS|CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE|HEX_CACERTS_PATH|ENABLE_BETA_TRACING_DETAILED)$' -or
+    $_.Name -match '^(ENABLE_ENHANCED_TELEMETRY_BETA|BETA_TRACING_ENDPOINT|VOICE_STREAM_BASE_URL|MCP_CLIENT_SECRET|AGENT_PROXY_URL)$' -or
+    $_.Name -match '^(USE_LOCAL_OAUTH|USE_STAGING_OAUTH|CLOUD_ML_REGION)$'
 } | ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
 
 if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
@@ -211,6 +286,7 @@ if ($Dossier.StartsWith('\\') -or @('NTFS', 'ReFS') -notcontains $format -or $ty
           "The temporary folder (TEMP) is on a drive without Windows permissions: it would not be yours alone. Nothing was started."
 }
 $Session = $null
+$Laisses = New-Object Collections.Generic.List[string]   # les restes d'avant qui n'ont pas pu être effacés
 $Lance = $false
 $Revocation = $false
 $code = 0
@@ -263,6 +339,17 @@ try {
     # Limite, dite : un compte sans droits peut créer C:\.claude après cette vérification ; seul un dossier refait à
     # chaque lancement le verrait. GetDirectoryName rend $null à la racine (C:\), sans erreur.
     $maison = [Environment]::GetFolderPath('UserProfile')
+    # Vu depuis le dossier personnel, le chemin jusqu'au dossier de session ne passe par aucun lien ni jonction : sinon
+    # un Temp déplacé par jonction (<profil>\AppData\Local\Temp -> D:\x\AppData\Local\Temp) ferait prendre D:\x pour le
+    # dossier personnel. En cas de doute (illisible), pas d'exception.
+    function SansLien([string]$racine, [string]$suite) {
+        $c = $racine
+        foreach ($morceau in ($suite -split '[\\/]' | Where-Object { $_ })) {
+            $c = Join-Path $c $morceau
+            try { if ([IO.File]::GetAttributes($c) -band [IO.FileAttributes]::ReparsePoint) { return $false } } catch { return $false }
+        }
+        $true
+    }
     for ($d = [IO.Path]::GetDirectoryName($Dossier); $d; $d = [IO.Path]::GetDirectoryName($d)) {
         $noms = @('CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', '.mcp.json')
         # Les deux façons de connaître le dossier personnel doivent tomber d'accord : sinon, pas d'exception. Comparé
@@ -270,7 +357,7 @@ try {
         # TEMP en nom court 8.3, une autre casse ou une jonction gardent ainsi l'exception.
         $suite = $Dossier.Substring($d.Length).TrimStart('\', '/')
         if ($env:USERPROFILE -and $maison -and [IO.Directory]::Exists((Join-Path $env:USERPROFILE $suite)) -and
-            [IO.Directory]::Exists((Join-Path $maison $suite))) {
+            [IO.Directory]::Exists((Join-Path $maison $suite)) -and (SansLien $env:USERPROFILE $suite) -and (SansLien $maison $suite)) {
             $noms += '.claude/CLAUDE.md', '.claude/AGENTS.md', '.claude/rules'
         } else { $noms += '.claude' }
         foreach ($nom in $noms) {
@@ -292,11 +379,15 @@ try {
         $sujet = @()
         $nom = ''
         if ($sig.Certificat) {
-            $sujet = @($sig.Certificat.SubjectName.Decode(
-                    [Security.Cryptography.X509Certificates.X500DistinguishedNameFlags]'UseNewLines, DoNotUseQuotes') -split "`r?`n")
+            $sujet = @(ChampsDuSujet $sig.Certificat.SubjectName.RawData)
             $nom = $sig.Certificat.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
         }
-        $manque = @($SujetAttendu | Where-Object { $sujet -cnotcontains $_ })
+        # Chaque champ attendu : une seule fois dans le sujet, et avec la bonne valeur.
+        $manque = @($SujetAttendu.Keys | Where-Object {
+                $o = $_
+                $vus = @($sujet | Where-Object { $_.StartsWith("$o=", [StringComparison]::Ordinal) })
+                $vus.Count -ne 1 -or $vus[0] -cne "$o=$($SujetAttendu[$o])"
+            })
         if ($sig.Statut -ne 'Valid' -or $nom -cne $Signataire -or $manque.Count -gt 0) {
             throw [Exception]::new("signature : $($sig.Statut), signataire : « $nom » (attendu : « $Signataire »)")
         }
@@ -341,23 +432,30 @@ try {
                 try { ([IO.File]::Open($verrou, 'Open', 'ReadWrite', 'None')).Dispose() } catch { return }
             }
             $n = Nettoyer $d $Exe $Travail $Revocation
-            if ($n.Efface) {
+            if ($n.Efface -and $n.JournauxLaisses.Count -eq 0) {
                 Dire 'Restes d''une session précédente effacés.' 'Leftovers of a previous session erased.'
-                if ($n.Deconnexion -eq 'non') {
-                    Dire '⚠ Sa déconnexion n''est PAS confirmée : fermez cette session sur claude.ai.' `
-                         '⚠ Its logout is NOT confirmed: end that session on claude.ai.'
-                }
+            } else {
+                $Laisses.Add($d)
+                Dire "⚠ Restes d'une session précédente PAS effacés en entier : $d (un fichier encore ouvert ?)." `
+                     "⚠ Leftovers of a previous session NOT fully erased: $d (a file still open?)."
+            }
+            if ($n.Deconnexion -eq 'non' -or $n.Deconnexion -eq 'pas lancée') {
+                Dire '⚠ Sa déconnexion n''est PAS confirmée : fermez cette session sur claude.ai.' `
+                     '⚠ Its logout is NOT confirmed: end that session on claude.ai.'
             }
         }
 
     # Le gardien : un PowerShell de Windows caché, détaché de cette fenêtre, qui attend la fin de ce script (sortie
     # normale, Ctrl+C, ou fenêtre fermée par sa croix), puis celle de claude.exe, et nettoie. Lancé seulement une fois
-    # claude.exe vérifié : il ne lance jamais un binaire non vérifié. Ses valeurs sont écrites entre apostrophes
-    # doublées, et le tout passé en -EncodedCommand : aucun guillemet de la ligne de commande à casser.
-    function Litteral([string]$s) { "'" + $s.Replace("'", "''") + "'" }
+    # claude.exe vérifié : il ne lance jamais un binaire non vérifié. Ses chemins n'entrent jamais dans son code tels
+    # quels : PowerShell ferme aussi une chaîne sur une apostrophe courbe (’ ‘ ‚ ‛), qu'un nom de compte peut porter, et
+    # le reste du nom serait lu comme du code. Ils y sont en base64 (lettres, chiffres, + / =), décodés par le gardien,
+    # et le tout passé en -EncodedCommand : aucun guillemet de la ligne de commande à casser.
+    function EnBase64([string]$s) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($s)) }
     # Un saut de ligne entre les deux : une chaîne @' '@ finit sans, et « }$dossier = » ne se lirait pas.
     $gardien = $TexteNettoyer + "`r`n" + @"
-`$dossier = $(Litteral $Dossier); `$exe = $(Litteral $Exe); `$travail = $(Litteral $Travail)
+function Texte([string]`$b) { [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(`$b)) }
+`$dossier = Texte '$(EnBase64 $Dossier)'; `$exe = Texte '$(EnBase64 $Exe)'; `$travail = Texte '$(EnBase64 $Travail)'
 try { Wait-Process -Id $PID -ErrorAction SilentlyContinue } catch { }
 for (`$i = 0; `$i -lt 30 -and (Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$exe } catch { `$false } }); `$i++) { Start-Sleep -Seconds 1 }
 Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$exe } catch { `$false } } | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -391,6 +489,13 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
     $n = Nettoyer $Dossier $(if ($Lance) { $Exe } else { '' }) $Travail $Revocation
     if ($Lance) {
         Write-Host ''
+        if ($n.Deconnexion -eq 'pas lancée') {
+            Dire '⚠ La déconnexion n''a PAS pu être lancée : fermez la session sur claude.ai.' `
+                 '⚠ The logout could NOT be started: end the session on claude.ai.'
+        } elseif ($n.Deconnexion -ne 'oui') {
+            Dire '⚠ Déconnexion NON confirmée par Anthropic (hors ligne, ou version qui ne le dit pas) : fermez la session sur claude.ai.' `
+                 '⚠ Logout NOT confirmed by Anthropic (offline, or a version that does not tell): end the session on claude.ai.'
+        }
         if (-not $n.Efface) {
             Dire "✖ $Dossier n'a pas pu être effacé (Claude tourne encore ?). Le gardien réessaie ; sinon, relancez « Depanner avec Claude »." `
                  "✖ Could not erase $Dossier (Claude still running?). The guard retries; otherwise run « Depanner avec Claude » again."
@@ -398,8 +503,16 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
             Dire '✔ Déconnecté ; Claude Code, la connexion et la conversation sont effacés de cet ordinateur.' `
                  '✔ Logged out; Claude Code, the sign-in and the conversation are erased from this computer.'
         } else {
-            Dire '⚠ Déconnexion NON confirmée par Anthropic (hors ligne, ou version qui ne le dit pas) : fermez la session sur claude.ai. Le reste est effacé de cet ordinateur.' `
-                 '⚠ Logout NOT confirmed by Anthropic (offline, or a version that does not tell): end the session on claude.ai. Everything else is erased from this computer.'
+            Dire 'Claude Code, la connexion et la conversation sont effacés de cet ordinateur.' `
+                 'Claude Code, the sign-in and the conversation are erased from this computer.'
+        }
+        foreach ($l in $n.JournauxLaisses) {
+            Dire "⚠ Journal de Claude Code de cette session PAS effacé : $l (un fichier encore ouvert ?) ; à effacer à la main." `
+                 "⚠ Claude Code log of this session NOT erased: $l (a file still open?); erase it by hand."
+        }
+        foreach ($l in @($Laisses | Where-Object { [IO.Directory]::Exists($_) })) {
+            Dire "⚠ Toujours là, d'une session précédente : $l ; relancez plus tard, ou effacez-le à la main." `
+                 "⚠ Still here, from a previous session: $l; run again later, or erase it by hand."
         }
         Write-Host ''
     } elseif (-not $n.Efface) {
