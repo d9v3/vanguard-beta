@@ -2955,8 +2955,10 @@ mod tests {
             assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
             assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
         }
+        // Hors de l'attente, dix ouvertures de fichiers : sous Wine et une forte charge, 1,44 s de plus vu le
+        // 21 nov. 2026 (2,44 s). Une attente par appel (le reste non décompté) en ferait au moins dix.
         assert!(
-            debut.elapsed() < ATTENTE_APRES_REFUS + std::time::Duration::from_secs(1),
+            debut.elapsed() < ATTENTE_APRES_REFUS + std::time::Duration::from_secs(3),
             "{:?}",
             debut.elapsed()
         );

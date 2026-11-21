@@ -44,7 +44,8 @@ pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
 #[cfg(unix)]
 // FFI de libc : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
 // fichier sans s'en servir.
-#[allow(unsafe_code, dead_code)]
+#[allow(dead_code)]
+#[allow(unsafe_code)]
 pub fn calcul_du_fil() -> std::time::Duration {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: clock_gettime écrit dans `t`, qui vit le temps de l'appel, et n'en garde rien.
@@ -61,7 +62,8 @@ pub fn calcul_du_fil() -> std::time::Duration {
 #[cfg(windows)]
 // FFI de Windows : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
 // fichier sans s'en servir.
-#[allow(unsafe_code, dead_code)]
+#[allow(dead_code)]
+#[allow(unsafe_code)]
 pub fn calcul_du_fil() -> std::time::Duration {
     use windows::Win32::Foundation::FILETIME;
     use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
