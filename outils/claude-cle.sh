@@ -47,6 +47,33 @@
 # Authenticode « Anthropic, PBC » de claude.exe avant de le lancer.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# --accepter-version et --annuler-acceptation tournent dans un bash propre : relancés par /usr/bin/env -i (ni BASH_ENV
+# ni ENV, ni fonction exportée, ni SHELLOPTS ; PATH fixe), avec les seules variables utiles. Un fichier nommé par
+# BASH_ENV est lu par bash AVANT ce script : ses fonctions au nom de « /usr/bin/pkexec » ou de « read » sautaient la
+# fenêtre polkit et la confirmation tapée. Relancé (VANGUARD_CLE_RELANCE), l'environnement est relu : BASH_ENV, ENV ou
+# une fonction encore là, refusé. Portée, dite : cela arrête un BASH_ENV hérité ou posé par mégarde ; le code qui
+# tourne avant ce script (le fichier de BASH_ENV en est) est un programme du même compte, qui peut aussi baisser la
+# protection à la main (plus bas, accepter). Sous VANGUARD_ESSAI, le PATH des essais est gardé (leurs doublures de
+# notify-send et systemctl) : la fenêtre polkit et la lecture au clavier ne passent jamais par le PATH.
+case ${1:-} in
+  --accepter-version | --annuler-acceptation)
+    if [[ ${VANGUARD_CLE_RELANCE:-} != 1 ]]; then
+      garder=(VANGUARD_CLE_RELANCE=1 PATH=/usr/local/bin:/usr/bin:/bin)
+      [[ -z ${VANGUARD_ESSAI:-} ]] || garder=(VANGUARD_CLE_RELANCE=1 "PATH=$PATH")
+      for n in HOME USER LOGNAME TERM LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TMPDIR XDG_CACHE_HOME XDG_CONFIG_HOME \
+        XDG_STATE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS VANGUARD_ESSAI "${!VANGUARD_CLAUDE_@}"; do
+        [[ -z ${!n+x} ]] || garder+=("$n=${!n}")
+      done
+      exec /usr/bin/env -i "${garder[@]}" /bin/bash --noprofile --norc -- "$PWD/outils/claude-cle.sh" "$@"
+      echo "✖ Relance dans un bash propre impossible (/usr/bin/env, /bin/bash) : rien changé." >&2
+      exit 1
+    fi
+    if [[ -n ${BASH_ENV+x}${ENV+x} || -n $(declare -F) ]]; then
+      echo "✖ Environnement pas propre (BASH_ENV, ENV ou une fonction de bash) : rien changé." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 SOURCE=https://downloads.claude.ai/claude-code-releases
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/vanguard/claude-cle
@@ -282,11 +309,13 @@ plus_ancienne() { # a b : code 0 si a est plus ancienne que b
 # changer (pas de journal, pas de baisse), et notifié après. La trace de l'acceptation (note d'avant, versions
 # déplacées) est rangée hors du cache, dans le dossier d'état. Annulable : --annuler-acceptation (terminal et
 # confirmation tapée, sans polkit : une hausse de protection) remet les versions de la trace qui se vérifient, la note
-# d'avant, et retire les versions écartées.
+# d'avant, et retire les versions écartées ; une version pas remise pour une panne passagère (vérification
+# impossible pour l'instant, déplacement raté) reste écartée et dans la trace : « annulation partielle », à relancer.
 # Portée, dite : le terminal arrête une minuterie, un tuyau, une entrée redirigée, pas un programme qui se fabrique un
 # terminal ; la fenêtre polkit, elle, demande le mot de passe du propriétaire. Un programme qui tourne déjà sous ce
 # compte peut toujours déplacer les dossiers et réécrire la note à la main, sans cette commande : ni polkit ni
-# notification ne l'en empêchent (LISEZMOI).
+# notification ne l'en empêchent, et une telle baisse ne laisse ni notification ni ligne au journal (seules les
+# baisses faites par cette commande sont notées et notifiées ; LISEZMOI).
 ECARTEES=$ETAT/claude-cle-ecartees
 JOURNAL=$ETAT/claude-cle-journal
 ACCEPTATIONS=$ETAT/claude-cle-acceptations
@@ -311,12 +340,20 @@ verrou() {
   flock -w 600 8
 }
 # L'accord fort du propriétaire pour une baisse de protection : la fenêtre d'administrateur du bureau (polkit), qui
-# ne lance que /usr/bin/true. Un refus, une fenêtre fermée, pkexec absent : rien changé. Chemins absolus ; aucune
-# variable ni option ne la saute (les essais changent une COPIE de ce script, jamais celui-ci).
-accord_fort() {
-  echo "Accord de l'administrateur demandé (fenêtre polkit)…"
+# ne lance que /usr/bin/true. Un refus, une fenêtre fermée, pkexec absent : rien changé. Chemins absolus, appelés par
+# « builtin command » (une fonction du même nom ne passe pas devant) ; ni option ni variable de ce script ne la
+# sautent (les essais changent une COPIE de ce script, jamais celui-ci). Ce que la fenêtre autorise y est écrit :
+# pkexec met la ligne de commande dans sa demande (« Authentication is needed to run `$(cmdline_short)' as the super
+# user », relu dans /usr/bin/pkexec, polkit 128), d'où l'argument lisible, ignoré par true ; la version (forme
+# simple, relue ici) est son seul morceau variable, et la ligne tient en 80 signes, sans quoi pkexec la raccourcit.
+# Limite, dite : c'est la demande générale de pkexec (« exécuter en super-utilisateur »), pas une action polkit à
+# Vanguard (il faudrait poser un fichier d'action, root) ; un programme du même compte peut ouvrir une fenêtre au
+# même texte.
+accord_fort() { # version
+  [[ $1 =~ $FORME_SIMPLE ]] || { echo "✖ Version de forme inattendue : pas d'accord demandé." >&2; return 1; }
+  echo "Accord de l'administrateur demandé (fenêtre polkit : « Vanguard : baisse de protection, Claude Code $1 »)…"
   [[ -x /usr/bin/pkexec ]] || { echo "✖ /usr/bin/pkexec absent : pas d'accord fort possible." >&2; return 1; }
-  /usr/bin/pkexec --keep-cwd /usr/bin/true
+  builtin command /usr/bin/pkexec --keep-cwd /usr/bin/true "Vanguard : baisse de protection, Claude Code $1"
 }
 # Ce qu'une acceptation de X changerait, sans rien écrire : notee, note_txt et hauts, ceux de l'appelant.
 plan_accepter() { # version
@@ -362,9 +399,9 @@ accepter() { # version
   echo "(une fenêtre d'administrateur suit)"
   # Ni l'attente au clavier ni la fenêtre polkit ne tiennent le verrou : la minuterie n'attend pas une personne. Tout
   # est recalculé sous le verrou, et refusé si ça a changé entre-temps.
-  read -r rep || rep=""
+  builtin read -r rep || rep=""
   [[ $rep == "ACCEPTER $x" ]] || { echo "Pas confirmé : rien changé."; return 1; }
-  accord_fort || erreur "Accord de l'administrateur (polkit) pas donné : rien changé."
+  accord_fort "$x" || erreur "Accord de l'administrateur (polkit) pas donné : rien changé."
   vu="$note_txt|${hauts[*]}"
   verrou || erreur "Verrou pas pris : rien changé."
   plan_accepter "$x"
@@ -412,9 +449,12 @@ derniere_trace() {
 }
 # Défait la dernière acceptation, d'après sa trace (dossier d'état), jamais d'après ce que le cache contient : chaque
 # version de la trace est remise si elle se vérifie (signée, entière), sinon laissée de côté et dite ; la note est
-# remise à la plus haute des deux (celle d'avant, celle d'aujourd'hui) ; les versions de la trace ne sont plus écartées.
+# remise à la plus haute des deux (celle d'avant, celle d'aujourd'hui). Une version remise, ou refusée pour de bon
+# (absente, ne se vérifie pas), n'est plus écartée et sort de la trace. Une panne passagère (vérification impossible
+# ici, code 3 : dossier temporaire plein ; déplacement raté) ne consomme rien : la version reste écartée et dans la
+# trace, l'annulation est dite partielle (code 2), et une relance la reprend.
 annuler_acceptation() {
-  local t s v avant notee rep raison lignes=() versions=() remis=() laisses=() reste
+  local t s v w avant notee rep raison rc passe lignes=() versions=() remis=() laisses=() passagers=() reste
   [[ -t 0 && -t 1 ]] ||
     erreur "--annuler-acceptation : seulement dans un terminal, avec une confirmation tapée. Rien changé."
   cache_present || erreur "Cache absent : rien changé."
@@ -432,7 +472,7 @@ annuler_acceptation() {
   echo "  note remise à la $avant si elle est plus haute que l'actuelle ($NOTE_VERSION)"
   echo "  remis dans le cache, s'ils se vérifient : ${versions[*]:-rien} (de $CACHE/$t)"
   echo "Pour confirmer, taper : ANNULER"
-  read -r rep || rep=""
+  builtin read -r rep || rep=""
   [[ $rep == ANNULER ]] || { echo "Pas confirmé : rien changé."; return 1; }
   verrou || erreur "Verrou pas pris : rien changé."
   [[ $(derniere_trace) == "$t" ]] || erreur "Les acceptations ont changé pendant la question : rien changé (relancer)."
@@ -445,14 +485,24 @@ annuler_acceptation() {
       laisses+=("$v (absent, ou lien)")
     elif [[ -e $CACHE/$v || -L $CACHE/$v ]]; then
       laisses+=("$v (déjà de nouveau dans le cache)")
-    elif ! raison=$(version_verifiee "$s/$v" "$v" 2>&1); then
-      laisses+=("$v (ne se vérifie pas : $raison)")
-    elif mv -T -- "$s/$v" "$CACHE/$v"; then
-      remis+=("$v")
     else
-      laisses+=("$v (pas déplacé)")
+      raison=$(version_verifiee "$s/$v" "$v" 2>&1)
+      rc=$?
+      if ((rc == 3)); then
+        passagers+=("$v")
+        laisses+=("$v (pas vérifiable ici pour l'instant : $raison)")
+      elif ((rc != 0)); then
+        laisses+=("$v (ne se vérifie pas : $raison)")
+      elif mv -T -- "$s/$v" "$CACHE/$v"; then
+        remis+=("$v")
+      else
+        passagers+=("$v")
+        laisses+=("$v (pas déplacé)")
+      fi
     fi
-    if [[ -f $ECARTEES ]]; then
+    passe=0
+    for w in "${passagers[@]}"; do [[ $w != "$v" ]] || passe=1; done
+    if ((!passe)) && [[ -f $ECARTEES ]]; then
       reste=$(grep -vxF -- "$v" "$ECARTEES")
       if [[ -n $reste ]]; then printf '%s\n' "$reste" >"$ECARTEES"; else rm -f -- "$ECARTEES"; fi
     fi
@@ -460,6 +510,20 @@ annuler_acceptation() {
   if [[ $avant =~ $FORME_VERSION ]]; then
     notee=$(haute_notee 2>/dev/null) || notee=""
     if [[ -z $notee ]] || plus_ancienne "$notee" "$avant"; then noter_haute "$avant" || return 1; fi
+  fi
+  if ((${#passagers[@]})); then
+    # La trace gardée, réduite à ce qui reste à remettre (écrite d'un coup) ; pas réécrite, elle reste entière, et
+    # la relance refait le tout (une version déjà remise y est « déjà de nouveau dans le cache »).
+    { printf '%s\n' "$avant" "${passagers[@]}" >"$ACCEPTATIONS/$t.tmp" &&
+      mv -f -T -- "$ACCEPTATIONS/$t.tmp" "$ACCEPTATIONS/$t"; } 2>/dev/null || rm -f -- "$ACCEPTATIONS/$t.tmp"
+    journal "annuler-acceptation $t : partielle ; remis ${remis[*]:-rien} ; à relancer : ${passagers[*]} ; note $(haute_notee 2>/dev/null)" ||
+      echo "⚠ La fin n'a pas pu être notée au journal ($JOURNAL) ; le début l'est." >&2
+    echo "⚠ Annulation partielle : remis dans le cache : ${remis[*]:-rien} ; note : $(haute_notee 2>/dev/null)."
+    echo "  Pas remis pour une panne passagère, toujours écartés, trace gardée : ${passagers[*]}. Relancer" \
+      "outils/claude-cle.sh --annuler-acceptation une fois la panne passée."
+    echo "  Laissés dans $s :"
+    printf '  %s\n' "${laisses[@]}"
+    return 2
   fi
   rm -f -- "${ACCEPTATIONS:?}/${t:?}"
   ((${#laisses[@]})) || rmdir -- "$s" 2>/dev/null
@@ -787,6 +851,9 @@ garder_cle() { # point version-du-cache note changés
   done
   [[ -n $rate ]] || copier_relu "$CLE_GPG" "$p/Claude/claude-code.asc" || rate="Claude/claude-code.asc pas copié sur la clé."
   [[ -n $rate ]] || copier_relu "outils/cle/$LANCEUR" "$p/$LANCEUR" || rate="$LANCEUR pas copié sur la clé."
+  # L'alerte de provenance AVANT d'écrire la note : une note pas écrite, un sync qui échoue, un arrêt (Ctrl+C,
+  # fenêtre fermée pendant un sync long) ne la font jamais taire ; arrêté avant la note, le dépôt suivant la redit.
+  [[ -z $pas_d_ici ]] || provenance "$4" "$pas_d_ici"
   if [[ -z $rate ]]; then
     NOTEE=()
     for c in "${!CLE_SHA[@]}"; do NOTEE[$c]=${CLE_SHA[$c]}; done
@@ -795,7 +862,6 @@ garder_cle() { # point version-du-cache note changés
   if [[ -n $rate ]]; then
     echo "✖ $rate" >&2
     [[ -n $pas_d_ici ]] || exit 1
-    provenance "$4" "$pas_d_ici"
     echo "  Le dépôt n'est pas fini : ce sera redit au dépôt suivant." >&2
     exit 2
   fi
@@ -811,7 +877,6 @@ sur la clé, pas redescendue."
     fi
     return 0
   fi
-  provenance "$4" "$pas_d_ici"
   return 2
 }
 # Des binaires gardés sur la clé (signés, vérifiés) qui ne viennent pas d'un dépôt d'ici : dit et notifié.
@@ -937,6 +1002,20 @@ Rien n'est posé sur la clé."
       [[ $s =~ ^[0-9a-f]{64}$ && $c =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ ]] && NOTEE[$c]=$s
     done <"$note"
   fi
+  # L'alerte d'un binaire changé ou inconnu, AVANT la première écriture de la note : arrêté pendant la copie (Ctrl+C,
+  # fenêtre fermée pendant un sync), la note connaîtrait déjà le nouveau binaire, ou l'ancien serait retiré (un
+  # binaire absent ne compte pas) : le dépôt suivant se tairait.
+  if [[ -n $vu ]]; then
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$vu. Remplacé par la copie vérifiée (ci-dessous) ; un" >&2
+    echo "  programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$vu. Remplacé par la copie vérifiée ; \
+un programme remplacé est un piège possible."
+  fi
+  if [[ -n $inconnu ]]; then
+    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu. Remplacé par la copie vérifiée (ci-dessous) ;" >&2
+    echo "  s'il ne vient pas de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
+    avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
+  fi
   # Chaque binaire : l'ancien retiré, le nouveau copié sous un nom provisoire, relu sur la clé et comparé à l'empreinte
   # signée, noté, puis renommé. Arrêté en route, la clé n'a jamais sous son vrai nom un binaire à moitié écrit ni un
   # binaire que la note ne connaît pas : pas de fausse alerte au dépôt suivant. Le nom provisoire est de ceux que le
@@ -980,19 +1059,8 @@ Rien n'est posé sur la clé."
   copier_relu "outils/cle/$LANCEUR" "$p/$LANCEUR" || refuser "$p" "$change" "copie ratée" "$LANCEUR pas copié sur la clé."
   sync -f "$p/Claude/CLAUDE.md" 2>/dev/null || true
   echo "✔ Claude Code $v sur la clé (vérifié, relu)."
-  if [[ -n $vu ]]; then
-    echo "✖ Sur la clé, changé depuis le dernier dépôt :$vu. Remplacé par la copie vérifiée ; un programme" >&2
-    echo "  remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
-    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$vu. Remplacé par la copie vérifiée ; \
-un programme remplacé est un piège possible."
-    return 2
-  fi
-  if [[ -n $inconnu ]]; then
-    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu. Remplacé par la copie vérifiée ; s'il ne vient pas" >&2
-    echo "  de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
-    avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
-    return 2
-  fi
+  # L'alerte est déjà dite (plus haut, avant la note) ; le code la rappelle.
+  [[ -z $vu && -z $inconnu ]] || return 2
 }
 
 # Avant la reprise d'un déploiement arrêté (outils/deployer.sh) : la reprise retire de la clé ce que le déploiement
