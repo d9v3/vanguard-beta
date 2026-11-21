@@ -103,12 +103,15 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      program's authenticity is proven, not that it is the stable version. A newer version set this way then
      blocks older ones (Vanguard says so). To lift the block, on the Vanguard computer, in a terminal:
      outils/claude-cle.sh --accepter-version 2.1.0 (the wanted version); it shows what changes and asks
-     you to type "ACCEPTER 2.1.0", then for the administrator password (polkit window). Newer versions
-     are moved aside (not deleted), this is logged first, and a notification says so every time. To put
-     everything back: outils/claude-cle.sh --annuler-acceptation, in a terminal, typing "ANNULER"; only
-     versions that still verify are put back. Scope: this stops a timer or a program started with nobody
-     at the screen; a program already running under the same account can still move those folders by
-     hand. The notification and the log (~/.local/state/vanguard) show it.
+     you to type "ACCEPTER 2.1.0", then for the administrator password (polkit window, which shows
+     "Vanguard : baisse de protection, Claude Code 2.1.0"). Newer versions are moved aside (not deleted),
+     this is first written to the log (~/.local/state/vanguard), and a notification says so every time.
+     To put everything back: outils/claude-cle.sh --annuler-acceptation, in a terminal, typing "ANNULER";
+     only versions that still verify are put back. If a check is not possible for now (a passing fault),
+     the undo is called "partial": the record is kept, run the command again later. Scope: this stops a
+     timer or a program started with nobody at the screen. A program already running under the same
+     account can still move those folders by hand; such a lowering leaves no notification and no log
+     line. Only lowerings made by this command are notified and logged.
    - Malware already running under the same account can read the login during the session: nothing stops
      it. On a computer believed infected, boot SystemRescue instead (key menu), and end the session on
      claude.ai afterwards.
