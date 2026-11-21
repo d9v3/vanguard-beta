@@ -89,11 +89,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   ligne ; sans gpg, la signature d'Anthropic ne se vérifie pas : c'est dit, et l'accord est demandé. Sous Windows, la
   liste des empreintes n'est pas vérifiée par une signature (seule la signature Authenticode du programme l'est),
   Claude Code se fie aux certificats installés dans Windows, un C:\.claude apparu pendant la session n'est pas vu, et
-  Set-StrictMode et Import-Module, pris par leur type .NET, ont été essayés sous PowerShell 7, pas encore sous Windows
-  PowerShell 5.1 d'un vrai Windows. Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la
-  session. La porte de `--accepter-version` arrête un environnement piégé, hérité ou posé par mégarde, une minuterie ou
-  un programme lancé sans personne devant l'écran, pas un programme qui a déjà le compte : il peut déplacer les
-  dossiers du cache à la main, et une telle baisse n'est ni signalée ni notée (seules celles de la commande le sont) ;
+  Set-StrictMode et Import-Module, pris par leur type .NET, ont été essayés seuls sous Windows PowerShell 5.1 d'un vrai
+  Windows 11, pas encore dans le lanceur entier. Un virus qui tourne déjà sous le même compte peut lire la connexion
+  pendant la session. La porte de `--accepter-version` arrête un environnement piégé, hérité ou posé par mégarde, une
+  minuterie ou un programme lancé sans personne devant l'écran, pas un programme qui a déjà le compte : il peut
+  déplacer les dossiers du cache à la main, et une telle baisse n'est ni signalée ni notée (seules celles de la
+  commande le sont) ;
   la fenêtre polkit est la demande générale de pkexec, qu'un programme du même compte peut imiter. Windows et Linux
   64 bits (x86-64) seulement. Le lot a passé plusieurs relectures adverses et une campagne d'attaque, et le lanceur
   Windows a été essayé sur un vrai Windows 11, en plus de PowerShell sous Linux avec des doublures.

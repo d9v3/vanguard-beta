@@ -33,8 +33,8 @@
 # pwsh 7, rien ne fait tomber ce filet : il garde PowerShell 5.1) ; CmdletInfo aussi. Pas trouvé : refusé plus bas,
 # avec les commandes étrangères. Limite, dite : du code déjà chargé dans la session (lancement autrement que par le
 # .bat) peut encore détourner les autres littéraux de ce script ([IO.Path]…) ou les membres des objets (types
-# étendus) ; c'est un programme de ce compte. Essayé sous pwsh 7 (Linux) ; sous PowerShell 5.1, à essayer sur un vrai
-# Windows (GetType(nom, $true) et ::new y existent).
+# étendus) ; c'est un programme de ce compte. Essayé sous pwsh 7 (Linux), et ce bloc seul sous PowerShell 5.1 d'un
+# vrai Windows 11 (strict actif, vrais types) ; le lanceur entier avec lui, pas encore.
 $Noyau = @{}
 try {
     $Moteur = $ExecutionContext.GetType().Assembly

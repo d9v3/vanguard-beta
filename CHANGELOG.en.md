@@ -87,10 +87,11 @@ example, finds it, to rebuild it if needed.
   checked: this is said, and consent is asked. On Windows, the checksum list is not checked by a signature (only the
   program's Authenticode signature is), Claude Code trusts the certificates installed in Windows, a C:\.claude that
   appears during the session is not seen, and Set-StrictMode and Import-Module, taken through their .NET type, were
-  tried under PowerShell 7, not yet under Windows PowerShell 5.1 on a real Windows. A virus already running under the
-  same account can read the login during the session. The `--accepter-version` gate stops a trapped environment,
-  inherited or set by mistake, a timer or a program started with nobody at the screen, not a program that already has
-  the account: it can move the cache folders by hand, and such a lowering is neither reported nor logged (only those
+  tried on their own under Windows PowerShell 5.1 on a real Windows 11, not yet within the whole launcher. A virus
+  already running under the same account can read the login during the session. The `--accepter-version` gate stops a
+  trapped environment, inherited or set by mistake, a timer or a program started with nobody at the screen, not a
+  program that already has the account: it can move the cache folders by hand, and such a lowering is neither reported
+  nor logged (only those
   made by the command are); the polkit window is pkexec's general request, which a program of the same account can
   imitate. Windows and Linux 64-bit (x86-64) only. The batch went through several adversarial reviews and an attack
   campaign, and the Windows launcher was tested on a real Windows 11, as well as PowerShell on Linux with stand-ins.
