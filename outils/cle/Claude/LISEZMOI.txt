@@ -108,9 +108,13 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      l'authenticité du programme est prouvée, pas qu'il soit la version stable. Une version plus récente
      posée ainsi bloque ensuite les plus anciennes (dit par Vanguard). Pour lever le blocage, sur
      l'ordinateur de Vanguard, dans un terminal : outils/claude-cle.sh --accepter-version 2.1.0 (la version
-     voulue) ; il montre ce qui change et demande de taper « ACCEPTER 2.1.0 ». Les versions plus récentes
-     sont déplacées de côté (pas effacées) et c'est noté ; outils/claude-cle.sh --annuler-acceptation
-     remet tout. Écrire la version à la main dans la note ne suffit pas.
+     voulue, telle qu'écrite dans le cache) ; il montre ce qui change, demande de taper « ACCEPTER 2.1.0 »,
+     puis le mot de passe d'administrateur (fenêtre polkit). Les versions plus récentes sont déplacées de
+     côté (pas effacées), c'est noté d'abord, et une notification le dit à chaque fois. Pour tout remettre :
+     outils/claude-cle.sh --annuler-acceptation, dans un terminal, en tapant « ANNULER » ; seules les
+     versions qui se vérifient encore sont remises. Portée : cela arrête une minuterie ou un programme lancé
+     sans personne devant l'écran ; un programme qui tourne déjà sous le même compte peut quand même
+     déplacer ces dossiers à la main. La notification et le journal (~/.local/state/vanguard) le montrent.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
      empêche. Sur un ordinateur qu'on croit infecté, démarrer plutôt sur SystemRescue (menu de la clé), et
      terminer la session sur claude.ai après.
