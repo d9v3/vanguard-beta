@@ -203,9 +203,11 @@ nettoyer() { # dossier [binaire vérifié]
   effacer_sauf "$d"
 }
 # Les points de montage à $1 ou dessous, séparés par un octet nul, tels que le noyau les donne (/proc/self/mountinfo,
-# 5e champ ; espace, tabulation, saut de ligne et barre oblique inverse y sont écrits en octal : décodés).
+# 5e champ ; espace, tabulation, saut de ligne et barre oblique inverse y sont écrits en octal : décodés). Le dossier
+# passe par l'environnement, pas par awk -v : -v décode les « \t » et « \\ » d'un chemin (TMPDIR avec une barre
+# oblique inverse), et le disque monté dessous ne serait plus reconnu.
 montages_sous() { # dossier
-  LC_ALL=C awk -v d="$1" '
+  DOSSIER_VISE=$1 LC_ALL=C awk '
     function dec(s,  r, o) {
       r = ""
       while (match(s, /\\[0-7][0-7][0-7]/)) {
@@ -215,6 +217,7 @@ montages_sous() { # dossier
       }
       return r s
     }
+    BEGIN { d = ENVIRON["DOSSIER_VISE"] }
     { m = dec($5); if (m == d || index(m, d "/") == 1) printf "%s%c", m, 0 }' "$MONTAGES"
 }
 # Efface $1 sans jamais descendre dans un disque monté dessous (« montes », du parent) : rm -rf viderait le disque
@@ -318,7 +321,8 @@ fi
 echo
 dire "Copie et vérification de Claude Code…" "Copying and checking Claude Code…"
 cp -- "$SOURCE" "$EXE" || arret "Copie ratée." "Copy failed."
-sha=$(sha256sum "$EXE" | cut -d' ' -f1)
+# Par l'entrée : avec le chemin en argument, sha256sum préfixe la ligne d'une « \ » si le chemin en contient une.
+sha=$(sha256sum <"$EXE" | cut -d' ' -f1)
 
 # Le manifeste, copié lui aussi : ce sont les octets vérifiés qui sont lus ensuite.
 cp -- "$ICI/manifest.json" "$DOSSIER/manifest.json" 2>/dev/null || arret "Manifeste absent de la clé." "Manifest missing."

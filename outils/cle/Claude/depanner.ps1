@@ -134,8 +134,9 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
             # Lues en même temps : un tuyau plein bloquerait claude.exe.
             $sortie = $p.StandardOutput.ReadToEndAsync()
             $erreurs = $p.StandardError.ReadToEndAsync()
-            if ($p.WaitForExit(20000)) {
-                $p.WaitForExit()   # les sorties lues jusqu'au bout
+            # Les lectures bornées elles aussi : un enfant laissé par la déconnexion garderait les tuyaux ouverts, et
+            # .Result attendrait sans fin (dossier de session et jeton pas effacés). Pas finies : pas confirmée.
+            if ($p.WaitForExit(20000) -and [Threading.Tasks.Task]::WaitAll(@($sortie, $erreurs), 5000)) {
                 $dit = $sortie.Result + $erreurs.Result
                 if ($p.ExitCode -eq 0 -and $sait -and
                     $dit.Contains('Successfully logged out from your Anthropic account.') -and
@@ -252,8 +253,10 @@ function Provenance([string]$n) {
     if (-not $c) { return 'introuvable' }
     if ($c.CommandType -ne [Management.Automation.CommandTypes]::Cmdlet) { return "$($c.CommandType) $($c.Source)".Trim() }
     $a = $c.ImplementingType.Assembly
+    # Une bibliothèque chargée en mémoire (Add-Type, Import-Module -Assembly) n'a pas d'emplacement : jamais de Windows.
+    if (-not $a.Location) { return 'bibliothèque en mémoire' }
     if ($a.GlobalAssemblyCache -or $a.Location.StartsWith($PSHOME + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return '' }
-    $a.Location
+    "bibliothèque $($a.Location)"
 }
 # ESSAIS : les doublures des fonctions ci-dessus sont posées ici.
 
@@ -447,12 +450,13 @@ try {
         $manque = @($SujetAttendu.Keys | Where-Object {
                 $o = $_
                 $vus = @($sujet | Where-Object { $_.StartsWith("$o=", [StringComparison]::Ordinal) })
-                $vus.Count -ne 1 -or $vus[0] -cne "$o=$($SujetAttendu[$o])"
+                # Octet par octet (Ordinal) : -cne compare selon la langue et ignore U+200B ou U+00AD (invisibles).
+                $vus.Count -ne 1 -or -not [string]::Equals($vus[0], "$o=$($SujetAttendu[$o])", [StringComparison]::Ordinal)
             })
         # Le message dit la vraie raison : un fichier changé garde le nom de son signataire, qui ne prouve plus rien.
         if ($sig.Statut -eq 'HashMismatch') { throw [Exception]::new('le fichier a été changé après sa signature') }
         if ($sig.Statut -ne 'Valid') { throw [Exception]::new("signature : $($sig.Statut)") }
-        if ($nom -cne $Signataire) { throw [Exception]::new("signataire : « $nom » (attendu : « $Signataire »)") }
+        if (-not [string]::Equals($nom, $Signataire, [StringComparison]::Ordinal)) { throw [Exception]::new("signataire : « $nom » (attendu : « $Signataire »)") }
         if ($manque.Count -gt 0) { throw [Exception]::new("certificat « $nom » qui n'est pas celui d'Anthropic (champs : $($manque -join ', '))") }
         # 2. Empreinte égale à celle du manifeste posé sur la clé : attrape une copie abîmée en route. Ce manifeste
         # n'est pas authentifié ici (pas de gpg sous Windows) : un autre claude.exe signé par Anthropic avec un
