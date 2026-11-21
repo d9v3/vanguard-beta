@@ -1323,15 +1323,15 @@ Content-Type: multipart/mixed; boundary=b\n\nx\n--bb--\n";
         while c.len() < 50_000_000 {
             c.extend_from_slice(b"--f8x-presque\n--f0\n=?x?B?\n");
         }
-        let debut = std::time::Instant::now();
+        // En temps de calcul de ce fil, pas en temps écoulé : sous Wine, avec verifier.sh et d'autres compilations
+        // en même temps (charge 70 sur 16 cœurs), l'attente d'un cœur libre faisait passer 30 s (36,5 s vu le 21 nov.
+        // 2026) sans que la lecture travaille plus.
+        let debut = crate::essais::calcul_du_fil();
         let m = lire(&c);
+        let duree = crate::essais::calcul_du_fil().saturating_sub(debut);
         assert_eq!(m.parties.len(), 1);
         // Moins de 2 s en version publiée ; la version de test, sans optimisation, a plus de marge.
         let limite = if cfg!(debug_assertions) { 30 } else { 2 };
-        assert!(
-            debut.elapsed() < std::time::Duration::from_secs(limite),
-            "{:?}",
-            debut.elapsed()
-        );
+        assert!(duree < std::time::Duration::from_secs(limite), "{duree:?}");
     }
 }

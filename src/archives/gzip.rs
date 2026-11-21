@@ -228,12 +228,14 @@ mod tests {
         let passee = std::time::Instant::now();
         assert_eq!(degzip_avant(&gz, 1 << 20, passee), None);
         assert_eq!(degzip_controle_avant(&gz, 1 << 20, passee), None);
-        // Pile à la limite : entier.
+        // Pile à la limite : entier ; un octet sous elle : refusé. Avec l'échéance lointaine, comme plus haut : sous
+        // l'échéance de la production (30 s à l'horloge), une machine chargée faisait refuser le membre entier pour
+        // le temps (21 nov. 2026, sous Wine), et le refus sous la limite pouvait passer pour cette mauvaise raison.
         assert_eq!(
-            degzip_controle(&gz, contenu.len()).map(|c| c.len()),
+            degzip_controle_avant(&gz, contenu.len(), loin).map(|c| c.len()),
             Some(contenu.len())
         );
-        assert_eq!(degzip(&gz, contenu.len() - 1), None);
+        assert_eq!(degzip_avant(&gz, contenu.len() - 1, loin), None);
     }
 
     proptest::proptest! {
