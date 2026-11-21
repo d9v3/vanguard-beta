@@ -102,7 +102,8 @@ CDPATH='' cd -- "${ICI%/*}/.." || exit 1
 # (les crochets des essais, lus seulement sous VANGUARD_ESSAI, plus bas) : une autre, même au nom proche, est laissée
 # tomber par la relance, jamais transmise puis refusée par ce même script.
 # Relancé, la marque VANGUARD_CLE_RELANCE n'est pas crue (l'appelant peut l'écrire lui-même) : l'environnement de
-# départ de ce bash est relu dans /proc/$$/environ, et tout nom hors de GARDEES y est refusé. Au second rang, après
+# départ de ce bash est relu dans /proc/$$/environ, et tout nom hors de GARDEES y est refusé ; ses options aussi ($-,
+# SHELLOPTS, BASHOPTS : celles de la relance, rien d'autre ; R10-PORTE-1, plus bas). Au second rang, après
 # la porte (qui a déjà refusé fonctions exportées et BASH_ENV) : refusé aussi s'il reste une fonction, un alias, un
 # piège (trap) ou un builtin coupé (enable -n), posés par du code lancé dans ce bash avant lui (bash -c, un script qui
 # source celui-ci) ; utile contre une erreur, pas contre un programme écrit exprès (voir la portée de la porte). Sous
@@ -127,6 +128,18 @@ case ${1:-} in
       exit 1
     fi
     sale=""
+    # R10-PORTE-1 : la marque forgée sautait la relance, seul endroit qui remet à zéro les options de bash ; celles
+    # de la ligne de commande (bash -f, -e, -C, -O nocasematch…) ne sont pas dans l'environnement, la porte ne les
+    # voit pas. Sous -f, « "$CACHE"/*/ » restait un motif littéral : rien mis de côté, et pourtant « ✔ ». La marque
+    # ne suffit donc jamais : l'état du shell doit être celui de la relance, mesuré par « /usr/bin/env -i /bin/bash
+    # --noprofile --norc » de bash 5.3, après « set -uo pipefail » plus haut. Rien que des expansions et [[ ]] (un
+    # mot réservé) : aucune commande qu'une fonction remplacerait. $-, SHELLOPTS et BASHOPTS sont tenus par bash
+    # (en lecture seule ; hérités, refusés par la porte). Un bash plus récent aux défauts changés est refusé : le
+    # sens sûr, et le témoin des essais (l'environnement exact de la relance) le montre aussitôt.
+    [[ $- == "huB" && $SHELLOPTS == "braceexpand:hashall:interactive-comments:nounset:pipefail" &&
+      $BASHOPTS == "checkwinsize:cmdhist:complete_fullquote:extquote:force_fignore:globasciiranges:globskipdots:\
+hostcomplete:interactive_comments:patsub_replacement:progcomp:promptvars:sourcepath" ]] ||
+      sale+=" (options de bash)"
     [[ -z $(\builtin \declare -F) ]] || sale+=" (une fonction de bash)"
     if [[ -r /proc/$$/environ ]]; then
       while IFS= \builtin \read -r -d '' e; do
@@ -1015,6 +1028,10 @@ sur la clé, pas redescendue."
 # Des binaires gardés sur la clé (signés, vérifiés) qui ne viennent pas d'un dépôt d'ici : dit et notifié. La raison
 # (facultative) : pourquoi ils restent quand la clé n'est pas gardée parce que plus récente (cache absent ou vide).
 provenance() { # changés pas-d-ici [raison]
+  local c reste=$2 suite="Gardée (plus récente que le cache)"
+  for c in $1; do reste=${reste// $c/}; done
+  # R10-CR-1 : un vrai choix. « ${3:+…}${3:-…} » collait la raison une seconde fois (${3:-X} rend $3 lui-même).
+  [[ -z ${3:-} ]] || suite="Laissée sur la clé ($3)"
   if [[ -n $1 ]]; then
     echo "✖ Changé depuis le dernier dépôt d'ici :$1. C'est la version $VERSION_CLE, signée par Anthropic et vérifiée," >&2
   else
@@ -1022,27 +1039,37 @@ provenance() { # changés pas-d-ici [raison]
   fi
   echo "  mais elle ne vient pas de cet ordinateur : posée d'un autre ordinateur, ou remplacée pendant le voyage. Si la" >&2
   echo "  clé n'est passée par aucun autre ordinateur avec Vanguard, regarder où elle est allée." >&2
+  # Changés et sans note à la fois : chacun nommé, dans la même version signée.
+  [[ -z $1 || -z $reste ]] || echo "  Pas posé d'ici non plus (aucune ligne dans la note de dépôt) :$reste." >&2
   [[ -z ${3:-} ]] || echo "  Laissé sur la clé tel quel, pas remplacé ($3)." >&2
   avertir "Claude Code changé sur la clé" "La clé porte la $VERSION_CLE signée, qui ne vient pas d'un dépôt d'ici :$2. \
-${3:+Laissée sur la clé ($3)}${3:-Gardée (plus récente que le cache)} ; regarder où la clé est allée."
+$suite ; regarder où la clé est allée."
 }
 # Cache absent ou vide (R9-CR-3) : les binaires sans note sont vérifiés avec la clé elle-même, son manifeste signé et
 # la seule clé de confiance du dépôt (version_cle). Entière, signée, ni mise de côté ni plus ancienne que la plus haute
 # vérifiée ici : dite signée et vérifiée, pas posée d'ici (provenance), sans le conseil de l'effacer ; le reste,
 # « PAS vérifié » (dire_inconnus). Code 0 si quelque chose a été dit (l'appelant sort en code 2), 1 sinon.
+# R10-CR-3 : les binaires NOTÉS mais changés aussi (change, de poser). Signés de la même version vérifiée entière, ils
+# ne sont plus retirés comme un piège (la clé d'un autre ordinateur, vidée) : sortis de change, dits par provenance
+# (changé depuis le dépôt d'ici, signé et vérifié, laissé). Seul ce qui ne se vérifie pas va à retirer_change. Le même
+# binaire signé n'a plus deux sorts selon qu'une vieille ligne de note existe ici ou non.
 dire_sans_cache() { # point raison
-  local c signes="" haute_ici rien=1
-  if [[ -n ${sans_note:-} ]]; then
+  local c signes="" changes_signes="" haute_ici rien=1
+  if [[ -n ${sans_note:-}${change:-} ]]; then
     version_cle "$1" 0.0.0
     if [[ -n $VERSION_CLE ]] && ! ecartee "$VERSION_CLE" && haute_ici=$(haute_notee 2>/dev/null) &&
       ! { [[ -n $haute_ici ]] && plus_ancienne "$VERSION_CLE" "$haute_ici"; }; then
-      for c in $sans_note; do
+      for c in ${sans_note:-}; do
         [[ -z ${CLE_SHA[$c]:-} ]] || signes+=" $c"
       done
+      for c in ${change:-}; do
+        [[ -z ${CLE_SHA[$c]:-} ]] || changes_signes+=" $c"
+      done
     fi
-    VERSION_CLE=${signes:+$VERSION_CLE}
+    [[ -n $signes$changes_signes ]] || VERSION_CLE=""
     for c in $signes; do sans_note=${sans_note// $c/}; done
-    [[ -z $signes ]] || { provenance "" "$signes" "$2"; rien=0; }
+    for c in $changes_signes; do change=${change// $c/}; done
+    [[ -z $signes$changes_signes ]] || { provenance "$changes_signes" "$changes_signes$signes" "$2"; rien=0; }
   fi
   dire_inconnus "$1" "$2" && rien=0
   VERSION_CLE="" CLE_SHA=()
@@ -1089,7 +1116,17 @@ poser() { # point
   if [[ -z $v ]]; then
     dire_sans_cache "$p" "cache vide" && dit=1
     [[ -z $change ]] || retirer_change "$p" "$change" "cache vide"
-    echo "Claude Code pas encore dans le cache (outils/claude-cle.sh --chercher) : la clé reste sans lui."
+    # R10-CR-2 : « la clé reste sans lui » seulement si aucun binaire n'y est (laissé, signé ou pas vérifié).
+    f=""
+    for ligne in "${PLATEFORMES[@]}"; do
+      read -r plat bin dossier <<<"$ligne"
+      [[ ! -e $p/Claude/$dossier/$bin && ! -L $p/Claude/$dossier/$bin ]] || f=1
+    done
+    if [[ -n $f ]]; then
+      echo "Claude Code pas encore dans le cache (outils/claude-cle.sh --chercher) : rien n'est posé d'ici, la clé garde ce qu'elle porte."
+    else
+      echo "Claude Code pas encore dans le cache (outils/claude-cle.sh --chercher) : la clé reste sans lui."
+    fi
     [[ -z $dit ]] || return 2
     return 0
   fi

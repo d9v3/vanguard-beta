@@ -511,6 +511,46 @@ cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cmp -s "$CLE/Claude/Wind
   ! grep -q "PAS vérifié\|l'effacer" "$ESSAI/sortie" && ! grep -q "inconnu" "$ESSAI/notifications" &&
   bon "R9-CR-3 : cache absent : la version signée de la clé dite vérifiée, sans conseil d'effacer" ||
   rate "R9-CR-3 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -4 "$ESSAI/sortie" | tr '\n' ' ')"
+# R10-CR-1 (ronde 11) : « ${3:+…}${3:-…} » collait la raison deux fois dans la notification (« (cache absent)cache
+# absent »). Lu dans le journal du faux notify-send : la raison une seule fois, à sa place.
+grep -q "Laissée sur la clé (cache absent) ; regarder où la clé est allée\.$" "$ESSAI/notifications" &&
+  [[ $(grep -o "cache absent" "$ESSAI/notifications" | wc -l) == 1 ]] &&
+  bon "R10-CR-1 : notification de provenance : la raison dite une seule fois" ||
+  rate "R10-CR-1 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null)"
+# R10-CR-2 (ronde 11) : cache vide, la clé garde la version signée qu'elle porte : jamais « la clé reste sans lui »
+# juste après « laissé sur la clé tel quel ».
+rm "$(cache)" && mkdir "$(cache)"
+rm -f "$ESSAI/notifications"
+attendu "R10-CR-2 : cache vide, clé signée posée ailleurs : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cmp -s "$CLE/Claude/Windows/claude.exe" "$ESSAI/r10-win" &&
+  grep -q "Laissé sur la clé tel quel, pas remplacé (cache vide)" "$ESSAI/sortie" &&
+  grep -q "rien n'est posé d'ici, la clé garde ce qu'elle porte\.$" "$ESSAI/sortie" &&
+  ! grep -q "reste sans lui" "$ESSAI/sortie" && [[ $(grep -o "cache vide" "$ESSAI/notifications" | wc -l) == 1 ]] &&
+  bon "R10-CR-2 : cache vide : la clé garde ce qu'elle porte, rien de contraire dit" ||
+  rate "R10-CR-2 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+rmdir "$(cache)" && ln -s "$ESSAI/disque-debranche/claude-cle" "$(cache)"
+# R10-CR-3 (ronde 11) : sans cache, un binaire NOTÉ ici mais changé (la clé repartie poser une autre version signée
+# d'un autre ordinateur) était retiré comme un piège, quand le même binaire sans note était dit signé et laissé. La
+# clé vérifiée entière : changé ou sans note, chacun dit une fois, signé et vérifié, laissé ; rien retiré. T3 : note
+# d'ici aux empreintes d'avant pour les deux binaires ; T4 (mixte) : la ligne de Windows ôtée de la note.
+for r11 in "T3|deux lignes d'avant" "T4|ligne de Linux seule"; do
+  for f in "$ESSAI/r10-notes"/*; do
+    sed -E 's/^[0-9a-f]{64}/'"$(printf '%064d' 7)"'/' "$f" >"$XDG_STATE_HOME/vanguard/${f##*/}"
+    [[ ${r11%%|*} == T3 ]] || sed -i '/ Claude\/Windows\/claude\.exe$/d' "$XDG_STATE_HOME/vanguard/${f##*/}"
+  done
+  rm -f "$ESSAI/notifications"
+  attendu "R10-CR-3 ${r11%%|*} : cache absent, ${r11#*|}, clé signée : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+  cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cmp -s "$CLE/Claude/Windows/claude.exe" "$ESSAI/r10-win" &&
+    grep -q "Changé depuis le dernier dépôt d'ici : Claude/Linux/claude.*signée par Anthropic et vérifiée" "$ESSAI/sortie" &&
+    grep -q "Laissé sur la clé tel quel, pas remplacé (cache absent)" "$ESSAI/sortie" &&
+    ! grep -qi "retiré\|piège\|PAS vérifié\|l'effacer" "$ESSAI/sortie" &&
+    [[ $(grep -c "Claude/Linux/claude" "$ESSAI/sortie") == 1 && $(grep -c "Claude/Windows/claude.exe" "$ESSAI/sortie") == 1 ]] &&
+    [[ $(wc -l <"$ESSAI/notifications") == 1 ]] && ! grep -qi "retiré\|inconnu" "$ESSAI/notifications" &&
+    { [[ ${r11%%|*} == T3 ]] || grep -q "Pas posé d'ici non plus (aucune ligne dans la note de dépôt) : Claude/Windows/claude\.exe\." "$ESSAI/sortie"; } &&
+    bon "R10-CR-3 ${r11%%|*} : ${r11#*|} : rien de signé retiré, un seul sort dit par binaire" ||
+    rate "R10-CR-3 ${r11%%|*} : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -6 "$ESSAI/sortie" | tr '\n' ' ')"
+done
+for f in "$ESSAI/r10-notes"/*; do rm -f "$XDG_STATE_HOME/vanguard/${f##*/}"; done
 printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
 attendu "R9-CR-3 témoin : cache absent, binaire qui ne se vérifie pas : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
 grep -q "PAS vérifié ni remplacé (cache absent) :.*Claude/Windows/claude\.exe" "$ESSAI/sortie" && ! grep -q "signée et vérifiée" "$ESSAI/sortie" &&
@@ -901,6 +941,20 @@ r7_refus "builtin echo coupé avant le script" "un builtin coupé" "${R7P[@]}" b
 # shellcheck disable=SC2016
 r7_refus "fonction posée avant le script, sans BASH_ENV" "une fonction" "${R7P[@]}" bash -c \
   'jamais() { :; }; . "$0" "$@"' "$CC" --accepter-version 2.1.2
+# R10-PORTE-1 (ronde 11) : la marque forgée sautait la relance, seul endroit qui remet les options de bash à zéro.
+# Sous « bash -f », le motif du cache restait littéral : rien mis de côté, et « ✔ ». L'état du shell (options de
+# la ligne de commande) est relu : chacune seule, dans l'environnement exact de la relance, refusée, rien changé.
+for o in "-f" "-O nocasematch" "-e" "-C"; do
+  # shellcheck disable=SC2086 # l'option et son argument, coupés exprès
+  r7_refus "marque forgée, bash $o" "options de bash" "${R7P[@]}" bash $o "$CC" --accepter-version 2.1.2
+done
+# Témoin : sans la marque, « bash -f » est relancé propre et va jusqu'à la question (« non » : pas confirmé).
+rm -f "$ESSAI/pkexec.log"
+attendu "témoin : bash -f sans la marque, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" bash -f "$CC" \
+  --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  ! grep -q "pas propre" "$ESSAI/sortie" && bon "témoin : bash -f sans la marque, relancé propre, question posée" ||
+  rate "témoin bash -f : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
 echo 0 >"$ESSAI/pkexec-code"
 rm -f "$ESSAI/pkexec.log"
 # R8-BAISSE-1 (ronde 9) : bash cherche une fonction avant tout builtin, même exec et exit. Des fonctions exportées
