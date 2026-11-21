@@ -23,6 +23,10 @@
 # binaire qui n'a pas la taille et l'empreinte du manifeste signé est effacé. Une version plus ancienne que la
 # dernière vérifiée est refusée, au téléchargement comme sur la clé (un serveur piégé ne fait pas revenir une version
 # à faille).
+# Limite, dite (LISEZMOI) : « stable » est un pointeur du serveur, pas signé. La signature prouve qu'une version vient
+# d'Anthropic, pas qu'elle est la « stable » du jour : une version authentique d'un autre canal, plus récente, peut
+# être prise, et bloque ensuite les plus anciennes (dit à chaque fois). Le blocage se lève en écrivant la version
+# voulue dans ~/.local/state/vanguard/claude-cle-version (NOTE_VERSION plus bas).
 # Ce que la copie fixée ne sait pas : une révocation publiée plus tard par Anthropic. Une clé expirée ou révoquée DANS
 # cette copie est refusée ; si Anthropic change de clé ou révoque la sienne, la nouvelle copie et sa nouvelle empreinte
 # arrivent avec une mise à jour de Vanguard (outils/cles-images/claude-code.asc, EMPREINTE_CLE ici et dans
