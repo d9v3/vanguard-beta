@@ -1031,4 +1031,21 @@ mod proprietes {
             prop_assert_eq!(voisin_confirme(&ligne), etat.ends_with("REACHABLE"));
         }
     }
+
+    /// Un port qui écoute, comme un port fermé qui refuse, prouve que l'appareil est là ; une liste vide ne prouve
+    /// rien. Tout reste sur 127.0.0.1, sur des ports choisis par le système.
+    #[test]
+    fn joignable_ouvert_ou_refuse_mais_pas_sans_adresse() {
+        let delai = Duration::from_secs(2);
+        let ecoute = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let ouvert = ecoute.local_addr().unwrap();
+        assert!(joignable(ouvert, delai));
+        assert!(un_seul_suffit(&[ouvert], delai));
+        // Le port est rendu : la connexion est refusée, ce qui compte comme une réponse. Pas sous Windows : il y
+        // réessaie un refus sur la boucle locale pendant environ 2 s (audit/http_local.rs), autant que le délai.
+        drop(ecoute);
+        #[cfg(not(windows))]
+        assert!(joignable(ouvert, delai));
+        assert!(!un_seul_suffit(&[], delai));
+    }
 }

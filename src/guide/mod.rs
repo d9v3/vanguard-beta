@@ -1977,4 +1977,116 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn un_chemin_mene_a_une_page_ou_non() {
+        // Les systèmes écrits dans Vanguard (pas tldr, téléchargé) : les bornes de chaque niveau du chemin.
+        assert!(!page_existe(0, None, None));
+        assert!(!page_existe(SYSTEMES.len() + 1, None, None));
+        for (rang, s) in SYSTEMES.iter().enumerate().filter(|(_, s)| **s != Systeme::Tldr) {
+            let n = rang + 1;
+            assert!(page_existe(n, None, None));
+            let programmes = s.programmes();
+            assert!(!page_existe(n, Some(0), None), "{n}.0");
+            assert!(
+                !page_existe(n, Some(programmes.len() + 1), None),
+                "{n} après son dernier programme"
+            );
+            for (j, (_, p)) in programmes.iter().enumerate() {
+                let j = j + 1;
+                assert!(page_existe(n, Some(j), None));
+                assert_eq!(page_existe(n, Some(j), Some(1)), !p.commandes.is_empty());
+                assert!(page_existe(n, Some(j), Some(p.commandes.len())) || p.commandes.is_empty());
+                assert!(!page_existe(n, Some(j), Some(0)), "{n}.{j}.0");
+                assert!(
+                    !page_existe(n, Some(j), Some(p.commandes.len() + 1)),
+                    "{n}.{j} après sa dernière commande"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn une_longue_commande_se_coupe_sans_rien_perdre() {
+        let adresse = format!("https://exemple.org/{}", "a".repeat(70));
+        let commande = format!("curl -fsSL {adresse} -o /tmp/x");
+        let lignes = lignes_de_commande(&commande, 20);
+        assert!(lignes.len() > 3, "{lignes:?}");
+        for l in &lignes {
+            assert!(largeur_affichee(l) <= 20, "{l:?} déborde");
+        }
+        // Rien ne se perd : seules les espaces entre les mots servent de coupure.
+        let sans_espaces = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(sans_espaces(&lignes.concat()), sans_espaces(&commande));
+        // Les caractères larges (deux colonnes) comptent double.
+        let large = "漢".repeat(15);
+        for l in lignes_de_commande(&large, 10) {
+            assert!(largeur_affichee(&l) <= 10, "{l:?}");
+        }
+        // Une commande courte reste sur une ligne, telle quelle.
+        assert_eq!(lignes_de_commande("ls -la", 20), ["ls -la"]);
+    }
+
+    #[test]
+    fn reponses_qui_reviennent_en_arriere() {
+        for r in ["", "↵", "q", "Q"] {
+            assert!(revenir(r), "{r:?}");
+        }
+        for r in ["1", "qq", " q", "quitter"] {
+            assert!(!revenir(r), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn pas_a_pas_reconnus_par_leur_adresse() {
+        let mut vus = 0;
+        for s in SYSTEMES.iter().filter(|s| **s != Systeme::Tldr) {
+            for g in s.pas_a_pas() {
+                assert!(est_un_pas_a_pas(g), "{}", g.nom);
+                vus += 1;
+            }
+            // Un programme ordinaire n'en est pas un, même s'il a des étapes.
+            for p in s.propres() {
+                assert!(!est_un_pas_a_pas(p), "{}", p.nom);
+            }
+        }
+        assert!(vus > 0, "aucun pas à pas essayé");
+    }
+
+    #[test]
+    fn une_commande_qui_change_quelque_chose_est_marquee() {
+        let modifie = Commande {
+            ligne: "sudo pacman -Syu",
+            ligne_en: "",
+            texte: ("Met à jour.", "Updates."),
+            modifie: true,
+            obstacle: Obstacle::Aucun,
+        };
+        let lit = Commande {
+            ligne: "pacman -Qi",
+            ligne_en: "",
+            texte: ("Décrit un paquet.", "Describes a package."),
+            modifie: false,
+            obstacle: Obstacle::Aucun,
+        };
+        assert!(marque(&modifie).contains('⚠'));
+        assert_eq!(marque(&lit), " ");
+        // Même largeur affichée : les commandes restent alignées.
+        assert_eq!(largeur_affichee(&marque(&modifie)), largeur_affichee(&marque(&lit)));
+        assert!(ligne_de_menu(&lit).ends_with("pacman -Qi"));
+    }
+
+    #[test]
+    fn texte_gris_decale_dans_la_largeur() {
+        let long = "mot ".repeat(60);
+        let lignes = lignes_grises(&long, 6);
+        assert!(lignes.len() > 1);
+        for l in &lignes {
+            let Ligne::Texte(t) = l else {
+                panic!("une ligne de texte")
+            };
+            assert!(t.starts_with("      \x1b"), "{t:?}");
+            assert!(largeur_affichee(t) <= LARGEUR, "{t:?}");
+        }
+    }
 }

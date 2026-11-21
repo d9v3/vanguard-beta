@@ -723,6 +723,72 @@ mod tests {
         assert_eq!(pages().len(), 0);
         assert!(date_en_clair().is_none());
     }
+
+    /// Une copie datée dans le futur (sur une clé préparée exprès) ne passe pas devant celle de cet ordinateur, même
+    /// plus ancienne : elle se ferait sinon prendre pour la plus fraîche pour toujours.
+    #[test]
+    fn une_copie_datee_dans_le_futur_passe_en_dernier() {
+        let (racine, dossiers) = deux_copies("essai-tldr-futur");
+        let [ordinateur, cle] = &dossiers;
+        ecrire(
+            ordinateur,
+            "fr",
+            &zip(&[("linux/a.md", "# ici\n", false)]),
+            Duration::from_hours(48),
+        );
+        let chemin = cle.join(nom_d_archive("fr"));
+        std::fs::write(&chemin, zip(&[("linux/a.md", "# futur\n", false)])).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&chemin)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_hours(24 * 365))
+            .unwrap();
+        let trouvees = archives("fr", &dossiers);
+        assert_eq!(trouvees.len(), 2);
+        assert_eq!(trouvees[0].chemin, ordinateur.join(nom_d_archive("fr")));
+        assert_eq!(
+            fichiers_de("fr", &dossiers).first().map(|f| f.1.clone()).as_deref(),
+            Some(&b"# ici\n"[..])
+        );
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Un lien ou un tube à la place de l'archive n'est pas une archive : ni suivi, ni ouvert.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_ou_un_tube_n_est_pas_une_archive() {
+        let (racine, dossiers) = deux_copies("essai-tldr-lien");
+        let [ordinateur, cle] = &dossiers;
+        let vraie = racine.join("ailleurs.zip");
+        std::fs::write(&vraie, zip(&[("linux/a.md", "# a\n", false)])).unwrap();
+        std::os::unix::fs::symlink(&vraie, ordinateur.join(nom_d_archive("en"))).unwrap();
+        crate::essais::tube_nomme(&cle.join(nom_d_archive("en"))).unwrap();
+        assert!(archives("en", &dossiers).is_empty());
+        assert_eq!(fichiers_de("en", &dossiers), Vec::<(String, Vec<u8>)>::new());
+        // Sans archive utilisable, la langue reste à renouveler.
+        assert!(a_renouveler("en", &dossiers));
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Les langues à revoir : sans archive, toutes ; fraîches et déjà lues, aucune ; fraîche mais pas encore lue,
+    /// celle-là seulement.
+    #[test]
+    fn langues_a_revoir_selon_les_archives() {
+        let (racine, dossiers) = deux_copies("essai-tldr-langues");
+        let [ordinateur, _] = &dossiers;
+        assert_eq!(langues_a_voir(&dossiers), ["en", "fr"]);
+        let bonne = zip(&[("linux/a.md", "# a\n", false)]);
+        ecrire(ordinateur, "en", &bonne, Duration::from_hours(1));
+        ecrire(ordinateur, "fr", &bonne, Duration::from_hours(1));
+        // Fraîches, mais jamais lues : à vérifier toutes les deux.
+        assert_eq!(langues_a_voir(&dossiers), ["en", "fr"]);
+        assert_eq!(fichiers_de("en", &dossiers).len(), 1);
+        assert_eq!(langues_a_voir(&dossiers), ["fr"]);
+        assert_eq!(fichiers_de("fr", &dossiers).len(), 1);
+        assert_eq!(langues_a_voir(&dossiers), Vec::<&str>::new());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
 }
 
 /// Archives au hasard : jamais de plantage, jamais plus que les limites.

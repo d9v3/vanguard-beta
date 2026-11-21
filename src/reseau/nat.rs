@@ -690,6 +690,57 @@ pub(super) mod tests {
         assert!(debut.elapsed() >= Duration::from_millis(150) && debut.elapsed() < Duration::from_secs(3));
         assert_ne!(hasard(), hasard(), "deux tirages identiques");
     }
+
+    /// Un serveur STUN sur la boucle locale (port choisi par le système) : il voit trois questions et répond à la
+    /// première avec un autre identifiant, à la deuxième depuis une autre adresse que la sienne, à la troisième
+    /// comme il faut. Seule la troisième est crue : une réponse qui ne vient pas du serveur interrogé, ou qui répond
+    /// à une autre question, pourrait sinon dicter l'adresse « vue d'Internet ».
+    #[test]
+    fn seule_la_reponse_du_serveur_interroge_a_la_bonne_question_compte() {
+        let serveur = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let ou = serveur.local_addr().unwrap();
+        let usurpateur = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let vue: SocketAddr = "203.0.113.7:54321".parse().unwrap();
+        let fausse: SocketAddr = "198.51.100.66:4444".parse().unwrap();
+        let fil = std::thread::spawn(move || {
+            serveur.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut t = [0u8; 576];
+            let mut question = || {
+                let (n, de) = serveur.recv_from(&mut t).unwrap();
+                // Une requête Binding de 20 octets : type 0x0001, longueur 0, la valeur fixe, l'identifiant.
+                assert_eq!(n, 20);
+                assert_eq!(&t[..8], &[0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42]);
+                (<[u8; 12]>::try_from(&t[8..20]).unwrap(), de)
+            };
+            let (id, de) = question();
+            let mut autre = id;
+            autre[0] ^= 0xff;
+            serveur.send_to(&reponse(&autre, fausse), de).unwrap();
+            let (id, de) = question();
+            usurpateur.send_to(&reponse(&id, fausse), de).unwrap();
+            let (id, de) = question();
+            serveur.send_to(&reponse(&id, vue), de).unwrap();
+        });
+        assert_eq!(interroger(&client, ou), Some(vue));
+        fil.join().unwrap();
+    }
+
+    /// Un serveur qui ne répond jamais : trois essais, puis rien, sans attendre plus que leurs délais.
+    #[test]
+    fn un_serveur_muet_ne_donne_aucune_adresse() {
+        let muet = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let debut = Instant::now();
+        assert_eq!(interroger(&client, muet.local_addr().unwrap()), None);
+        assert!(debut.elapsed() < Duration::from_secs(10));
+        // Les trois questions sont bien parties.
+        muet.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut t = [0u8; 576];
+        for _ in 0..3 {
+            assert_eq!(muet.recv_from(&mut t).unwrap().0, 20);
+        }
+    }
 }
 
 /// Propriétés de la lecture STUN : n'importe quel serveur, ou n'importe qui sur le chemin, peut répondre n'importe

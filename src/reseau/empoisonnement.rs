@@ -599,4 +599,76 @@ mod tests {
         let m = requete_mdns(0, "vgtest");
         assert_eq!(&m[m.len() - 2..], &[0x80, 0x01]);
     }
+
+    /// Un « appareil » sur la boucle locale : il vérifie que la question LLMNR reçue est bien formée, puis envoie ces
+    /// paquets-là, d'une seule source (127.0.0.1). Rend ce que la sonde en a retenu.
+    async fn sonde_llmnr(nom: &'static str, paquets: Vec<Vec<u8>>) -> BTreeSet<Ipv4Addr> {
+        let appareil = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let cible = appareil.local_addr().unwrap();
+        let fil = std::thread::spawn(move || {
+            appareil.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut t = [0u8; 1500];
+            let (n, de) = appareil.recv_from(&mut t).unwrap();
+            assert_eq!(&t[..n], requete_llmnr(0x0bad, nom).as_slice());
+            for p in paquets {
+                appareil.send_to(&p, de).unwrap();
+            }
+        });
+        let trouves = interroger(
+            Ipv4Addr::LOCALHOST,
+            cible,
+            requete_llmnr(0x0bad, nom),
+            true,
+            false,
+            |p| adresse_llmnr(p, 0x0bad, nom),
+        )
+        .await;
+        fil.join().unwrap();
+        trouves
+    }
+
+    /// Un paquet sans rapport, une réponse pour un autre identifiant, puis la bonne, deux fois : l'appareil est
+    /// retenu, une seule fois, par sa source et non par l'adresse qu'il annonce (192.0.2.9).
+    #[tokio::test]
+    async fn la_sonde_retient_l_appareil_qui_repond_a_son_nom() {
+        let nom = "vgdeadbeef01";
+        let paquets = vec![
+            b"bonjour".to_vec(),
+            reponse_dns(0x0001, nom, [192, 0, 2, 9]),
+            reponse_dns(0x0bad, nom, [192, 0, 2, 9]),
+            reponse_dns(0x0bad, nom, [192, 0, 2, 9]),
+        ];
+        assert_eq!(sonde_llmnr(nom, paquets).await, BTreeSet::from([Ipv4Addr::LOCALHOST]));
+    }
+
+    /// Les mêmes paquets faux sans la bonne réponse : sans rapport, autre identifiant, autre nom. Personne n'est
+    /// désigné empoisonneur ; un appareil qui répond à côté de la question n'est pas un menteur.
+    #[tokio::test]
+    async fn la_sonde_ignore_les_reponses_a_une_autre_question() {
+        let nom = "vgdeadbeef02";
+        let paquets = vec![
+            b"bonjour".to_vec(),
+            reponse_dns(0x0001, nom, [192, 0, 2, 9]),
+            reponse_dns(0x0bad, "vgautrenom02", [192, 0, 2, 9]),
+        ];
+        assert_eq!(sonde_llmnr(nom, paquets).await, BTreeSet::new());
+    }
+
+    /// Personne ne répond : aucun empoisonneur, et la sonde s'arrête à son délai.
+    #[tokio::test]
+    async fn la_sonde_sans_reponse_ne_trouve_personne() {
+        let muet = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let debut = Instant::now();
+        let trouves = interroger(
+            Ipv4Addr::LOCALHOST,
+            muet.local_addr().unwrap(),
+            requete_netbios(7, "vgcafe0003"),
+            false,
+            false,
+            |p| adresse_netbios(p, 7, "vgcafe0003"),
+        )
+        .await;
+        assert!(trouves.is_empty());
+        assert!(debut.elapsed() >= DELAI && debut.elapsed() < DELAI * 4);
+    }
 }

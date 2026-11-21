@@ -788,4 +788,144 @@ mod tests {
             Vec::<String>::new()
         );
     }
+
+    #[tokio::test]
+    async fn la_latence_se_mesure_sur_un_port_ouvert_comme_sur_un_port_ferme() {
+        // Un serveur sur la boucle locale, au port choisi par le système : la connexion aboutit, le temps est noté.
+        let ecoute = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let ouvert = ecoute.local_addr().unwrap();
+        let t = sonder(ouvert).await.expect("le port ouvert répond");
+        assert!((0.0..1000.0).contains(&t), "{t}");
+        // Le même port refermé : le refus arrive aussi vite qu'une acceptation et compte comme une réponse. Pas sous
+        // Windows : il y réessaie un refus sur la boucle locale pendant environ 2 s (audit/http_local.rs), au-delà de
+        // la seconde de `sonder`.
+        drop(ecoute);
+        #[cfg(not(windows))]
+        assert!(
+            sonder(ouvert).await.is_some(),
+            "un refus est une réponse, pas une perte"
+        );
+    }
+
+    #[tokio::test]
+    async fn une_serie_s_arrete_quand_on_le_demande() {
+        let ecoute = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let cible = ecoute.local_addr().unwrap();
+        // Arrêt déjà demandé (le transfert sous charge est fini) : aucune mesure.
+        let arret = AtomicBool::new(true);
+        assert_eq!(serie(cible, 35, Some(&arret)).await.0, Vec::<Option<f64>>::new());
+        // Sans arrêt : autant de mesures que demandé, toutes reçues sur la boucle locale.
+        let s = serie(cible, 2, Some(&AtomicBool::new(false))).await;
+        assert_eq!(s.0.len(), 2);
+        assert!(s.0.iter().all(Option::is_some), "{:?}", s.0);
+    }
+
+    #[test]
+    fn couleurs_aux_seuils_du_jeu() {
+        assert_eq!(couleur_ping(29.9), VERT);
+        assert_eq!(couleur_ping(30.0), couleur(Niveau::Moyen));
+        assert_eq!(couleur_ping(60.0), couleur(Niveau::Eleve));
+        assert_eq!(couleur_ping(100.0), couleur(Niveau::Critique));
+        assert_eq!(couleur_gigue(4.9), VERT);
+        assert_eq!(couleur_gigue(5.0), couleur(Niveau::Moyen));
+        assert_eq!(couleur_gigue(10.0), couleur(Niveau::Eleve));
+        assert_eq!(couleur_pertes(0.0), VERT);
+        assert_eq!(couleur_pertes(1.0), couleur(Niveau::Moyen));
+        assert_eq!(couleur_pertes(1.1), couleur(Niveau::Critique));
+    }
+
+    #[test]
+    fn barre_de_debit_logarithmique() {
+        let pleines = |b: &str| b.matches('▰').count();
+        let vides = |b: &str| b.matches('▱').count();
+        // 1 Mbit/s (ou moins) : vide ; 1 Gbit/s et plus : pleine ; 31,6 Mbit/s : à moitié. Toujours dix cases.
+        for (debit, attendu) in [(0.0, 0), (1.0, 0), (10.0, 3), (31.7, 5), (1000.0, 10), (10_000.0, 10)] {
+            let b = barre_debit(debit);
+            assert_eq!(pleines(&b), attendu, "{debit} Mbit/s");
+            assert_eq!(pleines(&b) + vides(&b), 10, "{debit} Mbit/s");
+        }
+        assert!(barre_debit(50.0).starts_with(VERT));
+        assert!(barre_debit(15.0).starts_with(couleur(Niveau::Moyen)));
+        assert!(barre_debit(14.9).starts_with(couleur(Niveau::Eleve)));
+    }
+
+    #[test]
+    fn hausse_sous_charge_la_pire_des_deux_et_jamais_negative() {
+        let charge = |reception: Vec<Option<f64>>, envoi: Vec<Option<f64>>| Charge {
+            en_reception: Serie(reception),
+            debit_bas: None,
+            en_envoi: Serie(envoi),
+            debit_haut: None,
+        };
+        assert_eq!(charge(vec![Some(40.0)], vec![Some(90.0)]).hausse(20.0), Some(70.0));
+        // Plus rapide sous charge qu'au repos (bruit de mesure) : aucune hausse, pas une hausse négative.
+        assert_eq!(charge(vec![Some(10.0)], vec![None]).hausse(20.0), Some(0.0));
+        // Un seul sens mesuré suffit.
+        assert_eq!(charge(vec![None], vec![Some(35.0)]).hausse(20.0), Some(15.0));
+        assert_eq!(charge(vec![None], vec![]).hausse(20.0), None);
+    }
+
+    #[test]
+    fn moins_bonne_que_d_habitude_par_le_ping_ou_un_debit() {
+        let h = Habitudes {
+            tests: 5,
+            ping_ms: 20.0,
+            descendant: Some(100.0),
+            montant: Some(20.0),
+        };
+        let charge = |bas: Option<f64>, haut: Option<f64>| Charge {
+            en_reception: Serie(Vec::new()),
+            debit_bas: bas,
+            en_envoi: Serie(Vec::new()),
+            debit_haut: haut,
+        };
+        assert!(!moins_bonne_que_d_habitude(&h, 22.0, &charge(Some(95.0), Some(19.0))));
+        assert!(moins_bonne_que_d_habitude(&h, 40.0, &charge(Some(95.0), Some(19.0))));
+        assert!(moins_bonne_que_d_habitude(&h, 22.0, &charge(Some(60.0), Some(19.0))));
+        assert!(moins_bonne_que_d_habitude(&h, 22.0, &charge(Some(95.0), Some(10.0))));
+        // Un débit non mesuré ne fait pas une connexion dégradée.
+        assert!(!moins_bonne_que_d_habitude(&h, 22.0, &charge(None, None)));
+    }
+
+    #[test]
+    fn habitudes_d_apres_les_dix_derniers_tests_seulement() {
+        let test = |ping: f64| Resultat {
+            date: String::new(),
+            internet_ms: ping,
+            gigue_ms: 0.0,
+            pertes: 0.0,
+            descendant: None,
+            montant: None,
+            hausse_ms: None,
+            reseau: Some("box".to_string()),
+        };
+        // Cinq vieux tests très lents, puis dix récents à 10 ms : les vieux sont oubliés.
+        let tests: Vec<Resultat> = [500.0; 5].into_iter().chain([10.0; 10]).map(test).collect();
+        let h = habitudes(&tests, Some("box")).unwrap();
+        assert_eq!((h.tests, h.ping_ms), (10, 10.0));
+        // Débits jamais mesurés : pas d'habitude de débit.
+        assert_eq!((h.descendant, h.montant), (None, None));
+    }
+
+    #[test]
+    fn liaison_avec_le_routeur() {
+        let internet = Serie(vec![Some(20.0); 5]);
+        // Pas de mesure du routeur : on ne sait pas.
+        assert_eq!(liaison_instable(None, &internet), None);
+        assert_eq!(liaison_instable(Some(&Serie(vec![None; 3])), &internet), None);
+        assert_eq!(
+            liaison_instable(Some(&Serie(vec![Some(1.0); 5])), &internet),
+            Some(false)
+        );
+        // Une perte vers le routeur, même rapide : instable.
+        assert_eq!(
+            liaison_instable(Some(&Serie(vec![Some(1.0), None, Some(1.0)])), &internet),
+            Some(true)
+        );
+        // Routeur à 8 ms : lent pour un réseau local.
+        assert_eq!(
+            liaison_instable(Some(&Serie(vec![Some(8.0); 3])), &internet),
+            Some(true)
+        );
+    }
 }

@@ -755,4 +755,106 @@ mod tests {
         assert_eq!(note(40), "D");
         assert_eq!(note(0), "F");
     }
+
+    #[test]
+    fn chaque_port_scanne_a_son_service_et_son_conseil() {
+        // Un port de la liste scannée sans entrée dans la base serait montré « Inconnu », niveau moyen, à chaque scan.
+        for &port in PORTS_COURANTS {
+            let i = info_port(port);
+            assert_ne!(i.service, inconnu(), "port {port} scanné sans service connu");
+            assert!(!i.conseil.is_empty(), "port {port} sans conseil");
+            let en = crate::langue::en_anglais(|| info_port(port));
+            assert_ne!(
+                en.service,
+                crate::langue::en_anglais(inconnu),
+                "port {port} sans service en anglais"
+            );
+            assert_eq!(
+                en.niveau, i.niveau,
+                "port {port} : le niveau ne dépend pas de la langue"
+            );
+        }
+        for &port in PORTS_UDP {
+            let i = info_udp(port);
+            assert_ne!(i.service, inconnu(), "port UDP {port} sondé sans service connu");
+            assert!(!i.conseil.is_empty(), "port UDP {port} sans conseil");
+        }
+    }
+
+    #[test]
+    fn listes_de_ports_coherentes() {
+        // Triées et sans doublon : un port en double serait scanné deux fois et compté deux fois.
+        for liste in [PORTS_COURANTS, PORTS_UDP, PORTS_HTTP] {
+            assert!(liste.windows(2).all(|w| w[0] < w[1]), "{liste:?}");
+        }
+        let mut decouverte = PORTS_DECOUVERTE.to_vec();
+        decouverte.sort_unstable();
+        decouverte.dedup();
+        assert_eq!(decouverte.len(), PORTS_DECOUVERTE.len());
+        // Les ports sondés en HTTP et ceux de la découverte sont aussi scannés.
+        for p in PORTS_HTTP.iter().chain(PORTS_DECOUVERTE) {
+            assert!(PORTS_COURANTS.contains(p), "port {p} hors de la liste scannée");
+        }
+    }
+
+    #[test]
+    fn niveaux_des_services_les_plus_dangereux() {
+        // Sans authentification par défaut ou en clair : critiques.
+        for port in [23, 2375, 5555, 6379, 9200, 11211, 27017] {
+            assert_eq!(info_port(port).niveau, Niveau::Critique, "port {port}");
+        }
+        for port in [21, 135, 139, 445, 3306, 3389, 5900, 11434] {
+            assert_eq!(info_port(port).niveau, Niveau::Eleve, "port {port}");
+        }
+        for port in [22, 443, 993, 5353, 51820] {
+            assert_eq!(info_port(port).niveau, Niveau::Info, "port {port}");
+        }
+        // Un port que la base ne connaît pas : à vérifier, jamais sain d'office.
+        let i = info_port(4);
+        assert_eq!((i.service, i.niveau), (inconnu(), Niveau::Moyen));
+        assert_ne!(i.conseil, "");
+        // En UDP, un port inconnu qui répond n'a ni conseil ni alerte.
+        let u = info_udp(4);
+        assert_eq!((u.service, u.niveau, u.conseil), (inconnu(), Niveau::Info, ""));
+        assert_eq!(info_udp(161).niveau, Niveau::Eleve);
+    }
+
+    #[test]
+    fn niveaux_ordonnes_et_traduits() {
+        let tous = [Niveau::Info, Niveau::Moyen, Niveau::Eleve, Niveau::Critique];
+        assert!(tous.windows(2).all(|w| w[0] < w[1]));
+        // Plus grave, plus de points retirés ; l'information n'en retire aucun.
+        assert_eq!(tous.map(Niveau::penalite), [0, 5, 15, 30]);
+        assert_eq!(tous.map(Niveau::libelle), ["INFO", "MOYEN", "ÉLEVÉ", "CRITIQUE"]);
+        assert_eq!(
+            crate::langue::en_anglais(|| tous.map(Niveau::libelle)),
+            ["INFO", "MEDIUM", "HIGH", "CRITICAL"]
+        );
+        assert_eq!(inconnu(), "Inconnu");
+        assert_eq!(crate::langue::en_anglais(inconnu), "Unknown");
+    }
+
+    #[test]
+    fn autres_bannieres_reconnues_ou_non() {
+        assert_eq!(identifier("+OK Dovecot ready."), Some(110));
+        assert_eq!(identifier("* OK [CAPABILITY IMAP4rev1] ready"), Some(143));
+        assert_eq!(identifier("+PONG"), Some(6379));
+        assert_eq!(identifier("-ERR unknown command, Redis"), Some(6379));
+        // « -ERR » seul est aussi la réponse d'un serveur POP3 : pas Redis sans son nom.
+        assert_eq!(identifier("-ERR authentication failed"), None);
+        assert_eq!(identifier("J\0\0\0\n5.7.44\0mysql_native_password\0"), Some(3306));
+        assert_eq!(identifier("5.5.5-10.11.6-MariaDB-0+deb12u1"), Some(3306));
+        // « 220 » sans FTP ni courrier : rien de sûr.
+        assert_eq!(identifier("220 bienvenue"), None);
+        assert_eq!(identifier("220 Microsoft FTP Service"), Some(21));
+        assert_eq!(identifier(""), None);
+    }
+
+    #[test]
+    fn notes_a_leurs_limites() {
+        assert_eq!(
+            [90, 89, 75, 74, 60, 59, 40, 39].map(note),
+            ["A", "B", "B", "C", "C", "D", "D", "F"]
+        );
+    }
 }

@@ -2461,4 +2461,340 @@ mod tests {
         let rendu = texte(&lignes[0], 36, false, largeur_du_cadre(colonnes_du_terminal())).unwrap();
         assert!(rendu.split('\n').all(|r| largeur_affichee(r) == LARGEUR));
     }
+
+    // Les touches du menu et de la liste à cocher, essayées sans terminal : chaque touche est un événement fabriqué,
+    // l'état d'avant et d'après est comparé. Ctrl-C et Ctrl-D quittent le programme : jamais envoyés ici.
+    fn touche(code: KeyCode) -> event::KeyEvent {
+        event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn etat_menu(en_cours: usize, tape: &str) -> EtatMenu {
+        EtatMenu {
+            en_cours,
+            en_cours_trouve: 0,
+            haut: 0,
+            tape: tape.to_string(),
+            survol: false,
+        }
+    }
+
+    fn sans_recherche<'b, 'a>() -> Trouvailles<'b, 'a> {
+        Trouvailles {
+            trouves: Vec::new(),
+            corrections: Vec::new(),
+            partiels: false,
+            suite: None,
+        }
+    }
+
+    #[test]
+    fn les_fleches_du_menu_font_le_tour() {
+        let visibles = ["1", "2", "q"];
+        let t = sans_recherche();
+        let mut e = etat_menu(0, "");
+        // En haut, ↑ passe à la dernière ligne ; en bas, ↓ revient à la première.
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Up), &mut e, &t, false, &visibles, true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.en_cours, 2);
+        let _ = touche_du_menu(touche(KeyCode::Down), &mut e, &t, false, &visibles, true);
+        assert_eq!(e.en_cours, 0);
+        let _ = touche_du_menu(touche(KeyCode::End), &mut e, &t, false, &visibles, true);
+        assert_eq!(e.en_cours, 2);
+        let _ = touche_du_menu(touche(KeyCode::Home), &mut e, &t, false, &visibles, true);
+        assert_eq!(e.en_cours, 0);
+        // Une flèche efface ce qui était tapé : Entrée choisit alors la ligne en surbrillance, pas le texte.
+        let mut e = etat_menu(0, "q");
+        let _ = touche_du_menu(touche(KeyCode::Down), &mut e, &t, false, &visibles, true);
+        assert_eq!((e.en_cours, e.tape.as_str()), (1, ""));
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Enter), &mut e, &t, false, &visibles, true),
+            ControlFlow::Break(Some("2".to_string()))
+        );
+    }
+
+    #[test]
+    fn entree_choisit_ce_qui_est_tape_ou_la_ligne_en_cours() {
+        let visibles = ["1", "2", "q"];
+        let t = sans_recherche();
+        // Ce qui est tapé l'emporte sur la surbrillance, et la saisie est vidée.
+        let mut e = etat_menu(0, "q");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Enter), &mut e, &t, false, &visibles, true),
+            ControlFlow::Break(Some("q".to_string()))
+        );
+        assert_eq!(e.tape, "");
+        // Ctrl-J, le saut de ligne de certains terminaux, vaut Entrée.
+        let mut e = etat_menu(1, "");
+        let ctrl_j = event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(
+            touche_du_menu(ctrl_j, &mut e, &t, false, &visibles, true),
+            ControlFlow::Break(Some("2".to_string()))
+        );
+        // Un menu vide : Entrée ne choisit rien.
+        let mut e = etat_menu(0, "");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Enter), &mut e, &t, false, &[], true),
+            ControlFlow::Continue(())
+        );
+    }
+
+    #[test]
+    fn une_lettre_tapee_deplace_la_surbrillance() {
+        let visibles = ["1", "2", "Q"];
+        let t = sans_recherche();
+        let mut e = etat_menu(0, "");
+        // Sans égard à la casse : « q » met « Q » en surbrillance.
+        let _ = touche_du_menu(touche(KeyCode::Char('q')), &mut e, &t, false, &visibles, true);
+        assert_eq!((e.en_cours, e.tape.as_str()), (2, "q"));
+        // Retour arrière efface la lettre, sans quitter le menu.
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Backspace), &mut e, &t, false, &visibles, true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.tape, "");
+        // Une lettre avec Ctrl n'est pas tapée.
+        let ctrl_x = event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let _ = touche_du_menu(ctrl_x, &mut e, &t, false, &visibles, true);
+        assert_eq!(e.tape, "");
+    }
+
+    #[test]
+    fn echap_et_gauche_reviennent_sauf_pendant_une_saisie() {
+        let visibles = ["1", "2"];
+        let t = sans_recherche();
+        // Rien de tapé : Échap, Retour arrière et ← reviennent en arrière.
+        for code in [KeyCode::Esc, KeyCode::Backspace, KeyCode::Left] {
+            let mut e = etat_menu(1, "");
+            assert_eq!(
+                touche_du_menu(touche(code), &mut e, &t, false, &visibles, true),
+                ControlFlow::Break(None)
+            );
+        }
+        // ← ne revient pas dans un menu où il ne le doit pas (le menu principal).
+        let mut e = etat_menu(1, "");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Left), &mut e, &t, false, &visibles, false),
+            ControlFlow::Continue(())
+        );
+        // Pendant une saisie, Échap l'efface et le menu reste.
+        let mut e = etat_menu(0, "scan");
+        e.en_cours_trouve = 3;
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Esc), &mut e, &t, true, &visibles, true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!((e.tape.as_str(), e.en_cours_trouve), ("", 0));
+    }
+
+    #[test]
+    fn la_recherche_choisit_parmi_ce_qu_elle_a_trouve() {
+        let lignes = [
+            Ligne::choix("1", "Bilan complet", ""),
+            Ligne::choix("2", "Scanner le réseau", ""),
+            Ligne::choix("3", "Scanner les ports", ""),
+        ];
+        let choix = choisissables(&lignes);
+        let t = Trouvailles {
+            trouves: vec![&choix[1], &choix[2]],
+            corrections: Vec::new(),
+            partiels: false,
+            suite: None,
+        };
+        let visibles = ["1", "2", "3"];
+        let mut e = etat_menu(0, "scan");
+        // Les flèches parcourent les trouvailles (deux), pas le menu entier, et la saisie reste.
+        let _ = touche_du_menu(touche(KeyCode::Down), &mut e, &t, true, &visibles, true);
+        assert_eq!((e.en_cours_trouve, e.en_cours, e.tape.as_str()), (1, 0, "scan"));
+        let _ = touche_du_menu(touche(KeyCode::Down), &mut e, &t, true, &visibles, true);
+        assert_eq!(e.en_cours_trouve, 0);
+        let _ = touche_du_menu(touche(KeyCode::Up), &mut e, &t, true, &visibles, true);
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Enter), &mut e, &t, true, &visibles, true),
+            ControlFlow::Break(Some("3".to_string()))
+        );
+        // Une recherche qui ne trouve rien : Entrée ne lance rien.
+        let vide = sans_recherche();
+        let mut e = etat_menu(0, "imprimante");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Enter), &mut e, &vide, true, &visibles, true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.tape, "imprimante");
+    }
+
+    #[test]
+    fn tab_complete_le_mot_predit() {
+        let t = Trouvailles {
+            suite: Some("nner".to_string()),
+            ..sans_recherche()
+        };
+        let mut e = etat_menu(0, "sca");
+        e.en_cours_trouve = 2;
+        // → prend la prédiction au lieu d'entrer, suivie d'une espace pour le mot suivant.
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Right), &mut e, &t, true, &["1"], true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!((e.tape.as_str(), e.en_cours_trouve), ("scanner ", 0));
+        // Tab fait de même.
+        let mut e = etat_menu(0, "sca");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Tab), &mut e, &t, true, &["1"], true),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.tape, "scanner ");
+        // Sans prédiction, → entre comme Entrée.
+        let mut e = etat_menu(0, "");
+        assert_eq!(
+            touche_du_menu(touche(KeyCode::Right), &mut e, &sans_recherche(), false, &["1"], true),
+            ControlFlow::Break(Some("1".to_string()))
+        );
+    }
+
+    fn case(recommandee: bool, fixe: bool) -> Case {
+        Case {
+            texte: "ligne".to_string(),
+            precision: String::new(),
+            detail: String::new(),
+            cochee: false,
+            recommandee,
+            fixe,
+        }
+    }
+
+    fn etat_liste(etats: Vec<bool>) -> EtatListe {
+        EtatListe {
+            etats,
+            en_cours: 0,
+            haut: 0,
+            recherche: None,
+            survol: false,
+        }
+    }
+
+    #[test]
+    fn espace_coche_sauf_une_ligne_deja_faite() {
+        let cases = [case(false, false), case(false, true)];
+        let montrees = [0, 1];
+        let mut e = etat_liste(vec![false, true]);
+        let espace = touche(KeyCode::Char(' '));
+        assert_eq!(
+            touche_de_la_liste(espace, &mut e, &cases, &montrees, Some(0), None),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.etats, [true, true]);
+        let _ = touche_de_la_liste(espace, &mut e, &cases, &montrees, Some(0), None);
+        assert_eq!(e.etats, [false, true]);
+        // La ligne fixe (un logiciel installé) ne se décoche pas.
+        e.en_cours = 1;
+        let _ = touche_de_la_liste(espace, &mut e, &cases, &montrees, Some(1), None);
+        assert_eq!(e.etats, [false, true]);
+        // Une ligne en cours que la recherche cache (rang absent) ne se coche pas à l'aveugle.
+        e.en_cours = 0;
+        let _ = touche_de_la_liste(espace, &mut e, &cases, &montrees, None, None);
+        assert_eq!(e.etats, [false, true]);
+    }
+
+    #[test]
+    fn r_coche_les_recommandes_sans_rien_decocher() {
+        let cases = [case(true, false), case(false, false), case(true, true)];
+        let mut e = etat_liste(vec![false, true, false]);
+        let _ = touche_de_la_liste(touche(KeyCode::Char('r')), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        // La recommandée cochée, la cochée à la main gardée, la fixe jamais changée.
+        assert_eq!(e.etats, [true, true, false]);
+    }
+
+    #[test]
+    fn entree_valide_la_liste_mais_seulement_hors_recherche() {
+        let cases = [case(false, false), case(false, false)];
+        let mut e = etat_liste(vec![true, false]);
+        e.recherche = Some("lig".to_string());
+        // Pendant une recherche, Entrée la termine : la liste se valide en la voyant entière.
+        assert_eq!(
+            touche_de_la_liste(touche(KeyCode::Enter), &mut e, &cases, &[0], Some(0), None),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(e.recherche, None);
+        assert_eq!(
+            touche_de_la_liste(touche(KeyCode::Enter), &mut e, &cases, &[0, 1], Some(0), None),
+            ControlFlow::Break(Some(vec![true, false]))
+        );
+    }
+
+    #[test]
+    fn la_liste_se_quitte_sans_valider_et_la_droite_ne_valide_pas() {
+        let cases = [case(false, false)];
+        for code in [KeyCode::Esc, KeyCode::Backspace, KeyCode::Left] {
+            let mut e = etat_liste(vec![true]);
+            assert_eq!(
+                touche_de_la_liste(touche(code), &mut e, &cases, &[0], Some(0), None),
+                ControlFlow::Break(None)
+            );
+        }
+        // → ne valide pas une liste qui lance des changements : Entrée seule les confirme.
+        let mut e = etat_liste(vec![true]);
+        assert_eq!(
+            touche_de_la_liste(touche(KeyCode::Right), &mut e, &cases, &[0], Some(0), None),
+            ControlFlow::Continue(())
+        );
+    }
+
+    #[test]
+    fn une_lettre_commence_une_recherche_dans_la_liste() {
+        let cases = [case(false, false), case(false, false), case(false, false)];
+        let mut e = etat_liste(vec![false; 3]);
+        let _ = touche_de_la_liste(touche(KeyCode::Char('f')), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        assert_eq!(e.recherche.as_deref(), Some("f"));
+        let _ = touche_de_la_liste(touche(KeyCode::Char('i')), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        assert_eq!(e.recherche.as_deref(), Some("fi"));
+        // Tab prend la prédiction, sans espace (Espace coche).
+        let _ = touche_de_la_liste(touche(KeyCode::Tab), &mut e, &cases, &[0, 1, 2], Some(0), Some("refox"));
+        assert_eq!(e.recherche.as_deref(), Some("firefox"));
+        let _ = touche_de_la_liste(touche(KeyCode::Backspace), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        assert_eq!(e.recherche.as_deref(), Some("firefo"));
+        // « / » ouvre une recherche vide ; Retour arrière sur une recherche vide la ferme.
+        let mut e = etat_liste(vec![false; 3]);
+        let _ = touche_de_la_liste(touche(KeyCode::Char('/')), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        assert_eq!(e.recherche.as_deref(), Some(""));
+        let _ = touche_de_la_liste(touche(KeyCode::Backspace), &mut e, &cases, &[0, 1, 2], Some(0), None);
+        assert_eq!(e.recherche, None);
+    }
+
+    #[test]
+    fn les_fleches_de_la_liste_suivent_les_lignes_montrees() {
+        let cases = [
+            case(false, false),
+            case(false, false),
+            case(false, false),
+            case(false, false),
+        ];
+        // La recherche ne montre que les lignes 1 et 3 : les flèches passent de l'une à l'autre et font le tour.
+        let montrees = [1, 3];
+        let mut e = etat_liste(vec![false; 4]);
+        e.en_cours = 1;
+        let _ = touche_de_la_liste(touche(KeyCode::Down), &mut e, &cases, &montrees, Some(0), None);
+        assert_eq!(e.en_cours, 3);
+        let _ = touche_de_la_liste(touche(KeyCode::Down), &mut e, &cases, &montrees, Some(1), None);
+        assert_eq!(e.en_cours, 1);
+        let _ = touche_de_la_liste(touche(KeyCode::Up), &mut e, &cases, &montrees, Some(0), None);
+        assert_eq!(e.en_cours, 3);
+        // Rien de montré : la ligne en cours ne bouge pas.
+        let _ = touche_de_la_liste(touche(KeyCode::Down), &mut e, &cases, &[], None, None);
+        assert_eq!(e.en_cours, 3);
+    }
+
+    #[test]
+    fn lignes_trouvees_par_tous_les_mots() {
+        let cherche: Vec<String> = ["firefox navigateur", "thunderbird courriel", "vlc lecteur video"]
+            .iter()
+            .map(|t| simplifier(t))
+            .collect();
+        assert_eq!(lignes_trouvees("", &cherche), [0, 1, 2]);
+        assert_eq!(lignes_trouvees("  ", &cherche), [0, 1, 2]);
+        assert_eq!(lignes_trouvees("Courriel", &cherche), [1]);
+        assert_eq!(lignes_trouvees("vlc vidéo", &cherche), [2]);
+        assert_eq!(lignes_trouvees("vlc courriel", &cherche), Vec::<usize>::new());
+    }
 }
