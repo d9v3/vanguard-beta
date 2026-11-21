@@ -487,7 +487,7 @@ derniere_trace() {
 }
 # Défait la dernière acceptation, d'après sa trace (dossier d'état), jamais d'après ce que le cache contient : chaque
 # version de la trace est remise si elle se vérifie (signée, entière), sinon laissée de côté et dite ; la note est
-# remise à la plus haute des deux (celle d'avant, celle d'aujourd'hui). Une version remise, ou refusée pour de bon
+# remise à la plus haute des deux (celle d'avant, celle d'aujourd'hui ; abîmée, refusé). Une version remise, ou refusée pour de bon
 # (absente, ne se vérifie pas), n'est plus écartée et sort de la trace. Une panne passagère (vérification impossible
 # ici, code 3 : dossier temporaire plein ; déplacement raté) ne consomme rien : la version reste écartée et dans la
 # trace, l'annulation est dite partielle (code 2), et une relance la reprend.
@@ -506,6 +506,11 @@ annuler_acceptation() {
   for v in "${versions[@]}"; do
     [[ $v =~ $FORME_VERSION ]] || erreur "Trace $ACCEPTATIONS/$t abîmée (version « $v ») : rien changé."
   done
+  # Une note vide ou abîmée est l'état le plus fermé (--chercher et --cle s'arrêtent) : jamais prise pour « pas de
+  # note », ni réécrite ici sans accord fort (une note montée plus haut que celle de la trace redescendrait). Relue
+  # avant la question, puis sous le verrou (abîmée pendant la question).
+  haute_notee >/dev/null 2>&1 || erreur "La note de la dernière version vérifiée ($NOTE_VERSION) est vide ou abîmée :" \
+    "l'annulation ne la réécrit pas. La réparer d'abord (voir --chercher). Rien changé."
   echo "Annuler l'acceptation ${t#mis-de-cote-} :"
   echo "  note remise à la $avant si elle est plus haute que l'actuelle ($NOTE_VERSION)"
   echo "  remis dans le cache, s'ils se vérifient : ${versions[*]:-rien} (de $CACHE/$t)"
@@ -514,6 +519,8 @@ annuler_acceptation() {
   [[ $rep == ANNULER ]] || { echo "Pas confirmé : rien changé."; return 1; }
   verrou || erreur "Verrou pas pris : rien changé."
   [[ $(derniere_trace) == "$t" ]] || erreur "Les acceptations ont changé pendant la question : rien changé (relancer)."
+  notee=$(haute_notee 2>/dev/null) || erreur "La note de la dernière version vérifiée ($NOTE_VERSION) est devenue vide" \
+    "ou abîmée pendant la question : l'annulation ne la réécrit pas. La réparer d'abord. Rien changé."
   journal "annuler-acceptation $t : début" || erreur "Journal ($JOURNAL) pas écrit : rien changé."
   s=$CACHE/$t
   for v in "${versions[@]}"; do
@@ -546,7 +553,6 @@ annuler_acceptation() {
     fi
   done
   if [[ $avant =~ $FORME_VERSION ]]; then
-    notee=$(haute_notee 2>/dev/null) || notee=""
     if [[ -z $notee ]] || plus_ancienne "$notee" "$avant"; then noter_haute "$avant" || return 1; fi
   fi
   if ((${#passagers[@]})); then

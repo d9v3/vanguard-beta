@@ -929,6 +929,29 @@ attendu "--annuler-acceptation, la panne passée : fini" 0 annuler_r5 ANNULER
 [[ -f $R5C/2.4.0/.verifiee && ! -e $trace_r5 && ! -e $R5E/claude-cle-ecartees && ! -e $de_cote && $(cat "$R5N") == 2.4.0 ]] &&
   grep -q "✔ Acceptation annulée" "$ESSAI/sortie" && bon "la panne passée : 2.4.0 remise, plus écartée, trace retirée" ||
   rate "la panne passée : $(etat_r5)"
+# R7-BAISSE-4 : une note abîmée (disque plein) était prise pour « pas de note » et réécrite avec celle de la trace :
+# une note montée plus haut redescendait, sans accord fort et sans le dire. Refusé, rien changé : avant la question,
+# et sous le verrou (abîmée pendant la question).
+attendu "r5 : accepter de nouveau la 2.1.2 (note abîmée ensuite)" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
+trace_r5=$R5E/claude-cle-acceptations/${de_cote##*/}
+etat_r7() { echo "$(etat_r5) | $(tr '\n' ' ' <"$trace_r5" 2>/dev/null) | $(ls -A "$de_cote" 2>/dev/null | tr '\n' ' ')"; }
+printf 'abîm\n' >"$R5N"
+av4=$(etat_r7)
+attendu "--annuler-acceptation, note abîmée : refusé" 1 annuler_r5 ANNULER
+[[ $(etat_r7) == "$av4" && $(cat "$R5N") == abîm ]] && grep -q "vide ou abîmée" "$ESSAI/sortie" &&
+  ! grep -q "Pour confirmer" "$ESSAI/sortie" && bon "annuler, note abîmée : refusé avant la question, note pas réécrite, rien changé" ||
+  rate "annuler, note abîmée : $(etat_r7) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+echo 2.1.2 >"$R5N"
+AU_CLAVIER_PENDANT="printf 'x\n' >'$R5N'" attendu "--annuler-acceptation, note abîmée pendant la question : refusé" 1 \
+  annuler_r5 ANNULER
+[[ $(cat "$R5N") == x && -d $de_cote/2.4.0 && ! -e $R5C/2.4.0 && $(tr '\n' ' ' <"$trace_r5" 2>/dev/null) == "2.4.0 2.4.0 " ]] &&
+  grep -q "pendant la question" "$ESSAI/sortie" && bon "annuler, note abîmée pendant la question : refusé sous le verrou, rien changé" ||
+  rate "annuler, note abîmée pendant la question : $(etat_r7) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+echo 2.1.2 >"$R5N"
+attendu "--annuler-acceptation, note réparée : fini" 0 annuler_r5 ANNULER
+[[ $(cat "$R5N") == 2.4.0 && -f $R5C/2.4.0/.verifiee && ! -e $trace_r5 ]] && bon "note réparée : annulé, note 2.4.0" ||
+  rate "note réparée : $(etat_r7)"
 # Une version de la trace qui ne se vérifie plus dans le dossier mis de côté : pas remise dans le cache, dite.
 attendu "r5 : accepter de nouveau la 2.1.2" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
 de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
