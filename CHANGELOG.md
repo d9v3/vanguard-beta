@@ -249,6 +249,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   OneDrive sont acceptés, mais OneDrive entier (même déplacé sous un autre nom), Images, Vidéos, Musique et les autres
   dossiers connus ne sont jamais permis ; chaque dossier de la lecture est ouvert sous le précédent et tenu de façon
   que nul ne le renomme pendant qu'on lit (vérifié sous Wine, pas encore sur un vrai Windows).
+- **Console sous Windows : trois cas de plus au banc de la VM.** `outils/test-windows/test.ps1` fabrique, sur le vrai
+  Windows de la VM, un fichier OneDrive « en ligne seulement » (un espace réservé de l'API des fichiers en nuage, sans
+  compte OneDrive) et un fichier marqué hors ligne : la Console doit les refuser, sans rien rapatrier. Il refuse aussi,
+  quelques secondes, la liste du dossier des profils au compte de la session, puis déplace Documents dans OneDrive
+  comme le fait la sauvegarde de OneDrive : la Console doit toujours lire Documents, et refuser OneDrive lui-même.
+  Chaque changement est remis tel quel et relu ; sinon, le banc le dit avec la commande qui le remet.
 - **Linux : une mise à jour qui ne se vérifie pas dit pourquoi.** Firmware : une erreur rendue par fwupd est nommée,
   et sinon fwupd est dit injoignable, avec sa cause ; le remède « fwupdmgr refresh », souvent faux, n'est plus donné.
   Flatpak : « hors ligne ? » devient la vraie raison (pas de réponse en 40 s, code de retour et première ligne de

@@ -233,6 +233,12 @@ example, finds it, to rebuild it if needed.
   Documents backed up to OneDrive are accepted, but the whole of OneDrive (even moved under another name), Pictures,
   Videos, Music and the other known folders are never allowed; each folder on the way is opened under the previous
   one and held so that nobody renames it while it is read (checked under Wine, not yet on a real Windows).
+- **Console on Windows: three more cases on the VM test bench.** `outils/test-windows/test.ps1` creates, on the
+  VM's real Windows, an "online-only" OneDrive file (a placeholder from the cloud files API, without a OneDrive
+  account) and a file marked offline: the Console must refuse them, without downloading anything. For a few seconds it
+  also denies the session's account the listing of the profiles folder, then moves Documents into OneDrive the way
+  OneDrive backup does: the Console must still read Documents, and refuse OneDrive itself. Each change is put back
+  exactly and read again; otherwise the bench says so, with the command that puts it back.
 - **Linux: an update that cannot be checked says why.** Firmware: an error returned by fwupd is named, otherwise
   fwupd is said to be unreachable, with its cause; the often wrong "fwupdmgr refresh" remedy is no longer given.
   Flatpak: "offline?" becomes the real reason (no answer within 40 s, return code and first line of flatpak's error,

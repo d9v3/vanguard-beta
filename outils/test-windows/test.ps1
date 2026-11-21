@@ -1084,6 +1084,485 @@ LancerAvec 'verifier-faux' @('verifier-fichier', $fichier, ('0' * 64)) "n`nn`nn`
 if ((Sortie 'verifier-faux') -match 'ne correspond pas|does not match') { Ok 'Mauvaise empreinte signalée' } else { Bug 'Mauvaise empreinte PAS signalée' }
 Remove-Item $fichier -Force -ErrorAction SilentlyContinue
 
+# Ouverture de la Console (0.97, src/socle/ouvrir_console.rs) : trois cas que Wine ne sait pas montrer, chacun à part
+# (l'échec de l'un ne saute pas les autres). Chaque changement du système est remis dans un finally, et la remise
+# est relue : sinon un Bug « état NON remis », avec la commande qui le remet.
+# Le C# (P/Invoke) est écrit en C# 5 : PowerShell 5.1 le compile avec le compilateur du .NET Framework, 7 avec Roslyn.
+$sourceBancConsole = @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace VgBancConsole {
+    // CF_SYNC_REGISTRATION (cfapi.h).
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Inscription {
+        public uint StructSize;
+        public IntPtr ProviderName;
+        public IntPtr ProviderVersion;
+        public IntPtr SyncRootIdentity;
+        public uint SyncRootIdentityLength;
+        public IntPtr FileIdentity;
+        public uint FileIdentityLength;
+        public Guid ProviderId;
+    }
+
+    // CF_SYNC_POLICIES : hydratation et peuplement (deux USHORT chacun), puis trois ULONG.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Regles {
+        public uint StructSize;
+        public ushort HydrationPrimary;
+        public ushort HydrationModifier;
+        public ushort PopulationPrimary;
+        public ushort PopulationModifier;
+        public uint InSync;
+        public uint HardLink;
+        public uint PlaceholderManagement;
+    }
+
+    // FILE_BASIC_INFO puis CF_FS_METADATA.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct InfoBase {
+        public long CreationTime;
+        public long LastAccessTime;
+        public long LastWriteTime;
+        public long ChangeTime;
+        public uint FileAttributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Metadonnees {
+        public InfoBase BasicInfo;
+        public long FileSize;
+    }
+
+    // CF_PLACEHOLDER_CREATE_INFO.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Reserve {
+        public IntPtr RelativeFileName;
+        public Metadonnees FsMetadata;
+        public IntPtr FileIdentity;
+        public uint FileIdentityLength;
+        public uint Flags;
+        public int Result;
+        public long CreateUsn;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct AttributsEtiquette {
+        public uint FileAttributes;
+        public uint ReparseTag;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct InfoStandard {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+        public byte DeletePending;
+        public byte Directory;
+    }
+
+    // Ce qu'un nom porte, lu comme Vanguard le lit : ouvert lui-meme (point d'analyse non suivi), sans rapatriement.
+    public class Etat {
+        public int Erreur;
+        public uint Attributs;
+        public uint Etiquette;
+        public long Alloue;
+        public long Taille;
+        // IO_REPARSE_TAG_CLOUD et ses variantes CLOUD_1 a CLOUD_F (le chiffre du milieu), comme juger_attributs.
+        public bool Nuage { get { return (Etiquette & 0xFFFF0FFF) == 0x9000001A; } }
+        public bool EnLigne { get { return (Attributs & 0x441000) != 0; } }
+        public override string ToString() {
+            if (Erreur != 0) { return "illisible (erreur " + Erreur + ")"; }
+            return String.Format("attributs 0x{0:X}, etiquette 0x{1:X8}, {2} octet(s) sur le disque pour {3}",
+                Attributs, Etiquette, Alloue, Taille);
+        }
+    }
+
+    public static class Nuage {
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        static extern int CfRegisterSyncRoot(string racine, ref Inscription inscription, ref Regles regles, uint drapeaux);
+
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        static extern int CfUnregisterSyncRoot(string racine);
+
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        static extern int CfCreatePlaceholders(string dossier, [In, Out] Reserve[] reserves, uint nombre, uint drapeaux, out uint faits);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string nom, uint acces, uint partage, IntPtr securite, uint disposition, uint drapeaux, IntPtr modele);
+
+        [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+        static extern bool LireEtiquette(SafeFileHandle f, int classe, out AttributsEtiquette info, uint taille);
+
+        [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+        static extern bool LireStandard(SafeFileHandle f, int classe, out InfoStandard info, uint taille);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool SetFileSecurityW(string nom, uint quoi, byte[] descripteur);
+
+        // Une racine de synchronisation sans fournisseur branche : hydratation complete, peuplement toujours complet
+        // (aucun rappel attendu), la racine marquee synchronisee et sans peuplement a la demande.
+        public static int Inscrire(string racine) {
+            IntPtr nom = Marshal.StringToHGlobalUni("Banc Vanguard");
+            IntPtr version = Marshal.StringToHGlobalUni("1.0");
+            try {
+                Inscription i = new Inscription();
+                i.StructSize = (uint)Marshal.SizeOf(typeof(Inscription));
+                i.ProviderName = nom;
+                i.ProviderVersion = version;
+                i.ProviderId = new Guid("6b1f3c2e-5a4d-4e8f-9c7b-2d0e1f3a4b5c");
+                Regles r = new Regles();
+                r.StructSize = (uint)Marshal.SizeOf(typeof(Regles));
+                r.HydrationPrimary = 2;
+                r.PopulationPrimary = 3;
+                return CfRegisterSyncRoot(racine, ref i, ref r, 0x2 | 0x4);
+            } finally {
+                Marshal.FreeHGlobal(nom);
+                Marshal.FreeHGlobal(version);
+            }
+        }
+
+        public static int Desinscrire(string racine) {
+            return CfUnregisterSyncRoot(racine);
+        }
+
+        // Un espace reserve jamais hydrate, de `taille` octets annonces, marque synchronise.
+        public static int CreerReserve(string dossier, string nom, long taille) {
+            IntPtr texte = Marshal.StringToHGlobalUni(nom);
+            IntPtr identite = Marshal.AllocHGlobal(4);
+            try {
+                Marshal.Copy(new byte[] { 0x76, 0x67, 0x30, 0x31 }, 0, identite, 4);
+                long maintenant = DateTime.Now.ToFileTime();
+                Reserve[] r = new Reserve[1];
+                r[0].RelativeFileName = texte;
+                r[0].FsMetadata.BasicInfo.CreationTime = maintenant;
+                r[0].FsMetadata.BasicInfo.LastAccessTime = maintenant;
+                r[0].FsMetadata.BasicInfo.LastWriteTime = maintenant;
+                r[0].FsMetadata.BasicInfo.ChangeTime = maintenant;
+                r[0].FsMetadata.BasicInfo.FileAttributes = 0x80;
+                r[0].FsMetadata.FileSize = taille;
+                r[0].FileIdentity = identite;
+                r[0].FileIdentityLength = 4;
+                r[0].Flags = 0x2;
+                uint faits;
+                int hr = CfCreatePlaceholders(dossier, r, 1, 0, out faits);
+                if (hr < 0) { return hr; }
+                if (r[0].Result < 0) { return r[0].Result; }
+                return faits == 1 ? 0 : -1;
+            } finally {
+                Marshal.FreeHGlobal(texte);
+                Marshal.FreeHGlobal(identite);
+            }
+        }
+
+        // FILE_READ_ATTRIBUTES seulement ; FILE_FLAG_OPEN_REPARSE_POINT, BACKUP_SEMANTICS et OPEN_NO_RECALL, comme
+        // Vanguard : la lecture de l'etat ne rapatrie rien.
+        public static Etat Lire(string chemin) {
+            Etat e = new Etat();
+            using (SafeFileHandle f = CreateFileW(chemin, 0x80, 7, IntPtr.Zero, 3, 0x00200000 | 0x02000000 | 0x00100000, IntPtr.Zero)) {
+                if (f.IsInvalid) { e.Erreur = Marshal.GetLastWin32Error(); return e; }
+                AttributsEtiquette a;
+                if (!LireEtiquette(f, 9, out a, (uint)Marshal.SizeOf(typeof(AttributsEtiquette)))) { e.Erreur = Marshal.GetLastWin32Error(); return e; }
+                e.Attributs = a.FileAttributes;
+                e.Etiquette = a.ReparseTag;
+                InfoStandard s;
+                if (!LireStandard(f, 1, out s, (uint)Marshal.SizeOf(typeof(InfoStandard)))) { e.Erreur = Marshal.GetLastWin32Error(); return e; }
+                e.Alloue = s.AllocationSize;
+                e.Taille = s.EndOfFile;
+            }
+            return e;
+        }
+
+        // La DACL seule (DACL_SECURITY_INFORMATION), ecrite par SetFileSecurityW : sans la propagation aux enfants
+        // que ferait Set-Acl (SetNamedSecurityInfo repasse sur tout ce qui est dessous). 0 ou l'erreur Win32.
+        public static int PoserDacl(string chemin, byte[] descripteur) {
+            return SetFileSecurityW(chemin, 4, descripteur) ? 0 : Marshal.GetLastWin32Error();
+        }
+    }
+}
+'@
+$bancConsolePret = $false
+try {
+    if (-not ('VgBancConsole.Nuage' -as [type])) { Add-Type -TypeDefinition $sourceBancConsole -Language CSharp -ErrorAction Stop }
+    $bancConsolePret = $true
+}
+catch { $bancConsoleErreur = $_.Exception.Message }
+
+# La Console lancée sur un chemin (« vanguard console verifier-fichier -- <valeur> », src/demarrage/console.rs) : le
+# code, le refus (sur la sortie d'erreur, relu comme une phrase : il est enveloppé) et l'outil du JSON quand le
+# fichier est lu. Le chemin s'écrit « ~\… » : sans espace à couper dans la ligne de commande.
+function Console-Fichier([string]$fichier, [string]$valeur) {
+    LancerAvec $fichier @('console', 'verifier-fichier', '--', $valeur) ''
+    $c = @($script:etape.Commandes | Where-Object Fichier -eq $fichier)[-1]
+    $erreurs = "$(Get-Content (Join-Path $res "$fichier.err.txt") -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)" -replace '\s+', ' '
+    $outil = $null
+    try { $outil = ((Sortie $fichier) | ConvertFrom-Json -ErrorAction Stop).outil } catch { $outil = $null }
+    [pscustomobject]@{ Code = $c.Code; Refus = $erreurs; Outil = $outil }
+}
+
+# Les phrases de Vanguard (Refus::phrase, src/socle/valeur_console.rs), en français et en anglais.
+$refusEnLigne = 'fichier en ligne seulement|online-only file'
+$refusHors = 'hors des endroits permis|outside the allowed places'
+
+# Lu et jugé normalement : code 0 et le JSON de l'examen (PRO-TEL-001).
+function Console-Lu($r, [string]$quoi) {
+    if ($r.Code -eq 0 -and $r.Outil -eq 'PRO-TEL-001') { Ok "$quoi : lu et jugé (code 0, examen PRO-TEL-001)" }
+    else { Bug "$quoi : PAS lu (code $($r.Code), outil « $($r.Outil) ») : $($r.Refus)" }
+}
+
+# Refusé avec la phrase attendue : code 2 (celui d'un argument refusé), voulu.
+function Console-Refuse($r, [string]$fichier, [string]$motif, [string]$quoi) {
+    if ($r.Code -eq 2 -and $r.Refus -match $motif) {
+        Code-Voulu $fichier 2 'refus attendu'
+        Ok "$quoi : refusé, et dit ($($Matches[0]))"
+    }
+    else { Bug "$quoi : PAS refusé comme attendu (code $($r.Code), outil « $($r.Outil) ») : $($r.Refus)" }
+}
+
+$profilBanc = [Environment]::GetFolderPath('UserProfile')
+$documentsBanc = Join-Path $profilBanc 'Documents'
+$marqueBanc = '{0:x}' -f (Get-Random -Maximum 0x7fffffff)
+$adminBanc = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+Etape 'Console (0.97) : fichier en ligne seulement (OneDrive à la demande, sans compte), refusé sans être rapatrié'
+if (-not $bancConsolePret) { Sautee "Aide P/Invoke non compilée : $bancConsoleErreur" }
+elseif (-not (Test-Path -LiteralPath $documentsBanc -PathType Container)) { Sautee "Pas de dossier $documentsBanc : la racine Documents du profil manque" }
+elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Documents, puis retirée) ?' 'o') {
+    # Une racine laissée par une passe interrompue : retirée d'abord.
+    foreach ($reste in @(Get-ChildItem -LiteralPath $documentsBanc -Filter 'vg-banc-nuage-*' -Force -ErrorAction SilentlyContinue)) {
+        Info "Reste d'une passe d'avant : $($reste.Name), retiré"
+        [void][VgBancConsole.Nuage]::Desinscrire($reste.FullName)
+        Remove-Item -LiteralPath $reste.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $cleRacines = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager'
+    $racinesAvant = @(Get-ChildItem -LiteralPath $cleRacines -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName }) -join ';'
+    $nomNuage = "vg-banc-nuage-$marqueBanc"
+    $racineNuage = Join-Path $documentsBanc $nomNuage
+    $reserve = Join-Path $racineNuage 'facture-en-ligne.pdf'
+    $inscrite = $false
+    try {
+        New-Item -ItemType Directory -Path $racineNuage -ErrorAction Stop | Out-Null
+        $hr = [VgBancConsole.Nuage]::Inscrire($racineNuage)
+        if ($hr -ne 0) { Sautee ('CfRegisterSyncRoot refusé (HRESULT 0x{0:X8}) : pas de racine de synchronisation, rien à prouver' -f $hr) }
+        else {
+            $inscrite = $true
+            $hr = [VgBancConsole.Nuage]::CreerReserve($racineNuage, 'facture-en-ligne.pdf', 4096)
+            $etatRacine = [VgBancConsole.Nuage]::Lire($racineNuage)
+            $avant = [VgBancConsole.Nuage]::Lire($reserve)
+            Info "Racine de synchronisation : $etatRacine"
+            Info "Espace réservé avant : $avant"
+            if ($hr -ne 0) { Sautee ('CfCreatePlaceholders refusé (HRESULT 0x{0:X8}) : pas d''espace réservé' -f $hr) }
+            elseif ($avant.Erreur -ne 0) { Sautee "Espace réservé posé mais illisible : $avant" }
+            elseif (-not ($avant.Attributs -band 0x400000)) { Sautee "Espace réservé SANS l'attribut RECALL_ON_DATA_ACCESS (0x400000) : $avant ; le cas « en ligne seulement » n'est pas prouvé ici" }
+            elseif (-not $avant.Nuage) { Sautee "Espace réservé sans étiquette IO_REPARSE_TAG_CLOUD* : $avant ; le cas OneDrive n'est pas prouvé ici" }
+            elseif ($etatRacine.Erreur -ne 0 -or $etatRacine.EnLigne) { Sautee "La racine elle-même est illisible ou marquée en ligne ($etatRacine) : le refus ne viendrait pas du fichier" }
+            else {
+                Ok "Vrai espace réservé déshydraté : RECALL_ON_DATA_ACCESS et étiquette de nuage (0x$('{0:X8}' -f $avant.Etiquette))"
+                $r = Console-Fichier 'console-en-ligne' "~\Documents\$nomNuage\facture-en-ligne.pdf"
+                Console-Refuse $r 'console-en-ligne' $refusEnLigne 'Fichier en ligne seulement'
+                $apres = [VgBancConsole.Nuage]::Lire($reserve)
+                Info "Espace réservé après : $apres"
+                # Sans fournisseur branché, un rapatriement demandé échouerait au lieu d'hydrater : la preuve est
+                # le refus dit ci-dessus, avant toute lecture ; l'état relu le confirme.
+                if ($apres.Erreur -eq 0 -and ($apres.Attributs -band 0x400000) -and $apres.Alloue -eq 0) { Ok 'Rien rapatrié : toujours en ligne seulement, 0 octet sur le disque' }
+                else { Bug "Espace réservé changé par Vanguard : $apres" }
+            }
+        }
+    }
+    catch { Bug "Essai interrompu par une erreur, ligne $($_.InvocationInfo.ScriptLineNumber) : $($_.Exception.Message)" }
+    finally {
+        if (Test-Path -LiteralPath $reserve) { try { [IO.File]::Delete($reserve) } catch { } }
+        if ($inscrite) {
+            $hr = [VgBancConsole.Nuage]::Desinscrire($racineNuage)
+            if ($hr -ne 0) { Bug ('état NON remis : CfUnregisterSyncRoot (HRESULT 0x{0:X8}) ; à la main, en PowerShell : [VgBancConsole.Nuage]::Desinscrire(''{1}'')' -f $hr, $racineNuage) }
+        }
+        if (Test-Path -LiteralPath $racineNuage) { Remove-Item -LiteralPath $racineNuage -Recurse -Force -ErrorAction SilentlyContinue }
+        $racinesApres = @(Get-ChildItem -LiteralPath $cleRacines -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName }) -join ';'
+        if (Test-Path -LiteralPath $racineNuage) { Bug "état NON remis : $racineNuage resté ; à la main : Remove-Item -LiteralPath '$racineNuage' -Recurse -Force" }
+        elseif ($racinesApres -ne $racinesAvant) { Bug "état NON remis : SyncRootManager changé (avant « $racinesAvant », après « $racinesApres »)" }
+        else { Ok 'Ménage : racine désinscrite, dossier effacé, SyncRootManager comme avant' }
+    }
+}
+
+# Le cas simple : l'attribut hors ligne (0x1000, « attrib +O ») sur un fichier ordinaire, sans nuage.
+if ($bancConsolePret -and (Test-Path -LiteralPath $documentsBanc -PathType Container)) {
+    $horsLigne = Join-Path $documentsBanc "vg-banc-hors-ligne-$marqueBanc.txt"
+    try {
+        [IO.File]::WriteAllText($horsLigne, 'contenu de test')
+        [IO.File]::SetAttributes($horsLigne, [IO.FileAttributes]::Archive -bor [IO.FileAttributes]::Offline)
+        $etat = [VgBancConsole.Nuage]::Lire($horsLigne)
+        if ($etat.Erreur -ne 0 -or -not ($etat.Attributs -band 0x1000)) { Sautee "Attribut hors ligne (0x1000) pas posé : $etat" }
+        else {
+            $r = Console-Fichier 'console-hors-ligne' "~\Documents\vg-banc-hors-ligne-$marqueBanc.txt"
+            Console-Refuse $r 'console-hors-ligne' $refusEnLigne 'Fichier marqué hors ligne (attrib +O)'
+        }
+    }
+    catch { Bug "Essai hors ligne interrompu, ligne $($_.InvocationInfo.ScriptLineNumber) : $($_.Exception.Message)" }
+    finally {
+        if (Test-Path -LiteralPath $horsLigne) {
+            try { [IO.File]::SetAttributes($horsLigne, [IO.FileAttributes]::Normal); [IO.File]::Delete($horsLigne) } catch { }
+        }
+        if (Test-Path -LiteralPath $horsLigne) { Bug "état NON remis : $horsLigne resté ; à la main : attrib -O '$horsLigne' puis Remove-Item -LiteralPath '$horsLigne' -Force" }
+    }
+}
+
+Etape 'Console (0.97) : un ancêtre du profil en « traverser seulement » ne bloque pas Documents'
+# Le dossier des profils (C:\Users), pas le profil : c'est le cas que vise ACCES_ANCETRE (« un profil sous un dossier
+# en traverser seulement reste lisible »), et le profil de la session n'est pas touché. Un refus de liste
+# (FILE_LIST_DIRECTORY), pour ce compte seulement, en tête de la DACL, sans héritage ; écrit et remis par
+# SetFileSecurityW, sans propagation aux profils ; la DACL d'origine remise à l'identique (SDDL comparé).
+$profilsBanc = Split-Path -Parent $profilBanc
+if (-not $bancConsolePret) { Sautee "Aide P/Invoke non compilée : $bancConsoleErreur" }
+elseif (-not $adminBanc) { Sautee 'Pas administrateur : la DACL du dossier des profils ne peut pas être changée' }
+elseif (-not (Test-Path -LiteralPath $documentsBanc -PathType Container)) { Sautee "Pas de dossier $documentsBanc" }
+elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte quelques secondes, puis remise) ?" 'o') {
+    $fichierTraverse = Join-Path $documentsBanc "vg-banc-traverse-$marqueBanc.txt"
+    $daclAvant = $null
+    $posee = $false
+    try {
+        [IO.File]::WriteAllText($fichierTraverse, 'contenu de test')
+        $daclAvant = (Get-Acl -LiteralPath $profilsBanc -ErrorAction Stop).GetSecurityDescriptorSddlForm('Access')
+        [IO.File]::WriteAllText((Join-Path $res 'dacl-profils-avant.txt'), $daclAvant)
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($daclAvant -notmatch '^D:([A-Z]*)(\(.*)$') { Sautee "DACL de $profilsBanc illisible en SDDL : $daclAvant" }
+        else {
+            $sddl = "D:$($Matches[1])(D;;0x1;;;$sid)$($Matches[2])"
+            $sd = New-Object Security.AccessControl.RawSecurityDescriptor($sddl)
+            $octets = New-Object byte[] $sd.BinaryLength
+            $sd.GetBinaryForm($octets, 0)
+            $posee = $true
+            $err = [VgBancConsole.Nuage]::PoserDacl($profilsBanc, $octets)
+            if ($err -ne 0) { $posee = $false; Sautee "Refus de liste pas posé sur $profilsBanc (erreur $err)" }
+            else {
+                # Le témoin : ce compte ne peut vraiment plus lister le dossier des profils.
+                $liste = $null
+                try { [void][IO.Directory]::GetFileSystemEntries($profilsBanc); $liste = $true }
+                catch [UnauthorizedAccessException] { $liste = $false }
+                catch { $liste = "$($_.Exception.Message)" }
+                if ($liste -is [string]) { Sautee "Témoin illisible : la liste de $profilsBanc a échoué autrement ($liste)" }
+                elseif ($liste) { Sautee "Le refus de liste ne s'applique pas à ce jeton (liste de $profilsBanc toujours permise) : rien à prouver" }
+                else {
+                    Ok "Témoin : la liste de $profilsBanc est refusée à ce compte"
+                    $r = Console-Fichier 'console-traverse' "~\Documents\vg-banc-traverse-$marqueBanc.txt"
+                    Console-Lu $r "Fichier de Documents sous $profilsBanc en traverser seulement"
+                }
+            }
+        }
+    }
+    catch { Bug "Essai interrompu par une erreur, ligne $($_.InvocationInfo.ScriptLineNumber) : $($_.Exception.Message)" }
+    finally {
+        if ($posee -and $daclAvant) {
+            $remise = 'jamais essayée'
+            try {
+                $sd = New-Object Security.AccessControl.RawSecurityDescriptor($daclAvant)
+                $octets = New-Object byte[] $sd.BinaryLength
+                $sd.GetBinaryForm($octets, 0)
+                $remise = [VgBancConsole.Nuage]::PoserDacl($profilsBanc, $octets)
+            }
+            catch { $remise = $_.Exception.Message }
+            $daclApres = $null
+            try { $daclApres = (Get-Acl -LiteralPath $profilsBanc -ErrorAction Stop).GetSecurityDescriptorSddlForm('Access') } catch { $daclApres = "illisible : $($_.Exception.Message)" }
+            if ($daclApres -ceq $daclAvant) { Ok "DACL de $profilsBanc remise à l'identique (SDDL comparé)" }
+            else {
+                Bug ("état NON remis : DACL de $profilsBanc (remise : $remise ; avant gardé dans dacl-profils-avant.txt) ; à la main, en administrateur : " +
+                    "`$s = New-Object Security.AccessControl.DirectorySecurity; `$s.SetSecurityDescriptorSddlForm('$daclAvant'); Set-Acl -LiteralPath '$profilsBanc' -AclObject `$s")
+            }
+        }
+        if (Test-Path -LiteralPath $fichierTraverse) { Remove-Item -LiteralPath $fichierTraverse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Etape 'Console (0.97) : Documents déplacé dans OneDrive (User Shell Folders), le nouvel endroit permis, OneDrive lui-même non'
+# Vanguard lit Documents par SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY)
+# (src/machine/windows/environnement.rs, dossier_actuel), c'est-à-dire la valeur « Personal » de HKCU\…\User Shell
+# Folders : c'est elle qui est changée (comme le fait la sauvegarde des dossiers de OneDrive), puis remise telle quelle
+# (texte non développé et sorte). L'ancien <profil>\Documents reste permis : racines() le garde toujours
+# (src/demarrage/console.rs) ; OneDrive lui-même ne l'est jamais.
+$oneDriveBanc = Join-Path $profilBanc 'OneDrive'
+$nouveauBanc = Join-Path $oneDriveBanc 'Documents'
+$cheminCle = 'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+# Documents tel qu'un nouveau processus le reçoit de Windows (sans cache de ce processus-ci).
+function Documents-Neuf {
+    $ps = (Get-Process -Id $PID).Path
+    "$(& $ps -NoProfile -NonInteractive -Command "[Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')" 2>$null)".Trim()
+}
+if (Test-Path -LiteralPath $oneDriveBanc) {
+    $od = Get-Item -LiteralPath $oneDriveBanc -Force
+    $odActif = [bool]($od.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+else { $odActif = $false }
+if ($odActif) { Sautee "$oneDriveBanc est une racine de synchronisation (OneDrive actif) : rien n'y est posé, il serait envoyé" }
+elseif (-not (Test-Path -LiteralPath $documentsBanc -PathType Container)) { Sautee "Pas de dossier $documentsBanc" }
+elseif (Question 'Faire ce test (Documents déplacé dans OneDrive quelques secondes, puis remis) ?' 'o') {
+    $cle = $null
+    $docsAvant = Documents-Neuf
+    $brutAvant = $null
+    $sorteAvant = $null
+    $change = $false
+    $crees = New-Object System.Collections.ArrayList
+    $nomKfm = "vg-banc-kfm-$marqueBanc.txt"
+    $fichiersKfm = @((Join-Path $nouveauBanc $nomKfm), (Join-Path $documentsBanc $nomKfm), (Join-Path $oneDriveBanc $nomKfm))
+    try {
+        $cle = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($cheminCle, $true)
+        if (-not $cle) { throw "HKCU\$cheminCle absent" }
+        $brutAvant = $cle.GetValue('Personal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -ne $brutAvant) { $sorteAvant = $cle.GetValueKind('Personal') }
+        Info "Documents avant : « $brutAvant » ($sorteAvant), donné par Windows : $docsAvant"
+        if ($docsAvant -ieq $nouveauBanc) { Sautee 'Documents déjà dans OneDrive\Documents : le témoin d''avant ne prouverait rien' }
+        else {
+            foreach ($d in $oneDriveBanc, $nouveauBanc) {
+                if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; [void]$crees.Insert(0, $d) }
+            }
+            foreach ($f in $fichiersKfm) { [IO.File]::WriteAllText($f, 'contenu de test') }
+            # Le témoin : avant le déplacement, OneDrive\Documents n'est pas un endroit permis.
+            $r = Console-Fichier 'console-kfm-avant' "~\OneDrive\Documents\$nomKfm"
+            Console-Refuse $r 'console-kfm-avant' $refusHors 'Avant le déplacement, OneDrive\Documents'
+            $change = $true
+            $cle.SetValue('Personal', $nouveauBanc, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $docsPendant = Documents-Neuf
+            if ($docsPendant -ine $nouveauBanc) { Sautee "Windows ne donne pas le nouvel emplacement à un nouveau processus (« $docsPendant ») : rien à prouver" }
+            else {
+                Ok "Windows donne Documents = $docsPendant"
+                $r = Console-Fichier 'console-kfm-nouveau' "~\OneDrive\Documents\$nomKfm"
+                Console-Lu $r 'Documents déplacé : un fichier dans OneDrive\Documents'
+                $r = Console-Fichier 'console-kfm-ancien' "~\Documents\$nomKfm"
+                Console-Lu $r 'Documents déplacé : un fichier resté dans l''ancien <profil>\Documents (toujours permis)'
+                $r = Console-Fichier 'console-kfm-onedrive' "~\OneDrive\$nomKfm"
+                Console-Refuse $r 'console-kfm-onedrive' $refusHors 'OneDrive lui-même'
+            }
+        }
+    }
+    catch { Bug "Essai interrompu par une erreur, ligne $($_.InvocationInfo.ScriptLineNumber) : $($_.Exception.Message)" }
+    finally {
+        if ($change -and $cle) {
+            try {
+                if ($null -eq $brutAvant) { $cle.DeleteValue('Personal', $false) }
+                else { $cle.SetValue('Personal', $brutAvant, $sorteAvant) }
+            }
+            catch { Bug "Remise de « Personal » en erreur : $($_.Exception.Message)" }
+            $brutApres = $cle.GetValue('Personal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $sorteApres = if ($null -ne $brutApres) { $cle.GetValueKind('Personal') } else { $null }
+            $docsApres = Documents-Neuf
+            if ($brutApres -ceq $brutAvant -and "$sorteApres" -eq "$sorteAvant" -and $docsApres -ieq $docsAvant) { Ok "Documents remis à l'identique (« $brutApres », $sorteApres ; Windows donne $docsApres)" }
+            else {
+                $commande = if ($null -eq $brutAvant) { "Remove-ItemProperty -Path 'HKCU:\$cheminCle' -Name Personal" }
+                else { "Set-ItemProperty -Path 'HKCU:\$cheminCle' -Name Personal -Value '$brutAvant' -Type $sorteAvant" }
+                Bug "état NON remis : Documents (avant « $brutAvant » $sorteAvant, après « $brutApres » $sorteApres, Windows donne $docsApres) ; à la main : $commande"
+            }
+        }
+        if ($cle) { $cle.Close() }
+        foreach ($f in $fichiersKfm) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+        # Seuls les dossiers créés ici, et vides.
+        foreach ($d in $crees) {
+            if (-not @(Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue).Count) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue }
+        }
+        $restes = @($fichiersKfm + @($crees) | Where-Object { Test-Path -LiteralPath $_ })
+        if ($restes.Count) { Bug "état NON remis : $($restes -join ', ') resté(s) ; à la main : Remove-Item -LiteralPath <chemin> (dossiers créés par le banc, vides)" }
+    }
+}
+
 Etape 'Fichiers-pièges : posés, un renommé comme par un rançongiciel, retirés'
 $dossiersPieges = @([Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('MyPictures'), [Environment]::GetFolderPath('Desktop'))
 if (Question 'Faire ce test (six fichiers posés puis retirés dans Documents, Images et Bureau) ?' 'o') {
