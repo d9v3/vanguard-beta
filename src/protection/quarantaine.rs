@@ -2559,14 +2559,16 @@ mod tests {
             j
         });
         std::fs::write(q.join("journal.txt"), journal).unwrap();
-        let debut = std::time::Instant::now();
+        // En temps de calcul de ce fil, pas en temps écoulé : sous la charge de verifier.sh (Wine et Linux en même
+        // temps), l'attente d'un cœur libre faisait dépasser 5 s à une lecture de 0,5 s (7,6 s vu le 18 nov. 2026).
+        let debut = crate::essais::calcul_du_fil();
         let liste = lire_liste(&q);
-        let duree = debut.elapsed();
+        let duree = crate::essais::calcul_du_fil().saturating_sub(debut);
         assert_eq!(liste.ecartees.len(), n);
         assert_eq!(liste.admises.len(), 0);
-        // Sous Linux, 0,5 s ; sous Wine, chaque accès passe par l'émulation : 4,3 s seul, plus sous charge (la borne
-        // de 5 s y tombait). Un parcours de toutes les entrées à chaque ligne (60 000², 3,6 milliards de comparaisons) dépasse 5 s sous
-        // Linux : c'est lui qui garde l'ordre de grandeur, Windows garde une borne contre le figé.
+        // Sous Linux, 0,5 s ; sous Wine, chaque accès passe par l'émulation : 4,3 s seul. Un parcours de toutes les
+        // entrées à chaque ligne (60 000², 3,6 milliards de comparaisons) dépasse 5 s sous Linux : c'est lui qui
+        // garde l'ordre de grandeur, Windows garde une borne contre le figé.
         let borne = std::time::Duration::from_secs(if cfg!(windows) { 60 } else { 5 });
         assert!(duree < borne, "{duree:?}");
         let _ = std::fs::remove_dir_all(&maison);

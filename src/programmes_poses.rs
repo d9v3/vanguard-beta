@@ -806,17 +806,8 @@ mod tests {
 
     const UNITE: &[u8] = b"[Service]\nExecStart=\"/x/vanguard\" surveiller\n";
 
-    /// Le temps de calcul de ce fil seul : celui des autres programmes de la machine n'y entre pas.
     #[cfg(unix)]
-    // FFI de libc : std n'a pas d'horloge du temps de calcul d'un fil.
-    #[allow(unsafe_code)]
-    fn calcul_du_fil() -> std::time::Duration {
-        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        // SAFETY: clock_gettime écrit dans `t`, qui vit le temps de l'appel, et n'en garde rien.
-        let rendu = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut t) };
-        assert_eq!(rendu, 0);
-        std::time::Duration::new(u64::try_from(t.tv_sec).unwrap(), u32::try_from(t.tv_nsec).unwrap())
-    }
+    use crate::essais::calcul_du_fil;
 
     /// L'empreinte d'une copie de Vanguard (copie_posee_dans, relue après chaque mise à jour) se calcule vite même
     /// dans un programme de développement ou de test : sans optimisation, BLAKE3 n'avançait qu'à 17 Mo/s, et le

@@ -2269,8 +2269,14 @@ fn basses_de_la_ronde_7() {
 /// `ENTREE_MAX`, doubler l'entrée ne change pas la sortie, donc rien de plus n'est lu ; (2) sous la borne, quadrupler
 /// l'entrée (2000 puis 8000) multiplie le temps par environ 4 (moins de 8 ; un coût quadratique donnerait 16),
 /// meilleur de 5 essais. La ronde 9 ajoute « www.a " » répété, et l'écart plus large tient mieux sous la charge.
+/// Compté en temps de calcul du fil, les deux tailles mesurées l'une après l'autre à chaque essai : en temps écoulé,
+/// l'attente d'un cœur libre tombait sur une mesure et pas l'autre (« 33 ms puis 289 ms » sous la charge de
+/// verifier.sh, le 21 nov. 2026), sans que le masqueur soit quadratique. Ce temps avance par tics sous Windows (une
+/// dizaine de millisecondes, Wine compris) : chaque mesure répète l'appel autant de fois qu'il faut pour que la petite
+/// taille passe 50 ms, la grande avec le même nombre de fois.
 #[test]
 fn detail_long_croissance_lineaire() {
+    use std::time::Duration;
     let barres = |n: usize| format!("\"file:///home/x/{}", "\\".repeat(n));
     let espaces = |n: usize| format!("www.a{}", " ".repeat(n));
     let guillemets = |n: usize| "www.a \"".repeat(n / 7);
@@ -2278,18 +2284,26 @@ fn detail_long_croissance_lineaire() {
         let grand = sans_urls(&entree(100_000));
         assert_eq!(grand, sans_urls(&entree(200_000)));
         assert!(grand.len() <= super::ENTREE_MAX + 16, "{}", grand.len());
-        let temps = |n: usize| {
-            (0..5)
-                .map(|_| {
-                    let debut = std::time::Instant::now();
-                    let _ = crate::amelioration::texte(&entree(n));
-                    debut.elapsed()
-                })
-                .min()
-                .unwrap_or_default()
+        let (petit, quadruple) = (entree(2_000), entree(8_000));
+        let calcul = |texte: &str, fois: u32| {
+            let debut = crate::essais::calcul_du_fil();
+            for _ in 0..fois {
+                let _ = crate::amelioration::texte(texte);
+            }
+            crate::essais::calcul_du_fil().saturating_sub(debut)
         };
-        let (petit, quadruple) = (temps(2_000), temps(8_000));
-        assert!(quadruple < petit.saturating_mul(8), "{petit:?} puis {quadruple:?}");
+        let mut fois = 1;
+        while calcul(&petit, fois) < Duration::from_millis(50) {
+            assert!(fois < 1 << 16, "l'horloge du temps de calcul n'avance pas");
+            fois *= 2;
+        }
+        let (petit, quadruple) = (0..5)
+            .map(|_| (calcul(&petit, fois), calcul(&quadruple, fois)))
+            .fold((Duration::MAX, Duration::MAX), |(p, q), (a, b)| (p.min(a), q.min(b)));
+        assert!(
+            quadruple < petit.saturating_mul(8),
+            "{petit:?} puis {quadruple:?} ({fois} fois chacun)"
+        );
     }
 }
 

@@ -36,6 +36,57 @@ pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+/// Le temps de calcul du fil en cours (Linux : `CLOCK_THREAD_CPUTIME_ID`). Un essai qui borne un coût (« pas
+/// quadratique », « ne fige pas ») le mesure ainsi plutôt qu'en temps écoulé (`Instant`) : ce dernier compte aussi
+/// l'attente d'un cœur libre, et une machine chargée (verifier.sh lance ses étapes en parallèle, Wine et Linux en
+/// même temps) faisait tomber de tels essais pour rien, sans que le code soit plus lent. Le temps de calcul, lui, ne
+/// grandit qu'avec le travail fait.
+#[cfg(unix)]
+// FFI de libc : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
+// fichier sans s'en servir.
+#[allow(unsafe_code, dead_code)]
+pub fn calcul_du_fil() -> std::time::Duration {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime écrit dans `t`, qui vit le temps de l'appel, et n'en garde rien.
+    let rendu = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut t) };
+    assert_eq!(rendu, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    std::time::Duration::new(
+        u64::try_from(t.tv_sec).unwrap_or_default(),
+        u32::try_from(t.tv_nsec).unwrap_or_default(),
+    )
+}
+
+/// Le temps de calcul du fil en cours (Windows : `GetThreadTimes`, noyau et utilisateur, par pas de 100 ns ; sous
+/// Wine, lu du noyau Linux au tic d'horloge près). Voir la version Linux pour le pourquoi.
+#[cfg(windows)]
+// FFI de Windows : std n'a pas d'horloge du temps de calcul d'un fil. tests/programme.rs inclut ce
+// fichier sans s'en servir.
+#[allow(unsafe_code, dead_code)]
+pub fn calcul_du_fil() -> std::time::Duration {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let (mut creation, mut fin, mut noyau, mut utilisateur) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: GetCurrentThread rend un pseudo-handle du fil en cours, sans rien à fermer ; GetThreadTimes écrit dans
+    // les quatre FILETIME, qui vivent le temps de l'appel, et n'en garde rien.
+    let rendu = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &raw mut creation,
+            &raw mut fin,
+            &raw mut noyau,
+            &raw mut utilisateur,
+        )
+    };
+    assert!(rendu.is_ok(), "GetThreadTimes : {rendu:?}");
+    let cent_ns = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    std::time::Duration::from_nanos((cent_ns(noyau) + cent_ns(utilisateur)).saturating_mul(100))
+}
+
 /// Le dossier des fichiers jetables des essais, à la place du dossier temporaire du système (`temp_dir`) :
 /// `essais-tmp/` dans le dossier de compilation de cargo, celui de `CARGO_TARGET_DIR` s'il était donné à la compilation
 /// (`livrer-branche.sh`, `/verifier`), sinon `target/` du dépôt ; `cargo clean` le vide. Le dossier temporaire du
