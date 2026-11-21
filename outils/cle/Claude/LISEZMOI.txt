@@ -14,10 +14,12 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 1. LANCER
 
    Windows (10 version 1809 ou plus récent) : double-cliquer « Depanner avec Claude.bat » à la racine de la clé.
-   Linux : dans un terminal,   bash /run/media/$USER/VANGUARD/Claude/depanner.sh
-           (ou /media/$USER/VANGUARD/… sur Ubuntu, Debian, Mint).
+   Linux : dans un terminal,   bash -p /run/media/$USER/VANGUARD/Claude/depanner.sh
+           (ou /media/$USER/VANGUARD/… sur Ubuntu, Debian, Mint). Le « -p » empêche bash de prendre du code
+           dans l'environnement de l'ordinateur avant la première ligne du lanceur.
    Ordinateur qui ne démarre plus : démarrer sur SystemRescue (menu de la clé), puis la même commande que sous
-   Linux. Claude y monte le disque en lecture seule pour diagnostiquer.
+   Linux. Claude y monte le disque en lecture seule, sous /mnt, pour diagnostiquer. Un disque resté monté dans
+   le dossier de la session n'est jamais effacé : le lanceur le dit, et demande de le démonter.
 
    La première fois, Claude donne une adresse de connexion (le navigateur de cet ordinateur ne s'ouvre pas) :
    l'ouvrir sur VOTRE téléphone, jamais dans le navigateur de cet ordinateur (il garderait votre compte
@@ -29,11 +31,12 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    Taper /exit dans Claude. Le lanceur déconnecte le compte et efface de l'ordinateur Claude Code, la
    connexion, la conversation et les journaux de Claude Code de cette session. « Déconnecté » n'est affiché
    que si Anthropic a confirmé la fin de la connexion. S'il affiche « Déconnexion NON confirmée » (hors
-   ligne, ou une version de Claude Code qui ne le dit pas), terminer la session sur claude.ai (Réglages ›
-   Compte).
+   ligne, ou une version de Claude Code qui ne le dit pas) ou « La déconnexion n'a PAS pu être lancée »,
+   terminer la session sur claude.ai (Réglages › Compte).
    Fenêtre fermée par sa croix : sous Windows, un gardien efface quand même ;
    au moindre doute (ou sous Linux), relancer le lanceur une fois, puis /exit : il efface d'abord ce qui
-   était resté.
+   était resté. Ce qu'il ne peut pas effacer (un fichier encore ouvert, un disque monté) est dit, avec son
+   chemin, jamais compté comme effacé.
    Après un ordinateur douteux (virus possible), ou s'il s'est éteint ou a planté en pleine session :
    terminer aussi la session sur claude.ai (Réglages › Compte), pour que la connexion ne vaille plus rien
    ailleurs.
@@ -47,7 +50,8 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      temporaire de la session (à votre seul compte ; sous Windows, refusé sur un disque sans droits Windows,
      FAT ou réseau), effacé à la fin.
    - Avant le lancement, le programme est vérifié : sous Windows, sa signature numérique, contrôlée par
-     Windows, faite par « Anthropic, PBC » (nom, pays et numéro d'entreprise du certificat), et son empreinte ;
+     Windows, faite par « Anthropic, PBC » (nom, organisation, pays, numéro d'entreprise et registre du Delaware
+     du certificat, lus champ par champ), et son empreinte ;
      sous Linux, la signature d'Anthropic sur la liste des empreintes, et l'empreinte du programme.
    - Les connecteurs de votre compte Claude (courriel, fichiers en ligne, agenda) ne sont pas chargés, ni
      aucun serveur MCP. Le navigateur de cet ordinateur ne s'ouvre jamais.
@@ -56,7 +60,10 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      Code par l'ordinateur (/etc/claude-code, C:\Program Files\ClaudeCode, stratégies du registre) : le
      lanceur refuse de démarrer, et dit pourquoi. Seule exception : le dossier .claude du dossier personnel
      (Claude Code déjà utilisé sur cet ordinateur), où seules des consignes (CLAUDE.md, AGENTS.md, rules) font
-     refuser.
+     refuser ; sous Windows, seulement si le chemin du dossier personnel au dossier temporaire ne passe par
+     aucun lien ni jonction.
+   - Les variables de l'ordinateur qui choisiraient le serveur, le compte, les certificats lus par Claude Code,
+     le mandataire, le traçage ou du code à charger sont retirées avant toute commande de Claude Code.
    - Claude reçoit des consignes de dépannage (CLAUDE.md, dans ce dossier) : diagnostiquer en lecture seule,
      expliquer la cause avant de corriger, ne rien changer sans accord, ne jamais couper l'antivirus, le
      pare-feu ni les mises à jour, respecter la vie privée du proche.
@@ -72,6 +79,15 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
    - Le lanceur Windows est essayé sous PowerShell sous Linux, les appels propres à Windows (droits,
      signature, disque, gardien) remplacés par des doublures : il n'a pas encore tourné sur un vrai Windows.
    - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
+   - Sous Linux, lancé sans « -p » (bash depanner.sh), le lanceur se relance aussitôt avec ; mais bash a déjà
+     lu l'environnement avant sa première ligne (traçage, BASH_ENV) : d'où « bash -p ».
+   - Sous WSL (Linux dans Windows), les réglages imposés de Windows (C:\Program Files\ClaudeCode) font
+     refuser, mais la politique du registre de Windows n'est pas lue d'ici : le lanceur le dit et demande.
+     Mieux : le lanceur Windows (« Depanner avec Claude.bat »).
+   - Sous Linux, Claude Code peut laisser une prise vide (cc-socks…) dans le dossier d'exécution de
+     l'utilisateur (XDG_RUNTIME_DIR) : elle ne contient ni la connexion ni la conversation, et disparaît
+     quand l'utilisateur ferme sa session. Le lanceur n'y touche pas (elle pourrait être celle d'un autre
+     Claude Code).
    - Sous Windows, la liste des empreintes n'est pas vérifiée par une signature (pas de gpg) : seule la
      signature d'Anthropic sur le programme l'est.
    - Sous Windows, les variables de certificats de l'ordinateur sont retirées, mais Claude Code se fie, comme
@@ -81,6 +97,13 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      pas s'il apparaît pendant la session.
    - Le lanceur vit sur la même clé que le programme : il voit une copie abîmée, pas une clé réécrite en
      entier. Une clé qui a quitté vos mains repasse par Vanguard (sur votre ordinateur) avant de servir.
+   - Sur l'ordinateur visité, le lanceur prouve « signé par Anthropic », pas « dernière version » : une clé
+     restée longtemps dans un tiroir, ou rechargée avec une version plus ancienne mais signée, passe. Vanguard
+     refuse les versions plus anciennes sur la clé de son propriétaire ; mettez la clé à jour avant de partir.
+   - Vanguard prend la version qu'Anthropic annonce « stable » ; cette annonce n'est pas signée. Seule
+     l'authenticité du programme est prouvée, pas qu'il soit la version stable. Une version plus récente
+     posée ainsi bloque ensuite les plus anciennes (dit par Vanguard) ; pour lever le blocage, écrire la
+     version voulue dans ~/.local/state/vanguard/claude-cle-version.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
      empêche. Sur un ordinateur qu'on croit infecté, démarrer plutôt sur SystemRescue (menu de la clé), et
      terminer la session sur claude.ai après.

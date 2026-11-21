@@ -14,10 +14,12 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
 1. START
 
    Windows (10 version 1809 or later): double-click "Depanner avec Claude.bat" at the root of the key.
-   Linux: in a terminal,   bash /run/media/$USER/VANGUARD/Claude/depanner.sh
-          (or /media/$USER/VANGUARD/… on Ubuntu, Debian, Mint).
+   Linux: in a terminal,   bash -p /run/media/$USER/VANGUARD/Claude/depanner.sh
+          (or /media/$USER/VANGUARD/… on Ubuntu, Debian, Mint). The "-p" keeps bash from taking code from
+          the computer's environment before the launcher's first line.
    Computer that no longer starts: boot SystemRescue (key menu), then the same command as on Linux. Claude
-   mounts the disk read-only there to diagnose.
+   mounts the disk read-only there, under /mnt, to diagnose. A disk still mounted in the session folder is
+   never erased: the launcher says so, and asks to unmount it.
 
    The first time, Claude gives a login address (this computer's browser does not open): open it on YOUR
    phone, never in this computer's browser (it would keep your account signed in after you leave), sign in,
@@ -29,9 +31,10 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
    Type /exit in Claude. The launcher logs out and erases from the computer Claude Code, the login, the
    conversation and Claude Code's logs of this session. "Logged out" is shown only if Anthropic confirmed
    that the login ended. If it shows "Logout NOT confirmed" (offline, or a version of Claude Code that
-   does not tell), end the session on claude.ai (Settings › Account).
+   does not tell) or "The logout could NOT be started", end the session on claude.ai (Settings › Account).
    Window closed with its X: on Windows, a watchdog still erases; if in doubt (or on Linux),
-   run the launcher once more, then /exit: it first erases what was left.
+   run the launcher once more, then /exit: it first erases what was left. What it cannot erase (a file
+   still open, a mounted disk) is shown, with its path, never counted as erased.
    After a doubtful computer (possible virus), or if it shut down or crashed during the session: also end
    the session on claude.ai (Settings › Account), so the login is worthless anywhere else.
    Signed in in this computer's browser by mistake: sign out of claude.ai there before leaving.
@@ -44,7 +47,8 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      folder (your account's only; on Windows, refused on a drive without Windows permissions, FAT or
      network), erased at the end.
    - Before it runs, the program is checked: on Windows, its digital signature, checked by Windows, made by
-     "Anthropic, PBC" (name, country and company number of the certificate), and its checksum; on Linux,
+     "Anthropic, PBC" (name, organization, country, company number and Delaware registry of the certificate,
+     read field by field), and its checksum; on Linux,
      Anthropic's signature on the checksum list, and the program's checksum.
    - Your Claude account's connectors (mail, online files, calendar) are not loaded, nor any MCP server.
      This computer's browser never opens.
@@ -52,7 +56,10 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      CLAUDE.local.md, AGENTS.md, .mcp.json, a .claude folder), or settings imposed on Claude Code by the
      computer (/etc/claude-code, C:\Program Files\ClaudeCode, registry policies): the launcher refuses to
      start, and says why. Only exception: the .claude folder of the home folder (Claude Code already used on
-     this computer), where only instructions (CLAUDE.md, AGENTS.md, rules) cause a refusal.
+     this computer), where only instructions (CLAUDE.md, AGENTS.md, rules) cause a refusal; on Windows, only
+     if the path from the home folder to the temporary folder goes through no link or junction.
+   - The computer's variables that would choose the server, the account, the certificates read by Claude
+     Code, the proxy, tracing or code to load are removed before any Claude Code command.
    - Claude gets troubleshooting instructions (CLAUDE.md, in this folder): diagnose read-only, explain the
      cause before fixing, change nothing without consent, never turn off the antivirus, the firewall or
      updates, respect the relative's privacy.
@@ -68,6 +75,14 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
    - The Windows launcher is tested under PowerShell on Linux, with the Windows-specific calls (permissions,
      signature, drive, watchdog) replaced by stand-ins: it has not yet run on a real Windows.
    - On Linux without gpg, Anthropic's signature cannot be checked: the launcher says so and asks.
+   - On Linux, started without "-p" (bash depanner.sh), the launcher restarts itself with it at once; but bash
+     has already read the environment before its first line (tracing, BASH_ENV): hence "bash -p".
+   - Under WSL (Linux inside Windows), Windows' imposed settings (C:\Program Files\ClaudeCode) cause a
+     refusal, but the Windows registry policy is not read from there: the launcher says so and asks. Better:
+     the Windows launcher ("Depanner avec Claude.bat").
+   - On Linux, Claude Code may leave an empty socket (cc-socks…) in the user's runtime folder
+     (XDG_RUNTIME_DIR): it holds neither the login nor the conversation, and goes away when the user logs
+     out. The launcher leaves it alone (it could belong to another Claude Code).
    - On Windows, the checksum list is not checked by a signature (no gpg): only Anthropic's signature on the
      program is.
    - On Windows, the computer's certificate variables are removed, but Claude Code trusts, like the browser,
@@ -77,6 +92,13 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      not if it appears during the session.
    - The launcher lives on the same key as the program: it sees a damaged copy, not a fully rewritten key.
      A key that left your hands goes through Vanguard (on your computer) again before use.
+   - On the visited computer, the launcher proves "signed by Anthropic", not "latest version": a key left in
+     a drawer for long, or reloaded with an older but signed version, passes. Vanguard refuses older versions
+     on its owner's key; update the key before leaving.
+   - Vanguard takes the version Anthropic announces as "stable"; that announcement is not signed. Only the
+     program's authenticity is proven, not that it is the stable version. A newer version set this way then
+     blocks older ones (Vanguard says so); to lift the block, write the wanted version into
+     ~/.local/state/vanguard/claude-cle-version.
    - Malware already running under the same account can read the login during the session: nothing stops
      it. On a computer believed infected, boot SystemRescue instead (key menu), and end the session on
      claude.ai afterwards.
