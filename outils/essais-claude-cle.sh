@@ -380,6 +380,120 @@ grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null && grep -q "Cla
   bon "changé puis panne : notifié et nommé" || rate "changé puis panne : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
 attendu "après la panne : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
 
+# Campagne r3 : un ordinateur à part (son cache, son état, sa clé), pour ne rien déranger plus haut.
+echo "Note de version, vérification impossible, clé plus récente"
+r3() { env XDG_CACHE_HOME="$ESSAI/r3/cache" XDG_STATE_HOME="$ESSAI/r3/etat" "$@"; }
+R3C=$ESSAI/r3/cache/vanguard/claude-cle R3N=$ESSAI/r3/etat/vanguard/claude-cle-version R3K=$ESSAI/r3/cle
+mkdir -p "$R3K"
+echo cle >"$R3K/vanguard.cle"
+echo fedcba9876543210fedcba9876543210 >"$R3K/vanguard.jeton"
+R3J=$ESSAI/r3/etat/vanguard/claude-cle-fedcba9876543210fedcba9876543210.sha256
+publier 2.0.6
+attendu "r3 : 2.0.6 dans le cache" 0 r3 bash outils/claude-cle.sh --chercher
+publier 2.0.7
+attendu "r3 : 2.0.7 dans le cache" 0 r3 bash outils/claude-cle.sh --chercher
+attendu "r3 : 2.0.7 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+# Une note de version vide (disque plein pendant son écriture) ou abîmée n'est jamais « pas de note » : le cache
+# redescendu à 2.0.6 ne fait pas redescendre la clé.
+mv "$R3C/2.0.7" "$ESSAI/r3/2.0.7-de-cote"
+attendu "note intacte, cache redescendu : refusé (témoin)" 1 r3 bash outils/claude-cle.sh --cle "$R3K"
+for abime in vide abc; do
+  if [[ $abime == vide ]]; then : >"$R3N"; else echo abc >"$R3N"; fi
+  rm -f "$ESSAI/notifications"
+  attendu "note de version $abime, cache redescendu : rien n'est posé" 1 r3 bash outils/claude-cle.sh --cle "$R3K"
+  cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/r3/2.0.7-de-cote/linux-x64/claude" &&
+    grep -q "note de version abîmée" "$ESSAI/notifications" 2>/dev/null && bon "note $abime : clé gardée en 2.0.7, notifié" ||
+    rate "note $abime : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+  attendu "note de version $abime : la recherche refuse" 1 r3 bash outils/claude-cle.sh --chercher
+  [[ ! -e $R3C/2.0.7 && $(cat "$R3N") == "$([[ $abime == vide ]] || echo abc)" ]] &&
+    bon "note $abime : rien téléchargé, note pas réécrite plus bas" || rate "note $abime : $(cat "$R3N")"
+done
+echo 2.0.7 >"$R3N"
+mv "$ESSAI/r3/2.0.7-de-cote" "$R3C/2.0.7"
+# La note qui ne peut pas s'écrire (dossier d'état en lecture seule) : pas de « ✔ », code 1, et dit.
+publier 2.0.8
+chmod a-w "$ESSAI/r3/etat/vanguard"
+attendu "dossier d'état en lecture seule : la recherche échoue" 1 r3 bash outils/claude-cle.sh --chercher
+chmod u+w "$ESSAI/r3/etat/vanguard"
+! grep -q "✔" "$ESSAI/sortie" && grep -q "pas écrite" "$ESSAI/sortie" && bon "note pas écrite : dit, pas de ✔" ||
+  rate "note pas écrite : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "dossier d'état revenu : note écrite" 0 r3 bash outils/claude-cle.sh --chercher
+[[ $(cat "$R3N") == 2.0.8 && ! -e $R3N.tmp ]] && bon "note 2.0.8, écrite d'un coup" || rate "note : $(cat "$R3N")"
+# Le serveur et le cache redescendus ensemble (la 2.0.8 perdue, « stable » à 2.0.7) : refusé et notifié, même si la
+# version annoncée est déjà dans le cache.
+mv "$R3C/2.0.8" "$ESSAI/r3/2.0.8-de-cote"
+echo 2.0.7 >"$ESSAI/serveur/stable"
+rm -f "$ESSAI/notifications"
+attendu "cache et serveur redescendus : refusé" 1 r3 bash outils/claude-cle.sh --chercher
+grep -q "plus ancienne refusée" "$ESSAI/notifications" 2>/dev/null && ! grep -q "déjà dans le cache" "$ESSAI/sortie" &&
+  bon "cache et serveur redescendus : notifié" || rate "redescendus : $(tail -1 "$ESSAI/sortie")"
+mv "$ESSAI/r3/2.0.8-de-cote" "$R3C/2.0.8"
+echo 2.0.8 >"$ESSAI/serveur/stable"
+# Une vérification impossible ici (dossier temporaire sans droit d'écriture, clé de confiance pas chargée) n'efface
+# rien du cache et ne crie pas au piège ; même version annoncée, puis une nouvelle.
+mkdir -p "$ESSAI/r3/tmp-ro"
+chmod 500 "$ESSAI/r3/tmp-ro"
+echo "pas une clé" >"$ESSAI/r3/cle-abimee.asc"
+for panne in "TMPDIR=$ESSAI/r3/tmp-ro" "VANGUARD_CLAUDE_CLE_GPG=$ESSAI/r3/cle-abimee.asc"; do
+  for annonce in 2.0.8 2.0.9; do
+    [[ $annonce == 2.0.8 ]] || publier 2.0.9
+    rm -f "$ESSAI/notifications"
+    attendu "vérification impossible (${panne%%=*}), annonce $annonce : code 1" 1 r3 env "$panne" bash outils/claude-cle.sh --chercher
+    [[ -f $R3C/2.0.7/.verifiee && -f $R3C/2.0.8/.verifiee && ! -e $R3C/2.0.9 ]] && grep -q "impossible" "$ESSAI/sortie" &&
+      ! grep -q "ne se vérifie plus\|refusé :" "$ESSAI/sortie" && ! grep -q "refusé" "$ESSAI/notifications" 2>/dev/null &&
+      bon "vérification impossible (${panne%%=*}, $annonce) : cache entier, pas d'alerte de piège" ||
+      rate "vérification impossible (${panne%%=*}, $annonce) : $(ls "$R3C" | tr '\n' ' ') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+    echo 2.0.8 >"$ESSAI/serveur/stable"
+  done
+done
+chmod 700 "$ESSAI/r3/tmp-ro"
+attendu "r3 : 2.0.8 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+# Un autre ordinateur pose la 2.0.9 sur la même clé ; de retour ici (cache et note à 2.0.8), la clé n'est pas
+# redescendue : elle garde sa version signée plus récente, et la note monte.
+echo 2.0.9 >"$ESSAI/serveur/stable"
+r3b() { env XDG_CACHE_HOME="$ESSAI/r3/cache-b" XDG_STATE_HOME="$ESSAI/r3/etat-b" "$@"; }
+attendu "autre ordinateur : 2.0.9 dans son cache" 0 r3b bash outils/claude-cle.sh --chercher
+attendu "autre ordinateur : 2.0.9 posée (sans note de dépôt chez lui)" 2 r3b bash outils/claude-cle.sh --cle "$R3K"
+rm -f "$ESSAI/notifications"
+attendu "clé plus récente que le cache : gardée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" &&
+  cmp -s "$R3K/Claude/manifest.json" "$ESSAI/serveur/2.0.9/manifest.json" && [[ $(cat "$R3N") == 2.0.9 ]] &&
+  ! grep -q "piège" "$ESSAI/sortie" && grep -q "plus récent sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "clé plus récente : 2.0.9 gardée, note montée, pas de fausse alerte" ||
+  rate "clé plus récente : $(cat "$R3N") $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "clé plus récente, pose suivante : le cache plus ancien est refusé" 1 r3 bash outils/claude-cle.sh --cle "$R3K"
+cmp -s "$R3K/Claude/Linux/claude" "$ESSAI/serveur/2.0.9/linux-x64/claude" && bon "pose suivante : clé laissée en 2.0.9" ||
+  rate "pose suivante : clé redescendue"
+attendu "r3 : 2.0.9 dans le cache" 0 r3 bash outils/claude-cle.sh --chercher
+attendu "r3 : 2.0.9 posée" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+# Une version plus récente sur la clé dont un binaire a changé (même taille) n'est pas gardée : elle ne se vérifie
+# pas, la copie du cache la remplace, et c'est dit.
+publier 2.1.0
+attendu "autre ordinateur : 2.1.0" 0 r3b bash outils/claude-cle.sh --chercher
+attendu "autre ordinateur : 2.1.0 posée" 0 r3b bash outils/claude-cle.sh --cle "$R3K"
+printf 'X' | dd of="$R3K/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
+attendu "clé plus récente mais binaire changé : remplacée, dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
+cmp -s "$R3K/Claude/Linux/claude" "$R3C/2.0.9/linux-x64/claude" && bon "binaire changé : la copie vérifiée remise" ||
+  rate "binaire changé : gardé"
+# La note de dépôt de la clé vidée (abîmée hors de ce script), et un binaire changé à taille égale : dit (code 2).
+: >"$R3J"
+printf 'X' | dd of="$R3K/Claude/Windows/claude.exe" bs=1 seek=4 conv=notrunc 2>/dev/null
+rm -f "$ESSAI/notifications"
+attendu "note de dépôt vide, binaire changé : dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
+cmp -s "$R3K/Claude/Windows/claude.exe" "$R3C/2.0.9/win32-x64/claude.exe" &&
+  grep -q "inconnu sur la clé" "$ESSAI/notifications" 2>/dev/null && bon "note vide : binaire changé remplacé et notifié" ||
+  rate "note vide : $(cat "$ESSAI/notifications" 2>/dev/null)"
+# Un dossier à la place d'un binaire noté : jamais dit « retiré » tant qu'il est là.
+rm "$R3K/Claude/Linux/claude"
+mkdir "$R3K/Claude/Linux/claude"
+echo charge >"$R3K/Claude/Linux/claude/charge"
+attendu "binaire devenu dossier : dit (code 2)" 2 r3 bash outils/claude-cle.sh --cle "$R3K"
+grep -q "PAS retiré" "$ESSAI/sortie" && ! grep -q ": retiré\.$" "$ESSAI/sortie" && bon "dossier à la place : « PAS retiré », pas « retiré »" ||
+  rate "dossier à la place : $(grep 'retiré' "$ESSAI/sortie" | tr '\n' ' ')"
+rm -rf "$R3K/Claude/Linux/claude"
+attendu "dossier effacé à la main : reposé" 0 r3 bash outils/claude-cle.sh --cle "$R3K"
+echo 2.0.5 >"$ESSAI/serveur/stable"
+
 echo "Lanceur Linux (depanner.sh)"
 attendu "pose pour le lanceur" 0 bash outils/claude-cle.sh --cle "$CLE"
 # L'empreinte de la vraie clé d'Anthropic est écrite dans le lanceur : la copie d'essai a celle de la clé d'essai.

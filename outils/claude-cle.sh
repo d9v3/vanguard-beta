@@ -104,7 +104,9 @@ cache_present() {
 }
 
 # Vérifie la signature du manifeste d'un dossier ; écrit sur la sortie le manifeste tel que gpg l'a vérifié. Code 1
-# (la raison sur la sortie d'erreur) sinon.
+# (la raison sur la sortie d'erreur) sinon. Code 3 si la vérification n'a pas pu se faire ici (dossier temporaire
+# plein ou sans droit d'écriture, clé de confiance pas chargée) : une panne de cet ordinateur ne passe jamais pour une
+# signature fausse (le cache serait effacé, et l'alerte crierait au piège).
 # Le trousseau jetable fermé : ses processus arrêtés et son dossier de sockets (/run/user/…/gnupg/d.…) retiré, sans
 # quoi chaque vérification en laisse un.
 trousseau_ferme() { # dossier
@@ -114,12 +116,22 @@ trousseau_ferme() { # dossier
 }
 manifeste_verifie() { # dossier
   local d=$1 trousseau statut
-  trousseau=$(mktemp -d "${TMPDIR:-/tmp}/vanguard-claude-gpg.XXXXXX") || return 1
-  chmod 700 "$trousseau"
-  gpg --homedir "$trousseau" --quiet --batch --import "$CLE_GPG" 2>/dev/null
+  trousseau=$(mktemp -d "${TMPDIR:-/tmp}/vanguard-claude-gpg.XXXXXX" 2>/dev/null) ||
+    { echo "vérification impossible ici : dossier temporaire (${TMPDIR:-/tmp}) plein ou sans droit d'écriture" >&2; return 3; }
+  # La clé fixée, chargée et retrouvée par son empreinte : un import raté (disque plein) n'est pas « clé inconnue ».
+  if ! chmod 700 "$trousseau" || ! gpg --homedir "$trousseau" --quiet --batch --import "$CLE_GPG" 2>/dev/null ||
+    ! gpg --homedir "$trousseau" --batch --list-keys "$EMPREINTE_CLE" >/dev/null 2>&1; then
+    trousseau_ferme "$trousseau"
+    echo "vérification impossible ici : clé de confiance pas chargée dans gpg (dossier temporaire ${TMPDIR:-/tmp} plein ?)" >&2
+    return 3
+  fi
   # La signature détachée porte sur les octets du fichier : ceux-là sont copiés à part, puis lus après vérification,
   # pour qu'un fichier changé entre la vérification et la lecture ne passe pas.
-  cp -- "$d/manifest.json" "$trousseau/manifest.json" 2>/dev/null
+  if [[ -f $d/manifest.json ]] && ! cp -- "$d/manifest.json" "$trousseau/manifest.json" 2>/dev/null; then
+    trousseau_ferme "$trousseau"
+    echo "vérification impossible ici : manifeste pas copié dans le dossier temporaire (${TMPDIR:-/tmp} plein ?)" >&2
+    return 3
+  fi
   statut=$(gpg --homedir "$trousseau" --batch --status-fd 1 --verify "$d/manifest.json.sig" "$trousseau/manifest.json" \
     2>/dev/null || true)
   # GOODSIG, et VALIDSIG … <empreinte de la clé principale> en dernier champ : la clé fixée ici, et elle seule.
@@ -179,7 +191,7 @@ version_verifiee() { # dossier version
   for f in manifest.json manifest.json.sig; do
     [[ -f $d/$f && ! -L $d/$f ]] || { echo "$f : absent, ou pas un fichier ordinaire" >&2; return 1; }
   done
-  m=$(manifeste_verifie "$d") || return 1
+  m=$(manifeste_verifie "$d") || return $?
   [[ $(champ version <<<"$m") == "$v" ]] || { echo "le manifeste signé n'est pas celui de la version $v" >&2; return 1; }
   for ligne in "${PLATEFORMES[@]}"; do
     read -r plat bin _dossier <<<"$ligne"
@@ -193,12 +205,48 @@ version_verifiee() { # dossier version
   done
 }
 
-# La plus haute version jamais vérifiée ici, notée hors du cache (un cache vidé ou redescendu ne la fait pas oublier).
+# La plus haute version jamais vérifiée ici, notée hors du cache (un cache vidé ou redescendu ne la fait pas oublier) ;
+# rien si la note n'existe pas. Une note présente mais vide, abîmée ou illisible (disque plein pendant son écriture)
+# n'est jamais prise pour « pas de note » : code 1, la raison sur la sortie d'erreur ; la protection contre le retour
+# ne tombe pas avec elle.
+NOTE_VERSION=$ETAT/claude-cle-version
 haute_notee() {
   local h
-  h=$(head -c 32 "$ETAT/claude-cle-version" 2>/dev/null | tr -d '[:space:]')
-  [[ $h =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] && echo "$h"
-  return 0
+  [[ -e $NOTE_VERSION || -L $NOTE_VERSION ]] || return 0
+  h=$(head -c 33 -- "$NOTE_VERSION" 2>/dev/null) || h=""
+  if [[ ! -f $NOTE_VERSION || ${#h} -gt 32 || ! $(tr -d '[:space:]' <<<"$h") =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]]; then
+    echo "note de la dernière version vérifiée ($NOTE_VERSION) vide, abîmée ou illisible" >&2
+    return 1
+  fi
+  tr -d '[:space:]' <<<"$h"
+  echo
+}
+# La note, écrite d'un coup (nom provisoire, puis renommée) puis relue : jamais à moitié, et un échec (disque plein,
+# dossier en lecture seule) est dit (code 1), jamais suivi d'un « ✔ ».
+noter_haute() { # version
+  { mkdir -p -- "$ETAT" && printf '%s\n' "$1" >"$NOTE_VERSION.tmp" && mv -f -T -- "$NOTE_VERSION.tmp" "$NOTE_VERSION" &&
+    [[ $(haute_notee 2>/dev/null) == "$1" ]]; } 2>/dev/null && return 0
+  rm -f -- "$NOTE_VERSION.tmp" 2>/dev/null
+  echo "✖ Note de la dernière version vérifiée ($1) pas écrite dans $NOTE_VERSION (disque plein, ou dossier en lecture seule ?)." >&2
+  avertir "Claude Code : note de version pas écrite" "La $1 est vérifiée, mais sa note n'a pas pu être écrite ($NOTE_VERSION)."
+  return 1
+}
+# Rien n'est effacé ni téléchargé quand la vérification ne peut pas se faire sur cet ordinateur (code 3 de
+# manifeste_verifie) : dit, notifié une fois par raison, code 1.
+impossible() { # raison
+  echo "✖ Vérification de Claude Code impossible sur cet ordinateur ($1) : rien n'est effacé ni téléchargé." >&2
+  if [[ $(cat "$ETAT/claude-cle-impossible" 2>/dev/null) != "$1" ]]; then
+    avertir "Claude Code : vérification impossible" "$1. Rien n'est effacé ; la clé garde ce qu'elle a."
+    mkdir -p "$ETAT" 2>/dev/null && echo "$1" >"$ETAT/claude-cle-impossible" 2>/dev/null
+  fi
+  return 1
+}
+# La note illisible : rien n'est téléchargé ni posé tant qu'elle n'est pas réparée (dit et notifié).
+note_abimee() {
+  echo "✖ La note de la dernière version vérifiée ($NOTE_VERSION) est vide ou abîmée : rien n'est téléchargé ni posé." >&2
+  echo "  La regarder ; y écrire la dernière version posée sur la clé (par exemple 2.1.0), ou l'effacer si elle est" >&2
+  echo "  perdue (la protection contre le retour repart alors de la plus récente du cache)." >&2
+  avertir "Claude Code : note de version abîmée" "$NOTE_VERSION est vide ou abîmée : rien n'est téléchargé ni posé."
 }
 plus_ancienne() { # a b : code 0 si a est plus ancienne que b
   [[ $1 != "$2" && $(printf '%s\n' "$1" "$2" | sort -V | head -1) == "$1" ]]
@@ -211,7 +259,7 @@ chercher() {
   # Le verrou hors du cache, comme ceux du déploiement : un lien planté dans le cache ne fait rien écrire ailleurs.
   exec 8>>"${XDG_RUNTIME_DIR:-/tmp}/vanguard-claude-cle.lock" || return 1
   flock 8
-  local v avant haute m ligne plat bin _dossier sha taille raison reste
+  local v avant haute notee m ligne plat bin _dossier sha taille raison reste code
   # Un téléchargement tué (arrêt brutal, kill -9) laisse son dossier partiel : sous le verrou, aucun n'est en cours.
   # Seulement ces noms-là (.x.y.z.XXXXXX), de vrais dossiers.
   for reste in "$CACHE"/.[0-9]*.??????; do
@@ -220,28 +268,23 @@ chercher() {
   done
   v=$(lire "$SOURCE/stable" | tr -d '[:space:]') || { echo "✖ Version stable de Claude Code illisible (Internet ?)." >&2; return 1; }
   [[ $v =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}$ ]] || { echo "✖ Version stable de forme inattendue : rien n'est téléchargé." >&2; return 1; }
+  notee=$(haute_notee 2>/dev/null) || { note_abimee; return 1; }
   avant=$(derniere)
   # La plus récente du cache, si ce n'est pas celle annoncée, revérifiée elle aussi : une copie abîmée ou un témoin
   # posé à la main ne bloque pas les mises à jour. La protection contre le retour tient par la note (haute_notee).
-  while [[ -n $avant && $avant != "$v" ]] && ! raison=$(version_verifiee "$CACHE/$avant" "$avant" 2>&1); do
+  # Une vérification impossible ici (code 3) n'efface rien.
+  while [[ -n $avant && $avant != "$v" ]]; do
+    raison=$(version_verifiee "$CACHE/$avant" "$avant" 2>&1)
+    code=$?
+    ((code == 0)) && break
+    ((code != 3)) || { impossible "$raison"; return 1; }
     echo "⚠ Claude Code $avant du cache ne se vérifie plus ($raison) : effacé." >&2
     rm -rf -- "${CACHE:?}/$avant"
     avant=$(derniere)
   done
-  if [[ $v == "$avant" ]]; then
-    # Revérifiée, pas crue sur son témoin : une copie abîmée ou changée est effacée, puis téléchargée de nouveau.
-    if raison=$(version_verifiee "$CACHE/$v" "$v" 2>&1); then
-      # Notée ici aussi : un cache rempli autrement (ou une note perdue) garde sa protection contre le retour.
-      haute=$(printf '%s\n' "$v" "$(haute_notee)" | sed '/^$/d' | sort -V | tail -1)
-      mkdir -p "$ETAT" && echo "$haute" >"$ETAT/claude-cle-version"
-      echo "Claude Code $v : déjà dans le cache, revérifié."
-      return 0
-    fi
-    echo "⚠ Claude Code $v du cache ne se vérifie plus ($raison) : effacé, téléchargé de nouveau." >&2
-    rm -rf -- "${CACHE:?}/$v"
-    avant=$(derniere)
-  fi
-  haute=$(printf '%s\n' "$avant" "$(haute_notee)" | sed '/^$/d' | sort -V | tail -1)
+  # Avant tout le reste, même quand la version annoncée est déjà dans le cache : une annonce plus ancienne que la plus
+  # haute version vérifiée est refusée et dite (le cache a pu redescendre en même temps que le serveur).
+  haute=$(printf '%s\n' "$avant" "$notee" | sed '/^$/d' | sort -V | tail -1)
   if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
     echo "✖ Le serveur annonce Claude Code $v, plus ancien que la $haute déjà vérifiée : refusé." >&2
     # Notifié une fois par annonce : la minuterie repasse chaque jour, la même alerte n'use pas l'attention.
@@ -250,6 +293,21 @@ chercher() {
       mkdir -p "$ETAT" && echo "$v<$haute" >"$ETAT/claude-cle-refus"
     fi
     return 1
+  fi
+  if [[ $v == "$avant" ]]; then
+    # Revérifiée, pas crue sur son témoin : une copie abîmée ou changée est effacée, puis téléchargée de nouveau.
+    raison=$(version_verifiee "$CACHE/$v" "$v" 2>&1)
+    code=$?
+    if ((code == 0)); then
+      # Notée ici aussi : un cache rempli autrement (ou une note perdue) garde sa protection contre le retour.
+      noter_haute "$haute" || return 1
+      echo "Claude Code $v : déjà dans le cache, revérifié."
+      return 0
+    fi
+    ((code != 3)) || { impossible "$raison"; return 1; }
+    echo "⚠ Claude Code $v du cache ne se vérifie plus ($raison) : effacé, téléchargé de nouveau." >&2
+    rm -rf -- "${CACHE:?}/$v"
+    avant=$(derniere)
   fi
   # Global, pas local : le piège de sortie le lit après la fin de la fonction.
   tmp=$(mktemp -d "$CACHE/.$v.XXXXXX") || return 1
@@ -260,8 +318,11 @@ chercher() {
       -o "$tmp/$f" "$SOURCE/$v/$f" ||
       { echo "✖ $v/$f : pas téléchargé." >&2; return 1; }
   done
-  if ! m=$(manifeste_verifie "$tmp" 2>"$tmp/.raison"); then
+  m=$(manifeste_verifie "$tmp" 2>"$tmp/.raison")
+  code=$?
+  if ((code != 0)); then
     raison=$(cat "$tmp/.raison")
+    ((code != 3)) || { impossible "$raison"; return 1; }
     echo "✖ Claude Code $v refusé : $raison." >&2
     avertir "Claude Code $v refusé" "$raison"
     return 1
@@ -275,7 +336,10 @@ chercher() {
     curl -fL --proto '=https,file' --retry 3 --connect-timeout 20 --max-filesize "$taille" --speed-limit 10240 --speed-time 120 --progress-bar \
       -o "$tmp/$plat/$bin" "$SOURCE/$v/$plat/$bin" || { echo "✖ $plat/$bin : pas téléchargé." >&2; return 1; }
   done
-  if ! raison=$(version_verifiee "$tmp" "$v" 2>&1); then
+  raison=$(version_verifiee "$tmp" "$v" 2>&1)
+  code=$?
+  if ((code != 0)); then
+    ((code != 3)) || { impossible "$raison"; return 1; }
     echo "✖ Claude Code $v refusé : $raison." >&2
     avertir "Claude Code $v refusé" "$raison"
     return 1
@@ -288,7 +352,7 @@ chercher() {
   touch "$CACHE/$v/.verifiee"
   # Deux versions gardées : la nouvelle, et celle d'avant, le temps que la clé passe à la nouvelle.
   local d
-  mkdir -p "$ETAT" && echo "$v" >"$ETAT/claude-cle-version"
+  noter_haute "$v" || return 1
   # Seulement les dossiers de version (nom x.y.z, avec leur manifeste) : rien d'autre n'est effacé.
   for d in "$CACHE"/*/; do
     d=${d%/}
@@ -379,17 +443,29 @@ retirer() { # point note
 # Ceux de la liste « remplacés » (changés pendant le voyage, déjà remplacés par la copie vérifiée avant la panne)
 # sont dits aussi : la panne qui suit ne fait jamais oublier qu'ils avaient changé.
 retirer_change() { # point changes raison [remplacés]
-  local p=$1 chemin
+  local p=$1 chemin restes=""
   for chemin in $2; do
     # Un lien à la place du binaire est retiré lui-même (rm ne suit pas) ; jamais au travers d'un dossier lien.
     [[ $chemin =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ && ! -L $p/Claude && ! -L $p/${chemin%/*} ]] &&
-      rm -f -- "${p:?}/$chemin"
+      rm -f -- "${p:?}/$chemin" 2>/dev/null
+    # Relu après coup : un dossier (ou ce qu'on n'a pas pu retirer) à la place du binaire n'est jamais dit « retiré ».
+    [[ ! -e $p/$chemin && ! -L $p/$chemin ]] || restes+=" $chemin"
   done
-  echo "✖ Sur la clé, changé depuis le dernier dépôt :$2. Pas de copie vérifiée à remettre ($3) : retiré." >&2
+  if [[ -z $restes ]]; then
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$2. Pas de copie vérifiée à remettre ($3) : retiré." >&2
+  else
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$2. Pas de copie vérifiée à remettre ($3)." >&2
+    echo "  PAS retiré (dossier ou lien à sa place, ou effacement refusé) :$restes. À regarder, puis effacer à la main." >&2
+  fi
   [[ -z ${4:-} ]] || echo "  Changé aussi, déjà remplacé par la copie vérifiée :$4." >&2
   echo "  Un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
-  avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$2${4:-}. Retiré de la clé ($3) ou remplacé \
+  if [[ -z $restes ]]; then
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$2${4:-}. Retiré de la clé ($3) ou remplacé \
 par la copie vérifiée ; un programme remplacé est un piège possible."
+  else
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$2${4:-}. PAS retiré :$restes (à effacer à la \
+main) ; un programme remplacé est un piège possible."
+  fi
   exit 2
 }
 # Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé, et il est toujours
@@ -434,6 +510,56 @@ minuterie() {
   fi
 }
 
+# La version que porte déjà la clé, si elle se vérifie entière : manifeste signé par la clé fixée, et chaque binaire
+# à la taille et à l'empreinte de ce manifeste. VERSION_CLE la reçoit (rien sinon), et CLE_SHA l'empreinte de chaque
+# binaire. Rien n'est suivi : un lien à la place d'un dossier ou d'un fichier, et ce n'est pas vérifié. Les binaires
+# ne sont relus que si la version signée est plus récente que « plus_que ».
+declare -A CLE_SHA=()
+VERSION_CLE=""
+version_cle() { # point plus_que
+  local c=$1/Claude m vc ligne plat bin dossier sha taille f
+  VERSION_CLE="" CLE_SHA=()
+  [[ -d $c && ! -L $c ]] || return 0
+  for f in manifest.json manifest.json.sig; do [[ -f $c/$f && ! -L $c/$f ]] || return 0; done
+  m=$(manifeste_verifie "$c" 2>/dev/null) || return 0
+  vc=$(champ version <<<"$m") || return 0
+  plus_ancienne "$2" "$vc" || return 0
+  for ligne in "${PLATEFORMES[@]}"; do
+    read -r plat bin dossier <<<"$ligne"
+    read -r sha taille _ < <(champ "$plat" "$bin" <<<"$m") || return 0
+    [[ ! -L $c/$dossier && -f $c/$dossier/$bin && ! -L $c/$dossier/$bin ]] || return 0
+    [[ $(stat -c %s "$c/$dossier/$bin") == "$taille" ]] || return 0
+    relache "$c/$dossier/$bin"
+    [[ $(sha256sum <"$c/$dossier/$bin" | cut -d' ' -f1) == "$sha" ]] || return 0
+    CLE_SHA[Claude/$dossier/$bin]=$sha
+  done
+  VERSION_CLE=$vc
+}
+
+# La clé garde sa version signée plus récente (version_cle) : ses binaires notés tels quels, la note de version montée à
+# elle, le lanceur et les consignes remis à jour ; son manifeste signé reste le sien. Un binaire qui a changé depuis
+# le dernier dépôt d'ici est dit : c'est la version signée de la clé, pas un programme inconnu.
+garder_cle() { # point version-du-cache note changés
+  local p=$1 f c
+  NOTEE=()
+  for c in "${!CLE_SHA[@]}"; do NOTEE[$c]=${CLE_SHA[$c]}; done
+  vu=""
+  { mkdir -p "$ETAT" && ecrire_note "$3"; } || refuser "$p" "" "note pas écrite" "Note du dépôt pas écrite ($3)."
+  noter_haute "$VERSION_CLE" || refuser "$p" "" "note de version pas écrite" "Note de version pas écrite : rien n'est posé."
+  for f in "${FIXES[@]}"; do
+    copier_relu "outils/cle/Claude/$f" "$p/Claude/$f" || refuser "$p" "" "copie ratée" "Claude/$f pas copié sur la clé."
+  done
+  copier_relu "$CLE_GPG" "$p/Claude/claude-code.asc" || refuser "$p" "" "copie ratée" "Claude/claude-code.asc pas copié sur la clé."
+  copier_relu "outils/cle/$LANCEUR" "$p/$LANCEUR" || refuser "$p" "" "copie ratée" "$LANCEUR pas copié sur la clé."
+  sync -f "$p/Claude/CLAUDE.md" 2>/dev/null || true
+  echo "⚠ La clé porte déjà Claude Code $VERSION_CLE (signé, vérifié), plus récent que le cache ($2) : gardé, pas" >&2
+  echo "  redescendu. Lancer outils/claude-cle.sh --chercher pour que cet ordinateur ait la même." >&2
+  [[ -z $4 ]] ||
+    echo "  Changé depuis le dernier dépôt d'ici :$4 ; c'est la version $VERSION_CLE signée (posée d'un autre ordinateur ?)." >&2
+  avertir "Claude Code plus récent sur la clé" "La clé porte la $VERSION_CLE signée ; le cache n'a que la $2. Gardée sur la \
+clé, pas redescendue."
+}
+
 poser() { # point
   local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu=""
   # Les crochets d'essai ne touchent jamais une vraie clé.
@@ -465,20 +591,11 @@ poser() { # point
     return 0
   fi
   d=$CACHE/$v
-  # Jamais plus ancienne que la plus haute version vérifiée ici : un cache redescendu (version récente effacée, copie
-  # d'un autre ordinateur) ne fait pas revenir une version à faille sur la clé.
-  haute=$(haute_notee)
-  if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
-    avertir "Claude Code : version plus ancienne refusée" "Le cache n'a que la $v ; la $haute a déjà été vérifiée. \
-Rien n'est posé sur la clé."
-    refuser "$p" "$change" "cache plus ancien que la version vérifiée" \
-      "Claude Code $v du cache, plus ancien que la $haute déjà vérifiée : rien n'est posé (relancer --chercher)."
+  # La note illisible : rien n'est posé (elle ne vaut jamais « pas de note »).
+  if ! haute=$(haute_notee 2>/dev/null); then
+    note_abimee
+    refuser "$p" "$change" "note de version abîmée" "Note de version abîmée : rien n'est posé sur la clé."
   fi
-  # Revérifié avant chaque copie : le cache est sur un disque de cet ordinateur, mais une copie abîmée ne doit pas
-  # partir sur la clé.
-  version_verifiee "$d" "$v" ||
-    refuser "$p" "$change" "cache qui ne se vérifie plus" \
-      "Claude Code $v du cache ne se vérifie plus : rien n'est posé (relancer --chercher)."
   # Rien n'est suivi sur la clé : chaque dossier est un vrai dossier, chaque fichier écrit un fichier ordinaire, ou
   # absent.
   for chemin in Claude Claude/Linux Claude/Windows; do
@@ -492,14 +609,41 @@ Rien n'est posé sur la clé."
         "$p/$chemin : lien symbolique, ou pas un fichier ordinaire : rien n'est posé."
   done
   [[ -n $jeton ]] || erreur "Jeton de la clé illisible : rien n'est posé."
-  # Un binaire déjà là sans note de dépôt (jeton changé, note perdue, posé par autre chose) : on ne sait pas d'où il
-  # vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé.
-  if [[ ! -f $note ]]; then
-    for ligne in "${PLATEFORMES[@]}"; do
-      read -r plat bin dossier <<<"$ligne"
-      [[ ! -e $p/Claude/$dossier/$bin ]] || cmp -s "$d/$plat/$bin" "$p/Claude/$dossier/$bin" || inconnu+=" Claude/$dossier/$bin"
-    done
+  # Jamais plus ancienne que la plus haute version vérifiée ici : un cache redescendu (version récente effacée, copie
+  # d'un autre ordinateur) ne fait pas revenir une version à faille sur la clé.
+  if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
+    avertir "Claude Code : version plus ancienne refusée" "Le cache n'a que la $v ; la $haute a déjà été vérifiée. \
+Rien n'est posé sur la clé."
+    refuser "$p" "$change" "cache plus ancien que la version vérifiée" \
+      "Claude Code $v du cache, plus ancien que la $haute déjà vérifiée : rien n'est posé (relancer --chercher)."
   fi
+  # La clé porte déjà, signée et entière, une version plus récente que le cache (posée d'un autre ordinateur, ou cache
+  # et note de cet ordinateur revenus ensemble en arrière) : elle n'est pas redescendue.
+  version_cle "$p" "$v"
+  if [[ -n $VERSION_CLE ]]; then
+    garder_cle "$p" "$v" "$note" "$change"
+    return 0
+  fi
+  # Revérifié avant chaque copie : le cache est sur un disque de cet ordinateur, mais une copie abîmée ne doit pas
+  # partir sur la clé. Une vérification impossible ici (dossier temporaire plein) est dite comme telle.
+  # Pas dans un sous-shell : VERIFIEES (les empreintes signées) sert à la copie.
+  version_verifiee "$d" "$v"
+  case $? in
+    0) ;;
+    3) refuser "$p" "$change" "vérification impossible ici" \
+      "Vérification de Claude Code $v impossible sur cet ordinateur (raison ci-dessus) : rien n'est posé." ;;
+    *) refuser "$p" "$change" "cache qui ne se vérifie plus" \
+      "Claude Code $v du cache ne se vérifie plus : rien n'est posé (relancer --chercher)." ;;
+  esac
+  # Un binaire déjà là sans ligne valable dans la note de dépôt (note absente ou abîmée, jeton changé, posé par autre
+  # chose) : on ne sait pas d'où il vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé.
+  for ligne in "${PLATEFORMES[@]}"; do
+    read -r plat bin dossier <<<"$ligne"
+    c=Claude/$dossier/$bin
+    [[ -e $p/$c || -L $p/$c ]] || continue
+    grep -qE "^[0-9a-f]{64} ${c//./\\.}\$" "$note" 2>/dev/null && continue
+    cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null || inconnu+=" $c"
+  done
   # Place : les binaires qui ne sont pas déjà là, plus la marge.
   besoin=$MARGE_MIO
   for ligne in "${PLATEFORMES[@]}"; do
@@ -570,7 +714,7 @@ un programme remplacé est un piège possible."
     return 2
   fi
   if [[ -n $inconnu ]]; then
-    echo "⚠ Déjà sur la clé, sans note de dépôt ici :$inconnu. Remplacé par la copie vérifiée ; s'il ne vient pas" >&2
+    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu. Remplacé par la copie vérifiée ; s'il ne vient pas" >&2
     echo "  de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
     avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
     return 2
