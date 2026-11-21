@@ -101,8 +101,11 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      on its owner's key; update the key before leaving.
    - Vanguard takes the version Anthropic announces as "stable"; that announcement is not signed. Only the
      program's authenticity is proven, not that it is the stable version. A newer version set this way then
-     blocks older ones (Vanguard says so); to lift the block, write the wanted version into
-     ~/.local/state/vanguard/claude-cle-version.
+     blocks older ones (Vanguard says so). To lift the block, on the Vanguard computer, in a terminal:
+     outils/claude-cle.sh --accepter-version 2.1.0 (the wanted version); it shows what changes and asks
+     you to type "ACCEPTER 2.1.0". Newer versions are moved aside (not deleted) and this is logged;
+     outils/claude-cle.sh --annuler-acceptation puts everything back. Writing the version into the note
+     by hand is not enough.
    - Malware already running under the same account can read the login during the session: nothing stops
      it. On a computer believed infected, boot SystemRescue instead (key menu), and end the session on
      claude.ai afterwards.

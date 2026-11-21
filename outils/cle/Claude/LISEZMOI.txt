@@ -106,8 +106,11 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      refuse les versions plus anciennes sur la clé de son propriétaire ; mettez la clé à jour avant de partir.
    - Vanguard prend la version qu'Anthropic annonce « stable » ; cette annonce n'est pas signée. Seule
      l'authenticité du programme est prouvée, pas qu'il soit la version stable. Une version plus récente
-     posée ainsi bloque ensuite les plus anciennes (dit par Vanguard) ; pour lever le blocage, écrire la
-     version voulue dans ~/.local/state/vanguard/claude-cle-version.
+     posée ainsi bloque ensuite les plus anciennes (dit par Vanguard). Pour lever le blocage, sur
+     l'ordinateur de Vanguard, dans un terminal : outils/claude-cle.sh --accepter-version 2.1.0 (la version
+     voulue) ; il montre ce qui change et demande de taper « ACCEPTER 2.1.0 ». Les versions plus récentes
+     sont déplacées de côté (pas effacées) et c'est noté ; outils/claude-cle.sh --annuler-acceptation
+     remet tout. Écrire la version à la main dans la note ne suffit pas.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en
      empêche. Sur un ordinateur qu'on croit infecté, démarrer plutôt sur SystemRescue (menu de la clé), et
      terminer la session sur claude.ai après.
