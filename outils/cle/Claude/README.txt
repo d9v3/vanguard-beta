@@ -60,6 +60,8 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      if the path from the home folder to the temporary folder goes through no link or junction.
    - The computer's variables that would choose the server, the account, the certificates read by Claude
      Code, the proxy, tracing or code to load are removed before any Claude Code command.
+   - On Windows, the PowerShell commands that do these checks are taken from the Windows modules, by their
+     path; a module placed in the account never replaces them (otherwise, refused).
    - Claude gets troubleshooting instructions (CLAUDE.md, in this folder): diagnose read-only, explain the
      cause before fixing, change nothing without consent, never turn off the antivirus, the firewall or
      updates, respect the relative's privacy.
@@ -73,7 +75,9 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
 
    - 64-bit Windows and Linux (x86-64). On Windows ARM, the x86-64 version runs under emulation.
    - The Windows launcher is tested under PowerShell on Linux, with the Windows-specific calls (permissions,
-     signature, drive, watchdog) replaced by stand-ins: it has not yet run on a real Windows.
+     signature, drive, watchdog) replaced by stand-ins, and also on a real Windows 11.
+   - On Windows, a temporary folder (TEMP) whose path is longer than about 140 characters is refused: Claude
+     Code would cut the name of its log, which could then no longer be found and erased.
    - On Linux without gpg, Anthropic's signature cannot be checked: the launcher says so and asks.
    - On Linux, started without "-p" (bash depanner.sh), the launcher restarts itself with it at once; but bash
      has already read the environment before its first line (tracing, BASH_ENV): hence "bash -p".

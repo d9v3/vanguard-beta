@@ -64,6 +64,8 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      aucun lien ni jonction.
    - Les variables de l'ordinateur qui choisiraient le serveur, le compte, les certificats lus par Claude Code,
      le mandataire, le traçage ou du code à charger sont retirées avant toute commande de Claude Code.
+   - Sous Windows, les commandes de PowerShell qui font ces vérifications sont prises dans les modules de
+     Windows, par leur chemin ; un module posé dans le compte ne les remplace jamais (sinon, refusé).
    - Claude reçoit des consignes de dépannage (CLAUDE.md, dans ce dossier) : diagnostiquer en lecture seule,
      expliquer la cause avant de corriger, ne rien changer sans accord, ne jamais couper l'antivirus, le
      pare-feu ni les mises à jour, respecter la vie privée du proche.
@@ -77,7 +79,9 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
 
    - Windows et Linux 64 bits (x86-64). Sous Windows ARM, la version x86-64 tourne en émulation.
    - Le lanceur Windows est essayé sous PowerShell sous Linux, les appels propres à Windows (droits,
-     signature, disque, gardien) remplacés par des doublures : il n'a pas encore tourné sur un vrai Windows.
+     signature, disque, gardien) remplacés par des doublures, et aussi sur un vrai Windows 11.
+   - Sous Windows, un dossier temporaire (TEMP) au chemin de plus d'environ 140 caractères est refusé : Claude
+     Code couperait le nom de son journal, qui ne pourrait plus être retrouvé et effacé.
    - Sous Linux sans gpg, la signature d'Anthropic ne peut pas être vérifiée : le lanceur le dit et demande.
    - Sous Linux, lancé sans « -p » (bash depanner.sh), le lanceur se relance aussitôt avec ; mais bash a déjà
      lu l'environnement avant sa première ligne (traçage, BASH_ENV) : d'où « bash -p ».
