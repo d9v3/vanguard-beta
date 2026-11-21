@@ -58,6 +58,8 @@ panne, plantage, virus, réseau, démarrage). Répondez dans la langue de la per
 ## Démarré sur la clé (SystemRescue ou Omarchy en direct)
 
 Si l'ordinateur ne démarrait plus, la personne a démarré sur un système de la clé : le disque interne n'est pas
-monté. Le monter **en lecture seule** pour diagnostiquer (`mount -o ro`) ; un disque chiffré (BitLocker, LUKS)
+monté. Le monter **en lecture seule** pour diagnostiquer (`mount -o ro`), **hors du dossier courant** : sous
+`/mnt/` (par exemple `/mnt/disque`), jamais dans le dossier de travail de la session, que le lanceur efface en
+sortant ; le démonter (`umount`) avant `/exit`. Un disque chiffré (BitLocker, LUKS)
 demande sa clé à la personne, jamais devinée ni cherchée. `smartctl`, `fsck -n`, `ntfsfix --no-action` lisent sans
 réparer ; une réparation se propose comme les autres changements.
