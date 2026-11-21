@@ -83,18 +83,18 @@ example, finds it, to rebuild it if needed.
   Anthropic", not "latest version": a key left in a drawer, or reloaded with an older but signed version, passes;
   Vanguard sees it on return. A revocation published later by Anthropic is only known with a Vanguard update. The
   launcher travels with the program: it sees a damaged copy, not a key rewritten in full. On Linux, run without `-p`,
-  what the PC exported for tracing or BASH_ENV runs before the first line; without gpg, Anthropic's signature cannot be
-  checked: this is said, and consent is asked. On Windows, the checksum list is not checked by a signature (only the
-  program's Authenticode signature is), Claude Code trusts the certificates installed in Windows, a C:\.claude that
-  appears during the session is not seen, and Set-StrictMode and Import-Module, taken through their .NET type, were
-  tried on their own under Windows PowerShell 5.1 on a real Windows 11, not yet within the whole launcher. A virus
-  already running under the same account can read the login during the session. The `--accepter-version` gate stops a
-  trapped environment, inherited or set by mistake, a timer or a program started with nobody at the screen, not a
-  program that already has the account: it can move the cache folders by hand, and such a lowering is neither reported
-  nor logged (only those
-  made by the command are); the polkit window is pkexec's general request, which a program of the same account can
-  imitate. Windows and Linux 64-bit (x86-64) only. The batch went through several adversarial reviews and an attack
-  campaign, and the Windows launcher was tested on a real Windows 11, as well as PowerShell on Linux with stand-ins.
+  what the PC exported for tracing or BASH_ENV runs before the first line; without gpg, Anthropic's signature cannot
+  be checked: this is said, and consent is asked. On Windows, the checksum list is not checked by a signature (only
+  the program's Authenticode signature is), Claude Code trusts the certificates installed in Windows, a C:\.claude
+  that appears during the session is not seen, and Set-StrictMode and Import-Module, taken through their .NET type,
+  were tried under Windows PowerShell 5.1 on a real Windows 11, on their own and then within the whole launcher (with
+  a fake claude.exe). A virus already running under the same account can read the login during the session. The
+  `--accepter-version` gate stops a trapped environment, inherited or set by mistake, a timer or a program started
+  with nobody at the screen, not a program that already has the account: it can move the cache folders by hand, and
+  such a lowering is neither reported nor logged (only those made by the command are); the polkit window is pkexec's
+  general request, which a program of the same account can imitate. Windows and Linux 64-bit (x86-64) only. The batch
+  went through several adversarial reviews and an attack campaign, and the Windows launcher was tested on a real
+  Windows 11, as well as PowerShell on Linux with stand-ins.
 - **The error log and the `vanguard signaler` draft go through the common masker**, the same as sent texts: serial
   numbers, passwords after `-p` or `--password`, `net use`, Wi-Fi keys, tokens, MAC and IP addresses (all of them, as
   "<mac>" and "<ip>"), paths ("<chemin .ext>") and web addresses ("<url>"). The text shown is the one written and then
