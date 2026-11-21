@@ -2446,18 +2446,22 @@ fn un_lien_n_offre_pas_de_correction() {
 }
 
 /// Les constats des catégories `categories` d'un `audit --json` lancé avec ce HOME : il doit rendre la main (un tube
-/// nommé dans ~/.ssh le figeait).
+/// nommé dans ~/.ssh le figeait). Compté en temps de calcul (`Delai::Calcul`) : les essais lancent ces bilans en
+/// parallèle, et sous la charge de verifier.sh l'horloge dépassait 100 s sans que le programme calcule plus
+/// (21 nov. 2026). Un blocage, qui ne calcule plus, est pris au plafond d'horloge.
 #[cfg(unix)]
 fn constats_du_bilan(programme: &Path, maison: &Path, categories: &[&str]) -> Vec<serde_json::Value> {
-    let debut = std::time::Instant::now();
-    let bilan = vanguard_dans(programme, maison, "fr", &["audit", "--json"], "", 120);
+    let delai = Delai::Calcul {
+        secondes: 100,
+        plafond: 600,
+    };
+    let bilan = vanguard_au_plus(programme, maison, "fr", &["audit", "--json"], "", delai, &[]);
     assert!(
         matches!(bilan.code, Some(0 | 1)),
         "{:?} : {}",
         bilan.code,
         bilan.erreurs
     );
-    assert!(debut.elapsed() < std::time::Duration::from_secs(100), "bilan trop long");
     let v: serde_json::Value = serde_json::from_str(&bilan.texte).expect("audit --json : JSON illisible");
     v["constats"]
         .as_array()
