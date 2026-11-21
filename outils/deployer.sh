@@ -736,16 +736,18 @@ rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/workt
   { code=$?; ((code == 24)) || exit "$code"; }
 # Claude Code sur la clé, en option (outils/claude-cle.sh ; CLAUDE_CLE=oui dans ~/.config/vanguard/images-cle.conf) :
 # la version vérifiée du cache, relue sur la clé ; réglage coupé, ce qu'il y avait posé part. Avant le manifeste, comme
-# tldr. Un binaire changé pendant le voyage (code 2) est remplacé par la copie vérifiée, et dit ; une panne laisse le
-# reste du déploiement continuer.
+# tldr. Un binaire changé pendant le voyage, ou inconnu (code 2), est remplacé par la copie vérifiée (retiré si la copie
+# rate), et dit ; une panne laisse le reste du déploiement continuer.
 # set -e : le code est pris à part, jamais une sortie du déploiement.
 code_claude=0
 bash outils/claude-cle.sh --cle "$CLE" || code_claude=$?
 case $code_claude in
   0) ;;
-  2) echo "✖ Claude Code : un binaire avait changé sur la clé pendant son voyage ; remplacé par la copie vérifiée." >&2
-     avertir_cle "Vanguard : Claude Code changé sur la clé" "Un binaire de Claude/ avait changé pendant le voyage : \
-remplacé par la copie vérifiée. Un programme remplacé est un piège possible : regarder où la clé est allée." ;;
+  2) echo "✖ Claude Code : un binaire avait changé sur la clé pendant son voyage (ou y était inconnu) ; remplacé par la" \
+       "copie vérifiée, ou retiré si la copie a raté (message ci-dessus)." >&2
+     avertir_cle "Vanguard : Claude Code changé sur la clé" "Un binaire de Claude/ avait changé pendant le voyage, ou y \
+était inconnu : remplacé par la copie vérifiée, ou retiré (voir le terminal). Un programme remplacé est un piège \
+possible : regarder où la clé est allée." ;;
   *) echo "Claude Code : pas mis à jour sur la clé (message ci-dessus) ; le reste du déploiement continue." ;;
 esac
 # Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même

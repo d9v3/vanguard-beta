@@ -386,6 +386,46 @@ rm -f "$ESSAI/notifications"
 attendu "après une copie ratée : reposé sans fausse alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
 cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" && bon "après une copie ratée : 2.0.5 posée" ||
   rate "après une copie ratée : pas la 2.0.5"
+# R7-CLE-2 : l'alerte dite avant la copie annonçait déjà « Remplacé par la copie vérifiée » ; la copie ratée ensuite,
+# c'était faux, et un binaire inconnu retiré sortait en code 1 (le dépôt suivant se taisait). Avant la copie : « va
+# être remplacé » ; « remplacé » seulement après ; une copie ratée dit ce qui est devenu de chaque binaire (code 2).
+# Un faux cp, qui rate seulement la copie provisoire de claude.exe (clé pleine, arrachée).
+mkdir -p "$ESSAI/bin-cp"
+printf '#!/bin/sh\ncase "$*" in *claude.exe.part*) echo "cp: erreur (essai)" >&2; exit 1 ;; esac\nexec /usr/bin/cp "$@"\n' \
+  >"$ESSAI/bin-cp/cp"
+chmod +x "$ESSAI/bin-cp/cp"
+printf 'X' | dd of="$CLE/Claude/Windows/claude.exe" bs=1 seek=4 conv=notrunc 2>/dev/null
+rm -f "$ESSAI/notifications"
+attendu "changé sur la clé, copie ratée : dit (code 2)" 2 env PATH="$ESSAI/bin-cp:$PATH" bash outils/claude-cle.sh --cle "$CLE"
+[[ ! -e $CLE/Claude/Windows/claude.exe ]] && grep -q "Va être remplacé par la copie vérifiée" "$ESSAI/sortie" &&
+  grep -q "Va être remplacé" "$ESSAI/notifications" && ! grep -q "Remplacé par la copie" "$ESSAI/notifications" &&
+  grep -q "Retiré de la clé (copie ratée)" "$ESSAI/notifications" && ! grep -q "✔" "$ESSAI/sortie" &&
+  bon "changé, copie ratée : « va être remplacé » avant, retiré et dit après, jamais « remplacé »" ||
+  rate "changé, copie ratée : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "changé, copie ratée, puis reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
+# Deux binaires inconnus (note de dépôt effacée) : celui de Linux remplacé, celui de Windows pas (copie ratée).
+rm -f "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
+printf 'X' | dd of="$CLE/Claude/Windows/claude.exe" bs=1 seek=4 conv=notrunc 2>/dev/null
+rm -f "$ESSAI/notifications"
+attendu "inconnus sur la clé, copie de claude.exe ratée : dit (code 2)" 2 env PATH="$ESSAI/bin-cp:$PATH" \
+  bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$(cache)/2.0.5/linux-x64/claude" && [[ ! -e $CLE/Claude/Windows/claude.exe ]] &&
+  grep -q "Remplacé par la copie vérifiée avant la panne : Claude/Linux/claude\.$" "$ESSAI/sortie" &&
+  grep -q "Retiré de la clé, PAS remplacé (copie ratée) : Claude/Windows/claude\.exe\.$" "$ESSAI/sortie" &&
+  ! grep -q "Laissé sur la clé" "$ESSAI/sortie" && ! grep -q "Remplacé par la copie" "$ESSAI/notifications" &&
+  grep -q "Copie vérifiée pas posée (copie ratée) ; retiré : Claude/Windows/claude.exe" "$ESSAI/notifications" &&
+  bon "inconnus, copie ratée : chacun dit tel qu'il est (remplacé, retiré), notifié, code 2" ||
+  rate "inconnus, copie ratée : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -4 "$ESSAI/sortie" | tr '\n' ' ')"
+rm -rf "$ESSAI/bin-cp"
+# Le « remplacé » dit après la copie réussie.
+rm -f "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
+attendu "inconnu sur la clé, copie réussie : remplacé et dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" &&
+  grep -q "Changé ou inconnu, remplacé par la copie vérifiée : Claude/Windows/claude.exe\.$" "$ESSAI/sortie" &&
+  bon "inconnu, copie réussie : « remplacé » dit après la copie" || rate "inconnu, copie réussie : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
 # Changé pendant le voyage, remplacé, puis une panne plus loin (un petit fichier pas copié) : le changement reste dit
 # (code 2, notification), jamais perdu derrière l'erreur.
 printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null

@@ -810,11 +810,28 @@ main) ; un programme remplacé est un piège possible."
   exit 2
 }
 # Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé, et il est toujours
-# dit (code 2), même s'il a déjà été remplacé avant la panne (vu, la liste du début, dans poser).
+# dit (code 2), même s'il a déjà été remplacé avant la panne (vu, la liste du début, dans poser). Un binaire inconnu
+# (inconnu, dans poser : sans ligne dans la note) est dit aussi, avec ce qu'il est devenu (remplacé, retiré, laissé),
+# code 2 : jamais un « remplacé » qui n'a pas eu lieu.
 refuser() { # point changes raison texte
-  local remplaces=${vu:-} c
+  local remplaces=${vu:-} c i_remplaces="" i_retires="" i_laisses=""
   for c in $2; do remplaces=${remplaces// $c/}; done
+  for c in ${inconnu:-}; do
+    if [[ "${inconnu_reste:-} " != *" $c "* ]]; then i_remplaces+=" $c"
+    elif [[ -e $1/$c || -L $1/$c ]]; then i_laisses+=" $c"
+    else i_retires+=" $c"; fi
+  done
+  if [[ -n ${inconnu:-} ]]; then
+    echo "✖ $4" >&2
+    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu." >&2
+    [[ -z $i_remplaces ]] || echo "  Remplacé par la copie vérifiée avant la panne :$i_remplaces." >&2
+    [[ -z $i_retires ]] || echo "  Retiré de la clé, PAS remplacé ($3) :$i_retires." >&2
+    [[ -z $i_laisses ]] || echo "  Laissé sur la clé, PAS remplacé ($3) :$i_laisses. S'il ne vient pas de Vanguard, l'effacer." >&2
+    [[ -z $i_retires$i_laisses ]] || avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. \
+Copie vérifiée pas posée ($3)${i_retires:+ ; retiré :$i_retires}${i_laisses:+ ; laissé sur la clé :$i_laisses}."
+  fi
   [[ -z $2 ]] || retirer_change "$1" "$2" "$3" "$remplaces"
+  [[ -z ${inconnu:-} ]] || exit 2
   if [[ -n $remplaces ]]; then
     echo "✖ $4" >&2
     echo "✖ Sur la clé, changé depuis le dernier dépôt :$remplaces. Remplacé par la copie vérifiée avant la panne ;" >&2
@@ -937,7 +954,8 @@ Gardée (plus récente que le cache) ; regarder où la clé est allée."
 }
 
 poser() { # point
-  local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu=""
+  local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu="" \
+    inconnu_reste=""
   # Les crochets d'essai ne touchent jamais une vraie clé.
   [[ -z $CROCHETS || $(realpath -m -- "$p") != /run/media/* ]] ||
     erreur "Crochets d'essai actifs : rien n'est posé sur une clé de /run/media ($p)."
@@ -1027,6 +1045,7 @@ Rien n'est posé sur la clé."
     grep -qE "^[0-9a-f]{64} ${c//./\\.}\$" "$note" 2>/dev/null && continue
     cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null || inconnu+=" $c"
   done
+  inconnu_reste=$inconnu
   # Place : les binaires qui ne sont pas déjà là, plus la marge.
   besoin=$MARGE_MIO
   for ligne in "${PLATEFORMES[@]}"; do
@@ -1048,17 +1067,19 @@ Rien n'est posé sur la clé."
   fi
   # L'alerte d'un binaire changé ou inconnu, AVANT la première écriture de la note : arrêté pendant la copie (Ctrl+C,
   # fenêtre fermée pendant un sync), la note connaîtrait déjà le nouveau binaire, ou l'ancien serait retiré (un
-  # binaire absent ne compte pas) : le dépôt suivant se tairait.
+  # binaire absent ne compte pas) : le dépôt suivant se tairait. Elle dit ce qui est vrai à ce moment (« va être
+  # remplacé ») ; « remplacé » n'est dit qu'après la copie réussie, et une copie ratée est dite (refuser).
   if [[ -n $vu ]]; then
-    echo "✖ Sur la clé, changé depuis le dernier dépôt :$vu. Remplacé par la copie vérifiée (ci-dessous) ; un" >&2
+    echo "✖ Sur la clé, changé depuis le dernier dépôt :$vu. Va être remplacé par la copie vérifiée (ci-dessous) ; un" >&2
     echo "  programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
-    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$vu. Remplacé par la copie vérifiée ; \
-un programme remplacé est un piège possible."
+    avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$vu. Va être remplacé par la copie vérifiée \
+(le résultat est dit au terminal) ; un programme remplacé est un piège possible."
   fi
   if [[ -n $inconnu ]]; then
-    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu. Remplacé par la copie vérifiée (ci-dessous) ;" >&2
-    echo "  s'il ne vient pas de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
-    avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Remplacé par la copie vérifiée."
+    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu. Va être remplacé par la copie vérifiée" >&2
+    echo "  (ci-dessous) ; s'il ne vient pas de Vanguard (autre ordinateur, autre jeton), regarder d'où il vient." >&2
+    avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. Va être remplacé par la copie \
+vérifiée (le résultat est dit au terminal)."
   fi
   # Chaque binaire : l'ancien retiré, le nouveau copié sous un nom provisoire, relu sur la clé et comparé à l'empreinte
   # signée, noté, puis renommé. Arrêté en route, la clé n'a jamais sous son vrai nom un binaire à moitié écrit ni un
@@ -1087,7 +1108,7 @@ un programme remplacé est un piège possible."
     NOTEE[$c]=$sha
     ecrire_note "$note" || { rm -f -- "${p:?}/$part"; refuser "$p" "$change" "note pas écrite" "Note du dépôt pas écrite ($note)."; }
     mv -f -T -- "$p/$part" "$p/$c" || { rm -f -- "${p:?}/$part"; refuser "$p" "$change" "copie ratée" "$c pas renommé sur la clé."; }
-    change=${change// $c/}
+    change=${change// $c/} inconnu_reste=${inconnu_reste// $c/}
   done
   ecrire_note "$note" || refuser "$p" "$change" "note pas écrite" "Note du dépôt pas écrite ($note)."
   # Les petits fichiers : le lanceur et les consignes du dépôt, le manifeste signé et sa signature du cache, la clé de
@@ -1103,6 +1124,7 @@ un programme remplacé est un piège possible."
   copier_relu "outils/cle/$LANCEUR" "$p/$LANCEUR" || refuser "$p" "$change" "copie ratée" "$LANCEUR pas copié sur la clé."
   sync -f "$p/Claude/CLAUDE.md" 2>/dev/null || true
   echo "✔ Claude Code $v sur la clé (vérifié, relu)."
+  [[ -z $vu$inconnu ]] || echo "  Changé ou inconnu, remplacé par la copie vérifiée :$vu$inconnu." >&2
   # L'alerte est déjà dite (plus haut, avant la note) ; le code la rappelle.
   [[ -z $vu && -z $inconnu ]] || return 2
 }
