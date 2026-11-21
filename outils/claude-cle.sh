@@ -60,6 +60,15 @@
 # hérité est développé à chaque commande tracée, juste avant elle ; « $((porte=1)) » réécrivait ainsi porte entre sa
 # lecture et le [[ ]] qui la juge, et la porte s'ouvrait. Il ne l'est plus qu'une fois, sur la ligne qui le remet,
 # avant que la porte ne lise environ.
+# La porte compare des OCTETS (des noms de variables) avec un motif de [[ ]], qui lit des CARACTÈRES selon la locale.
+# Dans une locale multi-octets autre que UTF-8 (GBK, BIG5, SJIS), le dernier octet d'une valeur et la lettre qui le
+# suit formaient un seul caractère : « *BASH_FUNC_* » ne voyait plus le nom suivant, et la porte s'ouvrait. Une
+# telle locale se fabrique sans root (localedef, puis LOCPATH vers son dossier) ; LANG ou LC_CTYPE suffisaient aussi.
+# D'où LC_ALL=C (bash refait setlocale à l'affectation, et LC_ALL passe devant LANG et LC_*) et LOCPATH vidé, par
+# affectation, avant la lecture : le motif redevient une comparaison d'octets. Rien d'autre ne change le motif ici :
+# nocasematch ne vient que de BASHOPTS (refusé ; il élargirait le refus), extglob est toujours actif dans [[ ]] et
+# aucun motif d'ici n'en use, GLOBIGNORE, IFS et noglob ne touchent ni [[ ]] ni ces affectations (vérifié, essais).
+# --accepter-version et --annuler-acceptation tournent donc en locale C : leurs messages sont écrits tels quels.
 # Pourquoi pas un « #!/usr/bin/env -S -i … » qui nettoie l'environnement : « bash outils/claude-cle.sh » (deployer.sh,
 # les essais, quiconque) lit le fichier sans passer par le shebang, et la porte doit tenir dans les deux cas.
 # Passée la porte, aucune fonction ni aucun alias ne viennent de l'environnement : les « exit 1 », exec et erreur de
@@ -70,6 +79,8 @@
 # baisse n'est ni signalée ni notée.
 PS4='+ '
 if [[ ${1-} == --accepter-version || ${1-} == --annuler-acceptation ]]; then
+  # shellcheck disable=SC2034 # LOCPATH : lue par la libc, pas par ce script
+  LC_ALL=C LOCPATH=
   { porte=$(</proc/$$/environ); } 2>/dev/null
   [[ -n $porte && $porte != *BASH_FUNC_* && $porte != *BASH_ENV=* && $porte != *SHELLOPTS=* && $porte != *BASHOPTS=* &&
     -z ${BASH_ENV+x}${ENV+x} ]] ||
@@ -748,6 +759,16 @@ fd=os.open(sys.argv[1],os.O_RDONLY)
 os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)
 os.close(fd)' "$1" 2>/dev/null || true
 }
+# La seule règle de lecture de la note de dépôt, pour changes, sans_note (poser) et NOTEE : la ligne d'un binaire est
+# celle qui finit par « ␠chemin ». Sans telle ligne, le binaire est sans note (inconnu) ; avec une, il est noté, et
+# changé si aucune ne porte exactement son empreinte (64 hexadécimaux minuscules) : une ligne abîmée compte donc comme
+# un changement, jamais aussi comme « sans note ». Un binaire est soit changé, soit sans note, jamais les deux : un
+# seul sort dit (avant, une ligne abîmée le mettait dans les deux listes, « laissé sur la clé » puis « retiré »).
+ligne_notee() { grep -qE " ${2//./\\.}\$" "$1" 2>/dev/null; } # note chemin
+# L'empreinte notée d'un binaire (la première ligne valable), ou rien.
+empreinte_notee() { # note chemin
+  grep -E "^[0-9a-f]{64} ${2//./\\.}\$" "$1" 2>/dev/null | head -1 | cut -c1-64
+}
 # Les binaires notés qui ont changé sur la clé depuis le dernier dépôt, relus entiers (« Claude/… », chacun précédé
 # d'une espace) ; un lien ou un non-fichier à leur place compte comme changé. Un binaire absent ne compte pas : un
 # dépôt arrêté en route en laisse un (poser), et outils/deployer.sh appelle --relire avant que la reprise d'un
@@ -757,13 +778,13 @@ changes() { # point note
   [[ -f $note ]] || return 0
   for chemin in "${BINAIRES_CLE[@]}"; do
     [[ -e $p/$chemin || -L $p/$chemin ]] || continue
-    grep -qF " $chemin" "$note" || continue
+    ligne_notee "$note" "$chemin" || continue
     sha=""
     if [[ -f $p/$chemin && ! -L $p/$chemin ]]; then
       relache "$p/$chemin"
       sha=$(sha256sum <"$p/$chemin" | cut -d' ' -f1)
     fi
-    grep -qxF "$sha $chemin" "$note" || printf ' %s' "$chemin"
+    { [[ -n $sha ]] && grep -qxF "$sha $chemin" "$note"; } || printf ' %s' "$chemin"
   done
 }
 # La note, réécrite d'un coup (nom provisoire, puis renommée) : jamais à moitié.
@@ -881,6 +902,8 @@ refuser() { # point changes raison texte
   dire_inconnus "$1" "$3" && dit=1
   # retirer_change dit aussi les binaires changés déjà remplacés ($remplaces), puis sort en code 2.
   [[ -z $2 ]] || retirer_change "$1" "$2" "$3" "$remplaces"
+  # Changés mais identiques à la copie vérifiée (egaux, dans poser) : déjà dits avant ce refus, jamais « remplacés ».
+  [[ -z ${egaux:-} ]] || dit=1
   if [[ -n $remplaces ]]; then
     echo "✖ Sur la clé, changé depuis le dernier dépôt :$remplaces. Remplacé par la copie vérifiée avant la panne ;" >&2
     echo "  un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
@@ -989,8 +1012,9 @@ sur la clé, pas redescendue."
   fi
   return 2
 }
-# Des binaires gardés sur la clé (signés, vérifiés) qui ne viennent pas d'un dépôt d'ici : dit et notifié.
-provenance() { # changés pas-d-ici
+# Des binaires gardés sur la clé (signés, vérifiés) qui ne viennent pas d'un dépôt d'ici : dit et notifié. La raison
+# (facultative) : pourquoi ils restent quand la clé n'est pas gardée parce que plus récente (cache absent ou vide).
+provenance() { # changés pas-d-ici [raison]
   if [[ -n $1 ]]; then
     echo "✖ Changé depuis le dernier dépôt d'ici :$1. C'est la version $VERSION_CLE, signée par Anthropic et vérifiée," >&2
   else
@@ -998,13 +1022,36 @@ provenance() { # changés pas-d-ici
   fi
   echo "  mais elle ne vient pas de cet ordinateur : posée d'un autre ordinateur, ou remplacée pendant le voyage. Si la" >&2
   echo "  clé n'est passée par aucun autre ordinateur avec Vanguard, regarder où elle est allée." >&2
+  [[ -z ${3:-} ]] || echo "  Laissé sur la clé tel quel, pas remplacé ($3)." >&2
   avertir "Claude Code changé sur la clé" "La clé porte la $VERSION_CLE signée, qui ne vient pas d'un dépôt d'ici :$2. \
-Gardée (plus récente que le cache) ; regarder où la clé est allée."
+${3:+Laissée sur la clé ($3)}${3:-Gardée (plus récente que le cache)} ; regarder où la clé est allée."
+}
+# Cache absent ou vide (R9-CR-3) : les binaires sans note sont vérifiés avec la clé elle-même, son manifeste signé et
+# la seule clé de confiance du dépôt (version_cle). Entière, signée, ni mise de côté ni plus ancienne que la plus haute
+# vérifiée ici : dite signée et vérifiée, pas posée d'ici (provenance), sans le conseil de l'effacer ; le reste,
+# « PAS vérifié » (dire_inconnus). Code 0 si quelque chose a été dit (l'appelant sort en code 2), 1 sinon.
+dire_sans_cache() { # point raison
+  local c signes="" haute_ici rien=1
+  if [[ -n ${sans_note:-} ]]; then
+    version_cle "$1" 0.0.0
+    if [[ -n $VERSION_CLE ]] && ! ecartee "$VERSION_CLE" && haute_ici=$(haute_notee 2>/dev/null) &&
+      ! { [[ -n $haute_ici ]] && plus_ancienne "$VERSION_CLE" "$haute_ici"; }; then
+      for c in $sans_note; do
+        [[ -z ${CLE_SHA[$c]:-} ]] || signes+=" $c"
+      done
+    fi
+    VERSION_CLE=${signes:+$VERSION_CLE}
+    for c in $signes; do sans_note=${sans_note// $c/}; done
+    [[ -z $signes ]] || { provenance "" "$signes" "$2"; rien=0; }
+  fi
+  dire_inconnus "$1" "$2" && rien=0
+  VERSION_CLE="" CLE_SHA=()
+  return $rien
 }
 
 poser() { # point
   local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu="" \
-    inconnu_reste="" inconnu_calcule="" sans_note="" dit=""
+    inconnu_reste="" inconnu_calcule="" sans_note="" dit="" egaux=""
   # Les crochets d'essai ne touchent jamais une vraie clé.
   [[ -z $CROCHETS || $(realpath -m -- "$p") != /run/media/* ]] ||
     erreur "Crochets d'essai actifs : rien n'est posé sur une clé de /run/media ($p)."
@@ -1017,13 +1064,14 @@ poser() { # point
     change=$(changes "$p" "$note")
   fi
   vu=$change
-  # Les binaires déjà là sans ligne valable dans la note (note absente ou abîmée, jeton changé, posés par autre
-  # chose) : sus dès maintenant, dits sur chaque refus qui suit (dire_inconnus), même avant la vérification du cache.
+  # Les binaires déjà là sans ligne dans la note (note absente, jeton changé, posés par autre chose ; ligne_notee) :
+  # sus dès maintenant, dits sur chaque refus qui suit (dire_inconnus), même avant la vérification du cache. Jamais
+  # aussi dans change : la même règle de lecture.
   for ligne in "${PLATEFORMES[@]}"; do
     read -r plat bin dossier <<<"$ligne"
     c=Claude/$dossier/$bin
     [[ -e $p/$c || -L $p/$c ]] || continue
-    grep -qE "^[0-9a-f]{64} ${c//./\\.}\$" "$note" 2>/dev/null || sans_note+=" $c"
+    ligne_notee "$note" "$c" || sans_note+=" $c"
   done
   if ! active; then
     retirer "$p" "$note"
@@ -1032,14 +1080,14 @@ poser() { # point
   fi
   minuterie
   if ! cache_present; then
-    dire_inconnus "$p" "cache absent" && dit=1
+    dire_sans_cache "$p" "cache absent" && dit=1
     [[ -z $change ]] || retirer_change "$p" "$change" "cache absent"
     [[ -z $dit ]] || return 2
     return 0
   fi
   v=$(derniere)
   if [[ -z $v ]]; then
-    dire_inconnus "$p" "cache vide" && dit=1
+    dire_sans_cache "$p" "cache vide" && dit=1
     [[ -z $change ]] || retirer_change "$p" "$change" "cache vide"
     echo "Claude Code pas encore dans le cache (outils/claude-cle.sh --chercher) : la clé reste sans lui."
     [[ -z $dit ]] || return 2
@@ -1106,6 +1154,23 @@ Rien n'est posé sur la clé."
     cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null || inconnu+=" $c"
   done
   inconnu_reste=$inconnu inconnu_calcule=1
+  # R9-CR-2 : un binaire changé depuis le dernier dépôt d'ici mais identique à la copie vérifiée (posé par un autre
+  # ordinateur, la même version) n'est pas recopié : jamais « va être remplacé » ni « remplacé » pour lui. Il sort de
+  # vu et de change, et il est dit tout de suite, avant tout refus qui suit et avant la première écriture de la note :
+  # gardé, code 2 (il ne vient pas d'un dépôt d'ici, comme dans garder_cle).
+  for c in $vu; do
+    plat=linux-x64 bin=claude
+    [[ $c != Claude/Windows/claude.exe ]] || plat=win32-x64 bin=claude.exe
+    { [[ ! -L $p/$c ]] && cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null; } || continue
+    egaux+=" $c" vu=${vu// $c/} change=${change// $c/}
+  done
+  if [[ -n $egaux ]]; then
+    echo "✖ Sur la clé, changé depuis le dernier dépôt d'ici :$egaux. Identique à la copie vérifiée de la $v : gardé tel" >&2
+    echo "  quel, pas recopié. Posé d'un autre ordinateur ? Si la clé n'est passée par aucun autre ordinateur avec" >&2
+    echo "  Vanguard, regarder où elle est allée." >&2
+    avertir "Claude Code changé sur la clé" "Changé depuis le dernier dépôt d'ici :$egaux. Identique à la copie vérifiée \
+de la $v : gardé ; regarder où la clé est allée."
+  fi
   # Place : les binaires qui ne sont pas déjà là, plus la marge.
   besoin=$MARGE_MIO
   for ligne in "${PLATEFORMES[@]}"; do
@@ -1120,11 +1185,10 @@ Rien n'est posé sur la clé."
     refuser "$p" "$change" "dossiers pas créés" "Dossiers de Claude/ pas créés sur la clé."
   # La note du dernier dépôt, reprise : chaque binaire y est réécrit dès qu'il est posé et relu.
   NOTEE=()
-  if [[ -f $note ]]; then
-    while read -r s c; do
-      [[ $s =~ ^[0-9a-f]{64}$ && $c =~ ^Claude/(Linux/claude|Windows/claude\.exe)$ ]] && NOTEE[$c]=$s
-    done <"$note"
-  fi
+  for c in "${BINAIRES_CLE[@]}"; do
+    s=$(empreinte_notee "$note" "$c")
+    [[ -z $s ]] || NOTEE[$c]=$s
+  done
   # L'alerte d'un binaire changé ou inconnu, AVANT la première écriture de la note : arrêté pendant la copie (Ctrl+C,
   # fenêtre fermée pendant un sync), la note connaîtrait déjà le nouveau binaire, ou l'ancien serait retiré (un
   # binaire absent ne compte pas) : le dépôt suivant se tairait. Elle dit ce qui est vrai à ce moment (« va être
@@ -1186,7 +1250,7 @@ vérifiée (le résultat est dit au terminal)."
   echo "✔ Claude Code $v sur la clé (vérifié, relu)."
   [[ -z $vu$inconnu ]] || echo "  Changé ou inconnu, remplacé par la copie vérifiée :$vu$inconnu." >&2
   # L'alerte est déjà dite (plus haut, avant la note) ; le code la rappelle.
-  [[ -z $vu && -z $inconnu ]] || return 2
+  [[ -z $vu && -z $inconnu && -z $egaux ]] || return 2
 }
 
 # Avant la reprise d'un déploiement arrêté (outils/deployer.sh) : la reprise retire de la clé ce que le déploiement

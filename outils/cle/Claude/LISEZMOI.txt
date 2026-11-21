@@ -116,9 +116,10 @@ propriétaire de l'ordinateur : ce que Claude lit (journaux, réglages, noms de 
      les versions qui se vérifient encore sont remises. Si une vérification est impossible pour l'instant
      (panne passagère), l'annulation est dite « partielle » : la trace est gardée, relancez la commande plus
      tard. Ces deux commandes refusent de tourner (rien changé) si elles héritent d'un environnement
-     piégé : une fonction de bash exportée, BASH_ENV, ENV, SHELLOPTS ou BASHOPTS. Portée : cela arrête une
-     minuterie, un programme lancé sans personne devant l'écran, ou un piège d'environnement hérité ; pas
-     un programme qui a déjà le compte. Un programme qui tourne déjà sous le même compte peut quand même
+     piégé : une fonction de bash exportée, BASH_ENV, ENV, SHELLOPTS ou BASHOPTS, quelle que soit la langue
+     (locale) héritée : le contrôle se fait en locale C. Portée : cela arrête une minuterie, un programme
+     lancé sans personne devant l'écran, ou un piège d'environnement hérité ; pas un programme qui a déjà
+     le compte. Un programme qui tourne déjà sous le même compte peut quand même
      déplacer ces dossiers à la main ; une telle baisse n'est ni signalée ni notée (aucune notification,
      aucune ligne au journal). Seules les baisses faites par cette commande sont notifiées et notées.
    - Un virus qui tourne déjà sous le même compte peut lire la connexion pendant la session : rien ne l'en

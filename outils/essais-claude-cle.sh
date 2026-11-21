@@ -465,6 +465,61 @@ done
 mv -f "$ESSAI/note-version-de-cote" "$XDG_STATE_HOME/vanguard/claude-cle-version"
 attendu "R8-CLE-3 : note remise, l'inconnu remplacé et dit" 2 bash outils/claude-cle.sh --cle "$CLE"
 attendu "R8-CLE-3 : reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R9-CR-1 (ronde 10) : une ligne abîmée dans la note de dépôt mettait claude.exe à la fois dans les changés et dans
+# les sans-note : « laissé sur la clé, PAS vérifié » puis « retiré », deux notifications contraires. Une seule règle
+# de lecture (ligne_notee) : noté mais pas à la bonne empreinte, il est changé, rien d'autre ; un seul sort dit.
+cp "$XDG_STATE_HOME/vanguard/claude-cle-version" "$ESSAI/note-version-de-cote"
+sed -i '/ Claude\/Windows\/claude\.exe$/s/^..../ZZZZ/' "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
+echo 2.9.0 >"$XDG_STATE_HOME/vanguard/claude-cle-version"
+rm -f "$ESSAI/notifications"
+attendu "R9-CR-1 : ligne de note abîmée, binaire remplacé, cache plus ancien : dit (code 2)" 2 \
+  bash outils/claude-cle.sh --cle "$CLE"
+[[ ! -e $CLE/Claude/Windows/claude.exe ]] && grep -q "changé depuis le dernier dépôt :.*Claude/Windows/claude\.exe.*retiré\." "$ESSAI/sortie" &&
+  ! grep -q "sans ligne dans la note\|Laissé sur la clé" "$ESSAI/sortie" && ! grep -q "inconnu" "$ESSAI/notifications" &&
+  [[ $(grep -c "Claude/Windows/claude.exe" "$ESSAI/notifications") == 1 ]] &&
+  bon "R9-CR-1 : ligne abîmée : changé et retiré, un seul sort dit et notifié" ||
+  rate "R9-CR-1 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -4 "$ESSAI/sortie" | tr '\n' ' ')"
+mv -f "$ESSAI/note-version-de-cote" "$XDG_STATE_HOME/vanguard/claude-cle-version"
+[[ -f $CLE/Claude/Linux/claude ]] && bon "R9-CR-1 : le binaire de Linux, à la bonne ligne, laissé" || rate "R9-CR-1 : Linux retiré"
+attendu "R9-CR-1 : note de version remise, reposé sans alerte (claude.exe absent ne compte pas)" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R9-CR-2 (ronde 10) : deux ordinateurs. La note d'ici connaît une autre version (empreintes d'avant), la clé porte
+# celle du cache, posée par l'autre ordinateur. Rien n'est recopié : jamais « va être remplacé » ni « remplacé »,
+# mais dit (changé depuis le dépôt d'ici, identique à la copie vérifiée, gardé), notifié, code 2 ; noté ensuite.
+cp "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cp "$CLE/Claude/Windows/claude.exe" "$ESSAI/r10-win"
+sed -i -E 's/^[0-9a-f]{64}/'"$(printf '%064d' 7)"'/' "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+rm -f "$ESSAI/notifications"
+attendu "R9-CR-2 : changé depuis le dépôt d'ici, identique à la copie vérifiée : dit (code 2)" 2 \
+  bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cmp -s "$CLE/Claude/Windows/claude.exe" "$ESSAI/r10-win" &&
+  grep -q "Identique à la copie vérifiée de la .* : gardé" "$ESSAI/sortie" && ! grep -qi "remplac" "$ESSAI/sortie" &&
+  ! grep -qi "remplac" "$ESSAI/notifications" && grep -q "Identique à la copie vérifiée" "$ESSAI/notifications" &&
+  bon "R9-CR-2 : deux ordinateurs : gardé et dit, aucun « remplacé » qui n'a pas eu lieu" ||
+  rate "R9-CR-2 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -4 "$ESSAI/sortie" | tr '\n' ' ')"
+attendu "R9-CR-2 : noté, reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R9-CR-3 (ronde 10) : un second ordinateur au cache absent, sans note pour cette clé, qui porte une version signée
+# posée ailleurs : « PAS vérifié… l'effacer » à tort. La clé se vérifie avec son manifeste signé : dite signée et
+# vérifiée, pas posée d'ici, laissée (code 2). Témoin : un binaire qui ne se vérifie pas reste « PAS vérifié ».
+mkdir -p "$ESSAI/r10-notes"
+mv "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256 "$ESSAI/r10-notes/"
+mv "$(cache)" "$ESSAI/cache-de-cote"
+ln -s "$ESSAI/disque-debranche/claude-cle" "$(cache)"
+rm -f "$ESSAI/notifications"
+attendu "R9-CR-3 : cache absent, clé signée posée ailleurs : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$ESSAI/r10-linux" && cmp -s "$CLE/Claude/Windows/claude.exe" "$ESSAI/r10-win" &&
+  grep -q "Pas posé d'ici.*signée et vérifiée" "$ESSAI/sortie" && grep -q "Laissé sur la clé tel quel, pas remplacé (cache absent)" "$ESSAI/sortie" &&
+  ! grep -q "PAS vérifié\|l'effacer" "$ESSAI/sortie" && ! grep -q "inconnu" "$ESSAI/notifications" &&
+  bon "R9-CR-3 : cache absent : la version signée de la clé dite vérifiée, sans conseil d'effacer" ||
+  rate "R9-CR-3 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -4 "$ESSAI/sortie" | tr '\n' ' ')"
+printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
+attendu "R9-CR-3 témoin : cache absent, binaire qui ne se vérifie pas : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+grep -q "PAS vérifié ni remplacé (cache absent) :.*Claude/Windows/claude\.exe" "$ESSAI/sortie" && ! grep -q "signée et vérifiée" "$ESSAI/sortie" &&
+  bon "R9-CR-3 témoin : ce qui ne se vérifie pas reste « PAS vérifié »" || rate "R9-CR-3 témoin : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+rm "$(cache)"
+mv "$ESSAI/cache-de-cote" "$(cache)"
+mv "$ESSAI/r10-notes"/* "$XDG_STATE_HOME/vanguard/"
+attendu "R9-CR-3 : cache revenu, notes remises, le binaire changé remplacé et dit" 2 bash outils/claude-cle.sh --cle "$CLE"
+attendu "R9-CR-3 : reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
 # R8-CLE-1 : pour le code 2, outils/deployer.sh disait « remplacé par la copie vérifiée, ou retiré », même quand le
 # binaire était laissé sur la clé ou gardé. Le texte de la branche 2 (terminal et notification) ne dit plus que
 # l'alerte, et nomme les quatre issues.
@@ -888,6 +943,29 @@ r9_refus "SHELLOPTS=xtrace hérité" "${R5ENV[@]}" SHELLOPTS=xtrace bash "$CC" -
 r9_refus "BASHOPTS=extglob hérité" "${R5ENV[@]}" BASHOPTS=extglob bash "$CC" --accepter-version 2.1.2
 r9_refus "ENV hérité" "${R5ENV[@]}" ENV="$ESSAI/fichier-env" bash "$CC" --accepter-version 2.1.2
 r9_refus "environnement vide (env -i)" env -i /bin/bash "$CC" --accepter-version 2.1.2
+# R9-PORTE-1 (ronde 10) : la porte compare des octets avec un motif de [[ ]], qui lit des caractères selon la
+# locale. En GBK (fabriquée sans root par localedef, LOCPATH vers son dossier), le dernier octet d'une valeur (0x81)
+# et le B de BASH_FUNC_ qui suit formaient un seul caractère : la porte s'ouvrait, les fonctions exportées prenaient
+# exec, exit, read… et « ACCEPTER 2.1.2 » baissait la protection. LC_ALL=C posé dans la porte : refusé. Chaque
+# fonction suit une variable dont la valeur finit par 0x81 (l'environnement garde l'ordre donné à env).
+if command -v localedef >/dev/null; then
+  mkdir -p "$ESSAI/locale" && localedef -c -i zh_CN -f GBK "$ESSAI/locale/zh_CN.GBK" >/dev/null 2>&1
+  R10G=()
+  for i in "${!R9F[@]}"; do R10G+=("R10_BOURRE_$i=x"$'\x81' "${R9F[$i]}"); done
+  # Témoin : la locale fabriquée agit bien (sans LC_ALL=C, le motif ne voit plus BASH dans « 0x81 BASH »).
+  # shellcheck disable=SC2016 # le code du bash -c, pas développé ici
+  if env LOCPATH="$ESSAI/locale" LC_ALL=zh_CN.GBK bash -c '[[ $1 != *BASH* ]]' _ "x"$'\x81'"BASH" 2>/dev/null; then
+    bon "R9-PORTE-1 : témoin, en GBK le motif ne voit plus BASH après l'octet 0x81"
+    r9_refus "R9-PORTE-1 : locale GBK (LOCPATH, LC_ALL), fonctions exportées après un octet 0x81" "${R5ENV[@]}" \
+      LOCPATH="$ESSAI/locale" LC_ALL=zh_CN.GBK "${R10G[@]}" bash "$CC" --accepter-version 2.1.2
+    r9_refus "R9-PORTE-1 : locale GBK par LC_CTYPE seul (LC_ALL absent), --annuler-acceptation" env -u LC_ALL \
+      "${R5ENV[@]}" LOCPATH="$ESSAI/locale" LC_CTYPE=zh_CN.GBK "${R10G[@]}" bash "$CC" --annuler-acceptation
+  else
+    rate "R9-PORTE-1 : la locale GBK fabriquée par localedef n'agit pas : essai sans objet, à revoir"
+  fi
+else
+  echo "  · R9-PORTE-1 (locale GBK) SAUTÉ : localedef absent, la porte n'est pas essayée en locale multi-octets." >&2
+fi
 # Pas de faux refus : VIRTUAL_ENV (« ENV= » dans son nom) passe la porte.
 rm -f "$ESSAI/pkexec.log"
 attendu "VIRTUAL_ENV, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" VIRTUAL_ENV=/x bash "$CC" --accepter-version 2.1.2

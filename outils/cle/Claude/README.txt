@@ -110,8 +110,9 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      only versions that still verify are put back. If a check is not possible for now (a passing fault),
      the undo is called "partial": the record is kept, run the command again later. Both commands refuse
      to run (nothing changed) if they inherit a trapped environment: an exported bash function, BASH_ENV,
-     ENV, SHELLOPTS or BASHOPTS. Scope: this stops a timer, a program started with nobody at the screen,
-     or an inherited environment trap; not a program that already has the account. A program already
+     ENV, SHELLOPTS or BASHOPTS, whatever the inherited language (locale): the check runs in the C
+     locale. Scope: this stops a timer, a program started with nobody at the screen, or an inherited
+     environment trap; not a program that already has the account. A program already
      running under the same account can still move those folders by hand; such a lowering is neither
      reported nor logged (no notification, no log line). Only lowerings made by this command are
      notified and logged.
