@@ -23,9 +23,24 @@
 # PowerShell 5.1 (Windows 10) : ce fichier est en UTF-8 avec BOM, sans quoi les accents seraient mal lus.
 # Essais : outils/essais-claude-cle.sh le lance sous pwsh (Linux), les appels propres à Windows remplacés au repère
 # « ESSAIS » plus bas ; toute la logique est celle de ce fichier. Essayé aussi sur un vrai Windows 11 (PowerShell 5.1).
-# Par son nom complet, comme Import-Module plus bas : une fonction du même nom déjà dans la session ne tourne pas
-# avant le contrôle de provenance (Provenance).
-Microsoft.PowerShell.Core\Set-StrictMode -Version 2
+# Set-StrictMode, et Import-Module plus bas, appelés par leur type (.NET), sans recherche de nom : une fonction ou un
+# alias du même nom, même au nom complet (Microsoft.PowerShell.Core\…), ou un module chargé nommé
+# Microsoft.PowerShell.Core passerait devant, avant le contrôle de provenance (Provenance ; vu sur un vrai Windows). Le
+# type vient de la bibliothèque de ce PowerShell, relue comme dans Provenance (GAC ou dossier de ce PowerShell ; sous
+# pwsh 7, rien ne fait tomber ce filet : il garde PowerShell 5.1). Pas trouvé : refusé plus bas, avec les commandes
+# étrangères. Limite, dite : essayé sous pwsh 7 (Linux) ; sous PowerShell 5.1, à essayer sur un vrai Windows.
+$Noyau = @{}
+try {
+    foreach ($paire in @(@('Set-StrictMode', [Microsoft.PowerShell.Commands.SetStrictModeCommand]),
+            @('Import-Module', [Microsoft.PowerShell.Commands.ImportModuleCommand]))) {
+        $a = $paire[1].Assembly
+        if ($a.Location -and ($a.GlobalAssemblyCache -or
+                $a.Location.StartsWith($PSHOME + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
+            $Noyau[$paire[0]] = [Management.Automation.CmdletInfo]::new($paire[0], $paire[1])
+        }
+    }
+} catch { }
+if ($Noyau['Set-StrictMode']) { & $Noyau['Set-StrictMode'] -Version 2 }
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
@@ -109,6 +124,18 @@ function Existe([string]$chemin) { [bool](Get-Item -LiteralPath $chemin -Force -
 # vérifié qui sait l'écrire ($sait : l'appelant a trouvé l'avertissement dans ses octets). Le gardien ne le passe
 # pas : son résultat n'est jamais dit.
 $TexteNettoyer = @'
+# Les appels propres à Windows dont Nettoyer se sert (le gardien aussi) : les essais les remplacent au repère plus bas.
+function SidDeMoi { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+function CreerDossierPrive([string]$dossier, [string]$moi) {
+    $sid = New-Object Security.Principal.SecurityIdentifier($moi)
+    $droits = New-Object Security.AccessControl.DirectorySecurity
+    $droits.SetAccessRuleProtection($true, $false)
+    $droits.SetOwner($sid)
+    $droits.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl',
+                'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+    [void][IO.Directory]::CreateDirectory($dossier, $droits)
+}
+function ProprietaireDe([string]$dossier) { (Get-Acl -LiteralPath $dossier).GetOwner([Security.Principal.SecurityIdentifier]).Value }
 function LancerCache([string]$exe, [string]$arguments, [string]$dossier) {
     $i = New-Object Diagnostics.ProcessStartInfo
     $i.FileName = $exe
@@ -132,6 +159,7 @@ function ArreterArbre($p) {
 }
 function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait = $false) {
     $deconnexion = ''
+    $hors = ''
     if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; JournauxLaisses = @(); Deconnexion = '' } }
     $config = [IO.Path]::Combine($dossier, 'config')
     if ($exe -and [IO.File]::Exists($exe) -and [IO.Directory]::Exists($config) -and $travail -and [IO.Directory]::Exists($travail)) {
@@ -142,10 +170,24 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
         # Le dossier courant hors de la session, à côté d'elle (…-fin, vide) : un enfant laissé vivant par la
         # déconnexion n'y garde rien d'ouvert, et la session s'efface quand même (vu sur un vrai Windows : travail\
         # restait). Son nom contient celui de la session : les journaux nommés d'après lui partent avec les siens ; plus
-        # court que \travail, il tient sous les 200 caractères. Pas créé : travail\, comme avant. Resté (l'enfant y est
-        # encore) : vide, effacé au lancement suivant avec les restes (vanguard-claude-*).
-        $hors = $dossier + '-fin'
-        try { [void][IO.Directory]::CreateDirectory($hors) } catch { $hors = $travail }
+        # court que \travail, il tient sous les 200 caractères. Créé NEUF, privé et à soi (propriétaire posé, comme la
+        # session : sous un jeton élevé, Windows le donnerait sinon aux Administrateurs, et le tri des restes le
+        # sauterait ensuite pour toujours), puis relu : déjà là (posé par un autre, ou laissé), lien ou jonction, pas
+        # vide, pas à soi : pas pris, travail\ comme avant. Resté (l'enfant y est encore) : vide, effacé au lancement
+        # suivant avec les restes (vanguard-claude-*).
+        $hors = $travail
+        $fin = $dossier + '-fin'
+        try {
+            if (-not [IO.Directory]::Exists($fin) -and -not [IO.File]::Exists($fin)) {
+                $moi = SidDeMoi
+                CreerDossierPrive $fin $moi
+                $vu = New-Object IO.DirectoryInfo($fin)
+                if (-not ($vu.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                    @([IO.Directory]::GetFileSystemEntries($fin)).Count -eq 0 -and (ProprietaireDe $fin) -eq $moi) {
+                    $hors = $fin
+                }
+            }
+        } catch { }
         try { $p = LancerCache $exe 'auth logout' $hors } catch { $deconnexion = 'pas lancée' }
         if ($p) { try {
             $p.StandardInput.Close()   # une question attendrait une réponse qui ne vient jamais
@@ -186,25 +228,16 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
     for ($i = 0; $i -lt 15; $i++) {
         try { [IO.Directory]::Delete($dossier, $true); break } catch { Start-Sleep -Seconds 1 }
     }
-    try { [IO.Directory]::Delete($dossier + '-fin', $false) } catch { }
+    # Seulement s'il a servi : un …-fin pas pris (déjà là, lien, pas à soi) n'est pas touché ici.
+    if ($hors -eq $dossier + '-fin') { try { [IO.Directory]::Delete($hors, $false) } catch { } }
     [pscustomobject]@{ Efface = -not [IO.Directory]::Exists($dossier); JournauxLaisses = $laisses; Deconnexion = $deconnexion }
 }
 '@
 . ([ScriptBlock]::Create($TexteNettoyer))
 
 # Les appels propres à Windows, chacun dans sa fonction : les essais (sous Linux) les remplacent au repère plus bas.
-function SidDeMoi { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 function FormatDuVolume([string]$dossier) { (New-Object IO.DriveInfo([IO.Path]::GetPathRoot($dossier))).DriveFormat }
 function TypeDuVolume([string]$dossier) { [string](New-Object IO.DriveInfo([IO.Path]::GetPathRoot($dossier))).DriveType }
-function CreerDossierPrive([string]$dossier, [string]$moi) {
-    $sid = New-Object Security.Principal.SecurityIdentifier($moi)
-    $droits = New-Object Security.AccessControl.DirectorySecurity
-    $droits.SetAccessRuleProtection($true, $false)
-    $droits.SetOwner($sid)
-    $droits.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl',
-                'ContainerInherit, ObjectInherit', 'None', 'Allow')))
-    [void][IO.Directory]::CreateDirectory($dossier, $droits)
-}
 function DroitsDuDossier([string]$dossier) {
     $acl = Get-Acl -LiteralPath $dossier
     $type = [Security.Principal.SecurityIdentifier]
@@ -215,7 +248,6 @@ function DroitsDuDossier([string]$dossier) {
                 [pscustomobject]@{ Sid = $_.IdentityReference.Value; Type = "$($_.AccessControlType)" } })
     }
 }
-function ProprietaireDe([string]$dossier) { (Get-Acl -LiteralPath $dossier).GetOwner([Security.Principal.SecurityIdentifier]).Value }
 function SignatureDe([string]$exe) {
     $s = Get-AuthenticodeSignature -LiteralPath $exe
     [pscustomobject]@{ Statut = "$($s.Status)"; Certificat = $s.SignerCertificate }
@@ -288,10 +320,11 @@ function Provenance([string]$n) {
 $ModulesWindows = [IO.Path]::Combine($PSHOME, 'Modules')
 $env:PSModulePath = $ModulesWindows
 foreach ($m in 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security') {
-    try { Microsoft.PowerShell.Core\Import-Module -Name ([IO.Path]::Combine($ModulesWindows, $m, "$m.psd1")) -ErrorAction Stop } catch { }
+    try { & $Noyau['Import-Module'] -Name ([IO.Path]::Combine($ModulesWindows, $m, "$m.psd1")) -ErrorAction Stop } catch { }
 }
 $PSModuleAutoLoadingPreference = 'None'
 $etrangeres = @()
+foreach ($n in 'Set-StrictMode', 'Import-Module') { if (-not $Noyau[$n]) { $etrangeres += "$n (pas l'applet de ce PowerShell)" } }
 foreach ($n in $Commandes + $CommandesWindows) {
     $d = Provenance $n
     if ($d) { $etrangeres += "$n ($d)" }
