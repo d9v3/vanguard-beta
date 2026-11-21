@@ -62,7 +62,8 @@ faux_claude() { # version
 c=\${XDG_CACHE_HOME:-\$HOME/.cache}/claude-cli-nodejs/essai; mkdir -p "\$c" && echo journal >"\$c/journal.txt"
 if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "env-logout=\$ANTHROPIC_BASE_URL\$https_proxy"; echo "pwd-logout=\$PWD"; echo "tmp-logout=\$TMPDIR"; } >>"$ESSAI/journal-claude"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "pwd=\$PWD"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$https_proxy\$HTTPS_PROXY\$GIT_DIR"; echo "args=\$*"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "path=\$PATH"; echo "home=\$HOME"; } >>"$ESSAI/journal-claude"
-env >"$ESSAI/env-claude"
+# « command » : une fonction « env » exportée par le PC (essai plus bas) ne prend pas la place de la commande.
+command env >"$ESSAI/env-claude"
 [ -f CLAUDE.md ] && echo consignes >>"$ESSAI/journal-claude"
 echo jeton-essai >"\$CLAUDE_CONFIG_DIR/.credentials.json"
 # Ce qui se passe pendant la session (un disque monté, un tuyau fermé) : posé par un essai.
@@ -763,21 +764,23 @@ signature "fonction gpg exportée par le PC"
 [[ ! -s $ESSAI/journal-claude ]] && bon "fonction gpg exportée : rien lancé" || rate "fonction gpg exportée : lancé"
 cp "$ESSAI/manifest.json.sig.bon" "$CLE/Claude/manifest.json.sig"
 # Une fonction « env » exportée (le lancement passe par env) : la vraie commande lance Claude.
+rm -f "$ESSAI/env-claude"
 attendu "fonction env exportée : lancé" 0 \
   env "BASH_FUNC_env%%=() { echo fonction-du-pc >>\"$ESSAI/journal-claude\"; }" bash "$CLE/Claude/depanner.sh" <<<"o"
 grep -qx "args=--strict-mcp-config" "$ESSAI/journal-claude" &&
   bon "fonction env exportée : pas suivie" || rate "fonction env exportée : $(tr '\n' ' ' <"$ESSAI/journal-claude")"
 # Ni passée à Claude Code : chaque commande qu'il lance dans bash la lirait.
-! grep -q '^BASH_FUNC_' "$ESSAI/env-claude" && bon "fonction exportée : pas donnée à Claude Code" ||
+[[ -s $ESSAI/env-claude ]] && ! grep -q '^BASH_FUNC_' "$ESSAI/env-claude" && bon "fonction exportée : pas donnée à Claude Code" ||
   rate "fonction exportée donnée à Claude Code : $(grep -c '^BASH_FUNC_' "$ESSAI/env-claude")"
 # Traçage hérité (SHELLOPTS) avec une invite de trace piégée : lancé par « bash -p » comme le dit LISEZMOI, rien du PC
 # ne tourne. (Lancé sans -p, la trace passe avant la première ligne : limite dite.)
+rm -f "$ESSAI/env-claude"
 : >"$ESSAI/journal-claude"
 attendu "traçage hérité, bash -p : lancé" 0 \
   env SHELLOPTS=xtrace PS4="\$(echo trace >>\"$ESSAI/temoin-trace\")" bash -p "$CLE/Claude/depanner.sh" <<<"o"
 [[ ! -e $ESSAI/temoin-trace ]] && bon "traçage hérité, bash -p : rien du PC exécuté" || rate "traçage hérité : invite exécutée"
 # Ni le traçage ni les options du lanceur (nounset, pipefail) données à Claude Code et à ses commandes.
-! grep -qE '^(SHELLOPTS|BASHOPTS|PS4)=' "$ESSAI/env-claude" && bon "traçage hérité : pas donné à Claude Code" ||
+[[ -s $ESSAI/env-claude ]] && ! grep -qE '^(SHELLOPTS|BASHOPTS|PS4)=' "$ESSAI/env-claude" && bon "traçage hérité : pas donné à Claude Code" ||
   rate "traçage hérité donné à Claude Code : $(grep -E '^(SHELLOPTS|BASHOPTS|PS4)=' "$ESSAI/env-claude" | tr '\n' ' ')"
 attendu "traçage hérité, sans -p : lancé" 0 \
   env SHELLOPTS=xtrace PS4="\$(echo trace >>\"$ESSAI/temoin-trace\")" bash "$CLE/Claude/depanner.sh" <<<"o"
