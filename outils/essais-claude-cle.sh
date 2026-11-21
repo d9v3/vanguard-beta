@@ -707,6 +707,97 @@ attendu "marque de relance forgée avec une fonction exportée : refusé" 1 au_c
   'BASH_FUNC_read%%=() { rep="ACCEPTER 2.1.2"; }' bash "$CC" --accepter-version 2.1.2
 [[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Environnement pas propre" "$ESSAI/sortie" &&
   bon "marque forgée, fonction exportée : environnement pas propre, rien changé" || rate "marque forgée, fonction : $(etat_r5)"
+# R7-BAISSE-1 : la marque crue, un fichier BASH_ENV qui s'efface lui-même et pose des alias (« builtin command
+# /usr/bin/pkexec » devenu « builtin true ») sautait la fenêtre polkit. La marque n'est plus crue : l'environnement
+# de départ relu dans /proc/$$/environ (BASH_ENV y reste), puis les alias, pièges, builtins coupés et fonctions.
+# Chaque contrôle seul ci-dessous : un bash à l'environnement exact de la relance (env -i), et le reste posé par un
+# « bash -c » qui source le script (hors portée dite dans claude-cle.sh, mais chaque contrôle y est seul à refuser).
+# « ACCEPTER 2.1.2 » tapé, polkit refusé (126) : sans le contrôle, le faux pkexec serait appelé, ou rien demandé.
+cat >"$ESSAI/bash-env-alias" <<'FIN'
+unset BASH_ENV
+shopt -s expand_aliases
+alias builtin='builtin ' command='true '
+FIN
+printf 'unset BASH_ENV\n' >"$ESSAI/bash-env-vide"
+R7P=(env -i VANGUARD_CLE_RELANCE=1 "PATH=$PATH" "HOME=$HOME" VANGUARD_ESSAI=1 "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
+  "XDG_CACHE_HOME=$ESSAI/r5/cache" "XDG_STATE_HOME=$ESSAI/r5/etat" "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+for n in "${!VANGUARD_CLAUDE_@}"; do R7P+=("$n=${!n}"); done
+echo 126 >"$ESSAI/pkexec-code"
+r7_refus() { # libellé motif-de-la-sortie commande… (après au_clavier « ACCEPTER 2.1.2 »)
+  local l=$1 m=$2
+  shift 2
+  rm -f "$ESSAI/pkexec.log"
+  attendu "$l : refusé" 1 au_clavier "ACCEPTER 2.1.2" "$@"
+  [[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Environnement pas propre.*$m" "$ESSAI/sortie" &&
+    bon "$l : environnement pas propre ($m), rien changé, polkit pas demandé" ||
+    rate "$l : $(etat_r5) $([[ -e $ESSAI/pkexec.log ]] && echo 'pkexec appelé') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+}
+# Tous ensemble : le cas du relecteur (marque forgée, environnement entier, BASH_ENV à alias).
+r7_refus "marque forgée, BASH_ENV qui pose des alias puis s'efface" "BASH_ENV" \
+  "${R5ENV[@]}" VANGUARD_CLE_RELANCE=1 BASH_ENV="$ESSAI/bash-env-alias" bash "$CC" --accepter-version 2.1.2
+# Témoin : l'environnement exact de la relance, rien d'autre, va jusqu'à la question (« non » : pas confirmé).
+rm -f "$ESSAI/pkexec.log"
+attendu "témoin : environnement de la relance, « non » tapé : pas confirmé" 1 au_clavier non "${R7P[@]}" bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  ! grep -q "pas propre" "$ESSAI/sortie" && bon "témoin : environnement de la relance accepté, question posée" ||
+  rate "témoin r7 : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# Chaque contrôle seul.
+r7_refus "/proc/\$\$/environ : BASH_ENV effacé par son fichier" "BASH_ENV" \
+  "${R7P[@]}" BASH_ENV="$ESSAI/bash-env-vide" bash "$CC" --accepter-version 2.1.2
+# shellcheck disable=SC2016 # le code du bash -c, pas développé ici
+r7_refus "alias builtin et command posés avant le script" "un alias" "${R7P[@]}" bash -c \
+  'shopt -s expand_aliases; alias builtin="builtin " command="true "; . "$0" "$@"' "$CC" --accepter-version 2.1.2
+# shellcheck disable=SC2016
+r7_refus "piège DEBUG posé avant le script" "un piège trap" "${R7P[@]}" bash -c \
+  'set -T; trap "echo piege >>\"$0.piege\"" DEBUG; . "$0" "$@"' "$CC" --accepter-version 2.1.2
+rm -f "$CC.piege"
+# shellcheck disable=SC2016
+r7_refus "builtin echo coupé avant le script" "un builtin coupé" "${R7P[@]}" bash -c \
+  'enable -n echo; . "$0" "$@"' "$CC" --accepter-version 2.1.2
+# shellcheck disable=SC2016
+r7_refus "fonction posée avant le script, sans BASH_ENV" "une fonction" "${R7P[@]}" bash -c \
+  'jamais() { :; }; . "$0" "$@"' "$CC" --accepter-version 2.1.2
+echo 0 >"$ESSAI/pkexec-code"
+rm -f "$ESSAI/pkexec.log"
+# R7-BAISSE-2 : lancé par un chemin relatif (« outils/claude-cle.sh », comme le dit le mode d'emploi), le cd du début
+# cherchait « outils/.. » d'abord dans CDPATH, et la relance lançait alors l'autre claude-cle.sh, celui du dossier
+# trouvé. Le fichier lancé est pris en chemin absolu avant le cd, et CDPATH est vidé pour ce cd : un CDPATH qui mène
+# à un autre dossier « outils » ne change ni le fichier relancé, ni le dossier de travail (--cle copie les fichiers
+# de outils/cle/ par un chemin relatif). Les deux protections se recouvrent : chacune seule dans une copie.
+P7=$ESSAI/piege-cdpath
+mkdir -p "$P7/outils"
+for f in claude-cle.sh claude-cle-sans-abs.sh claude-cle-sans-cdpath.sh; do
+  printf '#!/bin/bash\necho "SCRIPT DU PIEGE : $*"\n' >"$P7/outils/$f"
+done
+grep -vxF '[[ $ICI == /* ]] || ICI=$PWD/$ICI' "$CC" >"$ESSAI/copie/outils/claude-cle-sans-abs.sh"
+sed 's|^CDPATH='"''"' cd -- |cd -- |' "$CC" >"$ESSAI/copie/outils/claude-cle-sans-cdpath.sh"
+for f in sans-abs sans-cdpath; do
+  cmp -s "$CC" "$ESSAI/copie/outils/claude-cle-$f.sh" && rate "copie claude-cle-$f.sh : rien retiré"
+done
+r7_cdpath() ( # script (relatif à la copie)
+  cd "$ESSAI/copie" || exit 99
+  au_clavier non "${R5ENV[@]}" CDPATH="$P7" bash "$1" --accepter-version 2.1.2
+)
+for f in claude-cle.sh claude-cle-sans-abs.sh claude-cle-sans-cdpath.sh; do
+  attendu "CDPATH vers un autre « outils », outils/$f lancé par un chemin relatif, « non » tapé" 1 r7_cdpath "outils/$f"
+  [[ $(etat_r5) == "$avant" ]] && grep -q "Pas confirmé" "$ESSAI/sortie" && ! grep -q "PIEGE" "$ESSAI/sortie" &&
+    bon "CDPATH, $f : le script lancé relancé, pas celui du piège" ||
+    rate "CDPATH, $f : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+done
+rm -f "$ESSAI/copie/outils/claude-cle-sans-abs.sh" "$ESSAI/copie/outils/claude-cle-sans-cdpath.sh"
+# Lancé depuis outils/ (« bash claude-cle.sh ») : après le cd vers le dossier du dépôt, un nom relatif mènerait à
+# un autre claude-cle.sh, posé à la racine. La relance prend le chemin absolu d'avant le cd.
+printf '#!/bin/bash\necho "SCRIPT DU PIEGE : $*"\n' >"$ESSAI/copie/claude-cle.sh"
+r7_dedans() ( cd "$ESSAI/copie/outils" && au_clavier non "${R5ENV[@]}" bash claude-cle.sh --accepter-version 2.1.2 )
+attendu "lancé depuis outils/ par son seul nom, « non » tapé" 1 r7_dedans
+[[ $(etat_r5) == "$avant" ]] && grep -q "Pas confirmé" "$ESSAI/sortie" && ! grep -q "PIEGE" "$ESSAI/sortie" &&
+  bon "lancé depuis outils/ : le script lancé relancé, pas celui de la racine" ||
+  rate "CDPATH, lancé depuis outils/ : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+rm -f "$ESSAI/copie/claude-cle.sh"
+r7_cle() ( cd "$ESSAI/copie" && r5 env CDPATH="$P7" bash outils/claude-cle.sh --cle "$R5K" )
+attendu "CDPATH vers un autre « outils », --cle par un chemin relatif : posé depuis le bon dossier" 0 r7_cle
+grep -q PIEGE "$ESSAI/sortie" && rate "CDPATH, --cle : le piège a tourné"
+rm -rf "$P7"
 # Chaque protection seule, sans la relance (une copie sans elle) : « builtin read » lit la vraie réponse, « builtin
 # command » lance le vrai pkexec, malgré les fonctions read et pkexec.
 sed '0,/^esac$/{/^case \${1:-} in$/,/^esac$/d}' "$CC" >"$ESSAI/copie/outils/claude-cle-sans-relance.sh"

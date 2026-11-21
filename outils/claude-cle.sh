@@ -46,32 +46,70 @@
 # fichier de plus de 64 Mio : cette relecture le complète. Sous Windows, le lanceur vérifie en plus la signature
 # Authenticode « Anthropic, PBC » de claude.exe avant de le lancer.
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 1
+# Le fichier lancé, en chemin absolu, pris AVANT le cd : « outils/.. » (chemin relatif) était d'abord cherché dans
+# CDPATH, et la relance plus bas lançait alors un autre claude-cle.sh, celui du dossier trouvé par CDPATH. Un chemin
+# absolu ne passe jamais par CDPATH ; CDPATH vidé en plus pour ce cd.
+ICI=${BASH_SOURCE[0]}
+[[ $ICI == /* ]] || ICI=$PWD/$ICI
+CDPATH='' cd -- "${ICI%/*}/.." || exit 1
 # --accepter-version et --annuler-acceptation tournent dans un bash propre : relancés par /usr/bin/env -i (ni BASH_ENV
-# ni ENV, ni fonction exportée, ni SHELLOPTS ; PATH fixe), avec les seules variables utiles. Un fichier nommé par
-# BASH_ENV est lu par bash AVANT ce script : ses fonctions au nom de « /usr/bin/pkexec » ou de « read » sautaient la
-# fenêtre polkit et la confirmation tapée. Relancé (VANGUARD_CLE_RELANCE), l'environnement est relu : BASH_ENV, ENV ou
-# une fonction encore là, refusé. Portée, dite : cela arrête un BASH_ENV hérité ou posé par mégarde ; le code qui
-# tourne avant ce script (le fichier de BASH_ENV en est) est un programme du même compte, qui peut aussi baisser la
-# protection à la main (plus bas, accepter). Sous VANGUARD_ESSAI, le PATH des essais est gardé (leurs doublures de
-# notify-send et systemctl) : la fenêtre polkit et la lecture au clavier ne passent jamais par le PATH.
+# ni ENV, ni fonction exportée, ni SHELLOPTS ; PATH fixe), avec les seules variables de GARDEES. Un fichier nommé par
+# BASH_ENV est lu par bash AVANT ce script : ses fonctions au nom de « /usr/bin/pkexec » ou de « read », ou ses alias
+# (« builtin », « command »), sautaient la fenêtre polkit et la confirmation tapée.
+# Relancé, la marque VANGUARD_CLE_RELANCE n'est pas crue (l'appelant peut l'écrire lui-même) : l'environnement de
+# départ de ce bash est relu dans /proc/$$/environ (un fichier BASH_ENV ne peut pas le réécrire), et tout nom hors de
+# GARDEES y est refusé ; refusé aussi s'il reste une fonction, un alias, un piège (trap) ou un builtin coupé
+# (enable -n), ou BASH_ENV ou ENV. Portée, dite : cela arrête un BASH_ENV hérité ou posé par mégarde, et ce qu'il
+# laisse derrière lui. Pas un programme écrit exprès pour tromper ce contrôle : du code qui tourne dans ce bash avant
+# lui (un bash -i et son ~/.bashrc, un script qui source celui-ci, un builtin chargé par enable -f, une variable non
+# exportée) peut le contourner ; c'est un programme du même compte, qui peut aussi baisser la protection à la main
+# (plus bas, accepter). Sous VANGUARD_ESSAI, le PATH des essais est gardé (leurs doublures de notify-send et
+# systemctl) : la fenêtre polkit et la lecture au clavier ne passent jamais par le PATH.
+GARDEES=(VANGUARD_CLE_RELANCE PATH HOME USER LOGNAME TERM LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TMPDIR XDG_CACHE_HOME
+  XDG_CONFIG_HOME XDG_STATE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS VANGUARD_ESSAI)
+# Les mots précédés de « \ » (\builtin, \read…) ne passent pas par les alias : voulu.
+# shellcheck disable=SC1001,SC1012
 case ${1:-} in
   --accepter-version | --annuler-acceptation)
     if [[ ${VANGUARD_CLE_RELANCE:-} != 1 ]]; then
       garder=(VANGUARD_CLE_RELANCE=1 PATH=/usr/local/bin:/usr/bin:/bin)
       [[ -z ${VANGUARD_ESSAI:-} ]] || garder=(VANGUARD_CLE_RELANCE=1 "PATH=$PATH")
-      for n in HOME USER LOGNAME TERM LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TMPDIR XDG_CACHE_HOME XDG_CONFIG_HOME \
-        XDG_STATE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS VANGUARD_ESSAI "${!VANGUARD_CLAUDE_@}"; do
+      for n in "${GARDEES[@]:2}" "${!VANGUARD_CLAUDE_@}"; do
         [[ -z ${!n+x} ]] || garder+=("$n=${!n}")
       done
-      exec /usr/bin/env -i "${garder[@]}" /bin/bash --noprofile --norc -- "$PWD/outils/claude-cle.sh" "$@"
+      exec /usr/bin/env -i "${garder[@]}" /bin/bash --noprofile --norc -- "$ICI" "$@"
       echo "✖ Relance dans un bash propre impossible (/usr/bin/env, /bin/bash) : rien changé." >&2
       exit 1
     fi
-    if [[ -n ${BASH_ENV+x}${ENV+x} || -n $(declare -F) ]]; then
-      echo "✖ Environnement pas propre (BASH_ENV, ENV ou une fonction de bash) : rien changé." >&2
+    # Les fonctions d'abord, seules : une fonction « read » ou « builtin » passerait devant la suite (le « \ » n'arrête
+    # que les alias).
+    if [[ -n ${BASH_ENV+x}${ENV+x} || -n $(\builtin \declare -F) || -n $(\declare -F) ]]; then
+      echo "✖ Environnement pas propre : BASH_ENV, ENV ou une fonction de bash. Rien changé." >&2
       exit 1
     fi
+    sale=""
+    if [[ -r /proc/$$/environ ]]; then
+      while IFS= \builtin \read -r -d '' e; do
+        n=${e%%=*} ok=0
+        for g in "${GARDEES[@]}"; do [[ $n != "$g" ]] || ok=1; done
+        [[ $n =~ ^VANGUARD_CLAUDE_[A-Z0-9_]+$ ]] && ok=1
+        ((ok)) || sale+=" ${n:0:40}"
+      done </proc/$$/environ
+    else
+      sale=" (/proc/$$/environ illisible)"
+    fi
+    [[ -z $(\builtin \alias -p) ]] || sale+=" (un alias)"
+    # Un signal ignoré au départ (trap -- '' SIGPIPE, hérité d'un appelant comme python) ne lance rien : pas compté.
+    pieges=$(\builtin \trap -p)
+    while IFS= \builtin \read -r e; do
+      [[ -z $e || $e =~ ^trap\ --\ \'\'\ SIG[A-Z0-9+-]+$ ]] || { sale+=" (un piège trap)"; break; }
+    done <<<"$pieges"
+    [[ -z $(\builtin \enable -n) ]] || sale+=" (un builtin coupé)"
+    if [[ -n $sale ]]; then
+      echo "✖ Environnement pas propre :$sale. Rien changé." >&2
+      exit 1
+    fi
+    unset sale e n ok g pieges
     ;;
 esac
 
