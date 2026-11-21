@@ -23,7 +23,9 @@
 # PowerShell 5.1 (Windows 10) : ce fichier est en UTF-8 avec BOM, sans quoi les accents seraient mal lus.
 # Essais : outils/essais-claude-cle.sh le lance sous pwsh (Linux), les appels propres à Windows remplacés au repère
 # « ESSAIS » plus bas ; toute la logique est celle de ce fichier. Essayé aussi sur un vrai Windows 11 (PowerShell 5.1).
-Set-StrictMode -Version 2
+# Par son nom complet, comme Import-Module plus bas : une fonction du même nom déjà dans la session ne tourne pas
+# avant le contrôle de provenance (Provenance).
+Microsoft.PowerShell.Core\Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
@@ -119,6 +121,15 @@ function LancerCache([string]$exe, [string]$arguments, [string]$dossier) {
     $i.RedirectStandardError = $true
     [Diagnostics.Process]::Start($i)
 }
+# Arrête claude.exe et ses enfants (taskkill /T /F, par le chemin que donne Windows, pas une variable), tant que le
+# parent vit : un enfant d'un parent déjà fini n'est plus trouvé par taskkill. Puis Kill, si taskkill manque.
+function ArreterArbre($p) {
+    $tk = [IO.Path]::Combine([Environment]::GetFolderPath('System'), 'taskkill.exe')
+    if ([IO.Path]::IsPathRooted($tk) -and [IO.File]::Exists($tk)) {
+        try { $k = LancerCache $tk "/T /F /PID $($p.Id)" ([IO.Path]::GetDirectoryName($tk)) ; $k.StandardInput.Close() ; [void]$k.WaitForExit(5000) } catch { }
+    }
+    try { $p.Kill() } catch { }
+}
 function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait = $false) {
     $deconnexion = ''
     if (-not [IO.Directory]::Exists($dossier)) { return [pscustomobject]@{ Efface = $true; JournauxLaisses = @(); Deconnexion = '' } }
@@ -128,7 +139,14 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
         $avant = $env:CLAUDE_CONFIG_DIR
         $env:CLAUDE_CONFIG_DIR = $config
         $p = $null
-        try { $p = LancerCache $exe 'auth logout' $travail } catch { $deconnexion = 'pas lancée' }
+        # Le dossier courant hors de la session, à côté d'elle (…-fin, vide) : un enfant laissé vivant par la
+        # déconnexion n'y garde rien d'ouvert, et la session s'efface quand même (vu sur un vrai Windows : travail\
+        # restait). Son nom contient celui de la session : les journaux nommés d'après lui partent avec les siens ; plus
+        # court que \travail, il tient sous les 200 caractères. Pas créé : travail\, comme avant. Resté (l'enfant y est
+        # encore) : vide, effacé au lancement suivant avec les restes (vanguard-claude-*).
+        $hors = $dossier + '-fin'
+        try { [void][IO.Directory]::CreateDirectory($hors) } catch { $hors = $travail }
+        try { $p = LancerCache $exe 'auth logout' $hors } catch { $deconnexion = 'pas lancée' }
         if ($p) { try {
             $p.StandardInput.Close()   # une question attendrait une réponse qui ne vient jamais
             # Lues en même temps : un tuyau plein bloquerait claude.exe.
@@ -144,7 +162,7 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
                     $deconnexion = 'oui'
                 }
             }
-            else { try { $p.Kill() } catch { } ; Start-Sleep -Seconds 1 }
+            else { ArreterArbre $p ; Start-Sleep -Seconds 1 }
         } catch { } }
         $env:CLAUDE_CONFIG_DIR = $avant
     }
@@ -165,9 +183,10 @@ function Nettoyer([string]$dossier, [string]$exe, [string]$travail, [bool]$sait 
         # Vides, ils ne servaient qu'à cette session ; sinon gardés (Claude Code est peut-être installé ici).
         foreach ($v in $journaux, [IO.Path]::GetDirectoryName($journaux)) { try { [IO.Directory]::Delete($v, $false) } catch { } }
     }
-    for ($i = 0; $i -lt 10; $i++) {
+    for ($i = 0; $i -lt 15; $i++) {
         try { [IO.Directory]::Delete($dossier, $true); break } catch { Start-Sleep -Seconds 1 }
     }
+    try { [IO.Directory]::Delete($dossier + '-fin', $false) } catch { }
     [pscustomobject]@{ Efface = -not [IO.Directory]::Exists($dossier); JournauxLaisses = $laisses; Deconnexion = $deconnexion }
 }
 '@
@@ -269,7 +288,7 @@ function Provenance([string]$n) {
 $ModulesWindows = [IO.Path]::Combine($PSHOME, 'Modules')
 $env:PSModulePath = $ModulesWindows
 foreach ($m in 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security') {
-    try { Import-Module -Name ([IO.Path]::Combine($ModulesWindows, $m, "$m.psd1")) -ErrorAction Stop } catch { }
+    try { Microsoft.PowerShell.Core\Import-Module -Name ([IO.Path]::Combine($ModulesWindows, $m, "$m.psd1")) -ErrorAction Stop } catch { }
 }
 $PSModuleAutoLoadingPreference = 'None'
 $etrangeres = @()
