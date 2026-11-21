@@ -45,6 +45,38 @@
 # remplacé par la copie vérifiée. Le manifeste de la clé (src/protection/manifeste.rs) ne compare que la taille d'un
 # fichier de plus de 64 Mio : cette relecture le complète. Sous Windows, le lanceur vérifie en plus la signature
 # Authenticode « Anthropic, PBC » de claude.exe avant de le lancer.
+#
+# La porte de --accepter-version et --annuler-acceptation, AVANT toute commande : écrite seulement avec des
+# affectations, des expansions et le mot-clé [[ ]], qu'aucune fonction ne remplace. Hors mode POSIX, bash cherche
+# une fonction avant tout builtin, même exec, exit, builtin, declare, read, printf ou « : » : une fonction exportée
+# (variable BASH_FUNC_nom%%) remplaçait chaque refus écrit avec une commande, et le script baissait la protection
+# en disant « rien changé ». La porte lit l'environnement de départ de ce bash (/proc/$$/environ, qu'aucune
+# commande ne réécrit) et refuse une fonction exportée, BASH_ENV (un fichier lu par bash avant ce script), SHELLOPTS
+# ou BASHOPTS (options posées avant la première ligne), ENV, et une lecture vide ou impossible. Son arrêt est
+# l'expansion ${refus:?…} d'une variable vide, qui arrête un bash non interactif (code 1) sans passer par aucun nom
+# de commande. Les octets nuls de environ sont perdus par $(<…) : les noms se suivent sans séparateur, d'où ENV
+# testé comme variable (« *ENV=* » prendrait VIRTUAL_ENV) ; bash ne lit ENV qu'en interactif, et seul un fichier
+# BASH_ENV (refusé ici) pourrait l'effacer avant la porte. PS4 est remis d'abord : sous traçage (bash -x), un PS4
+# hérité est développé à chaque commande tracée, juste avant elle ; « $((porte=1)) » réécrivait ainsi porte entre sa
+# lecture et le [[ ]] qui la juge, et la porte s'ouvrait. Il ne l'est plus qu'une fois, sur la ligne qui le remet,
+# avant que la porte ne lise environ.
+# Pourquoi pas un « #!/usr/bin/env -S -i … » qui nettoie l'environnement : « bash outils/claude-cle.sh » (deployer.sh,
+# les essais, quiconque) lit le fichier sans passer par le shebang, et la porte doit tenir dans les deux cas.
+# Passée la porte, aucune fonction ni aucun alias ne viennent de l'environnement : les « exit 1 », exec et erreur de
+# la suite sont les vrais builtins. Portée, dite : la porte arrête les pièges d'environnement hérités ou posés par
+# mégarde. Pas un attaquant qui a déjà le compte : du code qui tourne dans ce bash avant la porte (LD_PRELOAD, un
+# bash -i, -l ou -c, un script qui source celui-ci, un fichier BASH_ENV écrit pour la tromper, qui peut poser un
+# alias sur [[) passe à côté ; il peut aussi baisser la protection à la main (plus bas, accepter), et une telle
+# baisse n'est ni signalée ni notée.
+PS4='+ '
+if [[ ${1-} == --accepter-version || ${1-} == --annuler-acceptation ]]; then
+  { porte=$(</proc/$$/environ); } 2>/dev/null
+  [[ -n $porte && $porte != *BASH_FUNC_* && $porte != *BASH_ENV=* && $porte != *SHELLOPTS=* && $porte != *BASHOPTS=* &&
+    -z ${BASH_ENV+x}${ENV+x} ]] ||
+    refus='' porte=${refus:?Environnement pas propre (fonction de bash exportée, BASH_ENV, ENV, SHELLOPTS ou \
+BASHOPTS, ou /proc/$$/environ illisible) : rien changé.}
+  porte=
+fi
 set -uo pipefail
 # Le fichier lancé, en chemin absolu, pris AVANT le cd : « outils/.. » (chemin relatif) était d'abord cherché dans
 # CDPATH, et la relance plus bas lançait alors un autre claude-cle.sh, celui du dossier trouvé par CDPATH. Un chemin
@@ -52,21 +84,22 @@ set -uo pipefail
 ICI=${BASH_SOURCE[0]}
 [[ $ICI == /* ]] || ICI=$PWD/$ICI
 CDPATH='' cd -- "${ICI%/*}/.." || exit 1
-# --accepter-version et --annuler-acceptation tournent dans un bash propre : relancés par /usr/bin/env -i (ni BASH_ENV
-# ni ENV, ni fonction exportée, ni SHELLOPTS ; PATH fixe), avec les seules variables de GARDEES. Un fichier nommé par
-# BASH_ENV est lu par bash AVANT ce script : ses fonctions au nom de « /usr/bin/pkexec » ou de « read », ou ses alias
-# (« builtin », « command »), sautaient la fenêtre polkit et la confirmation tapée.
+# --accepter-version et --annuler-acceptation tournent dans un bash propre, une fois la porte passée (plus haut) :
+# relancés par /usr/bin/env -i (PATH fixe, ni SHELLOPTS ni variable inconnue), avec les seules variables de GARDEES.
+# Une seule liste fermée, pour la relance comme pour la relecture qui suit : une variable hors de GARDEES n'est pas
+# transmise, et refusée si elle est là quand même (la marque forgée). Les VANGUARD_CLAUDE_* y sont nommées une à une
+# (les crochets des essais, lus seulement sous VANGUARD_ESSAI, plus bas) : une autre, même au nom proche, est laissée
+# tomber par la relance, jamais transmise puis refusée par ce même script.
 # Relancé, la marque VANGUARD_CLE_RELANCE n'est pas crue (l'appelant peut l'écrire lui-même) : l'environnement de
-# départ de ce bash est relu dans /proc/$$/environ (un fichier BASH_ENV ne peut pas le réécrire), et tout nom hors de
-# GARDEES y est refusé ; refusé aussi s'il reste une fonction, un alias, un piège (trap) ou un builtin coupé
-# (enable -n), ou BASH_ENV ou ENV. Portée, dite : cela arrête un BASH_ENV hérité ou posé par mégarde, et ce qu'il
-# laisse derrière lui. Pas un programme écrit exprès pour tromper ce contrôle : du code qui tourne dans ce bash avant
-# lui (un bash -i et son ~/.bashrc, un script qui source celui-ci, un builtin chargé par enable -f, une variable non
-# exportée) peut le contourner ; c'est un programme du même compte, qui peut aussi baisser la protection à la main
-# (plus bas, accepter). Sous VANGUARD_ESSAI, le PATH des essais est gardé (leurs doublures de notify-send et
-# systemctl) : la fenêtre polkit et la lecture au clavier ne passent jamais par le PATH.
+# départ de ce bash est relu dans /proc/$$/environ, et tout nom hors de GARDEES y est refusé. Au second rang, après
+# la porte (qui a déjà refusé fonctions exportées et BASH_ENV) : refusé aussi s'il reste une fonction, un alias, un
+# piège (trap) ou un builtin coupé (enable -n), posés par du code lancé dans ce bash avant lui (bash -c, un script qui
+# source celui-ci) ; utile contre une erreur, pas contre un programme écrit exprès (voir la portée de la porte). Sous
+# VANGUARD_ESSAI, le PATH des essais est gardé (leurs doublures de notify-send et systemctl) : la fenêtre polkit et la
+# lecture au clavier ne passent jamais par le PATH.
 GARDEES=(VANGUARD_CLE_RELANCE PATH HOME USER LOGNAME TERM LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TMPDIR XDG_CACHE_HOME
-  XDG_CONFIG_HOME XDG_STATE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS VANGUARD_ESSAI)
+  XDG_CONFIG_HOME XDG_STATE_HOME XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS VANGUARD_ESSAI
+  VANGUARD_CLAUDE_SOURCE VANGUARD_CLAUDE_CACHE VANGUARD_CLAUDE_DEPOT VANGUARD_CLAUDE_CLE_GPG VANGUARD_CLAUDE_EMPREINTE)
 # Les mots précédés de « \ » (\builtin, \read…) ne passent pas par les alias : voulu.
 # shellcheck disable=SC1001,SC1012
 case ${1:-} in
@@ -74,29 +107,24 @@ case ${1:-} in
     if [[ ${VANGUARD_CLE_RELANCE:-} != 1 ]]; then
       garder=(VANGUARD_CLE_RELANCE=1 PATH=/usr/local/bin:/usr/bin:/bin)
       [[ -z ${VANGUARD_ESSAI:-} ]] || garder=(VANGUARD_CLE_RELANCE=1 "PATH=$PATH")
-      for n in "${GARDEES[@]:2}" "${!VANGUARD_CLAUDE_@}"; do
+      for n in "${GARDEES[@]:2}"; do
         [[ -z ${!n+x} ]] || garder+=("$n=${!n}")
       done
+      # La porte passée, exec et exit sont les vrais builtins : aucune fonction ne peut les remplacer ici.
       exec /usr/bin/env -i "${garder[@]}" /bin/bash --noprofile --norc -- "$ICI" "$@"
       echo "✖ Relance dans un bash propre impossible (/usr/bin/env, /bin/bash) : rien changé." >&2
       exit 1
     fi
-    # Les fonctions d'abord, seules : une fonction « read » ou « builtin » passerait devant la suite (le « \ » n'arrête
-    # que les alias).
-    if [[ -n ${BASH_ENV+x}${ENV+x} || -n $(\builtin \declare -F) || -n $(\declare -F) ]]; then
-      echo "✖ Environnement pas propre : BASH_ENV, ENV ou une fonction de bash. Rien changé." >&2
-      exit 1
-    fi
     sale=""
+    [[ -z $(\builtin \declare -F) ]] || sale+=" (une fonction de bash)"
     if [[ -r /proc/$$/environ ]]; then
       while IFS= \builtin \read -r -d '' e; do
         n=${e%%=*} ok=0
         for g in "${GARDEES[@]}"; do [[ $n != "$g" ]] || ok=1; done
-        [[ $n =~ ^VANGUARD_CLAUDE_[A-Z0-9_]+$ ]] && ok=1
         ((ok)) || sale+=" ${n:0:40}"
       done </proc/$$/environ
     else
-      sale=" (/proc/$$/environ illisible)"
+      sale+=" (/proc/$$/environ illisible)"
     fi
     [[ -z $(\builtin \alias -p) ]] || sale+=" (un alias)"
     # Un signal ignoré au départ (trap -- '' SIGPIPE, hérité d'un appelant comme python) ne lance rien : pas compté.
@@ -809,38 +837,59 @@ main) ; un programme remplacé est un piège possible."
   fi
   exit 2
 }
-# Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé, et il est toujours
-# dit (code 2), même s'il a déjà été remplacé avant la panne (vu, la liste du début, dans poser). Un binaire inconnu
-# (inconnu, dans poser : sans ligne dans la note) est dit aussi, avec ce qu'il est devenu (remplacé, retiré, laissé),
-# code 2 : jamais un « remplacé » qui n'a pas eu lieu.
-refuser() { # point changes raison texte
-  local remplaces=${vu:-} c i_remplaces="" i_retires="" i_laisses=""
-  for c in $2; do remplaces=${remplaces// $c/}; done
-  for c in ${inconnu:-}; do
-    if [[ "${inconnu_reste:-} " != *" $c "* ]]; then i_remplaces+=" $c"
-    elif [[ -e $1/$c || -L $1/$c ]]; then i_laisses+=" $c"
-    else i_retires+=" $c"; fi
-  done
-  if [[ -n ${inconnu:-} ]]; then
-    echo "✖ $4" >&2
-    echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$inconnu." >&2
-    [[ -z $i_remplaces ]] || echo "  Remplacé par la copie vérifiée avant la panne :$i_remplaces." >&2
-    [[ -z $i_retires ]] || echo "  Retiré de la clé, PAS remplacé ($3) :$i_retires." >&2
-    [[ -z $i_laisses ]] || echo "  Laissé sur la clé, PAS remplacé ($3) :$i_laisses. S'il ne vient pas de Vanguard, l'effacer." >&2
-    [[ -z $i_retires$i_laisses ]] || avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$inconnu. \
-Copie vérifiée pas posée ($3)${i_retires:+ ; retiré :$i_retires}${i_laisses:+ ; laissé sur la clé :$i_laisses}."
+# Les binaires de la clé sans ligne valable dans la note de dépôt d'ici, dits sur CHAQUE refus de poser, même avant
+# que le cache ne soit vérifié (note de version abîmée, chemin piégé, cache plus ancien, vide ou qui ne se vérifie
+# plus) : sans_note, dans poser, est su dès la note lue. Avant la comparaison au cache (inconnu_calcule vide), chacun
+# est « laissé sur la clé, PAS vérifié » ; après, seuls ceux qui diffèrent de la copie vérifiée (inconnu) sont dits,
+# avec ce qu'ils sont devenus (remplacé, retiré, laissé) : jamais un « remplacé » qui n'a pas eu lieu. Code 0 si
+# quelque chose a été dit (l'appelant sort alors en code 2), 1 sinon.
+dire_inconnus() { # point raison
+  local c liste="" i_remplaces="" i_retires="" i_laisses=""
+  if [[ -n ${inconnu_calcule:-} ]]; then
+    liste=${inconnu:-}
+    for c in $liste; do
+      if [[ "${inconnu_reste:-} " != *" $c "* ]]; then i_remplaces+=" $c"
+      elif [[ -e $1/$c || -L $1/$c ]]; then i_laisses+=" $c"
+      else i_retires+=" $c"; fi
+    done
+  else
+    for c in ${sans_note:-}; do
+      [[ -e $1/$c || -L $1/$c ]] && liste+=" $c" i_laisses+=" $c"
+    done
   fi
+  [[ -n $liste ]] || return 1
+  echo "⚠ Déjà sur la clé, sans ligne dans la note de dépôt d'ici :$liste." >&2
+  [[ -z $i_remplaces ]] || echo "  Remplacé par la copie vérifiée avant la panne :$i_remplaces." >&2
+  [[ -z $i_retires ]] || echo "  Retiré de la clé, PAS remplacé ($2) :$i_retires." >&2
+  if [[ -n $i_laisses && -n ${inconnu_calcule:-} ]]; then
+    echo "  Laissé sur la clé, PAS remplacé ($2) :$i_laisses. S'il ne vient pas de Vanguard, l'effacer." >&2
+  elif [[ -n $i_laisses ]]; then
+    echo "  Laissé sur la clé, PAS vérifié ni remplacé ($2) :$i_laisses. S'il ne vient pas de Vanguard, l'effacer." >&2
+  fi
+  [[ -z $i_retires$i_laisses ]] || avertir "Claude Code inconnu sur la clé" "Déjà là sans note de dépôt :$liste. \
+Copie vérifiée pas posée ($2)${i_retires:+ ; retiré :$i_retires}${i_laisses:+ ; laissé sur la clé :$i_laisses}."
+  return 0
+}
+# Rien n'est posé (code 1) ; un binaire changé pendant le voyage, lui, ne reste jamais sur la clé, et il est toujours
+# dit (code 2), même s'il a déjà été remplacé avant la panne (vu, la liste du début, dans poser). Un binaire sans
+# ligne dans la note est dit aussi (dire_inconnus), code 2. Tout est dit AVANT de sortir : un binaire inconnu ne fait
+# jamais taire ce que sont devenus les binaires changés déjà remplacés, ni l'inverse.
+refuser() { # point changes raison texte
+  local remplaces=${vu:-} c dit=""
+  for c in $2; do remplaces=${remplaces// $c/}; done
+  echo "✖ $4" >&2
+  dire_inconnus "$1" "$3" && dit=1
+  # retirer_change dit aussi les binaires changés déjà remplacés ($remplaces), puis sort en code 2.
   [[ -z $2 ]] || retirer_change "$1" "$2" "$3" "$remplaces"
-  [[ -z ${inconnu:-} ]] || exit 2
   if [[ -n $remplaces ]]; then
-    echo "✖ $4" >&2
     echo "✖ Sur la clé, changé depuis le dernier dépôt :$remplaces. Remplacé par la copie vérifiée avant la panne ;" >&2
     echo "  un programme remplacé pendant le voyage est un piège possible : regarder où la clé est allée." >&2
     avertir "Claude Code changé sur la clé" "Changé pendant le voyage :$remplaces. Remplacé par la copie vérifiée \
 (le reste du dépôt a raté) ; un programme remplacé est un piège possible."
-    exit 2
+    dit=1
   fi
-  erreur "$4"
+  [[ -z $dit ]] || exit 2
+  exit 1
 }
 
 # La minuterie qui remplit le cache (vanguard-claude-cle.timer) n'est allumée que par outils/systemd/installer.sh :
@@ -955,7 +1004,7 @@ Gardée (plus récente que le cache) ; regarder où la clé est allée."
 
 poser() { # point
   local p=$1 jeton v d note="" ligne plat bin dossier change="" vu besoin libre chemin haute f s c sha part inconnu="" \
-    inconnu_reste=""
+    inconnu_reste="" inconnu_calcule="" sans_note="" dit=""
   # Les crochets d'essai ne touchent jamais une vraie clé.
   [[ -z $CROCHETS || $(realpath -m -- "$p") != /run/media/* ]] ||
     erreur "Crochets d'essai actifs : rien n'est posé sur une clé de /run/media ($p)."
@@ -968,6 +1017,14 @@ poser() { # point
     change=$(changes "$p" "$note")
   fi
   vu=$change
+  # Les binaires déjà là sans ligne valable dans la note (note absente ou abîmée, jeton changé, posés par autre
+  # chose) : sus dès maintenant, dits sur chaque refus qui suit (dire_inconnus), même avant la vérification du cache.
+  for ligne in "${PLATEFORMES[@]}"; do
+    read -r plat bin dossier <<<"$ligne"
+    c=Claude/$dossier/$bin
+    [[ -e $p/$c || -L $p/$c ]] || continue
+    grep -qE "^[0-9a-f]{64} ${c//./\\.}\$" "$note" 2>/dev/null || sans_note+=" $c"
+  done
   if ! active; then
     retirer "$p" "$note"
     [[ -z $change ]] || retirer_change "$p" "$change" "Claude Code coupé"
@@ -975,13 +1032,17 @@ poser() { # point
   fi
   minuterie
   if ! cache_present; then
+    dire_inconnus "$p" "cache absent" && dit=1
     [[ -z $change ]] || retirer_change "$p" "$change" "cache absent"
+    [[ -z $dit ]] || return 2
     return 0
   fi
   v=$(derniere)
   if [[ -z $v ]]; then
+    dire_inconnus "$p" "cache vide" && dit=1
     [[ -z $change ]] || retirer_change "$p" "$change" "cache vide"
     echo "Claude Code pas encore dans le cache (outils/claude-cle.sh --chercher) : la clé reste sans lui."
+    [[ -z $dit ]] || return 2
     return 0
   fi
   d=$CACHE/$v
@@ -1002,7 +1063,7 @@ poser() { # point
       refuser "$p" "$change" "chemin piégé sur la clé" \
         "$p/$chemin : lien symbolique, ou pas un fichier ordinaire : rien n'est posé."
   done
-  [[ -n $jeton ]] || erreur "Jeton de la clé illisible : rien n'est posé."
+  [[ -n $jeton ]] || refuser "$p" "$change" "jeton de la clé illisible" "Jeton de la clé illisible : rien n'est posé."
   # Jamais plus ancienne que la plus haute version vérifiée ici : un cache redescendu (version récente effacée, copie
   # d'un autre ordinateur) ne fait pas revenir une version à faille sur la clé.
   if [[ -n $haute ]] && plus_ancienne "$v" "$haute"; then
@@ -1036,16 +1097,15 @@ Rien n'est posé sur la clé."
     *) refuser "$p" "$change" "cache qui ne se vérifie plus" \
       "Claude Code $v du cache ne se vérifie plus : rien n'est posé (relancer --chercher)." ;;
   esac
-  # Un binaire déjà là sans ligne valable dans la note de dépôt (note absente ou abîmée, jeton changé, posé par autre
-  # chose) : on ne sait pas d'où il vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé.
+  # Un binaire sans ligne valable dans la note (sans_note) qui diffère de la copie vérifiée : on ne sait pas d'où il
+  # vient. Remplacé par la copie vérifiée, et dit, comme un binaire changé ; identique à elle, il est seulement noté.
   for ligne in "${PLATEFORMES[@]}"; do
     read -r plat bin dossier <<<"$ligne"
     c=Claude/$dossier/$bin
-    [[ -e $p/$c || -L $p/$c ]] || continue
-    grep -qE "^[0-9a-f]{64} ${c//./\\.}\$" "$note" 2>/dev/null && continue
+    [[ "$sans_note " == *" $c "* ]] || continue
     cmp -s "$d/$plat/$bin" "$p/$c" 2>/dev/null || inconnu+=" $c"
   done
-  inconnu_reste=$inconnu
+  inconnu_reste=$inconnu inconnu_calcule=1
   # Place : les binaires qui ne sont pas déjà là, plus la marge.
   besoin=$MARGE_MIO
   for ligne in "${PLATEFORMES[@]}"; do

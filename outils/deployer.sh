@@ -736,18 +736,19 @@ rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/workt
   { code=$?; ((code == 24)) || exit "$code"; }
 # Claude Code sur la clé, en option (outils/claude-cle.sh ; CLAUDE_CLE=oui dans ~/.config/vanguard/images-cle.conf) :
 # la version vérifiée du cache, relue sur la clé ; réglage coupé, ce qu'il y avait posé part. Avant le manifeste, comme
-# tldr. Un binaire changé pendant le voyage, ou inconnu (code 2), est remplacé par la copie vérifiée (retiré si la copie
-# rate), et dit ; une panne laisse le reste du déploiement continuer.
+# tldr. Le code 2 veut dire « alerte sur un binaire de Claude/ » (changé pendant le voyage, inconnu, ou pas posé
+# d'ici), pas « remplacé » : il peut avoir été remplacé, retiré, laissé sur la clé ou gardé, et claude-cle.sh dit
+# lequel au terminal ; ce message-ci ne dit que l'alerte. Une panne laisse le reste du déploiement continuer.
 # set -e : le code est pris à part, jamais une sortie du déploiement.
 code_claude=0
 bash outils/claude-cle.sh --cle "$CLE" || code_claude=$?
 case $code_claude in
   0) ;;
-  2) echo "✖ Claude Code : un binaire avait changé sur la clé pendant son voyage (ou y était inconnu) ; remplacé par la" \
-       "copie vérifiée, ou retiré si la copie a raté (message ci-dessus)." >&2
-     avertir_cle "Vanguard : Claude Code changé sur la clé" "Un binaire de Claude/ avait changé pendant le voyage, ou y \
-était inconnu : remplacé par la copie vérifiée, ou retiré (voir le terminal). Un programme remplacé est un piège \
-possible : regarder où la clé est allée." ;;
+  2) echo "✖ Claude Code : alerte sur un binaire de Claude/ de la clé (changé pendant le voyage, inconnu, ou pas posé" \
+       "d'ici) ; ce qu'il est devenu (remplacé, retiré, laissé sur la clé ou gardé) est dit ci-dessus." >&2
+     avertir_cle "Vanguard : alerte Claude Code sur la clé" "Un binaire de Claude/ a changé pendant le voyage, y était \
+inconnu, ou n'a pas été posé d'ici. Remplacé, retiré, laissé sur la clé ou gardé : voir le terminal. Un programme \
+remplacé est un piège possible : regarder où la clé est allée." ;;
   *) echo "Claude Code : pas mis à jour sur la clé (message ci-dessus) ; le reste du déploiement continue." ;;
 esac
 # Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même

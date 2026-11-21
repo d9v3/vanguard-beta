@@ -426,6 +426,53 @@ cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.5/win32-x64/claude.exe" &&
   grep -q "Changé ou inconnu, remplacé par la copie vérifiée : Claude/Windows/claude.exe\.$" "$ESSAI/sortie" &&
   bon "inconnu, copie réussie : « remplacé » dit après la copie" || rate "inconnu, copie réussie : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
 attendu "reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R8-CLE-2 : un binaire changé (noté) déjà remplacé, puis un binaire inconnu (sa ligne retirée de la note de dépôt)
+# dont la copie rate : la sortie du bloc « inconnu » passait avant le compte rendu du binaire changé, jamais dit.
+mkdir -p "$ESSAI/bin-cp"
+printf '#!/bin/sh\ncase "$*" in *claude.exe.part*) echo "cp: erreur (essai)" >&2; exit 1 ;; esac\nexec /usr/bin/cp "$@"\n' \
+  >"$ESSAI/bin-cp/cp"
+chmod +x "$ESSAI/bin-cp/cp"
+sed -i '/ Claude\/Windows\/claude\.exe$/d' "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
+printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
+rm -f "$ESSAI/notifications"
+attendu "R8-CLE-2 : changé et inconnu, copie de claude.exe ratée : tout dit (code 2)" 2 env PATH="$ESSAI/bin-cp:$PATH" \
+  bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Linux/claude" "$(cache)/2.0.5/linux-x64/claude" &&
+  grep -q "changé depuis le dernier dépôt : Claude/Linux/claude\. Remplacé par la copie vérifiée avant la panne" "$ESSAI/sortie" &&
+  grep -q "Retiré de la clé, PAS remplacé (copie ratée) : Claude/Windows/claude\.exe\.$" "$ESSAI/sortie" &&
+  grep -q "Changé pendant le voyage : Claude/Linux/claude\. Remplacé par la copie vérifiée" "$ESSAI/notifications" &&
+  bon "R8-CLE-2 : le binaire changé remplacé est dit, même avec un inconnu retiré" ||
+  rate "R8-CLE-2 : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -5 "$ESSAI/sortie" | tr '\n' ' ')"
+rm -rf "$ESSAI/bin-cp"
+attendu "R8-CLE-2 : reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R8-CLE-3 : un binaire inconnu n'était dit que si poser allait jusqu'à la comparaison au cache ; un refus plus tôt
+# (ici : cache plus ancien que la version déjà vérifiée, puis note de version abîmée) sortait en code 1 sans un mot
+# sur lui. Il est su dès la note de dépôt lue : « laissé sur la clé, PAS vérifié », notifié, code 2.
+cp "$XDG_STATE_HOME/vanguard/claude-cle-version" "$ESSAI/note-version-de-cote"
+rm -f "$XDG_STATE_HOME"/vanguard/claude-cle-*.sha256
+printf 'MZ inconnu\n' >"$CLE/Claude/Windows/claude.exe"
+for r8c3 in "2.9.0|cache plus ancien que la version vérifiée" "2.x|note de version abîmée"; do
+  echo "${r8c3%%|*}" >"$XDG_STATE_HOME/vanguard/claude-cle-version"
+  rm -f "$ESSAI/notifications"
+  attendu "R8-CLE-3 : inconnu sur la clé, refusé tôt (${r8c3#*|}) : dit (code 2)" 2 bash outils/claude-cle.sh --cle "$CLE"
+  [[ $(cat "$CLE/Claude/Windows/claude.exe") == "MZ inconnu" ]] &&
+    grep -q "Laissé sur la clé, PAS vérifié ni remplacé (${r8c3#*|}) : .*Claude/Windows/claude\.exe\." "$ESSAI/sortie" &&
+    grep -q "inconnu sur la clé.*laissé sur la clé : .*Claude/Windows/claude.exe" "$ESSAI/notifications" &&
+    bon "R8-CLE-3 : ${r8c3#*|} : le binaire inconnu laissé est dit et notifié" ||
+    rate "R8-CLE-3 ${r8c3#*|} : $(tr '\n' ' ' <"$ESSAI/notifications" 2>/dev/null) $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+done
+mv -f "$ESSAI/note-version-de-cote" "$XDG_STATE_HOME/vanguard/claude-cle-version"
+attendu "R8-CLE-3 : note remise, l'inconnu remplacé et dit" 2 bash outils/claude-cle.sh --cle "$CLE"
+attendu "R8-CLE-3 : reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
+# R8-CLE-1 : pour le code 2, outils/deployer.sh disait « remplacé par la copie vérifiée, ou retiré », même quand le
+# binaire était laissé sur la clé ou gardé. Le texte de la branche 2 (terminal et notification) ne dit plus que
+# l'alerte, et nomme les quatre issues.
+branche2=$(sed -n '/^case \$code_claude in$/,/^esac$/p' outils/deployer.sh | sed -n '/^  2)/,/;;$/p')
+[[ -n $branche2 && $branche2 != *"remplacé par la copie vérifiée"* && $branche2 == *"laissé sur la clé ou gardé"* &&
+  $branche2 == *"Remplacé, retiré, laissé sur la clé ou gardé"* ]] &&
+  bon "R8-CLE-1 : deployer.sh, code 2 : l'alerte seule, jamais un « remplacé » qui n'a pas eu lieu" ||
+  rate "R8-CLE-1 : deployer.sh, code 2 : $(tr '\n' ' ' <<<"$branche2")"
 # Changé pendant le voyage, remplacé, puis une panne plus loin (un petit fichier pas copié) : le changement reste dit
 # (code 2, notification), jamais perdu derrière l'erreur.
 printf 'X' | dd of="$CLE/Claude/Linux/claude" bs=1 seek=4 conv=notrunc 2>/dev/null
@@ -719,8 +766,9 @@ for faute in 2.01.2 2.1.9; do
 done
 # R6-BAISSE-2 : un fichier BASH_ENV (lu par bash avant le script) ou une fonction exportée (BASH_FUNC_…) qui
 # remplacent read, builtin et le chemin de pkexec par des fonctions sautaient la confirmation tapée et la fenêtre
-# polkit. Le script se relance dans un bash propre (env -i) : la réponse tapée « non » compte, rien changé. Les
-# fonctions ne touchent que la réponse et polkit (les autres read vont au vrai).
+# polkit. Ronde 9 : la porte du début du script les refuse avant toute commande (plus de relance qui les nettoie,
+# puisque exec lui-même pouvait être une fonction) ; rien changé, polkit pas demandé. Les fonctions ne touchent que
+# la réponse et polkit (les autres read vont au vrai).
 cat >"$ESSAI/bash-env" <<FIN
 read() { if [[ \$# == 2 && \$1 == -r && \$2 == rep ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; command builtin read "\$@"; }
 builtin() { if [[ \$1 == read ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; [[ \$1 == command && \$2 == "$ESSAI/faux-pkexec" ]] && return 0; command builtin "\$@"; }
@@ -729,15 +777,16 @@ FIN
 # Une commande (au_clavier la lance), pas une fonction du shell.
 R5ENV=(env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat")
 rm -f "$ESSAI/pkexec.log"
-attendu "BASH_ENV qui remplace read, builtin et pkexec, « non » tapé : pas confirmé" 1 \
+attendu "BASH_ENV qui remplace read, builtin et pkexec, « non » tapé : refusé" 1 \
   au_clavier non "${R5ENV[@]}" BASH_ENV="$ESSAI/bash-env" bash "$CC" --accepter-version 2.1.2
-[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log && ! -e $R5E/claude-cle-journal ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
-  bon "BASH_ENV : relancé dans un bash propre, la réponse tapée compte, rien changé" || rate "BASH_ENV : $(etat_r5)"
-attendu "fonction exportée builtin, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" \
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log && ! -e $R5E/claude-cle-journal ]] &&
+  grep -q "Environnement pas propre" "$ESSAI/sortie" && ! grep -q "taper" "$ESSAI/sortie" &&
+  bon "BASH_ENV : refusé par la porte avant la question, rien changé" || rate "BASH_ENV : $(etat_r5)"
+attendu "fonction exportée builtin, « non » tapé : refusé" 1 au_clavier non "${R5ENV[@]}" \
   'BASH_FUNC_builtin%%=() { if [[ $1 == read ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; [[ $1 == command ]] && return 0; command builtin "$@"; }' \
   bash "$CC" --accepter-version 2.1.2
-[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
-  bon "fonction exportée : relancé dans un bash propre, rien changé" || rate "fonction exportée : $(etat_r5)"
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Environnement pas propre" "$ESSAI/sortie" &&
+  bon "fonction exportée : refusée par la porte, rien changé" || rate "fonction exportée : $(etat_r5)"
 # La marque de relance forgée : l'environnement relu, BASH_ENV ou une fonction encore là, refusé.
 attendu "marque de relance forgée avec BASH_ENV : refusé" 1 \
   au_clavier non "${R5ENV[@]}" VANGUARD_CLE_RELANCE=1 BASH_ENV="$ESSAI/bash-env" bash "$CC" --accepter-version 2.1.2
@@ -799,6 +848,63 @@ r7_refus "fonction posée avant le script, sans BASH_ENV" "une fonction" "${R7P[
   'jamais() { :; }; . "$0" "$@"' "$CC" --accepter-version 2.1.2
 echo 0 >"$ESSAI/pkexec-code"
 rm -f "$ESSAI/pkexec.log"
+# R8-BAISSE-1 (ronde 9) : bash cherche une fonction avant tout builtin, même exec et exit. Des fonctions exportées
+# exec, exit, builtin, declare, read, printf et « : » rendaient muets la relance et chaque refus écrit avec une
+# commande, et « ACCEPTER 2.1.2 » tapé avec polkit donné baissait la protection. La porte du début (des affectations,
+# des expansions et [[ ]] seulement) refuse avant toute commande : son message à elle, rien changé, polkit pas
+# demandé, rien noté. polkit donné (0) : sans la porte, la baisse irait au bout.
+# shellcheck disable=SC2016 # le code des fonctions, pas développé ici
+R9F=('BASH_FUNC_exec%%=() { return 0; }' 'BASH_FUNC_exit%%=() { return 0; }'
+  'BASH_FUNC_builtin%%=() { case "$1 ${2-}" in "declare -F" | "command "* | "alias -p" | "trap -p" | "enable -n") return 0 ;; "read -d") return 1 ;; esac; command builtin "$@"; }'
+  'BASH_FUNC_declare%%=() { [[ $1 == -F ]] && return 0; command builtin declare -g "$@"; }'
+  'BASH_FUNC_read%%=() { command builtin read "$@"; }' 'BASH_FUNC_printf%%=() { command builtin printf "$@"; }'
+  'BASH_FUNC_:%%=() { return 0; }')
+echo 0 >"$ESSAI/pkexec-code"
+r9_refus() { # libellé commande… : refusé par la porte elle-même, rien changé, polkit pas demandé, rien noté
+  local l=$1
+  shift
+  rm -f "$ESSAI/pkexec.log"
+  attendu "$l : refusé" 1 au_clavier "ACCEPTER 2.1.2" "$@"
+  [[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log && ! -e $R5E/claude-cle-journal ]] &&
+    grep -q "Environnement pas propre (fonction de bash exportée, BASH_ENV, ENV, SHELLOPTS" "$ESSAI/sortie" &&
+    bon "$l : refusé par la porte, rien changé, polkit pas demandé" ||
+    rate "$l : $(etat_r5) $([[ -e $ESSAI/pkexec.log ]] && echo 'pkexec appelé') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+}
+r9_refus "R8-BAISSE-1 : exec, exit, builtin, declare, read, printf et « : » exportés à la fois" \
+  "${R5ENV[@]}" "${R9F[@]}" bash "$CC" --accepter-version 2.1.2
+r9_refus "R8-BAISSE-1 : les mêmes, --annuler-acceptation" "${R5ENV[@]}" "${R9F[@]}" bash "$CC" --annuler-acceptation
+# R8-BAISSE-2 : la marque de relance forgée, builtin et declare exportés (l'ancien contrôle des fonctions passait par
+# eux) : refusé par la porte, avant la relecture.
+r9_refus "R8-BAISSE-2 : marque forgée, builtin et declare exportés" "${R5ENV[@]}" VANGUARD_CLE_RELANCE=1 \
+  "${R9F[2]}" "${R9F[3]}" bash "$CC" --accepter-version 2.1.2
+# Sous traçage (bash -x), un PS4 hérité, développé avant chaque commande tracée, réécrivait porte juste avant le
+# [[ ]] qui la juge (« $((porte=1)) ») : la porte s'ouvrait. La ligne PS4='+ ' du début le remet avant la porte.
+# shellcheck disable=SC2016
+r9_refus "bash -x, PS4 qui réécrit la lecture de la porte, fonctions exportées" "${R5ENV[@]}" 'PS4=$((porte=1))+ ' \
+  "${R9F[@]}" bash -x "$CC" --accepter-version 2.1.2
+# Les autres pièges d'environnement hérités, chacun seul, et un environnement vide (rien de relu).
+printf 'true\n' >"$ESSAI/fichier-env"
+r9_refus "SHELLOPTS=xtrace hérité" "${R5ENV[@]}" SHELLOPTS=xtrace bash "$CC" --accepter-version 2.1.2
+r9_refus "BASHOPTS=extglob hérité" "${R5ENV[@]}" BASHOPTS=extglob bash "$CC" --accepter-version 2.1.2
+r9_refus "ENV hérité" "${R5ENV[@]}" ENV="$ESSAI/fichier-env" bash "$CC" --accepter-version 2.1.2
+r9_refus "environnement vide (env -i)" env -i /bin/bash "$CC" --accepter-version 2.1.2
+# Pas de faux refus : VIRTUAL_ENV (« ENV= » dans son nom) passe la porte.
+rm -f "$ESSAI/pkexec.log"
+attendu "VIRTUAL_ENV, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" VIRTUAL_ENV=/x bash "$CC" --accepter-version 2.1.2
+grep -q "Pas confirmé" "$ESSAI/sortie" && ! grep -q "pas propre" "$ESSAI/sortie" &&
+  bon "VIRTUAL_ENV : pas de faux refus de la porte" || rate "VIRTUAL_ENV : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+# R8-BAISSE-3 : la relance transmettait toute VANGUARD_CLAUDE_*, et la relecture les acceptait toutes. Une seule liste
+# fermée (GARDEES) pour les deux : une VANGUARD_CLAUDE_ hors liste n'est pas transmise, donc ni refusée à tort par la
+# relecture, ni passée au bash propre.
+attendu "R8-BAISSE-3 : VANGUARD_CLAUDE_note hors liste, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" \
+  VANGUARD_CLAUDE_note=1 bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  ! grep -q "pas propre" "$ESSAI/sortie" && bon "R8-BAISSE-3 : une variable hors de la liste fermée laissée par la relance" ||
+  rate "R8-BAISSE-3 : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+r7_refus "R8-BAISSE-3 : marque forgée, VANGUARD_CLAUDE_note hors liste relue" "VANGUARD_CLAUDE_note" \
+  "${R7P[@]}" VANGUARD_CLAUDE_note=1 bash "$CC" --accepter-version 2.1.2
+echo 0 >"$ESSAI/pkexec-code"
+rm -f "$ESSAI/pkexec.log"
 # R7-BAISSE-2 : lancé par un chemin relatif (« outils/claude-cle.sh », comme le dit le mode d'emploi), le cd du début
 # cherchait « outils/.. » d'abord dans CDPATH, et la relance lançait alors l'autre claude-cle.sh, celui du dossier
 # trouvé. Le fichier lancé est pris en chemin absolu avant le cd, et CDPATH est vidé pour ce cd : un CDPATH qui mène
@@ -840,8 +946,10 @@ grep -q PIEGE "$ESSAI/sortie" && rate "CDPATH, --cle : le piège a tourné"
 rm -rf "$P7"
 # Chaque protection seule, sans la relance (une copie sans elle) : « builtin read » lit la vraie réponse, « builtin
 # command » lance le vrai pkexec, malgré les fonctions read et pkexec.
-sed '0,/^esac$/{/^case \${1:-} in$/,/^esac$/d}' "$CC" >"$ESSAI/copie/outils/claude-cle-sans-relance.sh"
-if grep -q 'exec /usr/bin/env -i' "$ESSAI/copie/outils/claude-cle-sans-relance.sh" ||
+# La porte du début retirée aussi (elle refuserait BASH_ENV avant ces deux protections).
+sed -e '/^if \[\[ \${1-} == --accepter-version /,/^fi$/d' -e '0,/^esac$/{/^case \${1:-} in$/,/^esac$/d}' "$CC" \
+  >"$ESSAI/copie/outils/claude-cle-sans-relance.sh"
+if grep -q 'exec /usr/bin/env -i\|porte=${refus:?' "$ESSAI/copie/outils/claude-cle-sans-relance.sh" ||
   ! grep -q '^case \${1:-} in$' "$ESSAI/copie/outils/claude-cle-sans-relance.sh"; then
   rate "copie sans relance : mal faite"
 fi

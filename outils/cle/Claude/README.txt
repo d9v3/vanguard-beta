@@ -108,10 +108,13 @@ computer's owner: what Claude reads (logs, settings, file names) is sent to Anth
      this is first written to the log (~/.local/state/vanguard), and a notification says so every time.
      To put everything back: outils/claude-cle.sh --annuler-acceptation, in a terminal, typing "ANNULER";
      only versions that still verify are put back. If a check is not possible for now (a passing fault),
-     the undo is called "partial": the record is kept, run the command again later. Scope: this stops a
-     timer or a program started with nobody at the screen. A program already running under the same
-     account can still move those folders by hand; such a lowering leaves no notification and no log
-     line. Only lowerings made by this command are notified and logged.
+     the undo is called "partial": the record is kept, run the command again later. Both commands refuse
+     to run (nothing changed) if they inherit a trapped environment: an exported bash function, BASH_ENV,
+     ENV, SHELLOPTS or BASHOPTS. Scope: this stops a timer, a program started with nobody at the screen,
+     or an inherited environment trap; not a program that already has the account. A program already
+     running under the same account can still move those folders by hand; such a lowering is neither
+     reported nor logged (no notification, no log line). Only lowerings made by this command are
+     notified and logged.
    - Malware already running under the same account can read the login during the session: nothing stops
      it. On a computer believed infected, boot SystemRescue instead (key menu), and end the session on
      claude.ai afterwards.
