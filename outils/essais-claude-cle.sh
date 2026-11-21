@@ -454,7 +454,8 @@ attendu "--etat, vérification impossible : code 3" 3 r3 env "TMPDIR=$ESSAI/r3/t
 grep -q "vérification impossible sur cet ordinateur" "$ESSAI/sortie" && ! grep -q "ne se vérifie plus\|bonnes" "$ESSAI/sortie" &&
   bon "--etat, vérification impossible : dit tel quel, pas « ne se vérifie plus »" || rate "--etat impossible : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
 # Une vérification réussie entre deux pannes : la même panne qui revient est notifiée de nouveau, sans le message
-# doublé « impossible (vérification impossible ici : …) ».
+# doublé « impossible (vérification impossible ici : …) ». La même panne d'abord (la dernière vue était une autre).
+attendu "panne (TMPDIR) avant un succès : code 1" 1 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --chercher
 attendu "succès entre deux pannes" 0 r3 bash outils/claude-cle.sh --chercher
 rm -f "$ESSAI/notifications"
 attendu "la même panne revient : code 1" 1 r3 env "TMPDIR=$ESSAI/r3/tmp-ro" bash outils/claude-cle.sh --chercher
