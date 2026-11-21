@@ -1828,6 +1828,25 @@ EOF
   m=$("$PWSH" -NoProfile -Command "Import-Module '$ESSAI/mpc/Microsoft.PowerShell.Core.psm1'; & '$ESSAI/noyau-seul.ps1'" 2>&1)
   [[ $m == strict && $(grep -c . "$ESSAI/noyau-seul.ps1") -gt 5 ]] && bon "Windows : mode strict posé par le type, malgré le module" ||
     rate "Windows : mode strict : « $m »"
+  # R7-CLE-1 : un littéral de type ([Microsoft.PowerShell.Commands.SetStrictModeCommand]) passe d'abord par la table des
+  # accélérateurs, que la session peut remplir avant le script : le nom menait à une autre applet. Les types viennent
+  # maintenant de la bibliothèque du moteur, par leur nom exact : deux accélérateurs détournés n'y changent rien.
+  tr -d '\r' <outils/cle/Claude/depanner.ps1 | sed -n '/^\$Noyau = @{}$/,/^if (\$Noyau\[.Set-StrictMode.\])/p' >"$ESSAI/noyau-seul.ps1"
+  printf '%s\n' 'try { $null = $jamaisPosee; "pas strict" } catch { "strict" }' \
+    '"{0} {1}" -f $Noyau["Set-StrictMode"].ImplementingType.FullName, $Noyau["Import-Module"].ImplementingType.FullName' \
+    >>"$ESSAI/noyau-seul.ps1"
+  acc='$a = [psobject].Assembly.GetType("System.Management.Automation.TypeAccelerators"); '
+  acc+='$a::Add("Microsoft.PowerShell.Commands.SetStrictModeCommand", [Microsoft.PowerShell.Commands.GetHistoryCommand]); '
+  acc+='$a::Add("Microsoft.PowerShell.Commands.ImportModuleCommand", [Microsoft.PowerShell.Commands.NewVariableCommand]); '
+  # Le témoin compile son littéral après le détour (un bloc de -Command est compilé d'un coup, avant l'Add).
+  m=$("$PWSH" -NoProfile -Command "$acc"'& ([scriptblock]::Create("[Microsoft.PowerShell.Commands.SetStrictModeCommand].FullName"))' 2>&1)
+  [[ $m == Microsoft.PowerShell.Commands.GetHistoryCommand ]] && bon "Windows : accélérateur détourné, le littéral suit bien le détour" ||
+    rate "Windows : accélérateur pas détourné (essai sans effet) : « $m »"
+  m=$("$PWSH" -NoProfile -Command "$acc& '$ESSAI/noyau-seul.ps1'" 2>&1 | tr '\n' ' ')
+  [[ $m == "strict Microsoft.PowerShell.Commands.SetStrictModeCommand Microsoft.PowerShell.Commands.ImportModuleCommand " ]] &&
+    bon "Windows : accélérateurs détournés, les vraies applets prises au moteur, mode strict posé" ||
+    rate "Windows : accélérateurs détournés : « $m »"
+  rm -f "$ESSAI/noyau-seul.ps1"
   rm -rf "$ESSAI/mpc" "$ESSAI/noyau-seul.ps1"
   # Plus aucun appel par nom complet dans le lanceur ; Set-StrictMode et Import-Module par leur type.
   ! tr -d '\r' <outils/cle/Claude/depanner.ps1 | grep -v '^ *#' | grep -q 'Microsoft\.PowerShell\.Core\\' &&

@@ -25,21 +25,28 @@
 # « ESSAIS » plus bas ; toute la logique est celle de ce fichier. Essayé aussi sur un vrai Windows 11 (PowerShell 5.1).
 # Set-StrictMode, et Import-Module plus bas, appelés par leur type (.NET), sans recherche de nom : une fonction ou un
 # alias du même nom, même au nom complet (Microsoft.PowerShell.Core\…), ou un module chargé nommé
-# Microsoft.PowerShell.Core passerait devant, avant le contrôle de provenance (Provenance ; vu sur un vrai Windows). Le
-# type vient de la bibliothèque de ce PowerShell, relue comme dans Provenance (GAC ou dossier de ce PowerShell ; sous
-# pwsh 7, rien ne fait tomber ce filet : il garde PowerShell 5.1). Pas trouvé : refusé plus bas, avec les commandes
-# étrangères. Limite, dite : essayé sous pwsh 7 (Linux) ; sous PowerShell 5.1, à essayer sur un vrai Windows.
+# Microsoft.PowerShell.Core passerait devant, avant le contrôle de provenance (Provenance ; vu sur un vrai Windows).
+# Le type n'est pas écrit en littéral ([Microsoft.PowerShell.Commands.…]) : un littéral de type est d'abord cherché
+# dans la table des accélérateurs de la session, une recherche de nom elle aussi, qui pouvait donner à ce nom une
+# autre applet de la même bibliothèque. Il est pris par son nom complet dans la bibliothèque du moteur de ce
+# PowerShell ($ExecutionContext, une constante), relue comme dans Provenance (GAC ou dossier de ce PowerShell ; sous
+# pwsh 7, rien ne fait tomber ce filet : il garde PowerShell 5.1) ; CmdletInfo aussi. Pas trouvé : refusé plus bas,
+# avec les commandes étrangères. Limite, dite : du code déjà chargé dans la session (lancement autrement que par le
+# .bat) peut encore détourner les autres littéraux de ce script ([IO.Path]…) ou les membres des objets (types
+# étendus) ; c'est un programme de ce compte. Essayé sous pwsh 7 (Linux) ; sous PowerShell 5.1, à essayer sur un vrai
+# Windows (GetType(nom, $true) et ::new y existent).
 $Noyau = @{}
 try {
-    foreach ($paire in @(@('Set-StrictMode', [Microsoft.PowerShell.Commands.SetStrictModeCommand]),
-            @('Import-Module', [Microsoft.PowerShell.Commands.ImportModuleCommand]))) {
-        $a = $paire[1].Assembly
-        if ($a.Location -and ($a.GlobalAssemblyCache -or
-                $a.Location.StartsWith($PSHOME + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
-            $Noyau[$paire[0]] = [Management.Automation.CmdletInfo]::new($paire[0], $paire[1])
+    $Moteur = $ExecutionContext.GetType().Assembly
+    if ($Moteur.Location -and ($Moteur.GlobalAssemblyCache -or
+            $Moteur.Location.StartsWith($PSHOME + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
+        $InfoApplet = $Moteur.GetType('System.Management.Automation.CmdletInfo', $true)
+        foreach ($paire in @(@('Set-StrictMode', 'Microsoft.PowerShell.Commands.SetStrictModeCommand'),
+                @('Import-Module', 'Microsoft.PowerShell.Commands.ImportModuleCommand'))) {
+            $Noyau[$paire[0]] = $InfoApplet::new($paire[0], $Moteur.GetType($paire[1], $true))
         }
     }
-} catch { }
+} catch { $Noyau = @{} }
 if ($Noyau['Set-StrictMode']) { & $Noyau['Set-StrictMode'] -Version 2 }
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
