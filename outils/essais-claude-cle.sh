@@ -854,7 +854,7 @@ grep -qx logout "$ESSAI/journal-claude" && [[ -z $(find "$ESSAI/run" -mindepth 1
 echo "Lanceur Windows (depanner.ps1, sous pwsh)"
 # Le vrai depanner.ps1, lancé par pwsh sous Linux, dans un dossier d'essai ($W) : seuls les appels propres à Windows
 # (droits NTFS, signature Authenticode, format du disque, gardien caché) sont remplacés par des doublures, posées au
-# repère « ESSAIS » ; elles lisent les variables ESSAI_*. Non essayé ainsi sur un vrai Windows.
+# repère « ESSAIS » ; elles lisent les variables ESSAI_*. Essayé aussi sur un vrai Windows 11 (PowerShell 5.1).
 PWSH=${VANGUARD_PWSH:-$HOME/.cache/vanguard-dev/pwsh/pwsh}
 [[ -x $PWSH ]] || PWSH=$(command -v pwsh || true)
 if [[ -z $PWSH || ! -x $PWSH ]]; then
@@ -863,12 +863,14 @@ else
   W=$ESSAI/w
   mkdir -p "$W/Claude/Windows" "$W/runw" "$W/local" "$W/maison"
   # Le faux claude.exe : un script qui note ce qu'il voit, et écrit son journal là où le vrai le range sous Windows
-  # (%LOCALAPPDATA%\claude-cli-nodejs\Cache\<dossier de travail, chaque signe hors lettres et chiffres devenu « - »>).
+  # (%LOCALAPPDATA%\claude-cli-nodejs\Cache\<dossier de travail, chaque signe hors lettres et chiffres devenu « - »>,
+  # coupé à 200 caractères suivis d'une empreinte au-delà, comme le vrai claude.exe 2.1.311).
   cat >"$W/Claude/Windows/claude.exe" <<EOF
 #!/bin/sh
 # Sait dire une révocation pas confirmée, comme le vrai récent : « didn't confirm the login was revoked ».
 j=$ESSAI/journal-win
-c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "\$c" && echo journal >"\$c/journal.txt"
+n=\$(printf %s "\$PWD" | sed 's/[^A-Za-z0-9]/-/g'); [ \${#n} -gt 200 ] && n=\$(printf %s "\$n" | cut -c1-200)-1a2b3c
+c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$n; mkdir -p "\$c" && echo journal >"\$c/journal.txt"
 # Un journal qui ne s'efface pas (fichier tenu ouvert sous Windows ; ici, un sous-dossier en lecture seule).
 [ -f "$ESSAI/journal-verrou" ] && mkdir -p "\$c/sous" && echo journal >"\$c/sous/f" && chmod 555 "\$c/sous"
 # Plus lançable ensuite (pour la déconnexion), sur demande.
@@ -946,6 +948,9 @@ function LancerGardien([string]$code64) {
 }
 # Une version qui ne sait pas dire une révocation ratée : le texte cherché, absent du binaire.
 if ($env:ESSAI_REVOCATION) { $RevocationDite = $env:ESSAI_REVOCATION }
+# Get-Acl et Get-AuthenticodeSignature n'existent pas sous Linux (leurs appels ont des doublures, ci-dessus) ; toutes
+# les autres commandes passent par le vrai contrôle de leur provenance.
+$CommandesWindows = @()
 EOF
   copie_ps() { # le vrai depanner.ps1, doublures posées au repère (absent : l'essai le dit)
     python3 -I - outils/cle/Claude/depanner.ps1 "$ESSAI/doublures.ps1" "$W/Claude/depanner.ps1" <<'EOF' || rate "repère « # ESSAIS » absent de depanner.ps1"
@@ -962,13 +967,15 @@ EOF
   }
   copie_ps
   # pwsh (CoreCLR) tombe parfois sous la charge (SIGABRT/SIGSEGV, sans lien avec le script) : relancé, trois fois au plus.
+  # PRECHARGE (variable du shell) : un module importé dans la session avant le script (-Command au lieu de -File).
   ps_lancer() { # réponse [VAR=valeur…]
-    local r=$1 c n
+    local r=$1 c n mode=(-File "$W/Claude/depanner.ps1")
     shift
+    [[ -n ${PRECHARGE:-} ]] && mode=(-Command "Import-Module '$PRECHARGE'; & '$W/Claude/depanner.ps1'; exit \$LASTEXITCODE")
     for n in 1 2 3; do
       env TEMP="$W/runw" LOCALAPPDATA="$W/local" USERPROFILE="$W/maison" HOME="$W/maison" ESSAI_CERT="$ESSAI/cert-bon.pem" \
         ESSAI_GERE="$W/gere" ESSAI_GARDIEN="$ESSAI/gardien.ps1" "$@" \
-        "$PWSH" -NoProfile -File "$W/Claude/depanner.ps1" <<<"$r" >"$ESSAI/sortie-ps" 2>&1
+        "$PWSH" -NoProfile "${mode[@]}" <<<"$r" >"$ESSAI/sortie-ps" 2>&1
       c=$?
       ((c == 134 || c == 139)) || break
     done
@@ -1042,6 +1049,32 @@ EOF
   }
   mkdir -p "$ESSAI/vide-gardien"
   gardien_essai "" "$W/runw"
+  # La liste des commandes dont la provenance est vérifiée n'en oublie aucune : chaque commande du lanceur et de son
+  # gardien (code tel qu'il partirait) est une fonction qu'ils définissent, ou est dans $Commandes / $CommandesWindows.
+  cat >"$ESSAI/couverture.ps1" <<'EOF'
+$def = @(); $cmd = @(); $liste = @()
+foreach ($f in $args) {
+    $t = $null; $e = $null
+    $a = [Management.Automation.Language.Parser]::ParseFile($f, [ref]$t, [ref]$e)
+    if ($e) { "illisible : $f"; exit 99 }
+    $def += @($a.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
+    $cmd += @($a.FindAll({ $args[0] -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+    $liste += @($a.FindAll({ $args[0] -is [Management.Automation.Language.AssignmentStatementAst] -and "$($args[0].Left)" -match '^\$Commandes(Windows)?$' }, $true) |
+        ForEach-Object { $_.Right.FindAll({ $args[0] -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) } | ForEach-Object Value)
+}
+$manque = @($cmd | Sort-Object -Unique | Where-Object { $def -notcontains $_ -and $liste -notcontains $_ })
+$manque
+exit $manque.Count
+EOF
+  # Le gardien de ce lancement, écrit plus haut (gardien_essai ne le change pas).
+  m=$("$PWSH" -NoProfile -File "$ESSAI/couverture.ps1" "$PWD/outils/cle/Claude/depanner.ps1" "$ESSAI/gardien.ps1" 2>&1)
+  c=$?
+  ((c == 0)) && grep -q 'Wait-Process' "$ESSAI/gardien.ps1" && bon "Windows : chaque commande du lanceur et du gardien a sa provenance vérifiée" ||
+    rate "Windows : commandes hors de la liste vérifiée (code $c) : $(tr '\n' ' ' <<<"$m")"
+  # Le gardien ne lit que les processus nommés claude (lire le chemin de tous prenait 1,4 s par tour sur un vrai Windows).
+  grep -q 'Get-Process -Name claude -ErrorAction SilentlyContinue' "$ESSAI/gardien.ps1" &&
+    [[ $(grep -c 'Get-Process' "$ESSAI/gardien.ps1") == 1 ]] && bon "Windows : gardien, seulement les processus claude lus" ||
+    rate "Windows : gardien, Get-Process sans -Name claude"
   # Un TEMP dont le nom porte une apostrophe courbe (que PowerShell prend aussi pour une fin de chaîne), avec la suite
   # écrite comme du code (inoffensif, nom inventé) : le gardien reste lisible, garde le bon dossier, n'exécute rien.
   t="$W/D’Arcy’;New-Item -ItemType File temoin-inoffensif;’b"
@@ -1137,6 +1170,9 @@ EOF
   rm -f "$ESSAI/journal-verrou"
   grep -q "Journal de Claude Code de cette session PAS effacé : $W/local/claude-cli-nodejs/Cache/.*vanguard-claude-" "$ESSAI/sortie" &&
     bon "Windows : journal pas effaçable, dit" || rate "Windows, journal pas effaçable : $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+  # Et jamais annoncé « effacés de cet ordinateur » à côté.
+  grep -q "PAS tout effacé" "$ESSAI/sortie" && ! grep -q "sont effacés de cet ordinateur" "$ESSAI/sortie" &&
+    bon "Windows : journal resté, jamais « effacés » annoncé" || rate "Windows, journal resté : $(grep -i 'effac' "$ESSAI/sortie" | tr '\n' ' ')"
   find "$W/local" -type d -exec chmod 755 {} + && rm -rf "$W/local/claude-cli-nodejs"
   # Un TEMP à crochets (lus comme des jokers par Start-Process) : la déconnexion est quand même lancée et confirmée.
   t="$W/runw/a[1]b"
@@ -1247,6 +1283,64 @@ EOF
   [[ ! -s $j && -d $W/runw/vanguard-claude-vieux ]] && bon "Windows : refus avant toute commande de Claude Code, restes gardés" ||
     rate "Windows, refus et restes : $(tr '\n' ' ' <"$j")"
   rm -rf "$W/runw/vanguard-claude-vieux" "$W/runw/CLAUDE.md"
+  # Un fichier changé après sa signature : dit tel quel (pas « signataire Anthropic, attendu Anthropic »).
+  refus_w "fichier changé après sa signature" "changé après sa signature" ESSAI_STATUT=HashMismatch
+  # F1 (vu sur un vrai Windows, 20 nov.) : un module du compte, dans un dossier de modules lu avant celui de
+  # PowerShell, prenait la place des commandes qui vérifient (Get-AuthenticodeSignature, Get-Acl, Get-FileHash). Ici
+  # un faux module inerte, au nom quelconque, dans le dossier de modules du compte (pwsh met celui-ci devant le sien,
+  # comme Documents\WindowsPowerShell\Modules) : chacune de ses fonctions note son passage, puis appelle la vraie.
+  um=$W/maison/.local/share
+  fm=$um/powershell/Modules/Faux.Essai
+  mkdir -p "$fm"
+  faux=(Utility:Write-Host Utility:Read-Host Utility:ConvertFrom-Json Utility:Start-Sleep Utility:Select-Object
+    Management:Test-Path Management:Copy-Item Management:Get-Content Management:Get-Item Management:Get-ChildItem
+    Management:Join-Path Management:Start-Process Management:Push-Location)
+  for f in "${faux[@]}"; do
+    printf 'function %s { [IO.File]::AppendAllText($env:ESSAI_TEMOIN_MODULE, "%s`n"); if ($MyInvocation.ExpectingInput) { $input | Microsoft.PowerShell.%s\\%s @args } else { Microsoft.PowerShell.%s\\%s @args } }\n' \
+      "${f#*:}" "${f#*:}" "${f%%:*}" "${f#*:}" "${f%%:*}" "${f#*:}"
+  done >"$fm/Faux.Essai.psm1"
+  printf "@{ RootModule = 'Faux.Essai.psm1'; ModuleVersion = '1.0'; FunctionsToExport = @(%s) }\n" \
+    "$(printf "'%s'," "${faux[@]#*:}" | sed 's/,$//')" >"$fm/Faux.Essai.psd1"
+  tm=$ESSAI/temoin-module
+  rm -f "$tm"
+  : >"$j"
+  # Le module seul, sans le lanceur : il prend bien la place des commandes (sinon l'essai ne prouverait rien).
+  env HOME="$W/maison" XDG_DATA_HOME="$um" ESSAI_TEMOIN_MODULE="$tm" "$PWSH" -NoProfile -Command 'Write-Host -NoNewline ""' >/dev/null 2>&1
+  [[ -s $tm ]] && bon "Windows : le faux module du compte prend la place de Write-Host (témoin de l'essai)" ||
+    rate "Windows : le faux module n'est pas pris, l'essai suivant ne prouverait rien"
+  rm -f "$tm"
+  attendu "Windows, module du compte : lancé" 0 ps_lancer o XDG_DATA_HOME="$um" PSModulePath="$um/powershell/Modules" ESSAI_TEMOIN_MODULE="$tm"
+  grep -qx consignes "$j" && [[ ! -e $tm ]] && bon "Windows : module du compte jamais pris, commandes de PowerShell lancées" ||
+    rate "Windows, module du compte : $( [[ -e $tm ]] && tr '\n' ' ' <"$tm") $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+  # Déjà chargé dans la session (lanceur appelé autrement que par le .bat) : ses fonctions passent devant les
+  # commandes de Windows ; vu, refusé avant la question, sans qu'aucune ne tourne.
+  PRECHARGE=$fm/Faux.Essai.psd1 refus_w "module du compte déjà chargé" "ne viennent pas de Windows : .*Write-Host (Function Faux.Essai)" \
+    XDG_DATA_HOME="$um" ESSAI_TEMOIN_MODULE="$tm"
+  [[ ! -e $tm ]] && bon "Windows : module déjà chargé, aucune de ses fonctions lancée" || rate "Windows, module chargé : $(tr '\n' ' ' <"$tm")"
+  ! grep -q "propriétaire de cet ordinateur" "$ESSAI/sortie" && bon "Windows : module déjà chargé, refusé avant la question" ||
+    rate "Windows, module chargé : question posée"
+  rm -rf "$W/maison/.local" "$tm"
+  # F2 : claude.exe coupe le nom de ses journaux à 200 caractères (le dossier de travail, signes devenus « - ») ; le
+  # nom de la session n'y est plus, le journal resterait. À 200 tout juste : lancé, journal effacé ; à 201 : refusé
+  # avant de rien créer. Le nom fait la longueur de TEMP plus 57 (/vanguard-claude-<32>/travail).
+  base=$W/runw/long-
+  for n in 200 201; do
+    t=$base$(printf "%0$((n - 57 - ${#base}))d" 0)
+    mkdir -p "$t"
+    : >"$j"
+    if ((n == 200)); then
+      attendu "Windows, nom de journal de 200 caractères : lancé" 0 ps_lancer o TEMP="$t"
+      grep -qx consignes "$j" && [[ -z $(find "$t" -mindepth 1) && ! -e $W/local/claude-cli-nodejs ]] &&
+        bon "Windows, nom de journal de 200 caractères : journal et dossier effacés" ||
+        rate "Windows, 200 caractères : $(find "$t" "$W/local" -mindepth 1 | tr '\n' ' ') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+    else
+      attendu "Windows, nom de journal de 201 caractères : refusé" 1 ps_lancer o TEMP="$t"
+      [[ ! -s $j && -z $(find "$t" -mindepth 1) && ! -e $W/local/claude-cli-nodejs ]] && grep -q "trop long" "$ESSAI/sortie" &&
+        bon "Windows, nom de journal de 201 caractères : rien lancé, rien laissé, dit" ||
+        rate "Windows, 201 caractères : $(find "$t" "$W/local" -mindepth 1 | tr '\n' ' ') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+    fi
+    rm -rf "$t" "$W/local/claude-cli-nodejs"
+  done
 fi
 
 echo "Textes"
@@ -1262,6 +1356,13 @@ grep -q $'\r$' "outils/cle/Depanner avec Claude.bat" && ! grep -qv $'\r$' "outil
   bon "lanceur .bat en CRLF" || rate "lanceur .bat : fins de ligne"
 grep -q 'NoDefaultCurrentDirectoryInExePath=1' "outils/cle/Depanner avec Claude.bat" && bon ".bat : dossier courant hors recherche" ||
   rate ".bat : NoDefaultCurrentDirectoryInExePath absent"
+# PSModulePath fixé sur les modules de Windows avant PowerShell (un module du compte remplaçait les vérifications).
+awk '/^set "PSModulePath=%SYS%\\WindowsPowerShell\\v1\.0\\Modules"\r$/ { m = NR } /^"%PS%" / && !p { p = NR } END { exit !(m && p && m < p) }' \
+  "outils/cle/Depanner avec Claude.bat" && bon ".bat : PSModulePath fixé sur les modules de Windows avant PowerShell" ||
+  rate ".bat : PSModulePath pas fixé avant PowerShell"
+# En ASCII seulement : le message sans PowerShell s'affiche avant chcp 65001 (accents illisibles en page 850).
+! LC_ALL=C grep -q $'[\x80-\xff]' "outils/cle/Depanner avec Claude.bat" && bon ".bat en ASCII (lisible avant chcp 65001)" ||
+  rate ".bat : caractères hors ASCII"
 # La même liste à trois endroits : le script, le manifeste de la clé (Rust), ces essais.
 for f in CLAUDE.md depanner.ps1 depanner.sh LISEZMOI.txt README.txt manifest.json manifest.json.sig claude-code.asc \
   Linux/claude Windows/claude.exe Linux/.claude.part Windows/.claude.exe.part; do

@@ -12,6 +12,9 @@ if not defined SYS goto sans_powershell
 "%SYS%\chcp.com" 65001 >nul
 set "PS=%SYS%\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" goto sans_powershell
+rem Les modules de PowerShell de Windows seulement : un dossier de modules du compte (PSModulePath de l'utilisateur),
+rem lu avant, remplacerait les commandes qui verifient la signature et les droits. depanner.ps1 le refait et verifie.
+set "PSModulePath=%SYS%\WindowsPowerShell\v1.0\Modules"
 rem -ExecutionPolicy Bypass pour ce script seulement, le temps de ce processus : la strategie de l'ordinateur ne
 rem change pas. Une strategie imposee par l'entreprise (GPO) l'emporte, et le script ne se lance pas.
 "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Claude\depanner.ps1"
@@ -23,7 +26,8 @@ exit /b %CODE%
 
 :sans_powershell
 echo.
-echo   PowerShell est absent ou bloqué sur cet ordinateur : Claude Code ne peut pas être lancé d'ici.
+rem En ASCII : sans SystemRoot ni windir, on arrive ici avant chcp 65001, et les accents seraient illisibles.
+echo   PowerShell est absent ou bloque sur cet ordinateur : Claude Code ne peut pas etre lance d'ici.
 echo   PowerShell is missing or blocked on this computer: Claude Code cannot be started from here.
 echo.
 pause

@@ -22,14 +22,15 @@
 # Limite, dite dans LISEZMOI : un programme malveillant du même compte Windows peut lire le jeton pendant la session.
 # PowerShell 5.1 (Windows 10) : ce fichier est en UTF-8 avec BOM, sans quoi les accents seraient mal lus.
 # Essais : outils/essais-claude-cle.sh le lance sous pwsh (Linux), les appels propres à Windows remplacés au repère
-# « ESSAIS » plus bas ; toute la logique est celle de ce fichier. Non essayé ainsi sur un vrai Windows.
+# « ESSAIS » plus bas ; toute la logique est celle de ce fichier. Essayé aussi sur un vrai Windows 11 (PowerShell 5.1).
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
+# Rien que .NET avant le contrôle des commandes de PowerShell (plus bas, après le repère des essais).
 $Ici = $PSScriptRoot                      # <clé>\Claude
-$Cle = Split-Path -Parent $Ici            # <clé>
-$Source = Join-Path (Join-Path $Ici 'Windows') 'claude.exe'
+$Cle = [IO.Path]::GetDirectoryName($Ici)  # <clé>
+$Source = [IO.Path]::Combine($Ici, 'Windows', 'claude.exe')
 $Signataire = 'Anthropic, PBC'
 # Le sujet du certificat d'Anthropic (certificat « EV » : le numéro est celui de l'entreprise au registre du
 # Delaware, il reste le même d'un certificat à l'autre ; ce registre est écrit dans le certificat, et exigé aussi).
@@ -214,6 +215,12 @@ function LancerGardien([string]$code64) {
 }
 # Le texte d'une révocation pas confirmée (voir Nettoyer) : cherché dans les octets de claude.exe vérifié.
 $RevocationDite = "didn't confirm the login was revoked"
+# SHA-256 par .NET : sous PowerShell 5.1, Get-FileHash est une fonction de module, pas une applet de Windows.
+function EmpreinteDe([string]$chemin) {
+    $f = [IO.File]::OpenRead($chemin)
+    $h = [Security.Cryptography.SHA256]::Create()
+    try { ([BitConverter]::ToString($h.ComputeHash($f)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose(); $f.Dispose() }
+}
 function ContientTexte([string]$chemin, [string]$texte) {
     $latin = [Text.Encoding]::GetEncoding(28591)   # un octet, un caractère : rien n'est perdu ni fusionné
     $f = [IO.File]::OpenRead($chemin)
@@ -229,7 +236,51 @@ function ContientTexte([string]$chemin, [string]$texte) {
         $false
     } finally { $f.Dispose() }
 }
+# Les commandes de PowerShell dont ce script et son gardien se servent : toutes doivent venir de Windows (voir plus
+# bas). Un essai (outils/essais-claude-cle.sh) vérifie que la liste n'en oublie aucune.
+$Commandes = @('ConvertFrom-Json', 'Copy-Item', 'ForEach-Object', 'Get-ChildItem', 'Get-Content', 'Get-Item',
+    'Get-Process', 'Import-Module', 'Join-Path', 'New-Object', 'Pop-Location', 'Push-Location', 'Read-Host',
+    'Remove-Item', 'Select-Object', 'Set-StrictMode', 'Start-Process', 'Start-Sleep', 'Stop-Process', 'Test-Path',
+    'Wait-Process', 'Where-Object', 'Write-Host')
+# Propres à Windows (absentes de PowerShell sous Linux : les essais vident cette liste, leurs appels ont des doublures).
+$CommandesWindows = @('Get-Acl', 'Get-AuthenticodeSignature')
+# Une commande de Windows : une applet (cmdlet ; pas une fonction ni un alias, qui passeraient devant elle) tirée d'une
+# bibliothèque de Windows (le GAC, où seul un administrateur installe ; ou le dossier de ce PowerShell). Le moteur de
+# PowerShell dit lui-même ce qui serait lancé sous ce nom ($ExecutionContext : aucune fonction ne le remplace).
+function Provenance([string]$n) {
+    $c = $ExecutionContext.InvokeCommand.GetCommand($n, [Management.Automation.CommandTypes]::All)
+    if (-not $c) { return 'introuvable' }
+    if ($c.CommandType -ne [Management.Automation.CommandTypes]::Cmdlet) { return "$($c.CommandType) $($c.Source)".Trim() }
+    $a = $c.ImplementingType.Assembly
+    if ($a.GlobalAssemblyCache -or $a.Location.StartsWith($PSHOME + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return '' }
+    $a.Location
+}
 # ESSAIS : les doublures des fonctions ci-dessus sont posées ici.
+
+# Les modules de PowerShell : ceux de Windows seulement. Un dossier de modules que le compte peut écrire (variable
+# PSModulePath de l'utilisateur, Documents\WindowsPowerShell\Modules), lu avant celui de Windows, ferait prendre son
+# Get-AuthenticodeSignature ou son Get-Acl : il dirait « signé par Anthropic » pour un claude.exe changé (essayé sur un
+# vrai Windows). « Depanner avec Claude.bat » fixe déjà PSModulePath ; ici aussi, si ce script est lancé autrement,
+# puis les modules de Windows importés par leur chemin complet, plus aucun module chargé de lui-même, et chaque
+# commande relue (Provenance). Le gardien hérite de ce PSModulePath. Une seule différence : refusé, avant la question.
+$ModulesWindows = [IO.Path]::Combine($PSHOME, 'Modules')
+$env:PSModulePath = $ModulesWindows
+foreach ($m in 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security') {
+    try { Import-Module -Name ([IO.Path]::Combine($ModulesWindows, $m, "$m.psd1")) -ErrorAction Stop } catch { }
+}
+$PSModuleAutoLoadingPreference = 'None'
+$etrangeres = @()
+foreach ($n in $Commandes + $CommandesWindows) {
+    $d = Provenance $n
+    if ($d) { $etrangeres += "$n ($d)" }
+}
+if ($etrangeres.Count -gt 0) {
+    # Sans Write-Host : c'est peut-être une de ces commandes.
+    [Console]::WriteLine('')
+    [Console]::WriteLine("  ✖ Des commandes de PowerShell manquent ou ne viennent pas de Windows : $($etrangeres -join ', '). Un module de ce compte peut les remplacer : la vérification de Claude Code ne serait plus celle de Windows. Rien n'a été lancé.")
+    [Console]::WriteLine('    Some PowerShell commands are missing or do not come from Windows (a module of this account may replace them). Nothing was started.')
+    exit 1
+}
 
 Write-Host ''
 Write-Host '  Dépanner avec Claude (Vanguard)' -ForegroundColor Red
@@ -267,7 +318,9 @@ if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Arret 'Claude Code n''est pas sur cette clé (Claude\Windows\claude.exe).' 'Claude Code is not on this key.'
 }
 $TempPc = $env:TEMP
-if (-not $TempPc -or -not (Test-Path -LiteralPath $TempPc -PathType Container)) {
+# Un TEMP vers un serveur absent fait lever une erreur à Test-Path : refusé avec le même message, pas l'erreur brute.
+$tempVu = try { $TempPc -and (Test-Path -LiteralPath $TempPc -PathType Container) } catch { $false }
+if (-not $tempVu) {
     Arret 'Dossier temporaire de Windows introuvable (TEMP).' 'Windows temporary folder not found (TEMP).'
 }
 $Moi = SidDeMoi
@@ -277,6 +330,14 @@ $Exe = [IO.Path]::Combine($Dossier, 'claude.exe')
 $Travail = [IO.Path]::Combine($Dossier, 'travail')
 $Config = [IO.Path]::Combine($Dossier, 'config')
 $Tmp = [IO.Path]::Combine($Dossier, 'tmp')
+# Claude Code nomme ses journaux d'après le dossier de travail, chaque signe hors lettres et chiffres devenu « - »
+# (lu dans claude.exe 2.1.311) ; au-delà de 200 caractères, il coupe le nom et y ajoute une empreinte : le nom de la
+# session n'y serait plus en entier, et ses journaux resteraient sur cet ordinateur sans qu'on les trouve. Refusé
+# avant de rien créer (TEMP de plus de 140 caractères environ ; le TEMP habituel en fait une quarantaine).
+if (($Travail -replace '[^a-zA-Z0-9]', '-').Length -gt 200) {
+    Arret "Le chemin du dossier temporaire (TEMP) est trop long ($($TempPc.Length) caractères) : les journaux de Claude Code ne pourraient pas être effacés. Rien n'a été lancé." `
+          "The temporary folder path (TEMP) is too long: Claude Code's logs could not be erased. Nothing was started."
+}
 # Sans droits Windows (FAT, exFAT, partage réseau), « à soi seul » ne voudrait rien dire : refusé avant de créer.
 # Un lecteur réseau monté sur une lettre rend souvent « NTFS » : seul un disque local (Fixed) est permis.
 $format = try { FormatDuVolume $Dossier } catch { '' }
@@ -388,14 +449,16 @@ try {
                 $vus = @($sujet | Where-Object { $_.StartsWith("$o=", [StringComparison]::Ordinal) })
                 $vus.Count -ne 1 -or $vus[0] -cne "$o=$($SujetAttendu[$o])"
             })
-        if ($sig.Statut -ne 'Valid' -or $nom -cne $Signataire -or $manque.Count -gt 0) {
-            throw [Exception]::new("signature : $($sig.Statut), signataire : « $nom » (attendu : « $Signataire »)")
-        }
+        # Le message dit la vraie raison : un fichier changé garde le nom de son signataire, qui ne prouve plus rien.
+        if ($sig.Statut -eq 'HashMismatch') { throw [Exception]::new('le fichier a été changé après sa signature') }
+        if ($sig.Statut -ne 'Valid') { throw [Exception]::new("signature : $($sig.Statut)") }
+        if ($nom -cne $Signataire) { throw [Exception]::new("signataire : « $nom » (attendu : « $Signataire »)") }
+        if ($manque.Count -gt 0) { throw [Exception]::new("certificat « $nom » qui n'est pas celui d'Anthropic (champs : $($manque -join ', '))") }
         # 2. Empreinte égale à celle du manifeste posé sur la clé : attrape une copie abîmée en route. Ce manifeste
         # n'est pas authentifié ici (pas de gpg sous Windows) : un autre claude.exe signé par Anthropic avec un
         # manifeste retouché passerait. Une clé qui a quitté vos mains repasse par Vanguard (LISEZMOI, Limites).
         $manifeste = Get-Content -LiteralPath (Join-Path $Ici 'manifest.json') -Raw | ConvertFrom-Json
-        $vu = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        $vu = EmpreinteDe $Exe
         if ($vu -ne $manifeste.platforms.'win32-x64'.checksum) { throw [Exception]::new('empreinte différente du manifeste de la clé') }
         # La version lue dans le programme signé, pas dans le manifeste qui ne l'est pas ici.
         $Version = (Get-Item -LiteralPath $Exe).VersionInfo.ProductVersion
@@ -412,7 +475,7 @@ try {
     try {
         Copy-Item -LiteralPath (Join-Path $Ici 'CLAUDE.md') -Destination $consignes
         if ((Get-Item -LiteralPath $consignes).Length -eq 0 -or
-            (Get-FileHash -LiteralPath $consignes).Hash -ne (Get-FileHash -LiteralPath (Join-Path $Ici 'CLAUDE.md')).Hash) {
+            (EmpreinteDe $consignes) -ne (EmpreinteDe (Join-Path $Ici 'CLAUDE.md'))) {
             throw [Exception]::new('copie différente')
         }
     } catch {
@@ -450,15 +513,17 @@ try {
     # claude.exe vérifié : il ne lance jamais un binaire non vérifié. Ses chemins n'entrent jamais dans son code tels
     # quels : PowerShell ferme aussi une chaîne sur une apostrophe courbe (’ ‘ ‚ ‛), qu'un nom de compte peut porter, et
     # le reste du nom serait lu comme du code. Ils y sont en base64 (lettres, chiffres, + / =), décodés par le gardien,
-    # et le tout passé en -EncodedCommand : aucun guillemet de la ligne de commande à casser.
+    # et le tout passé en -EncodedCommand : aucun guillemet de la ligne de commande à casser. Il ne lit que les
+    # processus nommés claude (lire le chemin de tous prenait plus d'une seconde par tour sur un vrai Windows).
     function EnBase64([string]$s) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($s)) }
     # Un saut de ligne entre les deux : une chaîne @' '@ finit sans, et « }$dossier = » ne se lirait pas.
     $gardien = $TexteNettoyer + "`r`n" + @"
 function Texte([string]`$b) { [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(`$b)) }
 `$dossier = Texte '$(EnBase64 $Dossier)'; `$exe = Texte '$(EnBase64 $Exe)'; `$travail = Texte '$(EnBase64 $Travail)'
 try { Wait-Process -Id $PID -ErrorAction SilentlyContinue } catch { }
-for (`$i = 0; `$i -lt 30 -and (Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$exe } catch { `$false } }); `$i++) { Start-Sleep -Seconds 1 }
-Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$exe } catch { `$false } } | Stop-Process -Force -ErrorAction SilentlyContinue
+function Claude { Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$exe } catch { `$false } } }
+for (`$i = 0; `$i -lt 30 -and (Claude); `$i++) { Start-Sleep -Seconds 1 }
+Claude | Stop-Process -Force -ErrorAction SilentlyContinue
 [void](Nettoyer `$dossier `$exe `$travail)
 "@
     try {
@@ -496,7 +561,10 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object { try { `$_.Path -eq `$
             Dire '⚠ Déconnexion NON confirmée par Anthropic (hors ligne, ou version qui ne le dit pas) : fermez la session sur claude.ai.' `
                  '⚠ Logout NOT confirmed by Anthropic (offline, or a version that does not tell): end the session on claude.ai.'
         }
-        if (-not $n.Efface) {
+        if ($n.Efface -and @($n.JournauxLaisses).Count -gt 0) {
+            Dire '⚠ PAS tout effacé : un journal de Claude Code de cette session est resté (ci-dessous).' `
+                 '⚠ NOT everything was erased: a Claude Code log of this session remains (below).'
+        } elseif (-not $n.Efface) {
             Dire "✖ $Dossier n'a pas pu être effacé (Claude tourne encore ?). Le gardien réessaie ; sinon, relancez « Depanner avec Claude »." `
                  "✖ Could not erase $Dossier (Claude still running?). The guard retries; otherwise run « Depanner avec Claude » again."
         } elseif ($n.Deconnexion -eq 'oui') {
