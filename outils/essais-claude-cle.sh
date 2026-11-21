@@ -253,6 +253,21 @@ attendu "binaire changé sur la clé : dit (code 2)" 2 bash outils/claude-cle.sh
 cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.3/win32-x64/claude.exe" && bon "remplacé par la copie vérifiée" ||
   rate "pas remplacé"
 grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null && bon "changement notifié" || rate "changement pas notifié"
+# R6-CLE-2 : arrêté pendant la copie (le sync tué, comme un Ctrl+C ou une fenêtre fermée) : l'alerte d'un binaire
+# changé est déjà dite et notifiée. Avant, elle venait après la copie ; l'ancien binaire retiré, le dépôt suivant se
+# taisait (un binaire absent ne compte pas).
+mkdir -p "$ESSAI/bin-tue"
+printf '#!/bin/sh\nkill -HUP "$PPID"\n' >"$ESSAI/bin-tue/sync"
+chmod +x "$ESSAI/bin-tue/sync"
+printf 'Y' | dd of="$CLE/Claude/Windows/claude.exe" bs=1 seek=4 conv=notrunc 2>/dev/null
+rm -f "$ESSAI/notifications"
+attendu "binaire changé, arrêté pendant la copie : tué (code 129)" 129 env PATH="$ESSAI/bin-tue:$PATH" bash outils/claude-cle.sh --cle "$CLE"
+grep -q "changé depuis le dernier dépôt" "$ESSAI/sortie" && grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "arrêté pendant la copie : le changement déjà dit et notifié" ||
+  rate "arrêté pendant la copie : pas dit ($(tail -2 "$ESSAI/sortie" | tr '\n' ' '))"
+attendu "après l'arrêt : reposé" 0 bash outils/claude-cle.sh --cle "$CLE"
+cmp -s "$CLE/Claude/Windows/claude.exe" "$(cache)/2.0.3/win32-x64/claude.exe" && [[ -z $(find "$CLE" -name '*.part') ]] &&
+  bon "après l'arrêt : la copie vérifiée posée, aucun nom provisoire" || rate "après l'arrêt : pas reposé"
 attendu "après remplacement : plus rien à dire" 0 bash outils/claude-cle.sh --cle "$CLE"
 # --relire, avant la reprise d'un déploiement arrêté (qui retire ce qui diffère de la référence) : un binaire changé
 # est dit, rien n'est retiré ; retiré ensuite par la reprise, il est reposé sans fausse alerte.
@@ -488,6 +503,15 @@ echo 2.0.9 >"$ESSAI/serveur/stable"
 r3b() { env XDG_CACHE_HOME="$ESSAI/r3/cache-b" XDG_STATE_HOME="$ESSAI/r3/etat-b" "$@"; }
 attendu "autre ordinateur : 2.0.9 dans son cache" 0 r3b bash outils/claude-cle.sh --chercher
 attendu "autre ordinateur : 2.0.9 posée (sans note de dépôt chez lui)" 2 r3b bash outils/claude-cle.sh --cle "$R3K"
+# R6-CLE-2 : arrêté au sync, après la note de dépôt : la provenance est déjà dite et notifiée (avant la note). La
+# note d'avant est remise ensuite, pour les essais qui suivent.
+cp -p "$R3J" "$ESSAI/r3-note.avant" 2>/dev/null || rm -f "$ESSAI/r3-note.avant"
+rm -f "$ESSAI/notifications"
+attendu "clé plus récente, pas posée d'ici, arrêté au sync : tué (code 129)" 129 \
+  r3 env PATH="$ESSAI/bin-tue:$PATH" bash outils/claude-cle.sh --cle "$R3K"
+grep -q "ne vient pas de cet ordinateur" "$ESSAI/sortie" && grep -q "changé sur la clé" "$ESSAI/notifications" 2>/dev/null &&
+  bon "arrêté au sync : provenance déjà dite et notifiée" || rate "arrêté au sync : $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+if [[ -f $ESSAI/r3-note.avant ]]; then cp -p "$ESSAI/r3-note.avant" "$R3J"; else rm -f "$R3J"; fi
 # Une copie ratée au premier retour (la racine de la clé en lecture seule : le lanceur abîmé ne s'y remet pas) : la
 # provenance est dite quand même (code 2), et la note de dépôt pas écrite : le dépôt suivant la redit (plus bas).
 printf 'abime\r\n' >"$R3K/Depanner avec Claude.bat"
@@ -608,9 +632,16 @@ if grep -q /usr/bin/pkexec "$CC"; then
   exit 1
 fi
 accord=$(sed -n '/^accord_fort() {/,/^}/p' outils/claude-cle.sh)
-[[ $(grep -c '^  /usr/bin/pkexec --keep-cwd /usr/bin/true$' <<<"$accord") == 1 && $accord != *'$'* ]] &&
-  bon "accord polkit : /usr/bin/pkexec --keep-cwd /usr/bin/true, chemins fixes, aucune variable pour le sauter" ||
-  rate "accord polkit : appel absent, ou une variable dans accord_fort"
+# L'appel : chemins fixes, par « builtin command » (aucune fonction ne passe devant), un libellé lisible dans la
+# fenêtre ; les seules variables d'accord_fort sont la version ($1) et sa forme ($FORME_SIMPLE), aucune pour sauter
+# polkit. La ligne affichée par pkexec (programme et arguments) tient en 80 signes pour la plus longue version.
+ligne_pk='  builtin command /usr/bin/pkexec --keep-cwd /usr/bin/true "Vanguard : baisse de protection, Claude Code $1"'
+vars=$(grep -oE '\$\{?[A-Za-z0-9_#@*?!-]*' <<<"$accord" | sort -u | tr '\n' ' ')
+montre="/usr/bin/true Vanguard : baisse de protection, Claude Code 9999.9999.999999"
+[[ $(grep -cxF -- "$ligne_pk" <<<"$accord") == 1 && $vars == '$1 $FORME_SIMPLE ' && ${#montre} -le 80 &&
+  $(grep -c pkexec <<<"$accord") == 2 && $accord == *'[[ $1 =~ $FORME_SIMPLE ]] ||'* ]] &&
+  bon "accord polkit : builtin command /usr/bin/pkexec, libellé lisible (${#montre} signes), version de forme simple, aucune autre variable" ||
+  rate "accord polkit : appel changé, ou une variable dans accord_fort ($vars)"
 r5x() { env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" "$@"; }
 accepter_r5() { # réponse version
   au_clavier "$1" env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat" bash "$CC" --accepter-version "$2"
@@ -646,10 +677,71 @@ for faute in 2.01.2 2.1.9; do
   [[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && bon "$faute : rien changé, polkit pas demandé" ||
     rate "$faute : $(etat_r5) $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
 done
+# R6-BAISSE-2 : un fichier BASH_ENV (lu par bash avant le script) ou une fonction exportée (BASH_FUNC_…) qui
+# remplacent read, builtin et le chemin de pkexec par des fonctions sautaient la confirmation tapée et la fenêtre
+# polkit. Le script se relance dans un bash propre (env -i) : la réponse tapée « non » compte, rien changé. Les
+# fonctions ne touchent que la réponse et polkit (les autres read vont au vrai).
+cat >"$ESSAI/bash-env" <<FIN
+read() { if [[ \$# == 2 && \$1 == -r && \$2 == rep ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; command builtin read "\$@"; }
+builtin() { if [[ \$1 == read ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; [[ \$1 == command && \$2 == "$ESSAI/faux-pkexec" ]] && return 0; command builtin "\$@"; }
+function $ESSAI/faux-pkexec { return 0; }
+FIN
+# Une commande (au_clavier la lance), pas une fonction du shell.
+R5ENV=(env XDG_CACHE_HOME="$ESSAI/r5/cache" XDG_STATE_HOME="$ESSAI/r5/etat")
+rm -f "$ESSAI/pkexec.log"
+attendu "BASH_ENV qui remplace read, builtin et pkexec, « non » tapé : pas confirmé" 1 \
+  au_clavier non "${R5ENV[@]}" BASH_ENV="$ESSAI/bash-env" bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log && ! -e $R5E/claude-cle-journal ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  bon "BASH_ENV : relancé dans un bash propre, la réponse tapée compte, rien changé" || rate "BASH_ENV : $(etat_r5)"
+attendu "fonction exportée builtin, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" \
+  'BASH_FUNC_builtin%%=() { if [[ $1 == read ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; [[ $1 == command ]] && return 0; command builtin "$@"; }' \
+  bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  bon "fonction exportée : relancé dans un bash propre, rien changé" || rate "fonction exportée : $(etat_r5)"
+# La marque de relance forgée : l'environnement relu, BASH_ENV ou une fonction encore là, refusé.
+attendu "marque de relance forgée avec BASH_ENV : refusé" 1 \
+  au_clavier non "${R5ENV[@]}" VANGUARD_CLE_RELANCE=1 BASH_ENV="$ESSAI/bash-env" bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Environnement pas propre" "$ESSAI/sortie" &&
+  bon "marque forgée, BASH_ENV : environnement pas propre, rien changé" || rate "marque forgée, BASH_ENV : $(etat_r5)"
+attendu "marque de relance forgée avec une fonction exportée : refusé" 1 au_clavier non "${R5ENV[@]}" VANGUARD_CLE_RELANCE=1 \
+  'BASH_FUNC_read%%=() { rep="ACCEPTER 2.1.2"; }' bash "$CC" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Environnement pas propre" "$ESSAI/sortie" &&
+  bon "marque forgée, fonction exportée : environnement pas propre, rien changé" || rate "marque forgée, fonction : $(etat_r5)"
+# Chaque protection seule, sans la relance (une copie sans elle) : « builtin read » lit la vraie réponse, « builtin
+# command » lance le vrai pkexec, malgré les fonctions read et pkexec.
+sed '0,/^esac$/{/^case \${1:-} in$/,/^esac$/d}' "$CC" >"$ESSAI/copie/outils/claude-cle-sans-relance.sh"
+if grep -q 'exec /usr/bin/env -i' "$ESSAI/copie/outils/claude-cle-sans-relance.sh" ||
+  ! grep -q '^case \${1:-} in$' "$ESSAI/copie/outils/claude-cle-sans-relance.sh"; then
+  rate "copie sans relance : mal faite"
+fi
+cat >"$ESSAI/bash-env-b" <<FIN
+read() { if [[ \$# == 2 && \$1 == -r && \$2 == rep ]]; then rep="ACCEPTER 2.1.2"; return 0; fi; command builtin read "\$@"; }
+function $ESSAI/faux-pkexec { return 0; }
+FIN
+echo 126 >"$ESSAI/pkexec-code"
+attendu "sans relance, fonction pkexec, polkit refusé : rien changé" 1 au_clavier "ACCEPTER 2.1.2" "${R5ENV[@]}" \
+  BASH_ENV="$ESSAI/bash-env-b" bash "$ESSAI/copie/outils/claude-cle-sans-relance.sh" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && -s $ESSAI/pkexec.log ]] && grep -q "polkit) pas donné" "$ESSAI/sortie" &&
+  bon "builtin command : le vrai pkexec demandé malgré une fonction du même nom" || rate "builtin command : $(etat_r5)"
+rm -f "$ESSAI/pkexec.log"
+attendu "sans relance, fonction read, « non » tapé : pas confirmé" 1 au_clavier non "${R5ENV[@]}" \
+  BASH_ENV="$ESSAI/bash-env-b" bash "$ESSAI/copie/outils/claude-cle-sans-relance.sh" --accepter-version 2.1.2
+[[ $(etat_r5) == "$avant" && ! -e $ESSAI/pkexec.log ]] && grep -q "Pas confirmé" "$ESSAI/sortie" &&
+  bon "builtin read : la vraie réponse lue malgré une fonction read" || rate "builtin read : $(etat_r5)"
+rm -f "$ESSAI/pkexec.log" "$ESSAI/copie/outils/claude-cle-sans-relance.sh"
+echo 0 >"$ESSAI/pkexec-code"
+# R6-BAISSE-4 : la version montrée dans la fenêtre polkit est de forme simple ; une autre, pas d'accord demandé.
+for faute in '2.1.2 ; true' '2.1.2$(id)' 02.1.2 $'2.1.2\nx' '2.1.2 Vanguard'; do
+  rm -f "$ESSAI/pkexec.log"
+  (eval "$(sed -n -e '/^FORME_SIMPLE=/p' -e '/^accord_fort() {/,/^}/p' "$CC")" && accord_fort "$faute") >"$ESSAI/sortie" 2>&1
+  c=$?
+  [[ $c == 1 && ! -e $ESSAI/pkexec.log ]] && grep -q "forme inattendue" "$ESSAI/sortie" &&
+    bon "accord_fort « ${faute//$'\n'/\\n} » : refusé, polkit pas demandé" || rate "accord_fort « ${faute//$'\n'/\\n} » : code $c"
+done
 # La fenêtre polkit refusée, ou pkexec absent : rien changé, même après la confirmation tapée.
 echo 126 >"$ESSAI/pkexec-code"
 attendu "--accepter-version, polkit refusé : rien changé" 1 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
-[[ $(etat_r5) == "$avant" && $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true" ]] &&
+[[ $(etat_r5) == "$avant" && $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true Vanguard : baisse de protection, Claude Code 2.1.2" ]] &&
   grep -q "polkit) pas donné : rien changé" "$ESSAI/sortie" && bon "polkit refusé : demandé une fois, rien changé" ||
   rate "polkit refusé : $(etat_r5) $(cat "$ESSAI/pkexec.log" 2>/dev/null)"
 echo 0 >"$ESSAI/pkexec-code"
@@ -682,7 +774,7 @@ de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
   [[ $(cat "$R5E/claude-cle-acceptations/${de_cote##*/}" 2>/dev/null | tr '\n' ' ') == "2.4.0 2.4.0 " ]] &&
   grep -q -- "--annuler-acceptation" "$ESSAI/sortie" &&
   bon "accepté : note 2.1.2, 2.4.0 déplacée (pas effacée), trace hors du cache, journal avant et après" || rate "accepté : $(etat_r5)"
-[[ $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true" ]] &&
+[[ $(cat "$ESSAI/pkexec.log" 2>/dev/null) == "--keep-cwd /usr/bin/true Vanguard : baisse de protection, Claude Code 2.1.2" ]] &&
   grep -q "protection baissée" "$ESSAI/notifications" 2>/dev/null && bon "accepté : polkit demandé, baisse notifiée" ||
   rate "accepté : polkit $(cat "$ESSAI/pkexec.log" 2>/dev/null), notifications $(cat "$ESSAI/notifications" 2>/dev/null)"
 attendu "r5 : la 2.1.2 maintenant acceptée" 0 r5 bash outils/claude-cle.sh --chercher
@@ -721,6 +813,31 @@ attendu "--annuler-acceptation" 0 annuler_r5 ANNULER
 [[ ! -e $R5C/9999.0.0 && -d $R5C/mis-de-cote-99999999-zz/9999.0.0 ]] && ! grep -q 9999 "$R5N" &&
   bon "annulé : le faux dossier mis de côté du cache ignoré" || rate "faux dossier mis de côté : $(etat_r5)"
 rm -rf "$R5C/mis-de-cote-99999999-zz"
+# R6-BAISSE-1 : une panne passagère pendant l'annulation : la version pas remise reste écartée, la trace gardée,
+# « annulation partielle » (code 2) ; la relance, la panne passée, finit. D'abord le dossier temporaire absent (la
+# vérification impossible pour l'instant, code 3), puis le cache en lecture seule (pas déplacé).
+attendu "r5 : accepter de nouveau la 2.1.2 (panne passagère)" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
+de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
+trace_r5=$R5E/claude-cle-acceptations/${de_cote##*/}
+partielle_r5() { # description
+  [[ -d $de_cote/2.4.0 && ! -e $R5C/2.4.0 && $(tr '\n' ' ' <"$trace_r5" 2>/dev/null) == "2.4.0 2.4.0 " ]] &&
+    grep -qx 2.4.0 "$R5E/claude-cle-ecartees" 2>/dev/null && grep -q "Annulation partielle" "$ESSAI/sortie" &&
+    grep -q "trace gardée : 2.4.0" "$ESSAI/sortie" && ! grep -q "✔ Acceptation annulée" "$ESSAI/sortie" &&
+    [[ $(tail -1 "$R5E/claude-cle-journal") == *"annuler-acceptation ${de_cote##*/} : partielle ; remis rien ; à relancer : 2.4.0"* ]] &&
+    bon "$1 : 2.4.0 pas remise, toujours écartée, trace gardée, partielle dite et notée" ||
+    rate "$1 : $(etat_r5) $(tail -3 "$ESSAI/sortie" | tr '\n' ' ')"
+}
+attendu "--annuler-acceptation, dossier temporaire absent : partielle (code 2)" 2 \
+  au_clavier ANNULER "${R5ENV[@]}" TMPDIR="$ESSAI/pas-de-tmp" bash outils/claude-cle.sh --annuler-acceptation
+partielle_r5 "vérification impossible pour l'instant"
+chmod a-w "$R5C"
+attendu "--annuler-acceptation, cache en lecture seule : partielle (code 2)" 2 annuler_r5 ANNULER
+chmod u+w "$R5C"
+partielle_r5 "pas déplacé"
+attendu "--annuler-acceptation, la panne passée : fini" 0 annuler_r5 ANNULER
+[[ -f $R5C/2.4.0/.verifiee && ! -e $trace_r5 && ! -e $R5E/claude-cle-ecartees && ! -e $de_cote && $(cat "$R5N") == 2.4.0 ]] &&
+  grep -q "✔ Acceptation annulée" "$ESSAI/sortie" && bon "la panne passée : 2.4.0 remise, plus écartée, trace retirée" ||
+  rate "la panne passée : $(etat_r5)"
 # Une version de la trace qui ne se vérifie plus dans le dossier mis de côté : pas remise dans le cache, dite.
 attendu "r5 : accepter de nouveau la 2.1.2" 0 accepter_r5 "ACCEPTER 2.1.2" 2.1.2
 de_cote=$(find "$R5C" -maxdepth 1 -name 'mis-de-cote-*' -type d)
@@ -1132,6 +1249,8 @@ c=\$LOCALAPPDATA/claude-cli-nodejs/Cache/\$n; mkdir -p "\$c" && echo journal >"\
 [ -f "$ESSAI/exe-casse" ] && chmod -x "\$0"
 # Un enfant qui survit à « auth logout » et garde ses sorties ouvertes, sur demande.
 [ "\$1 \$2" = "auth logout" ] && [ -f "$ESSAI/enfant-logout" ] && { sleep 47 & echo \$! >"$ESSAI/enfant-logout"; }
+# Un …-fin déjà là quand la session se ferme (vide, pas à soi, ou un lien), sur demande.
+[ "\$1 \$2" != "auth logout" ] && [ -f "$ESSAI/fin-deja" ] && { f="\${CLAUDE_CONFIG_DIR%/config}-fin"; case "\$(cat "$ESSAI/fin-deja")" in vide) mkdir "\$f" ;; autre) mkdir "\$f" && : >"\$f/pas-a-moi" ;; lien) mkdir -p "$ESSAI/fin-cible" && ln -s "$ESSAI/fin-cible" "\$f" ;; esac; }
 if [ "\$1 \$2" = "auth logout" ]; then { echo logout; echo "pwd-logout=\$PWD"; echo "config-logout=\$CLAUDE_CONFIG_DIR"; } >>"\$j"; rm -f "\$CLAUDE_CONFIG_DIR/.credentials.json"; if [ -f "$ESSAI/sortie-logout" ]; then cat "$ESSAI/sortie-logout"; else echo "Successfully logged out from your Anthropic account."; fi; [ -f "$ESSAI/code-logout" ] && exit "\$(cat "$ESSAI/code-logout")"; exit 0; fi
 { echo "config=\$CLAUDE_CONFIG_DIR"; echo "cle=\$VANGUARD_CLE"; echo "maj=\$DISABLE_AUTOUPDATER"; echo "trafic=\$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"; echo "mcp=\$ENABLE_CLAUDEAI_MCP_SERVERS"; echo "mcp-journaux=\$CLAUDE_CODE_SKIP_MCP_DEBUG_LOG_FILES"; echo "nav=\$BROWSER"; echo "args=\$*"; echo "pwd=\$PWD"; echo "tmp=\$TEMP"; echo "url=\$ANTHROPIC_BASE_URL"; echo "proxy=\$HTTPS_PROXY\$https_proxy\$GRPC_PROXY"; echo "entree=\$SESSION_INGRESS_URL"; } >>"\$j"
 env >"$ESSAI/env-win"
@@ -1183,7 +1302,16 @@ function FormatDuVolume([string]$dossier) {
     if ($env:ESSAI_FORMAT) { $env:ESSAI_FORMAT } else { 'NTFS' }
 }
 function TypeDuVolume([string]$dossier) { if ($env:ESSAI_TYPE) { $env:ESSAI_TYPE } else { 'Fixed' } }
-function CreerDossierPrive([string]$dossier, [string]$moi) { [void][IO.Directory]::CreateDirectory($dossier) }
+function CreerDossierPrive([string]$dossier, [string]$moi) {
+    # ESSAI_FIN : un …-fin créé de travers (un lien à la place, ou déjà un fichier dedans).
+    if ($env:ESSAI_FIN -eq 'lien' -and $dossier.EndsWith('-fin')) {
+        [void][IO.Directory]::CreateDirectory($dossier + '-cible')
+        [void][IO.Directory]::CreateSymbolicLink($dossier, $dossier + '-cible')
+        return
+    }
+    [void][IO.Directory]::CreateDirectory($dossier)
+    if ($env:ESSAI_FIN -eq 'plein' -and $dossier.EndsWith('-fin')) { [IO.File]::WriteAllText([IO.Path]::Combine($dossier, 'x'), 'x') }
+}
 function DroitsDuDossier([string]$dossier) {
     $moi = SidDeMoi
     $regles = @([pscustomobject]@{ Sid = $moi; Type = 'Allow' })
@@ -1194,6 +1322,7 @@ function DroitsDuDossier([string]$dossier) {
     [pscustomobject]@{ Protege = ($env:ESSAI_DROITS -ne 'herite'); Proprietaire = $proprio; Regles = $regles }
 }
 function ProprietaireDe([string]$dossier) {
+    if ($env:ESSAI_FIN -eq 'autre' -and $dossier.EndsWith('-fin')) { return 'S-1-5-21-1111-2222-3333-1002' }
     if (Test-Path -LiteralPath (Join-Path $dossier 'pas-a-moi')) { 'S-1-5-21-1111-2222-3333-1002' } else { SidDeMoi }
 }
 function SignatureDe([string]$exe) {
@@ -1263,6 +1392,42 @@ EOF
   grep -qx logout "$j" && grep -q "^pwd-logout=$W/runw/vanguard-claude-[0-9a-f]*-fin$" "$j" &&
     [[ -z $(find "$W/runw" -maxdepth 1 -name '*-fin') ]] &&
     bon "Windows : déconnecté en sortant, depuis hors de la session" || rate "Windows, déconnexion : $(grep logout "$j" | tr '\n' ' ')"
+  # R6-CLE-1 : …-fin créé NEUF, à soi (propriétaire posé), puis relu. Déjà là quand la session se ferme (vide, pas à
+  # soi, lien : posé pendant la session), ou créé de travers (un lien, pas vide, pas à soi : doublures ESSAI_FIN) : pas
+  # pris, la déconnexion depuis travail\ comme avant, et ce …-fin pas touché.
+  fin_pas_pris() { # libellé
+    grep -qx logout "$j" && grep -q "^pwd-logout=$W/runw/vanguard-claude-[0-9a-f]*/travail$" "$j" && grep -q "Déconnecté ;" "$ESSAI/sortie" &&
+      bon "Windows, …-fin $1 : pas pris, déconnecté depuis travail" ||
+      rate "Windows, …-fin $1 : $(grep logout "$j" | tr '\n' ' ') $(tail -2 "$ESSAI/sortie" | tr '\n' ' ')"
+  }
+  for cas in vide autre lien; do
+    echo "$cas" >"$ESSAI/fin-deja"
+    : >"$j"
+    attendu "Windows, …-fin déjà là ($cas) : lancé" 0 ps_lancer o
+    rm -f "$ESSAI/fin-deja"
+    fin_pas_pris "déjà là ($cas)"
+    f=$(find "$W/runw" -maxdepth 1 -name 'vanguard-claude-*-fin')
+    { [[ $cas == lien && -L $f ]] || [[ $cas != lien && -d $f && ! -L $f ]]; } && bon "Windows, …-fin déjà là ($cas) : laissé tel quel" ||
+      rate "Windows, …-fin déjà là ($cas) : « $f »"
+    rm -rf "$W/runw"/vanguard-claude-*-fin "$ESSAI/fin-cible"
+  done
+  for cas in lien plein autre; do
+    : >"$j"
+    attendu "Windows, …-fin créé de travers ($cas) : lancé" 0 ps_lancer o ESSAI_FIN=$cas
+    fin_pas_pris "créé de travers ($cas)"
+    rm -rf "$W/runw"/vanguard-claude-*-fin "$W/runw"/vanguard-claude-*-fin-cible
+  done
+  # Le vrai CreerDossierPrive (remplacé ici) pose le propriétaire ; Nettoyer s'en sert pour …-fin, et le gardien a le
+  # même texte (les trois fonctions dans $TexteNettoyer, une seule fois dans le fichier).
+  texte_n=$(tr -d '\r' <outils/cle/Claude/depanner.ps1 | sed -n "/^\$TexteNettoyer = @'$/,/^'@$/p")
+  for f in SidDeMoi CreerDossierPrive ProprietaireDe; do
+    [[ $(grep -c "^function $f\b" <<<"$texte_n") == 1 && $(grep -c "^function $f\b" outils/cle/Claude/depanner.ps1) == 1 ]] ||
+      rate "Windows : $f pas une fois dans le texte de Nettoyer"
+  done
+  grep -qF '$droits.SetOwner($sid)' <<<"$texte_n" && grep -qF 'CreerDossierPrive $fin $moi' <<<"$texte_n" &&
+    grep -qF '(ProprietaireDe $fin) -eq $moi' <<<"$texte_n" &&
+    bon "Windows : …-fin créé par CreerDossierPrive (propriétaire posé), dans le texte du gardien aussi" ||
+    rate "Windows : …-fin pas créé à soi"
   grep -q "Déconnecté ;" "$ESSAI/sortie" && bon "Windows : déconnexion confirmée, dit" || rate "Windows : $(tail -2 "$ESSAI/sortie")"
   [[ -z $(restes_w) ]] && bon "Windows : dossier temporaire effacé" || rate "Windows : restes $(restes_w)"
   [[ -z $(find "$W/local" -path '*vanguard-claude*') && -d $W/local/claude-cli-nodejs/Cache/C--autre-projet ]] &&
@@ -1638,9 +1803,37 @@ EOF
   PRECHARGE=$ESSAI/noyau.psm1 refus_w "fonctions Set-StrictMode et Import-Module déjà chargées" "Import-Module (Function noyau)" \
     ESSAI_TEMOIN_MODULE="$tm"
   [[ ! -e $tm ]] && grep -q "Set-StrictMode (Function noyau)" "$ESSAI/sortie" &&
-    bon "Windows : Set-StrictMode et Import-Module du noyau appelés par leur nom complet, les fonctions jamais lancées" ||
+    bon "Windows : Set-StrictMode et Import-Module appelés par leur type, les fonctions du même nom jamais lancées" ||
     rate "Windows, noyau : $( [[ -e $tm ]] && tr '\n' ' ' <"$tm")"
   rm -f "$tm" "$ESSAI/noyau.psm1"
+  # R6-CLE-3 : un module chargé NOMMÉ Microsoft.PowerShell.Core, avec des fonctions Set-StrictMode et Import-Module :
+  # le nom complet (Microsoft.PowerShell.Core\…) le trouvait lui (vu sur un vrai Windows). Appelées par leur type, les
+  # applets de ce PowerShell tournent ; les fonctions jamais, et la relecture les refuse.
+  mkdir -p "$ESSAI/mpc"
+  for f in Set-StrictMode Import-Module; do
+    printf 'function %s { [IO.File]::AppendAllText($env:ESSAI_TEMOIN_MODULE, "%s`n") }\n' "$f" "$f"
+  done >"$ESSAI/mpc/Microsoft.PowerShell.Core.psm1"
+  rm -f "$tm"
+  PRECHARGE=$ESSAI/mpc/Microsoft.PowerShell.Core.psm1 refus_w "module nommé Microsoft.PowerShell.Core déjà chargé" \
+    "Set-StrictMode (Function Microsoft.PowerShell.Core)" ESSAI_TEMOIN_MODULE="$tm"
+  [[ ! -e $tm ]] && grep -q "Import-Module (Function Microsoft.PowerShell.Core)" "$ESSAI/sortie" &&
+    bon "Windows : module nommé Microsoft.PowerShell.Core, ses fonctions jamais lancées, refusées" ||
+    rate "Windows, module Microsoft.PowerShell.Core : $( [[ -e $tm ]] && tr '\n' ' ' <"$tm")"
+  rm -rf "$tm" "$ESSAI/mpc"
+  # L'appel par le type pose vraiment le mode strict (une variable jamais posée : erreur), même avec ce module chargé.
+  tr -d '\r' <outils/cle/Claude/depanner.ps1 | sed -n '/^\$Noyau = @{}$/,/^if (\$Noyau\[.Set-StrictMode.\])/p' >"$ESSAI/noyau-seul.ps1"
+  printf '%s\n' 'try { $null = $jamaisPosee; "pas strict" } catch { "strict" }' >>"$ESSAI/noyau-seul.ps1"
+  mkdir -p "$ESSAI/mpc"
+  printf 'function Set-StrictMode { }\n' >"$ESSAI/mpc/Microsoft.PowerShell.Core.psm1"
+  m=$("$PWSH" -NoProfile -Command "Import-Module '$ESSAI/mpc/Microsoft.PowerShell.Core.psm1'; & '$ESSAI/noyau-seul.ps1'" 2>&1)
+  [[ $m == strict && $(grep -c . "$ESSAI/noyau-seul.ps1") -gt 5 ]] && bon "Windows : mode strict posé par le type, malgré le module" ||
+    rate "Windows : mode strict : « $m »"
+  rm -rf "$ESSAI/mpc" "$ESSAI/noyau-seul.ps1"
+  # Plus aucun appel par nom complet dans le lanceur ; Set-StrictMode et Import-Module par leur type.
+  ! tr -d '\r' <outils/cle/Claude/depanner.ps1 | grep -v '^ *#' | grep -q 'Microsoft\.PowerShell\.Core\\' &&
+    grep -qF "& \$Noyau['Set-StrictMode'] -Version 2" outils/cle/Claude/depanner.ps1 &&
+    grep -qF "& \$Noyau['Import-Module'] -Name" outils/cle/Claude/depanner.ps1 &&
+    bon "Windows : aucun nom complet, Set-StrictMode et Import-Module appelés par leur type" || rate "Windows : un appel par nom reste"
   # F2 : claude.exe coupe le nom de ses journaux à 200 caractères (le dossier de travail, signes devenus « - ») ; le
   # nom de la session n'y est plus, le journal resterait. À 200 tout juste : lancé, journal effacé ; à 201 : refusé
   # avant de rien créer. Le nom fait la longueur de TEMP plus 57 (/vanguard-claude-<32>/travail).
