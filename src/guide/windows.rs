@@ -733,10 +733,9 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "Clear-DnsClientCache",
-                "Vide le cache DNS (comme ipconfig /flushdns).",
-                "Empties the DNS cache (like ipconfig /flushdns).",
-            )
-            .sauf(Obstacle::Administrateur),
+                "Vide le cache DNS, sans terminal administrateur (ipconfig /flushdns en demande un).",
+                "Empties the DNS cache, without an administrator terminal (ipconfig /flushdns needs one).",
+            ),
             voir(
                 "Get-NetRoute -DestinationPrefix 0.0.0.0/0",
                 "La passerelle par défaut : l'adresse du routeur.",
@@ -828,8 +827,8 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "schtasks /change /tn \"<nom>\" /disable",
-                "Désactive une tâche planifiée.",
-                "Disables a scheduled task.",
+                "Désactive une tâche planifiée (une tâche de Windows : terminal administrateur).",
+                "Disables a scheduled task (a Windows task: administrator terminal).",
             ),
         ],
     },
@@ -1057,8 +1056,8 @@ pub const PAS_A_PAS: &[Programme] = &[
             changer("winget upgrade --all", "Les met tous à jour.", "Updates them all."),
             changer(
                 "Update-MpSignature",
-                "Les définitions de Microsoft Defender (terminal administrateur).",
-                "Microsoft Defender's definitions (administrator terminal).",
+                "Les définitions de Microsoft Defender.",
+                "Microsoft Defender's definitions.",
             ),
             voir(
                 "Get-HotFix | Sort-Object InstalledOn -Desc | Select -First 5",

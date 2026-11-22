@@ -2069,7 +2069,6 @@ mod tests {
             "restart-service",
             "restart-netadapter",
             "ipconfig /flushdns",
-            "clear-dnsclientcache",
             "start-mpwdoscan",
         ];
         let mut vues = 0;
