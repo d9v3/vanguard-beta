@@ -1,7 +1,7 @@
 //! Guide : Omarchy, c'est-à-dire Arch Linux avec le bureau Hyprland tout réglé : ses commandes, puis pacman, yay et
 //! ufw, partagés avec Arch.
 
-use super::{Obstacle, Programme, changer, voir};
+use super::{Obstacle, Programme, Theme, changer, voir};
 
 pub const PROGRAMMES: &[Programme] = &[
     OMARCHY_CLI,
@@ -20,6 +20,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("omarchy update, puis redémarrer", "omarchy update, then restart"),
         executable: "omarchy",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "omarchy update available",
@@ -52,6 +53,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : dépanner",
         role: ("Wi-Fi, son, barre, instantané", "Wi-Fi, sound, bar, snapshot"),
         executable: "omarchy",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "omarchy debug --print --no-sudo",
@@ -98,6 +100,7 @@ const OMARCHY_CLI: Programme = Programme {
     nom: "omarchy",
     role: ("Omarchy : mises à jour, réglages", "Omarchy: updates, settings"),
     executable: "omarchy",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "omarchy update",
@@ -323,6 +326,7 @@ const APPARENCE: Programme = Programme {
     nom: "omarchy theme, font, toggle",
     role: ("thèmes, polices, écran", "themes, fonts, screen"),
     executable: "omarchy",
+    theme: Some(Theme::Outils),
     commandes: &[
         voir("omarchy theme list", "Les thèmes disponibles.", "Available themes."),
         voir("omarchy theme current", "Le thème actuel.", "The current theme."),
@@ -426,6 +430,7 @@ const MATERIEL: Programme = Programme {
     nom: "omarchy hw, drive, battery",
     role: ("matériel, disques, énergie", "hardware, disks, power"),
     executable: "omarchy",
+    theme: Some(Theme::Materiel),
     commandes: &[
         voir(
             "omarchy battery status",
@@ -516,6 +521,7 @@ const RESEAU: Programme = Programme {
     nom: "omarchy network, capture",
     role: ("réseau, partage, captures", "network, sharing, captures"),
     executable: "omarchy",
+    theme: Some(Theme::Reseau),
     commandes: &[
         voir(
             "omarchy network status --verbose",
@@ -580,6 +586,7 @@ const INSTALLER: Programme = Programme {
     nom: "omarchy install, remove",
     role: ("installer jeux, services", "install games, services"),
     executable: "omarchy",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "omarchy install gaming steam",

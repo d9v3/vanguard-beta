@@ -1,7 +1,7 @@
 //! Guide : Debian, Ubuntu et leurs dérivées (Mint, Pop!_OS) : apt et dpkg, snap, AppArmor, les versions, les mises à
 //! jour automatiques, et les marches à suivre.
 
-use super::{Obstacle, Programme, changer, voir};
+use super::{Obstacle, Programme, Theme, changer, voir};
 
 pub const PROGRAMMES: &[Programme] = &[
     APT,
@@ -20,6 +20,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("apt, snap, Flatpak", "apt, snap, Flatpak"),
         executable: "apt",
+        theme: Some(Theme::Paquets),
         commandes: &[
             changer(
                 "sudo apt update",
@@ -51,6 +52,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : installer",
         role: ("apt, Flatpak ou snap", "apt, Flatpak or snap"),
         executable: "apt",
+        theme: Some(Theme::Paquets),
         commandes: &[
             changer(
                 "sudo apt update",
@@ -85,6 +87,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : réparer apt",
         role: ("verrou, paquets cassés, dépôts", "lock, broken packages, repos"),
         executable: "apt",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "pgrep -a 'apt|dpkg'",
@@ -122,6 +125,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : nouvelle version",
         role: ("Ubuntu ou Debian suivante", "next Ubuntu or Debian"),
         executable: "apt",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir("lsb_release -a", "Votre version.", "Your release."),
             changer(
@@ -151,6 +155,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : pare-feu",
         role: ("ufw : activer, ouvrir, refermer", "ufw: enable, open, close"),
         executable: "apt",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "sudo ufw status verbose",
@@ -189,6 +194,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mises à jour auto",
         role: ("sécurité installée toute seule", "security installed by itself"),
         executable: "apt",
+        theme: Some(Theme::Paquets),
         commandes: &[
             changer(
                 "sudo apt install unattended-upgrades",
@@ -221,6 +227,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : faire de la place",
         role: ("apt, snaps, journaux", "apt, snaps, logs"),
         executable: "apt",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "df -h /",
@@ -266,6 +273,7 @@ const APT: Programme = Programme {
     nom: "apt, dpkg",
     role: ("paquets : Debian, Ubuntu, Mint", "packages: Debian, Ubuntu, Mint"),
     executable: "apt",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "sudo apt update && sudo apt upgrade",
@@ -373,6 +381,7 @@ const DPKG: Programme = Programme {
     nom: "dpkg",
     role: ("paquets .deb, en détail", ".deb packages, in detail"),
     executable: "dpkg",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir(
             "dpkg -l | grep -i <mot>",
@@ -413,6 +422,7 @@ const SNAP: Programme = Programme {
     nom: "snap",
     role: ("applications Snap (Ubuntu)", "Snap apps (Ubuntu)"),
     executable: "snap",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir("snap list", "Les Snap installés.", "Installed snaps."),
         changer("sudo snap refresh", "Les met à jour.", "Updates them."),
@@ -462,6 +472,7 @@ const APPARMOR: Programme = Programme {
     nom: "aa-status, aa-complain",
     role: ("AppArmor : protège les programmes", "AppArmor: program confinement"),
     executable: "aa-status",
+    theme: Some(Theme::Securite),
     commandes: &[
         voir(
             "sudo aa-status",
@@ -491,6 +502,7 @@ const VERSIONS: Programme = Programme {
     nom: "lsb_release, ubuntu-drivers",
     role: ("version, pilotes, PPA", "release, drivers, PPAs"),
     executable: "lsb_release",
+    theme: Some(Theme::Materiel),
     commandes: &[
         voir(
             "lsb_release -a",
@@ -540,6 +552,7 @@ const AUTO: Programme = Programme {
     nom: "unattended-upgrades",
     role: ("mises à jour automatiques", "automatic updates"),
     executable: "unattended-upgrade",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir(
             "systemctl status unattended-upgrades",
@@ -568,6 +581,7 @@ const NEEDRESTART: Programme = Programme {
     nom: "needrestart",
     role: ("services à relancer", "services to restart"),
     executable: "needrestart",
+    theme: Some(Theme::Services),
     commandes: &[voir(
         "sudo needrestart -r l",
         "Les services et le noyau à relancer après des mises à jour, sans rien relancer.",

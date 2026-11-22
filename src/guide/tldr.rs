@@ -449,6 +449,7 @@ fn charger() -> &'static [PageTldr] {
                         nom: garder(&titre),
                         role: (description, description),
                         executable: garder(executable),
+                        theme: None,
                         commandes: commandes.leak(),
                     },
                 }

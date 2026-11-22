@@ -1,13 +1,14 @@
 //! Guide : les commandes qui s'écrivent pareil sous Linux et Windows, Vanguard en tête. Sous Windows, ssh, scp,
 //! curl et tar sont fournis depuis Windows 10 (2018).
 
-use super::{Programme, changer, traduite, voir};
+use super::{Programme, Theme, changer, traduite, voir};
 
 pub const PROGRAMMES: &[Programme] = &[
     Programme {
         nom: "vanguard",
         role: ("Vanguard en ligne de commande", "Vanguard from the command line"),
         executable: "",
+        theme: Some(Theme::Outils),
         commandes: &[
             traduite(
                 "vanguard",
@@ -127,6 +128,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "vanguard : sécurité",
         role: ("Vanguard : se défendre", "Vanguard: defending"),
         executable: "",
+        theme: Some(Theme::Securite),
         commandes: &[
             traduite(
                 "vanguard audit-reseau",
@@ -358,6 +360,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "vanguard : dépannage",
         role: ("Vanguard : dépanner, outils", "Vanguard: troubleshooting, tools"),
         executable: "",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             traduite(
                 "vanguard depanner",
@@ -442,6 +445,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "claude, ollama",
         role: ("agents et serveurs d'IA", "AI agents and servers"),
         executable: "",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "claude mcp list",
@@ -469,6 +473,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "ping",
         role: ("un appareil répond-il ?", "does a device answer?"),
         executable: "ping",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "ping <routeur>",
@@ -491,6 +496,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "nslookup",
         role: ("DNS : l'adresse d'un nom", "DNS: a name's address"),
         executable: "nslookup",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "nslookup <site>",
@@ -508,6 +514,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "ssh, scp, ssh-keygen",
         role: ("connexions à distance (OpenSSH)", "remote connections (OpenSSH)"),
         executable: "ssh",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "ssh <utilisateur>@<adresse>",
@@ -570,6 +577,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "curl",
         role: ("sites et téléchargements", "websites and downloads"),
         executable: "curl",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "curl -I https://<site>",
@@ -597,6 +605,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "tar",
         role: ("archives compressées", "compressed archives"),
         executable: "tar",
+        theme: Some(Theme::Disques),
         commandes: &[
             changer(
                 "tar -czf <archive>.tar.gz <dossier>",
@@ -619,6 +628,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "git",
         role: ("les versions d'un projet", "a project's versions"),
         executable: "git",
+        theme: Some(Theme::Outils),
         commandes: &[
             changer(
                 "git clone <adresse>",
@@ -704,6 +714,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "whoami, hostname",
         role: ("votre compte, cet ordinateur", "your account, this computer"),
         executable: "whoami",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "whoami",
@@ -717,6 +728,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "docker",
         role: ("conteneurs (Docker)", "containers (Docker)"),
         executable: "docker",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir("docker ps", "Les conteneurs qui tournent.", "Running containers."),
             voir(
@@ -766,6 +778,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : clé SSH",
         role: ("se connecter sans mot de passe", "connect without a password"),
         executable: "ssh",
+        theme: Some(Theme::Reseau),
         commandes: &[
             changer(
                 "ssh-keygen -t ed25519",
@@ -798,6 +811,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : git",
         role: ("récupérer, modifier, envoyer", "get, change, send"),
         executable: "git",
+        theme: Some(Theme::Outils),
         commandes: &[
             changer("git clone <adresse>", "Récupère un projet.", "Gets a project."),
             changer(

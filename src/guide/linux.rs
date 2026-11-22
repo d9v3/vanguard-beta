@@ -2,7 +2,7 @@
 //! firewalld) et openSUSE, rangé dans « Autres Linux ». Chaque distribution a son fichier (arch, omarchy, fedora,
 //! debian).
 
-use super::{Obstacle, Programme, changer, voir};
+use super::{Obstacle, Programme, Theme, changer, voir};
 
 /// Les programmes de toutes les distributions : chaque Linux du guide les montre après les siens.
 pub const COMMUNS: &[Programme] = &[
@@ -10,6 +10,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "systemctl",
         role: ("services : état, démarrage", "services: status, start, stop"),
         executable: "systemctl",
+        theme: Some(Theme::Services),
         commandes: &[
             voir("systemctl --failed", "Les services en échec.", "Failed services."),
             voir(
@@ -73,6 +74,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "journalctl, coredumpctl",
         role: ("journaux, plantages", "logs, crashes"),
         executable: "journalctl",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "journalctl -b -p err",
@@ -145,6 +147,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "flatpak",
         role: ("applications Flatpak", "Flatpak apps"),
         executable: "flatpak",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "flatpak list --app",
@@ -183,6 +186,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "ip, ss",
         role: ("adresses, routes, ports ouverts", "addresses, routes, open ports"),
         executable: "ip",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "ip -br a",
@@ -225,6 +229,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "nmcli",
         role: ("Wi-Fi et connexions", "Wi-Fi and connections"),
         executable: "nmcli",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "nmcli device status",
@@ -257,6 +262,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "resolvectl",
         role: ("DNS (systemd-resolved)", "DNS (systemd-resolved)"),
         executable: "resolvectl",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "resolvectl status",
@@ -279,6 +285,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "lsblk, df, du",
         role: ("disques, partitions, place", "disks, partitions, space"),
         executable: "lsblk",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "lsblk -f",
@@ -307,6 +314,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "smartctl",
         role: ("santé des disques (smartmontools)", "disk health (smartmontools)"),
         executable: "smartctl",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "sudo smartctl -H /dev/<disque>",
@@ -329,6 +337,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "btrfs, fsck",
         role: ("vérifier un système de fichiers", "check a file system"),
         executable: "fsck",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "sudo btrfs filesystem usage /",
@@ -356,6 +365,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "snapper, timeshift",
         role: ("instantanés du système", "system snapshots"),
         executable: "snapper",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "sudo snapper list",
@@ -388,6 +398,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "hostnamectl, lspci, inxi",
         role: ("système et matériel", "system and hardware"),
         executable: "hostnamectl",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "hostnamectl",
@@ -422,6 +433,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "sensors, upower",
         role: ("températures, batterie", "temperatures, battery"),
         executable: "sensors",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "sensors",
@@ -439,6 +451,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "fwupdmgr",
         role: ("mises à jour du firmware", "firmware updates"),
         executable: "fwupdmgr",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "fwupdmgr get-devices",
@@ -467,6 +480,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "top, ps, kill",
         role: ("programmes en marche, mémoire", "running programs, memory"),
         executable: "ps",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "top",
@@ -520,6 +534,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "sudo, chmod, chown",
         role: ("comptes et droits", "accounts and permissions"),
         executable: "sudo",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "id",
@@ -558,6 +573,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "find, grep",
         role: ("chercher fichiers et textes", "find files and text"),
         executable: "find",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "find ~ -iname \"*<mot>*\"",
@@ -590,6 +606,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "rsync",
         role: ("copier, sauvegarder des dossiers", "copy, back up folders"),
         executable: "rsync",
+        theme: Some(Theme::Disques),
         commandes: &[
             changer(
                 "rsync -a --info=progress2 <source>/ <destination>/",
@@ -607,6 +624,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "timedatectl, loginctl",
         role: ("heure, langue, sessions", "time, language, sessions"),
         executable: "timedatectl",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "timedatectl",
@@ -644,6 +662,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "dmesg, lsmod, modprobe",
         role: ("noyau et pilotes", "kernel and drivers"),
         executable: "dmesg",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "sudo dmesg --level=err,warn | tail -30",
@@ -681,6 +700,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "rfkill, iw, bluetoothctl",
         role: ("Wi-Fi et Bluetooth bloqués ?", "blocked Wi-Fi and Bluetooth?"),
         executable: "rfkill",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "rfkill list",
@@ -719,6 +739,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "dig, tracepath, mtr",
         role: ("DNS et chemin vers un site", "DNS and path to a site"),
         executable: "dig",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "dig <site>",
@@ -751,6 +772,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "findmnt, blkid, mount",
         role: ("partitions montées", "mounted partitions"),
         executable: "findmnt",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "findmnt -D",
@@ -779,6 +801,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "nvme, hdparm",
         role: ("santé et vitesse des SSD", "SSD health and speed"),
         executable: "nvme",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "sudo nvme smart-log /dev/nvme0",
@@ -796,6 +819,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "uptime, vmstat, swapon",
         role: ("charge, mémoire, échange", "load, memory, swap"),
         executable: "vmstat",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "uptime",
@@ -823,6 +847,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "last, w",
         role: ("qui s'est connecté, et quand", "who logged in, and when"),
         executable: "last",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "last -n 20",
@@ -845,6 +870,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "useradd, usermod, chage",
         role: ("comptes et groupes", "accounts and groups"),
         executable: "useradd",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir("groups", "Vos groupes.", "Your groups."),
             voir(
@@ -883,6 +909,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "crontab",
         role: ("tâches planifiées (cron)", "scheduled tasks (cron)"),
         executable: "crontab",
+        theme: Some(Theme::Services),
         commandes: &[
             voir("crontab -l", "Vos tâches planifiées.", "Your scheduled tasks."),
             changer("crontab -e", "Les modifie.", "Edits them."),
@@ -897,6 +924,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "sysctl",
         role: ("réglages du noyau", "kernel settings"),
         executable: "sysctl",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "sysctl <nom>",
@@ -919,6 +947,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "stat, file, sha256sum",
         role: ("fichiers : type, empreinte", "files: type, hash"),
         executable: "file",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "file <fichier>",
@@ -946,6 +975,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "zip, unzip",
         role: ("archives .zip", ".zip archives"),
         executable: "unzip",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "unzip -l <archive>.zip",
@@ -968,6 +998,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "nft, iptables",
         role: ("règles du pare-feu du noyau", "kernel firewall rules"),
         executable: "nft",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "sudo nft list ruleset",
@@ -985,6 +1016,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "fail2ban-client",
         role: ("bannir les attaques répétées", "ban repeated attacks"),
         executable: "fail2ban-client",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "sudo fail2ban-client status",
@@ -1007,6 +1039,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "cryptsetup",
         role: ("disques chiffrés (LUKS)", "encrypted disks (LUKS)"),
         executable: "cryptsetup",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "lsblk -o NAME,TYPE,FSTYPE | grep -i crypt",
@@ -1029,6 +1062,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "wpctl, pactl",
         role: ("son (PipeWire)", "sound (PipeWire)"),
         executable: "wpctl",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "wpctl status",
@@ -1052,6 +1086,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "lpstat, cancel",
         role: ("imprimantes et file d'attente", "printers and queue"),
         executable: "lpstat",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "lpstat -p -d",
@@ -1079,6 +1114,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "powerprofilesctl, tlp-stat",
         role: ("profils d'énergie, batterie", "power profiles, battery"),
         executable: "powerprofilesctl",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "powerprofilesctl",
@@ -1101,6 +1137,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "efibootmgr, mokutil, bootctl",
         role: ("démarrage UEFI, Secure Boot", "UEFI boot, Secure Boot"),
         executable: "efibootmgr",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "efibootmgr -v",
@@ -1119,6 +1156,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "nvidia-smi, vulkaninfo",
         role: ("carte graphique et pilotes", "graphics card and drivers"),
         executable: "lspci",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "lspci -k | grep -A3 -iE 'vga|3d'",
@@ -1146,6 +1184,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "dkms",
         role: ("pilotes construits par noyau", "drivers built per kernel"),
         executable: "dkms",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "dkms status",
@@ -1163,6 +1202,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "lynis",
         role: ("audit de sécurité complet", "full security audit"),
         executable: "lynis",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "sudo lynis audit system --quick",
@@ -1185,6 +1225,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "getcap",
         role: ("droits spéciaux des programmes", "programs' special rights"),
         executable: "getcap",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "find / -xdev -perm -4000 -type f 2>/dev/null",
@@ -1202,6 +1243,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "faillock",
         role: ("comptes bloqués", "locked accounts"),
         executable: "faillock",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "sudo faillock --user <utilisateur>",
@@ -1219,6 +1261,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "clamscan, freshclam",
         role: ("antivirus ClamAV", "ClamAV antivirus"),
         executable: "clamscan",
+        theme: Some(Theme::Securite),
         commandes: &[
             changer(
                 "sudo freshclam",
@@ -1241,6 +1284,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "gpg",
         role: ("signatures des téléchargements", "download signatures"),
         executable: "gpg",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "gpg --verify <fichier>.sig <fichier>",
@@ -1263,6 +1307,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "wg",
         role: ("tunnels VPN WireGuard", "WireGuard VPN tunnels"),
         executable: "wg",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "sudo wg show",
@@ -1281,6 +1326,7 @@ pub const COMMUNS: &[Programme] = &[
         nom: "openssl",
         role: ("certificats d'un site", "a site's certificates"),
         executable: "openssl",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "openssl s_client -connect <site>:443 -brief </dev/null",
@@ -1304,6 +1350,7 @@ const ZYPPER: Programme = Programme {
     nom: "zypper",
     role: ("paquets : openSUSE", "packages: openSUSE"),
     executable: "zypper",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "sudo zypper refresh && sudo zypper update",
@@ -1380,6 +1427,7 @@ pub(super) const UFW: Programme = Programme {
     nom: "ufw",
     role: ("pare-feu (Ubuntu, Mint, Omarchy)", "firewall (Ubuntu, Mint, Omarchy)"),
     executable: "ufw",
+    theme: Some(Theme::Securite),
     commandes: &[
         voir(
             "sudo ufw status verbose",
@@ -1445,6 +1493,7 @@ pub(super) const FIREWALLD: Programme = Programme {
     nom: "firewall-cmd",
     role: ("pare-feu firewalld (Fedora, SUSE)", "firewalld firewall (Fedora, SUSE)"),
     executable: "firewall-cmd",
+    theme: Some(Theme::Securite),
     commandes: &[
         voir(
             "firewall-cmd --state",
@@ -1510,6 +1559,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("zypper : Leap ou Tumbleweed", "zypper: Leap or Tumbleweed"),
         executable: "zypper",
+        theme: Some(Theme::Paquets),
         commandes: &[
             changer("sudo zypper refresh", "Relit les dépôts.", "Rereads the repositories."),
             voir("zypper list-updates", "Ce qui va changer.", "What will change."),
@@ -1535,6 +1585,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : revenir en arrière",
         role: ("snapper, avant une mise à jour", "snapper, before an update"),
         executable: "snapper",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "sudo snapper list",

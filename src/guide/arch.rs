@@ -1,7 +1,7 @@
 //! Guide : Arch Linux et ses dérivées (Manjaro, EndeavourOS) : pacman et l'AUR, leur entretien, le noyau, et les
 //! marches à suivre. Omarchy reprend pacman et yay.
 
-use super::{Programme, changer, voir};
+use super::{Programme, Theme, changer, voir};
 
 pub const PROGRAMMES: &[Programme] = &[PACMAN, YAY, CONTRIB, NOYAU, super::linux::UFW, SBCTL];
 
@@ -11,6 +11,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("pacman -Syu, AUR, .pacnew", "pacman -Syu, AUR, .pacnew"),
         executable: "pacman",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "yay -Pw",
@@ -45,6 +46,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : installer",
         role: ("dépôts, Flatpak, puis l'AUR", "repositories, Flatpak, then AUR"),
         executable: "pacman",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "pacman -Ss <mot>",
@@ -84,6 +86,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : faire de la place",
         role: ("cache de pacman, orphelins", "pacman cache, orphans"),
         executable: "pacman",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "df -h /",
@@ -132,6 +135,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : réparer",
         role: ("mise à jour ou démarrage ratés", "failed update or boot"),
         executable: "pacman",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "tail -40 /var/log/pacman.log",
@@ -180,6 +184,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : pare-feu",
         role: ("ufw : bloquer ce qui entre", "ufw: block what comes in"),
         executable: "pacman",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "sudo ufw status verbose",
@@ -218,6 +223,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : NVIDIA",
         role: ("pilote de la carte graphique", "graphics card driver"),
         executable: "pacman",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "lspci -k | grep -A3 -iE 'vga|3d'",
@@ -254,6 +260,7 @@ pub(super) const PACMAN: Programme = Programme {
     nom: "pacman",
     role: ("paquets : Arch, Manjaro, Omarchy", "packages: Arch, Manjaro, Omarchy"),
     executable: "pacman",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "sudo pacman -Syu",
@@ -364,6 +371,7 @@ pub(super) const YAY: Programme = Programme {
     nom: "yay",
     role: ("paquets de l'AUR (Arch)", "AUR packages (Arch)"),
     executable: "yay",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "yay",
@@ -418,6 +426,7 @@ const CONTRIB: Programme = Programme {
     nom: "paccache, pacdiff, reflector",
     role: ("cache, réglages, miroirs", "cache, settings, mirrors"),
     executable: "paccache",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir(
             "paccache -dk2",
@@ -462,6 +471,7 @@ const NOYAU: Programme = Programme {
     nom: "mkinitcpio, linux-lts",
     role: ("noyau et démarrage", "kernel and boot"),
     executable: "mkinitcpio",
+    theme: Some(Theme::Demarrage),
     commandes: &[
         voir(
             "pacman -Q linux && uname -r",
@@ -490,6 +500,7 @@ const SBCTL: Programme = Programme {
     nom: "sbctl",
     role: ("Secure Boot sur Arch", "Secure Boot on Arch"),
     executable: "sbctl",
+    theme: Some(Theme::Securite),
     commandes: &[
         voir(
             "sudo sbctl status",

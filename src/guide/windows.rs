@@ -1,13 +1,14 @@
 //! Guide : les commandes de Windows 10 et 11, par programme. Toutes se tapent dans PowerShell (le terminal par
 //! défaut) ; les programmes classiques (ipconfig, sfc, netsh…) marchent aussi dans l'invite de commandes.
 
-use super::{Obstacle, Programme, changer, voir};
+use super::{Obstacle, Programme, Theme, changer, voir};
 
 pub const PROGRAMMES: &[Programme] = &[
     Programme {
         nom: "winget",
         role: ("installer, mettre à jour", "install, update"),
         executable: "winget",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "winget upgrade",
@@ -48,6 +49,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "ms-settings",
         role: ("ouvrir une page des Paramètres", "open a Settings page"),
         executable: "",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "start ms-settings:windowsupdate",
@@ -97,6 +99,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "sfc, DISM",
         role: ("réparer Windows (administrateur)", "repair Windows (administrator)"),
         executable: "sfc",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             changer(
                 "sfc /scannow",
@@ -128,6 +131,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "chkdsk",
         role: ("erreurs et réparation du disque", "disk errors and repair"),
         executable: "chkdsk",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "chkdsk C:",
@@ -153,6 +157,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "ipconfig",
         role: ("adresses, routeur, DNS", "addresses, router, DNS"),
         executable: "ipconfig",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "ipconfig /all",
@@ -181,6 +186,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "netsh",
         role: ("Wi-Fi, pare-feu, pile réseau", "Wi-Fi, firewall, network stack"),
         executable: "netsh",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "netsh winsock show catalog",
@@ -232,6 +238,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "PowerShell : réseau",
         role: ("cartes, connexions, DNS", "cards, connections, DNS"),
         executable: "",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "Get-NetIPConfiguration",
@@ -270,6 +277,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "tracert, pathping",
         role: ("le chemin jusqu'à un site", "the path to a site"),
         executable: "tracert",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "tracert <site>",
@@ -287,6 +295,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "PowerShell : Defender",
         role: ("antivirus Microsoft Defender", "Microsoft Defender antivirus"),
         executable: "",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "Get-MpComputerStatus",
@@ -330,6 +339,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "PowerShell : services",
         role: ("services et programmes en marche", "services and running programs"),
         executable: "",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "Get-Service | Where-Object Status -eq Running",
@@ -364,6 +374,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "tasklist, taskkill",
         role: ("programmes en marche", "running programs"),
         executable: "tasklist",
+        theme: Some(Theme::Services),
         commandes: &[
             voir("tasklist", "Les programmes en marche.", "Running programs."),
             voir(
@@ -387,6 +398,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "systeminfo, msinfo32, dxdiag",
         role: ("système et matériel", "system and hardware"),
         executable: "systeminfo",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "systeminfo",
@@ -422,6 +434,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "powercfg",
         role: ("batterie, veille, énergie", "battery, sleep, power"),
         executable: "powercfg",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "powercfg /batteryreport",
@@ -458,6 +471,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "PowerShell : disques",
         role: ("santé et place des disques", "disk health and space"),
         executable: "",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "Get-PhysicalDisk | Format-Table FriendlyName, MediaType, HealthStatus",
@@ -499,6 +513,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "manage-bde",
         role: ("chiffrement BitLocker", "BitLocker encryption"),
         executable: "manage-bde",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "manage-bde -status",
@@ -518,6 +533,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-WinEvent, perfmon",
         role: ("erreurs, plantages, fiabilité", "errors, crashes, reliability"),
         executable: "",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "Get-WinEvent -FilterHashtable @{LogName='System';Level=2} -MaxEvents 20",
@@ -553,6 +569,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "rstrui, Checkpoint-Computer",
         role: ("points de restauration", "restore points"),
         executable: "rstrui",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             changer(
                 "rstrui",
@@ -578,6 +595,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "shutdown",
         role: ("redémarrer, éteindre, dépanner", "restart, shut down, troubleshoot"),
         executable: "shutdown",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             changer("shutdown /r /t 0", "Redémarre tout de suite.", "Restarts right away."),
             changer(
@@ -596,6 +614,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-LocalUser, net user",
         role: ("comptes et administrateurs", "accounts and administrators"),
         executable: "",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "Get-LocalUser",
@@ -624,6 +643,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-ScheduledTask, msconfig",
         role: ("ce qui se lance au démarrage", "what starts at boot"),
         executable: "",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "Get-CimInstance Win32_StartupCommand | Format-List Name, Command",
@@ -653,6 +673,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-ChildItem, robocopy",
         role: ("chercher et copier des fichiers", "find and copy files"),
         executable: "",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "Get-ChildItem -Recurse -Filter \"*<mot>*\"",
@@ -681,6 +702,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "wsl",
         role: ("Linux dans Windows (WSL)", "Linux inside Windows (WSL)"),
         executable: "wsl",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "wsl --status",
@@ -720,6 +742,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-DnsClient, arp, netstat",
         role: ("DNS, voisins, connexions", "DNS, neighbors, connections"),
         executable: "",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "netstat -ano | findstr :11434",
@@ -767,6 +790,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-PnpDevice, pnputil",
         role: ("pilotes et périphériques", "drivers and devices"),
         executable: "pnputil",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "Get-PnpDevice -Status ERROR",
@@ -803,6 +827,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "sc.exe, schtasks",
         role: ("services et tâches planifiées", "services and scheduled tasks"),
         executable: "schtasks",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "sc.exe query <service>",
@@ -836,6 +861,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "gpresult, bcdedit, reagentc",
         role: ("stratégies et démarrage", "policies and boot"),
         executable: "gpresult",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             voir(
                 "gpresult /r",
@@ -861,6 +887,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-FileHash, icacls",
         role: ("empreintes, droits des fichiers", "hashes, file permissions"),
         executable: "",
+        theme: Some(Theme::Comptes),
         commandes: &[
             voir(
                 "Get-FileHash <fichier>",
@@ -894,6 +921,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-AppxPackage, wsreset",
         role: ("applications du Microsoft Store", "Microsoft Store apps"),
         executable: "",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "Get-AppxPackage | Select Name, Version",
@@ -921,6 +949,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "reg",
         role: ("le registre", "the registry"),
         executable: "reg",
+        theme: Some(Theme::Outils),
         commandes: &[
             voir(
                 "reg query <clé>",
@@ -953,6 +982,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-NetConnectionProfile",
         role: ("réseau public ou privé", "public or private network"),
         executable: "",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "Get-NetConnectionProfile",
@@ -971,6 +1001,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-SmbShare",
         role: ("dossiers partagés", "shared folders"),
         executable: "",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "Get-SmbShare",
@@ -990,6 +1021,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-Tpm, tpm.msc",
         role: ("puce de sécurité TPM", "TPM security chip"),
         executable: "",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "Get-Tpm",
@@ -1009,6 +1041,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "Get-AuthenticodeSignature",
         role: ("signature d'un programme", "a program's signature"),
         executable: "",
+        theme: Some(Theme::Securite),
         commandes: &[voir(
             "Get-AuthenticodeSignature <fichier> | Format-List",
             "Qui a signé un programme, et si la signature est valide (Status : Valid).",
@@ -1019,6 +1052,7 @@ pub const PROGRAMMES: &[Programme] = &[
         nom: "cipher, mdsched",
         role: ("espace libre, mémoire vive", "free space, memory"),
         executable: "cipher",
+        theme: Some(Theme::Materiel),
         commandes: &[
             changer(
                 "cipher /w:C:\\",
@@ -1041,6 +1075,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("Windows Update, winget, Defender", "Windows Update, winget, Defender"),
         executable: "",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir(
                 "start ms-settings:windowsupdate",
@@ -1075,6 +1110,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : réparer Windows",
         role: ("DISM, sfc, disque, démarrage", "DISM, sfc, disk, boot"),
         executable: "",
+        theme: Some(Theme::Demarrage),
         commandes: &[
             changer(
                 "DISM /Online /Cleanup-Image /RestoreHealth",
@@ -1117,6 +1153,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : réseau",
         role: ("Wi-Fi, DNS, pile réseau", "Wi-Fi, DNS, network stack"),
         executable: "",
+        theme: Some(Theme::Reseau),
         commandes: &[
             voir(
                 "ipconfig /all",
@@ -1150,6 +1187,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : faire de la place",
         role: ("disque C: plein", "C: drive full"),
         executable: "",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "Get-PSDrive C",
@@ -1190,6 +1228,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : sécurité",
         role: ("Defender, pare-feu, comptes", "Defender, firewall, accounts"),
         executable: "",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "Get-MpComputerStatus | Select *Enabled",
@@ -1235,6 +1274,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : lenteur",
         role: ("processeur, mémoire, démarrage", "processor, memory, startup"),
         executable: "",
+        theme: Some(Theme::Services),
         commandes: &[
             voir(
                 "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10",

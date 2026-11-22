@@ -26,6 +26,7 @@ mod windows;
 pub(crate) use tldr::cle::sur_la_cle as tldr_sur_la_cle;
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -314,7 +315,69 @@ pub struct Programme {
     /// Le fichier qui dit s'il est installé ici (nom cherché dans le PATH, ou chemin complet) ; vide : toujours là
     /// (commandes de PowerShell, Vanguard lui-même).
     pub executable: &'static str,
+    /// Son thème, pour l'entrée « Par thème » du guide : écrit avec lui, le compilateur refuse un programme qui
+    /// l'oublie. `None` : hors des thèmes (pages de tldr-pages, commandes de Vanguard, rangées autrement).
+    pub theme: Option<Theme>,
     pub commandes: &'static [Commande],
+}
+
+/// Un thème du guide : les programmes qui servent à la même chose, tous systèmes confondus.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Theme {
+    Paquets,
+    Reseau,
+    Disques,
+    Securite,
+    Services,
+    Materiel,
+    Comptes,
+    Demarrage,
+    /// Ce qui n'entre dans aucun autre : réglages du bureau et du système, git, Docker, WSL, Vanguard, l'IA.
+    Outils,
+}
+
+/// Les thèmes du menu « Par thème », dans l'ordre : leur rang fait leur touche.
+pub const THEMES: [Theme; 9] = [
+    Theme::Paquets,
+    Theme::Reseau,
+    Theme::Disques,
+    Theme::Securite,
+    Theme::Services,
+    Theme::Materiel,
+    Theme::Comptes,
+    Theme::Demarrage,
+    Theme::Outils,
+];
+
+impl Theme {
+    fn nom(self) -> &'static str {
+        match self {
+            Theme::Paquets => tr!("Paquets et mises à jour", "Packages and updates"),
+            Theme::Reseau => tr!("Réseau", "Network"),
+            Theme::Disques => tr!("Disques et fichiers", "Disks and files"),
+            Theme::Securite => tr!("Sécurité et pare-feu", "Security and firewall"),
+            Theme::Services => tr!("Services et journaux", "Services and logs"),
+            Theme::Materiel => tr!("Matériel et pilotes", "Hardware and drivers"),
+            Theme::Comptes => tr!("Comptes et droits", "Accounts and permissions"),
+            Theme::Demarrage => tr!("Démarrage et réparation", "Boot and repair"),
+            Theme::Outils => tr!("Outils et réglages", "Tools and settings"),
+        }
+    }
+
+    /// Précision de sa ligne au menu (33 caractères au plus).
+    fn apercu(self) -> &'static str {
+        match self {
+            Theme::Paquets => tr!("installer, mettre à jour", "install, update"),
+            Theme::Reseau => tr!("Wi-Fi, DNS, adresses, ssh", "Wi-Fi, DNS, addresses, ssh"),
+            Theme::Disques => tr!("place, santé, copier, chercher", "space, health, copy, find"),
+            Theme::Securite => tr!("pare-feu, antivirus, chiffrement", "firewall, antivirus, encryption"),
+            Theme::Services => tr!("services, programmes, journaux", "services, programs, logs"),
+            Theme::Materiel => tr!("pilotes, son, batterie, GPU", "drivers, sound, battery, GPU"),
+            Theme::Comptes => tr!("comptes, groupes, droits", "accounts, groups, permissions"),
+            Theme::Demarrage => tr!("démarrage, instantanés, réparer", "boot, snapshots, repair"),
+            Theme::Outils => tr!("réglages, git, Docker, WSL…", "settings, git, Docker, WSL…"),
+        }
+    }
 }
 
 pub struct Commande {
@@ -777,6 +840,21 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
                 .avec_mots(&s.mots().join(" ")),
             );
         }
+        lignes.push(Ligne::cachee(
+            &format!("{avant}{}", cle_des_themes()),
+            &format!("{guide} ›"),
+            tr!("Par thème", "By topic"),
+            tr!("réseau, disques, sécurité…", "network, disks, security…"),
+        ));
+    }
+    // Chaque thème se trouve par son nom (« réseau » mène aussi au thème Réseau, pas seulement à ses programmes).
+    for (i, t) in THEMES.iter().enumerate() {
+        lignes.push(Ligne::cachee(
+            &format!("{avant}{}.{}", cle_des_themes(), i.saturating_add(1)),
+            &format!("{racine}{} ›", tr!("Par thème", "By topic")),
+            t.nom(),
+            t.apercu(),
+        ));
     }
     for page in pages() {
         let p = page.programme;
@@ -811,8 +889,17 @@ pub fn chemin(texte: &str) -> Option<(usize, Option<usize>, Option<usize>)> {
 }
 
 /// Ouvre une page du guide trouvée par la recherche : un système (1 à 9), l'un de ses programmes, ou l'une de ses
-/// commandes.
+/// commandes ; ou « Par thème » (10), l'un de ses thèmes (« 10.3 »). Les thèmes ne sont qu'au menu : en ligne de
+/// commande, `page_existe` refuse 10 avant d'arriver ici.
 pub fn ouvrir(systeme: usize, programme: Option<usize>, commande: Option<usize>) {
+    if systeme == cle_des_themes() {
+        match programme.and_then(|n| n.checked_sub(1)).and_then(|i| THEMES.get(i)) {
+            Some(t) if commande.is_none() => menu_theme(*t),
+            Some(_) => {}
+            None => menu_themes(),
+        }
+        return;
+    }
     let Some(&s) = systeme.checked_sub(1).and_then(|i| SYSTEMES.get(i)) else {
         return;
     };
@@ -1237,26 +1324,50 @@ fn menu_systeme(s: Systeme) {
                 2,
             ));
         }
-        // La place qui reste pour la précision, après la touche et le nom (tldr-pages en a des milliers).
-        let largeur_touche = programmes.len().to_string().len().max(2);
-        // Comme `selection::colonne` : le nom le plus long tel qu'affiché, « (absent) » compris là où il paraît.
-        let marque_absent = largeur_affichee(tr!(" (absent)", " (missing)"));
-        let plus_long = programmes
-            .iter()
-            .map(|&(proprietaire, p)| {
-                let absent = s != Systeme::Tldr && absent(proprietaire, p);
-                largeur_affichee(nom(p)).saturating_add(if absent { marque_absent } else { 0 })
-            })
-            .max()
-            .unwrap_or(0);
-        let colonne = plus_long.saturating_add(2).clamp(36, 48);
-        let place = LARGEUR
-            .saturating_sub(largeur_touche.saturating_add(colonne).saturating_add(5))
-            .max(10);
         let tldr = s == Systeme::Tldr;
+        // Les communs à Linux d'une distribution tiennent sur une ligne repliée, mais gardent leurs numéros (« 1.20.3 »
+        // marche encore, au menu comme en ligne de commande) : ils ne sont que cachés, jamais renumérotés.
+        let communs = rangs_des_communs(s, &programmes);
+        let cle_repliee = format!("{}–{}", communs.start.saturating_add(1), communs.end);
+        let montres: Vec<_> = programmes
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| !communs.contains(j))
+            .map(|(_, x)| *x)
+            .collect();
+        // Les programmes montrés viennent d'abord (1 à N) : la plus large de leurs touches est celle de N.
+        let place = place_de_la_precision(&montres, montres.len().to_string().len(), !tldr, 0);
         let pages_tldr = if tldr { tldr::pages() } else { &[] };
         let mut section = None;
         for (j, &(proprietaire, p)) in programmes.iter().enumerate() {
+            let touche = j.saturating_add(1).to_string();
+            if communs.contains(&j) {
+                if j == communs.start {
+                    lignes.push(Ligne::Texte(String::new()));
+                    lignes.push(Ligne::Texte(ligne_section(tr!("COMMUNS À LINUX", "COMMON TO LINUX"))));
+                    // Sans précision : sa touche plus large (« 11–56 ») la pousserait hors de la colonne des autres.
+                    lignes.push(Ligne::choix(
+                        &cle_repliee,
+                        &trf!(
+                            "Commandes communes à Linux › ({})",
+                            "Commands common to Linux › ({})",
+                            communs.len()
+                        ),
+                        "",
+                    ));
+                }
+                // Cachée : son numéro et la recherche la trouvent toujours.
+                lignes.push(
+                    Ligne::cachee(
+                        &touche,
+                        &format!("{} ›", tr!("Communs à Linux", "Common to Linux")),
+                        nom(p),
+                        dans_la_langue(p.role),
+                    )
+                    .avec_mots(&noms_du_programme(p)),
+                );
+                continue;
+            }
             let titre = if tldr {
                 pages_tldr.get(j).map_or("", |page| page.plateforme).to_uppercase()
             } else if est_un_pas_a_pas(p) {
@@ -1271,31 +1382,20 @@ fn menu_systeme(s: Systeme) {
                 lignes.push(Ligne::Texte(ligne_section(&titre)));
                 section = Some(titre);
             }
-            // Sauf pour tldr-pages : des milliers de pages, la plupart pour des programmes qu'on n'a pas.
-            let nom = if !tldr && absent(proprietaire, p) {
-                format!("{} {DISCRET}{}{RESET}", nom(p), tr!("(absent)", "(missing)"))
-            } else {
-                nom(p).to_string()
-            };
-            let mots = if tldr {
+            if tldr {
                 // Une page de tldr-pages se trouve aussi par ses exemples : leurs commandes ne sont pas des lignes à
-                // part (des dizaines de milliers).
-                p.commandes
+                // part (des dizaines de milliers). Pas de « (absent) » : la plupart sont pour des programmes qu'on
+                // n'a pas.
+                let mots = p
+                    .commandes
                     .iter()
                     .map(|c| format!("{} {}", c.texte.0, c.ligne))
                     .collect::<Vec<_>>()
-                    .join(" ")
+                    .join(" ");
+                lignes.push(Ligne::choix(&touche, nom(p), &couper(dans_la_langue(p.role), place)).avec_mots(&mots));
             } else {
-                noms_du_programme(p)
-            };
-            lignes.push(
-                Ligne::choix(
-                    &j.saturating_add(1).to_string(),
-                    &nom,
-                    &couper(dans_la_langue(p.role), place),
-                )
-                .avec_mots(&mots),
-            );
+                lignes.push(ligne_du_programme(&touche, proprietaire, p, place, 0));
+            }
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1318,17 +1418,323 @@ fn menu_systeme(s: Systeme) {
             return;
         };
         let choix = choix.trim();
-        let mut parties = choix.split('.').map(|n| n.parse::<usize>().ok()?.checked_sub(1));
-        let programme = parties.next().flatten().and_then(|j| programmes.get(j));
-        match (programme, parties.next(), parties.next()) {
-            (Some(&(proprietaire, p)), None, None) => {
-                dernier = choix.to_string();
-                montrer_programme(proprietaire, p);
+        if !communs.is_empty() && choix == cle_repliee {
+            dernier = cle_repliee;
+            menu_communs(s, &programmes, &communs);
+            continue;
+        }
+        match ouvrir_parmi(&programmes, 0..programmes.len(), choix) {
+            // Un commun ouvert par son numéro : au retour, le curseur sur leur ligne repliée.
+            Ouvert::Programme(j) if communs.contains(&j) => dernier = cle_repliee,
+            Ouvert::Programme(_) => dernier = choix.to_string(),
+            Ouvert::Rien if revenir(choix) => return,
+            Ouvert::Commande | Ouvert::Rien => {}
+        }
+    }
+}
+
+/// Les rangs des programmes communs à Linux au menu d'une distribution (vide ailleurs) : ils viennent en dernier
+/// (`Systeme::programmes`).
+fn rangs_des_communs(s: Systeme, programmes: &[(Systeme, &'static Programme)]) -> Range<usize> {
+    if !s.linux() || s == Systeme::Linux {
+        return 0..0;
+    }
+    let debut = programmes
+        .iter()
+        .position(|(proprietaire, _)| *proprietaire == Systeme::Linux)
+        .unwrap_or(programmes.len());
+    debut..programmes.len()
+}
+
+/// La place qui reste pour la précision d'une ligne de programme, après la touche et le nom, comme
+/// `selection::colonne` les range : le nom le plus long tel qu'affiché, « (absent) » compris là où il paraît, et
+/// `allonge` : le plus grand décalage mis devant un nom (`ligne_du_programme`), qui peut pousser cette colonne.
+fn place_de_la_precision(
+    montres: &[(Systeme, &Programme)],
+    largeur_touche: usize,
+    marquer_absents: bool,
+    allonge: usize,
+) -> usize {
+    let marque_absent = largeur_affichee(tr!(" (absent)", " (missing)"));
+    let plus_long = montres
+        .iter()
+        .map(|&(proprietaire, p)| {
+            let absent = marquer_absents && absent(proprietaire, p);
+            largeur_affichee(nom(p)).saturating_add(if absent { marque_absent } else { 0 })
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(allonge);
+    let colonne = plus_long.saturating_add(2).clamp(36, 48);
+    LARGEUR
+        .saturating_sub(largeur_touche.max(2).saturating_add(colonne).saturating_add(5))
+        .max(10)
+}
+
+/// La ligne d'un programme au menu : son nom, « (absent) » s'il n'est pas installé ici, son rôle en précision.
+/// `decalage` : des espaces avant le nom et avant le rôle, pour une touche plus étroite que les autres du menu, que
+/// `selection` cale à droite sur deux colonnes seulement ; décaler les deux garde aussi la colonne des rôles.
+fn ligne_du_programme(touche: &str, proprietaire: Systeme, p: &Programme, place: usize, decalage: usize) -> Ligne {
+    let avant = " ".repeat(decalage);
+    let texte = if absent(proprietaire, p) {
+        format!("{avant}{} {DISCRET}{}{RESET}", nom(p), tr!("(absent)", "(missing)"))
+    } else {
+        format!("{avant}{}", nom(p))
+    };
+    let precision = format!("{avant}{}", couper(dans_la_langue(p.role), place));
+    Ligne::choix(touche, &texte, &precision).avec_mots(&noms_du_programme(p))
+}
+
+/// Ce qu'un numéro tapé au menu d'un système a ouvert.
+enum Ouvert {
+    /// Le programme à ce rang (à partir de 0).
+    Programme(usize),
+    /// Une commande d'un programme.
+    Commande,
+    /// Rien : pas de programme à ce numéro (ou hors de ceux permis), ou pas un numéro.
+    Rien,
+}
+
+/// Ouvre « 12 » (un programme) ou « 12.3 » (une de ses commandes) parmi `programmes`, numérotés à partir de 1, si son
+/// rang est dans `permis`.
+fn ouvrir_parmi(programmes: &[(Systeme, &'static Programme)], permis: Range<usize>, choix: &str) -> Ouvert {
+    let mut parties = choix.split('.').map(|n| n.parse::<usize>().ok()?.checked_sub(1));
+    let Some(j) = parties.next().flatten().filter(|j| permis.contains(j)) else {
+        return Ouvert::Rien;
+    };
+    let Some(&(proprietaire, p)) = programmes.get(j) else {
+        return Ouvert::Rien;
+    };
+    match (parties.next(), parties.next()) {
+        (None, _) => {
+            montrer_programme(proprietaire, p);
+            Ouvert::Programme(j)
+        }
+        (Some(k), None) => {
+            if let Some(c) = k.and_then(|k| p.commandes.get(k)) {
+                montrer_commande(proprietaire, p, c);
             }
-            (Some(&(proprietaire, p)), Some(k), None) => {
-                if let Some(c) = k.and_then(|k| p.commandes.get(k)) {
-                    montrer_commande(proprietaire, p, c);
+            Ouvert::Commande
+        }
+        _ => Ouvert::Rien,
+    }
+}
+
+/// La ligne repliée des communs à Linux, ouverte : chacun à son numéro dans la distribution (« 20 », « 20.3 »), le
+/// même qu'au chemin du guide.
+fn menu_communs(s: Systeme, programmes: &[(Systeme, &'static Programme)], communs: &Range<usize>) {
+    let montres = programmes.get(communs.clone()).unwrap_or_default();
+    let mut dernier = communs.start.saturating_add(1).to_string();
+    loop {
+        print!("\x1b[2J\x1b[H");
+        let mut lignes = entete(
+            &[
+                tr!("Guide", "Guide"),
+                s.nom(),
+                tr!("Communs à Linux", "Common to Linux"),
+            ],
+            &trf!("{} programmes", "{} programs", montres.len()),
+        );
+        lignes.extend(lignes_grises(
+            tr!(
+                "Les programmes communs à toutes les distributions de Linux, à leur numéro dans celle-ci.",
+                "The programs common to every Linux distribution, at their number in this one."
+            ),
+            2,
+        ));
+        lignes.extend(legende(s).into_iter().map(Ligne::Texte));
+        lignes.push(Ligne::Texte(String::new()));
+        let place = place_de_la_precision(montres, communs.end.to_string().len(), true, 0);
+        for (j, &(proprietaire, p)) in programmes.iter().enumerate() {
+            if communs.contains(&j) {
+                lignes.push(ligne_du_programme(
+                    &j.saturating_add(1).to_string(),
+                    proprietaire,
+                    p,
+                    place,
+                    0,
+                ));
+            }
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        lignes.push(Ligne::Texte(String::new()));
+        for (j, (_, p)) in programmes.iter().enumerate() {
+            if communs.contains(&j) {
+                lignes.extend(lignes_des_commandes(&format!("{}.", j.saturating_add(1)), "", p));
+            }
+        }
+        let Some(choix) = choisir(
+            &lignes,
+            tr!(
+                "  Numéro du programme, ou un mot à chercher (Entrée pour revenir) : ",
+                "  Program number, or a word to look for (Enter to go back): "
+            ),
+            &dernier,
+            tr!("revenir", "back"),
+        ) else {
+            return;
+        };
+        let choix = choix.trim();
+        match ouvrir_parmi(programmes, communs.clone(), choix) {
+            Ouvert::Programme(_) => dernier = choix.to_string(),
+            Ouvert::Rien if revenir(choix) => return,
+            Ouvert::Commande | Ouvert::Rien => {}
+        }
+    }
+}
+
+/// La touche de « Par thème » au menu du guide : juste après les systèmes, sans rien décaler.
+fn cle_des_themes() -> usize {
+    SYSTEMES.len().saturating_add(1)
+}
+
+/// Les programmes d'un thème, chacun avec son chemin au guide (« 6.11 ») : dans l'ordre de la recherche, ceux de cet
+/// ordinateur d'abord, puis ceux de tous les systèmes, puis les autres ; chacun une fois.
+fn programmes_du_theme(t: Theme) -> Vec<(String, Page)> {
+    pages()
+        .into_iter()
+        .filter(|page| page.programme.theme == Some(t))
+        .map(|page| {
+            let cle = format!(
+                "{}.{}",
+                page.rang_systeme.saturating_add(1),
+                page.rang_programme.saturating_add(1)
+            );
+            (cle, page)
+        })
+        .collect()
+}
+
+/// « Par thème » : choisir un thème.
+fn menu_themes() {
+    let mut dernier = String::from("1");
+    loop {
+        print!("\x1b[2J\x1b[H");
+        let mut lignes = entete(
+            &[tr!("Guide", "Guide"), tr!("Par thème", "By topic")],
+            &trf!("{} thèmes", "{} topics", THEMES.len()),
+        );
+        lignes.extend(lignes_grises(
+            tr!(
+                "Les programmes de tous les systèmes, rangés selon ce qu'ils font : ceux de cet ordinateur d'abord, chacun avec son chemin au guide.",
+                "The programs of every system, sorted by what they do: those of this computer first, each with its path in the guide."
+            ),
+            2,
+        ));
+        lignes.push(Ligne::Texte(String::new()));
+        for (i, t) in THEMES.iter().enumerate() {
+            let programmes = programmes_du_theme(*t);
+            let noms: Vec<String> = programmes
+                .iter()
+                .map(|(_, page)| noms_du_programme(page.programme))
+                .collect();
+            lignes.push(
+                Ligne::choix(
+                    &i.saturating_add(1).to_string(),
+                    &format!("{} {GRIS}({}){RESET}", t.nom(), programmes.len()),
+                    t.apercu(),
+                )
+                .avec_mots(&noms.join(" ")),
+            );
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        lignes.push(Ligne::Texte(String::new()));
+        let Some(choix) = choisir(
+            &lignes,
+            tr!(
+                "  Numéro du thème, ou un mot à chercher (Entrée pour revenir) : ",
+                "  Topic number, or a word to look for (Enter to go back): "
+            ),
+            &dernier,
+            tr!("revenir", "back"),
+        ) else {
+            return;
+        };
+        let choix = choix.trim();
+        match choix
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| THEMES.get(i))
+        {
+            Some(t) => {
+                dernier = choix.to_string();
+                menu_theme(*t);
+            }
+            None if revenir(choix) => return,
+            None => {}
+        }
+    }
+}
+
+/// Les programmes d'un thème, rangés par système (celui de cet ordinateur d'abord) ; chacun s'ouvre par son chemin au
+/// guide, sur la même page que depuis son système.
+fn menu_theme(t: Theme) {
+    let programmes = programmes_du_theme(t);
+    let mut dernier = programmes.first().map_or_default(|(cle, _)| cle.clone());
+    loop {
+        print!("\x1b[2J\x1b[H");
+        let mut lignes = entete(
+            &[tr!("Guide", "Guide"), tr!("Par thème", "By topic"), t.nom()],
+            &trf!("{} programmes", "{} programs", programmes.len()),
+        );
+        lignes.extend(lignes_grises(
+            tr!(
+                "Ceux de cet ordinateur d'abord. Le chemin, à gauche, ouvre aussi la page depuis le menu du guide, ou par vanguard guide <chemin>.",
+                "Those of this computer first. The path, on the left, also opens the page from the guide menu, or with vanguard guide <path>."
+            ),
+            2,
+        ));
+        let montres: Vec<_> = programmes
+            .iter()
+            .map(|(_, page)| (page.systeme, page.programme))
+            .collect();
+        // Les chemins n'ont pas tous la même largeur (« 1.9 », « 6.11 ») et le menu cale chaque touche à droite sur
+        // deux colonnes : les noms reçoivent le complément, pour commencer tous à la même colonne.
+        let largeur_touche = programmes.iter().map(|(cle, _)| cle.len()).max().unwrap_or(2).max(2);
+        let place = place_de_la_precision(&montres, largeur_touche, true, largeur_touche.saturating_sub(2));
+        let mut section = None;
+        for (cle, page) in &programmes {
+            let systeme = SYSTEMES.get(page.rang_systeme).copied().unwrap_or(page.systeme);
+            if section != Some(page.rang_systeme) {
+                let titre = if systeme == Systeme::actuel() {
+                    trf!("{} (ce système)", "{} (this system)", systeme.nom())
+                } else {
+                    systeme.nom().to_string()
+                };
+                lignes.push(Ligne::Texte(String::new()));
+                lignes.push(Ligne::Texte(ligne_section(&titre.to_uppercase())));
+                section = Some(page.rang_systeme);
+            }
+            let decalage = largeur_touche.saturating_sub(cle.len().max(2));
+            lignes.push(ligne_du_programme(cle, page.systeme, page.programme, place, decalage));
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        lignes.push(Ligne::Texte(String::new()));
+        for (cle, page) in &programmes {
+            lignes.extend(lignes_des_commandes(&format!("{cle}."), "", page.programme));
+        }
+        let Some(choix) = choisir(
+            &lignes,
+            tr!(
+                "  Chemin du programme, ou un mot à chercher (Entrée pour revenir) : ",
+                "  Program path, or a word to look for (Enter to go back): "
+            ),
+            &dernier,
+            tr!("revenir", "back"),
+        ) else {
+            return;
+        };
+        let choix = choix.trim();
+        match chemin(choix) {
+            Some((s, Some(p), c)) if programmes.iter().any(|(cle, _)| *cle == format!("{s}.{p}")) => {
+                if c.is_none() {
+                    dernier = choix.to_string();
                 }
+                ouvrir(s, Some(p), c);
             }
             _ if revenir(choix) => return,
             _ => {}
@@ -1435,6 +1841,12 @@ pub fn menu() {
             };
             lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &nom, &apercu).avec_mots(&s.mots().join(" ")));
         }
+        // Après les systèmes, sans décaler leurs numéros : les chemins tapés d'habitude (« 6.11 ») restent les mêmes.
+        lignes.push(Ligne::choix(
+            &cle_des_themes().to_string(),
+            tr!("Par thème", "By topic"),
+            tr!("réseau, disques, sécurité…", "network, disks, security…"),
+        ));
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
         lignes.push(Ligne::Texte(String::new()));
@@ -1454,7 +1866,7 @@ pub fn menu() {
         let choix = choix.trim().to_string();
         match chemin(&choix) {
             Some((s, None, None)) => {
-                if (1..=SYSTEMES.len()).contains(&s) {
+                if (1..=cle_des_themes()).contains(&s) {
                     dernier.clone_from(&choix);
                 }
                 ouvrir(s, None, None);
@@ -1881,6 +2293,7 @@ mod tests {
             nom: "essai",
             role: ("essai", "test"),
             executable,
+            theme: None,
             commandes: &[],
         };
         assert!(installe(&p("")));
@@ -1914,6 +2327,14 @@ mod tests {
             };
             assert!(touches.insert(touche.clone()), "{touche} deux fois");
             let (s, p, c) = chemin(touche.strip_prefix("10.").unwrap()).unwrap();
+            if s == cle_des_themes() {
+                // « Par thème » et chacun de ses thèmes, rien de plus.
+                assert!(
+                    c.is_none() && p.is_none_or(|n| (1..=THEMES.len()).contains(&n)),
+                    "{touche}"
+                );
+                continue;
+            }
             let systeme = SYSTEMES[s - 1];
             let Some(p) = p else { continue };
             let (_, programme) = systeme.programmes()[p - 1];
@@ -1928,7 +2349,8 @@ mod tests {
         assert_eq!(commandes, toutes().count());
         // Dans le menu du guide, les mêmes lignes, sans les systèmes, ni « 10. ».
         let du_guide = lignes_de_recherche("");
-        assert_eq!(du_guide.len(), lignes.len() - SYSTEMES.len());
+        // Sans les systèmes ni la ligne « Par thème » : le menu du guide les montre déjà.
+        assert_eq!(du_guide.len(), lignes.len() - SYSTEMES.len() - 1);
     }
 
     /// Ce que plusieurs distributions montrent (pacman sous Omarchy et Arch) ne s'écrit qu'une fois, et la recherche
@@ -2112,6 +2534,107 @@ mod tests {
             let (s, p, c) = chemin(tape.strip_prefix("10.").unwrap()).unwrap();
             let (_, programme) = SYSTEMES[s - 1].programmes()[p.unwrap() - 1];
             assert_eq!(programme.commandes[c.unwrap() - 1].ligne, attendue, "{tape}");
+        }
+    }
+
+    /// Les communs à Linux, repliés au menu d'une distribution, gardent leurs chemins : notés en dur avant le
+    /// repli (master f54c787b), au menu comme en ligne de commande (`ouvrir` et `vanguard guide <chemin>` lisent
+    /// tous deux `programmes`). Une ligne numérotée de plus, ou les communs déplacés, les ferait mentir.
+    #[test]
+    fn les_chemins_des_communs_a_linux_restent_les_memes() {
+        for (tape, programme, attendue) in [
+            ("1.20.3", "snapper, timeshift", "sudo timeshift --list"),
+            ("1.11.1", "systemctl", "systemctl --failed"),
+            ("2.13.1", "systemctl", "systemctl --failed"),
+            ("3.15.2", "ip, ss", "ip route"),
+            ("4.54.2", "dkms", "sudo dkms autoinstall"),
+            ("5.5.1", "systemctl", "systemctl --failed"),
+        ] {
+            let (s, p, c) = chemin(tape).unwrap();
+            assert!(page_existe(s, p, c), "{tape}");
+            let (proprietaire, trouve) = SYSTEMES[s - 1].programmes()[p.unwrap() - 1];
+            assert_eq!(proprietaire, Systeme::Linux, "{tape}");
+            assert_eq!(trouve.nom, programme, "{tape}");
+            assert_eq!(trouve.commandes[c.unwrap() - 1].ligne, attendue, "{tape}");
+        }
+    }
+
+    /// La ligne repliée d'une distribution couvre exactement ses communs à Linux, qui viennent en dernier ; ailleurs,
+    /// rien n'est replié. Sa touche (« 20–70 ») n'est pas un chemin : elle ne prend la place d'aucun numéro.
+    #[test]
+    fn la_ligne_repliee_couvre_les_communs_a_linux_et_eux_seuls() {
+        for s in SYSTEMES {
+            let programmes = s.programmes();
+            let communs = rangs_des_communs(s, &programmes);
+            let attendus: Vec<usize> = (0..programmes.len())
+                .filter(|&j| programmes[j].0 == Systeme::Linux)
+                .collect();
+            assert_eq!(communs.clone().collect::<Vec<_>>(), attendus, "{}", s.nom());
+            assert_eq!(!communs.is_empty(), s.linux(), "{}", s.nom());
+            if !communs.is_empty() {
+                assert_eq!(communs.end, programmes.len(), "{}", s.nom());
+                let cle = format!("{}–{}", communs.start + 1, communs.end);
+                assert_eq!(chemin(&cle), None, "{cle}");
+            }
+        }
+    }
+
+    /// Chaque programme du guide a son thème : un oubli le cacherait de « Par thème ». Seules les pages de tldr-pages
+    /// et celles des commandes de Vanguard, faites à part, n'en ont pas.
+    #[test]
+    fn aucun_programme_du_guide_n_est_sans_theme() {
+        for s in tous_les_systemes().filter(|s| !matches!(s, Systeme::Tldr | Systeme::Vanguard)) {
+            for (_, p) in s.programmes() {
+                assert!(p.theme.is_some(), "{} › {} sans thème", s.nom(), p.nom);
+            }
+        }
+        for t in THEMES {
+            assert!(!programmes_du_theme(t).is_empty(), "{} est vide", t.nom());
+        }
+    }
+
+    /// Les noms et aperçus des thèmes, dans les deux langues, tiennent au menu ; et chacun est à son rang dans
+    /// `THEMES`, une seule fois.
+    #[test]
+    fn les_themes_tiennent_au_menu() {
+        let mut vus = HashSet::new();
+        for t in THEMES {
+            assert!(vus.insert(t), "{} deux fois", t.nom());
+            let (nom_en, apercu_en) = crate::langue::en_anglais(|| (t.nom(), t.apercu()));
+            for texte in [t.nom(), t.apercu(), nom_en, apercu_en] {
+                assert!(texte.chars().count() <= 33, "{texte}");
+            }
+        }
+    }
+
+    /// Un programme ouvert depuis son thème est le même qu'à son chemin : la touche du thème (« 6.11 ») mène, par
+    /// `ouvrir`, au programme qu'on y voit ; ceux de cet ordinateur viennent d'abord.
+    #[test]
+    fn chaque_programme_d_un_theme_s_ouvre_a_son_chemin() {
+        for t in THEMES {
+            let programmes = programmes_du_theme(t);
+            let mut cles = HashSet::new();
+            for (cle, page) in &programmes {
+                assert!(cles.insert(cle.clone()), "{cle} deux fois dans {}", t.nom());
+                let (s, p, c) = chemin(cle).unwrap();
+                assert!(c.is_none() && page_existe(s, p, None), "{cle}");
+                let (proprietaire, trouve) = SYSTEMES[s - 1].programmes()[p.unwrap() - 1];
+                assert!(std::ptr::eq(trouve, page.programme), "{cle}");
+                assert_eq!(proprietaire, page.systeme, "{cle}");
+                assert_eq!(trouve.theme, Some(t), "{cle}");
+            }
+            let actuel = SYSTEMES.iter().position(|s| *s == Systeme::actuel());
+            if let Some(rang) = actuel
+                && let Some(premier_autre) = programmes.iter().position(|(_, page)| page.rang_systeme != rang)
+            {
+                assert!(
+                    programmes[premier_autre..]
+                        .iter()
+                        .all(|(_, page)| page.rang_systeme != rang),
+                    "{} : ceux de cet ordinateur d'abord",
+                    t.nom()
+                );
+            }
         }
     }
 

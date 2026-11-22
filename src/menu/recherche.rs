@@ -351,6 +351,7 @@ pub(crate) fn programmes_vanguard() -> &'static [guide::Programme] {
                     nom: garder(format!("vanguard ({numero})")),
                     role: titre,
                     executable: "",
+                    theme: None,
                     commandes: Box::leak(commandes.into_boxed_slice()),
                 }
             })

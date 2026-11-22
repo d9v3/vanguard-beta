@@ -19,6 +19,12 @@ example, finds it, to rebuild it if needed.
 - **Windows guide: administrator commands say so.** Commands that Windows refuses outside an administrator terminal
   (netsh, chkdsk /f, powercfg, sc.exe, pnputil, reagentc…) now say so, and sfc and DISM are marked as long; a test
   stops a new one from being added unmarked.
+- **Guide: by topic.** The guide menu gains “By topic” (10): packages, network, disks, security, services,
+  hardware, accounts, boot, tools. Each topic shows your system's programs first, then those of the others, each
+  with its path (“6.11 ipconfig”), which opens the same page.
+- **Guide: Linux commons folded.** A distribution's menu shows its step-by-step guides and programs, then a single
+  line “Commands common to Linux” that opens them. Their numbers do not change: “1.20.3” still works, in the menu
+  as in vanguard guide, which still shows them all.
 
 ## November 22, 2026: version 0.97.0
 

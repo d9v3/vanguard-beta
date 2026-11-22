@@ -1,7 +1,7 @@
 //! Guide : Fedora (et RHEL, Rocky, Alma) : dnf et rpm, SELinux, firewalld, les éditions atomiques, et les marches
 //! à suivre.
 
-use super::{Obstacle, Programme, changer, voir};
+use super::{Obstacle, Programme, Theme, changer, voir};
 
 pub const PROGRAMMES: &[Programme] = &[DNF, RPM, SELINUX, super::linux::FIREWALLD, OSTREE];
 
@@ -11,6 +11,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : mettre à jour",
         role: ("dnf, Flatpak, firmware", "dnf, Flatpak, firmware"),
         executable: "dnf",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir("dnf check-upgrade", "Ce qui va changer.", "What will change."),
             changer(
@@ -41,6 +42,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : nouvelle version",
         role: ("passer à la Fedora suivante", "move to the next Fedora"),
         executable: "dnf",
+        theme: Some(Theme::Paquets),
         commandes: &[
             voir("rpm -E %fedora", "Votre version de Fedora.", "Your Fedora release."),
             changer(
@@ -69,6 +71,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : NVIDIA et codecs",
         role: ("RPM Fusion : pilote, vidéo", "RPM Fusion: driver, video"),
         executable: "dnf",
+        theme: Some(Theme::Materiel),
         commandes: &[
             voir(
                 "lspci -k | grep -A3 -iE 'vga|3d'",
@@ -108,6 +111,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : SELinux",
         role: ("comprendre un refus", "understand a denial"),
         executable: "sestatus",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "getenforce",
@@ -145,6 +149,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : pare-feu",
         role: ("firewalld, par zones", "firewalld, by zones"),
         executable: "firewall-cmd",
+        theme: Some(Theme::Securite),
         commandes: &[
             voir(
                 "firewall-cmd --state",
@@ -178,6 +183,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         nom: "Pas à pas : faire de la place",
         role: ("dnf, Flatpak, journaux", "dnf, Flatpak, logs"),
         executable: "dnf",
+        theme: Some(Theme::Disques),
         commandes: &[
             voir(
                 "df -h /",
@@ -219,6 +225,7 @@ const DNF: Programme = Programme {
     nom: "dnf",
     role: ("paquets : Fedora, RHEL", "packages: Fedora, RHEL"),
     executable: "dnf",
+    theme: Some(Theme::Paquets),
     commandes: &[
         changer(
             "sudo dnf upgrade --refresh",
@@ -331,6 +338,7 @@ const RPM: Programme = Programme {
     nom: "rpm",
     role: ("paquets installés, en détail", "installed packages, in detail"),
     executable: "rpm",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir(
             "rpm -qa | grep -i <mot>",
@@ -371,6 +379,7 @@ const SELINUX: Programme = Programme {
     nom: "sestatus, ausearch",
     role: ("SELinux : protection des services", "SELinux: service protection"),
     executable: "sestatus",
+    theme: Some(Theme::Securite),
     commandes: &[
         voir(
             "sestatus",
@@ -430,6 +439,7 @@ const OSTREE: Programme = Programme {
     nom: "rpm-ostree, toolbox",
     role: ("éditions atomiques (Silverblue)", "atomic editions (Silverblue)"),
     executable: "rpm-ostree",
+    theme: Some(Theme::Paquets),
     commandes: &[
         voir(
             "rpm-ostree status",

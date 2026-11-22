@@ -19,6 +19,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Guide Windows : les commandes administrateur le disent.** Les commandes que Windows refuse hors d'un
   terminal administrateur (netsh, chkdsk /f, powercfg, sc.exe, pnputil, reagentc…) le disent, et sfc et DISM sont
   marquées longues ; un essai empêche d'en ajouter une sans marque.
+- **Guide : par thème.** Le menu du guide gagne « Par thème » (10) : paquets, réseau, disques, sécurité, services,
+  matériel, comptes, démarrage, outils. Chaque thème montre d'abord les programmes de votre système, puis ceux des
+  autres, chacun avec son chemin (« 6.11 ipconfig »), qui ouvre la même page.
+- **Guide : communs à Linux repliés.** Le menu d'une distribution montre ses pas-à-pas et ses programmes, puis une
+  seule ligne « Commandes communes à Linux » qui les ouvre. Leurs numéros ne changent pas : « 1.20.3 » marche
+  toujours, au menu comme dans vanguard guide, qui les montre encore tous.
 
 ## 22 novembre 2026 : version 0.97.0
 
