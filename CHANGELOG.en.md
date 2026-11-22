@@ -16,6 +16,9 @@ example, finds it, to rebuild it if needed.
   to keep the boxes already checked.
 - **Badges on guide commands.** A command's page shows “⚠ changes the system”, “Administrator”, “Window” or
   “Long”, drawn from what the guide already knows about it.
+- **Windows guide: administrator commands say so.** Commands that Windows refuses outside an administrator terminal
+  (netsh, chkdsk /f, powercfg, sc.exe, pnputil, reagentc…) now say so, and sfc and DISM are marked as long; a test
+  stops a new one from being added unmarked.
 
 ## November 22, 2026: version 0.97.0
 

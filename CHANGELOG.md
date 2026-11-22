@@ -16,6 +16,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   liste à cocher, « / » ne filtre que la liste, pour garder les cases déjà cochées.
 - **Pastilles des commandes du guide.** La page d'une commande montre « ⚠ modifie le système », « Administrateur »,
   « Fenêtre » ou « Longue », tirées de ce que le guide sait déjà d'elle.
+- **Guide Windows : les commandes administrateur le disent.** Les commandes que Windows refuse hors d'un
+  terminal administrateur (netsh, chkdsk /f, powercfg, sc.exe, pnputil, reagentc…) le disent, et sfc et DISM sont
+  marquées longues ; un essai empêche d'en ajouter une sans marque.
 
 ## 22 novembre 2026 : version 0.97.0
 
