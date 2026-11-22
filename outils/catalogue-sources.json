@@ -1,0 +1,757 @@
+{
+  "format": 1,
+  "flathub_pas_libre": [
+    "com.bitwarden.desktop"
+  ],
+  "logiciels": [
+    {
+      "nom": "Firefox",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [
+          "firefox"
+        ],
+        "debian": [
+          "firefox-esr"
+        ],
+        "fedora": [
+          "firefox"
+        ],
+        "opensuse": [
+          "MozillaFirefox"
+        ]
+      },
+      "flatpak": "org.mozilla.firefox",
+      "winget": "Mozilla.Firefox"
+    },
+    {
+      "nom": "Brave",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "com.brave.Browser",
+      "winget": "Brave.Brave"
+    },
+    {
+      "nom": "LibreWolf",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [
+          "librewolf"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "io.gitlab.librewolf-community",
+      "winget": "LibreWolf.LibreWolf"
+    },
+    {
+      "nom": "Google Chrome",
+      "licence": null,
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "com.google.Chrome",
+      "winget": "Google.Chrome"
+    },
+    {
+      "nom": "Thunderbird",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [
+          "thunderbird"
+        ],
+        "debian": [
+          "thunderbird"
+        ],
+        "fedora": [
+          "thunderbird"
+        ],
+        "opensuse": [
+          "MozillaThunderbird"
+        ]
+      },
+      "flatpak": "org.mozilla.Thunderbird",
+      "winget": "Mozilla.Thunderbird"
+    },
+    {
+      "nom": "Signal",
+      "licence": "AGPL-3.0",
+      "paquets": {
+        "arch": [
+          "signal-desktop"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "org.signal.Signal",
+      "winget": "OpenWhisperSystems.Signal"
+    },
+    {
+      "nom": "Discord",
+      "licence": null,
+      "paquets": {
+        "arch": [
+          "discord"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "com.discordapp.Discord",
+      "winget": "Discord.Discord"
+    },
+    {
+      "nom": "LocalSend",
+      "licence": "Apache-2.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "org.localsend.localsend_app",
+      "winget": "LocalSend.LocalSend"
+    },
+    {
+      "nom": "qBittorrent",
+      "licence": "GPL-2.0-or-later",
+      "paquets": {
+        "arch": [
+          "qbittorrent"
+        ],
+        "debian": [
+          "qbittorrent"
+        ],
+        "fedora": [
+          "qbittorrent"
+        ],
+        "opensuse": [
+          "qbittorrent"
+        ]
+      },
+      "flatpak": "org.qbittorrent.qBittorrent",
+      "winget": "qBittorrent.qBittorrent"
+    },
+    {
+      "nom": "Ente Auth",
+      "licence": "AGPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "io.ente.auth",
+      "winget": "ente-io.auth-desktop"
+    },
+    {
+      "nom": "Bitwarden",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "com.bitwarden.desktop",
+      "winget": "Bitwarden.Bitwarden"
+    },
+    {
+      "nom": "KeePassXC",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "keepassxc"
+        ],
+        "debian": [],
+        "fedora": [
+          "keepassxc"
+        ],
+        "opensuse": [
+          "keepassxc"
+        ]
+      },
+      "flatpak": "org.keepassxc.KeePassXC",
+      "winget": "KeePassXCTeam.KeePassXC"
+    },
+    {
+      "nom": "Proton Pass",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Proton.ProtonPass"
+    },
+    {
+      "nom": "VeraCrypt",
+      "licence": "Apache-2.0 + TrueCrypt-3.0",
+      "paquets": {
+        "arch": [
+          "veracrypt"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "IDRIX.VeraCrypt"
+    },
+    {
+      "nom": "Cryptomator",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "org.cryptomator.Cryptomator",
+      "winget": "Cryptomator.Cryptomator"
+    },
+    {
+      "nom": "LibreOffice",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [
+          "libreoffice-fresh"
+        ],
+        "debian": [
+          "libreoffice"
+        ],
+        "fedora": [
+          "libreoffice"
+        ],
+        "opensuse": [
+          "libreoffice"
+        ]
+      },
+      "flatpak": "org.libreoffice.LibreOffice",
+      "winget": "TheDocumentFoundation.LibreOffice"
+    },
+    {
+      "nom": "ONLYOFFICE",
+      "licence": "AGPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "org.onlyoffice.desktopeditors",
+      "winget": "ONLYOFFICE.DesktopEditors"
+    },
+    {
+      "nom": "SumatraPDF",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "SumatraPDF.SumatraPDF"
+    },
+    {
+      "nom": "Calibre",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "calibre"
+        ],
+        "debian": [
+          "calibre"
+        ],
+        "fedora": [
+          "calibre"
+        ],
+        "opensuse": [
+          "calibre"
+        ]
+      },
+      "flatpak": "com.calibre_ebook.calibre",
+      "winget": "calibre.calibre"
+    },
+    {
+      "nom": "Joplin",
+      "licence": "AGPL-3.0-or-later",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "net.cozic.joplin_desktop",
+      "winget": "Joplin.Joplin"
+    },
+    {
+      "nom": "VLC",
+      "licence": "GPL-2.0",
+      "paquets": {
+        "arch": [
+          "vlc"
+        ],
+        "debian": [
+          "vlc"
+        ],
+        "fedora": [
+          "vlc"
+        ],
+        "opensuse": [
+          "vlc"
+        ]
+      },
+      "flatpak": "org.videolan.VLC",
+      "winget": "VideoLAN.VLC"
+    },
+    {
+      "nom": "OBS Studio",
+      "licence": "GPL-2.0",
+      "paquets": {
+        "arch": [
+          "obs-studio"
+        ],
+        "debian": [
+          "obs-studio"
+        ],
+        "fedora": [
+          "obs-studio"
+        ],
+        "opensuse": [
+          "obs-studio"
+        ]
+      },
+      "flatpak": "com.obsproject.Studio",
+      "winget": "OBSProject.OBSStudio"
+    },
+    {
+      "nom": "Audacity",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "audacity"
+        ],
+        "debian": [
+          "audacity"
+        ],
+        "fedora": [
+          "audacity"
+        ],
+        "opensuse": [
+          "audacity"
+        ]
+      },
+      "flatpak": "org.audacityteam.Audacity",
+      "winget": "Audacity.Audacity"
+    },
+    {
+      "nom": "HandBrake",
+      "licence": "GPL-2.0",
+      "paquets": {
+        "arch": [
+          "handbrake"
+        ],
+        "debian": [
+          "handbrake"
+        ],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "fr.handbrake.ghb",
+      "winget": "HandBrake.HandBrake"
+    },
+    {
+      "nom": "Kdenlive",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "kdenlive"
+        ],
+        "debian": [
+          "kdenlive"
+        ],
+        "fedora": [
+          "kdenlive"
+        ],
+        "opensuse": [
+          "kdenlive"
+        ]
+      },
+      "flatpak": "org.kde.kdenlive",
+      "winget": "KDE.Kdenlive"
+    },
+    {
+      "nom": "GIMP",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "gimp"
+        ],
+        "debian": [
+          "gimp"
+        ],
+        "fedora": [
+          "gimp"
+        ],
+        "opensuse": [
+          "gimp"
+        ]
+      },
+      "flatpak": "org.gimp.GIMP",
+      "winget": "GIMP.GIMP.3"
+    },
+    {
+      "nom": "Inkscape",
+      "licence": "GPL-2.0-or-later",
+      "paquets": {
+        "arch": [
+          "inkscape"
+        ],
+        "debian": [
+          "inkscape"
+        ],
+        "fedora": [
+          "inkscape"
+        ],
+        "opensuse": [
+          "inkscape"
+        ]
+      },
+      "flatpak": "org.inkscape.Inkscape",
+      "winget": "Inkscape.Inkscape"
+    },
+    {
+      "nom": "Krita",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "krita"
+        ],
+        "debian": [
+          "krita"
+        ],
+        "fedora": [
+          "krita"
+        ],
+        "opensuse": [
+          "krita"
+        ]
+      },
+      "flatpak": "org.kde.krita",
+      "winget": "KDE.Krita"
+    },
+    {
+      "nom": "Blender",
+      "licence": "GPL-3.0-or-later",
+      "paquets": {
+        "arch": [
+          "blender"
+        ],
+        "debian": [
+          "blender"
+        ],
+        "fedora": [
+          "blender"
+        ],
+        "opensuse": []
+      },
+      "flatpak": "org.blender.Blender",
+      "winget": "BlenderFoundation.Blender"
+    },
+    {
+      "nom": "ShareX",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "ShareX.ShareX"
+    },
+    {
+      "nom": "7-Zip",
+      "licence": "LGPL-2.1",
+      "paquets": {
+        "arch": [
+          "7zip"
+        ],
+        "debian": [
+          "7zip"
+        ],
+        "fedora": [
+          "7zip"
+        ],
+        "opensuse": [
+          "7zip"
+        ]
+      },
+      "flatpak": null,
+      "winget": "7zip.7zip"
+    },
+    {
+      "nom": "BleachBit",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "bleachbit"
+        ],
+        "debian": [
+          "bleachbit"
+        ],
+        "fedora": [
+          "bleachbit"
+        ],
+        "opensuse": [
+          "bleachbit"
+        ]
+      },
+      "flatpak": null,
+      "winget": "BleachBit.BleachBit"
+    },
+    {
+      "nom": "PowerToys",
+      "licence": "MIT",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Microsoft.PowerToys"
+    },
+    {
+      "nom": "CrystalDiskInfo",
+      "licence": "MIT",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "CrystalDewWorld.CrystalDiskInfo"
+    },
+    {
+      "nom": "WinDirStat",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "WinDirStat.WinDirStat"
+    },
+    {
+      "nom": "Rufus",
+      "licence": "GPL-3.0-or-later",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Rufus.Rufus"
+    },
+    {
+      "nom": "Mission Center",
+      "licence": "GPL-3.0-or-later",
+      "paquets": {
+        "arch": [
+          "mission-center"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "io.missioncenter.MissionCenter",
+      "winget": null
+    },
+    {
+      "nom": "VSCodium",
+      "licence": "MIT",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": "com.vscodium.codium",
+      "winget": "VSCodium.VSCodium"
+    },
+    {
+      "nom": "Git",
+      "licence": "GPL-2.0",
+      "paquets": {
+        "arch": [
+          "git"
+        ],
+        "debian": [
+          "git"
+        ],
+        "fedora": [
+          "git"
+        ],
+        "opensuse": [
+          "git"
+        ]
+      },
+      "flatpak": null,
+      "winget": "Git.Git"
+    },
+    {
+      "nom": "Notepad++",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Notepad++.Notepad++"
+    },
+    {
+      "nom": "Windows Terminal",
+      "licence": "MIT",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Microsoft.WindowsTerminal"
+    },
+    {
+      "nom": "Tor Browser",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [
+          "torbrowser-launcher"
+        ],
+        "debian": [],
+        "fedora": [
+          "torbrowser-launcher"
+        ],
+        "opensuse": [
+          "torbrowser-launcher"
+        ]
+      },
+      "flatpak": "org.torproject.torbrowser-launcher",
+      "winget": "TorProject.TorBrowser"
+    },
+    {
+      "nom": "Mullvad Browser",
+      "licence": "MPL-2.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "MullvadVPN.MullvadBrowser"
+    },
+    {
+      "nom": "Proton VPN",
+      "licence": "GPL-3.0",
+      "paquets": {
+        "arch": [
+          "proton-vpn-gtk-app"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Proton.ProtonVPN"
+    },
+    {
+      "nom": "Mullvad VPN",
+      "licence": "GPL-3.0-or-later",
+      "paquets": {
+        "arch": [
+          "mullvad-vpn"
+        ],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "MullvadVPN.MullvadVPN"
+    },
+    {
+      "nom": "Wireshark",
+      "licence": "GPL-2.0",
+      "paquets": {
+        "arch": [
+          "wireshark-qt"
+        ],
+        "debian": [
+          "wireshark"
+        ],
+        "fedora": [
+          "wireshark"
+        ],
+        "opensuse": [
+          "wireshark",
+          "wireshark-ui-qt"
+        ]
+      },
+      "flatpak": null,
+      "winget": "WiresharkFoundation.Wireshark"
+    },
+    {
+      "nom": "Kopia",
+      "licence": "Apache-2.0",
+      "paquets": {
+        "arch": [],
+        "debian": [],
+        "fedora": [],
+        "opensuse": []
+      },
+      "flatpak": null,
+      "winget": "Kopia.KopiaUI"
+    },
+    {
+      "nom": "Déjà Dup",
+      "licence": "GPL-3.0-or-later",
+      "paquets": {
+        "arch": [
+          "deja-dup"
+        ],
+        "debian": [
+          "deja-dup"
+        ],
+        "fedora": [
+          "deja-dup"
+        ],
+        "opensuse": [
+          "deja-dup"
+        ]
+      },
+      "flatpak": "org.gnome.DejaDup",
+      "winget": null
+    }
+  ]
+}

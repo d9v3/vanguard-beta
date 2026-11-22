@@ -25,6 +25,10 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Guide : communs à Linux repliés.** Le menu d'une distribution montre ses pas-à-pas et ses programmes, puis une
   seule ligne « Commandes communes à Linux » qui les ouvre. Leurs numéros ne changent pas : « 1.20.3 » marche
   toujours, au menu comme dans vanguard guide, qui les montre encore tous.
+- **Sources du catalogue contrôlées avant chaque publication.** Les logiciels que Vanguard vous propose d'installer
+  sont vérifiés à la source : paquet Arch présent et non marqué périmé, application Flathub ni en fin de vie ni de
+  licence changée, identifiant winget toujours là, paquets Debian et Fedora présents. Une source dégradée ou qu'on n'a
+  pas pu vérifier arrête la publication ; rien n'est compté sain sans réponse.
 
 ## 22 novembre 2026 : version 0.97.0
 

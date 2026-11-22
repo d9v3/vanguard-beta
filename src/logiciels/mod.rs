@@ -818,4 +818,59 @@ mod tests {
             assert!(largeur_affichee(&precision(&o)) <= 33, "{}", l.nom);
         }
     }
+
+    /// Les sources du catalogue telles que les lit `outils/controle-sources.py` : la sérialisation vient du catalogue
+    /// compilé, jamais d'une lecture du source Rust par motifs (un commentaire, une macro ou un `cfg` la tromperait).
+    fn catalogue_exporte() -> String {
+        let logiciels: Vec<serde_json::Value> = CATALOGUE
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "nom": l.nom,
+                    "licence": l.licence,
+                    "paquets": {
+                        "arch": l.paquets[0],
+                        "debian": l.paquets[1],
+                        "fedora": l.paquets[2],
+                        "opensuse": l.paquets[3],
+                    },
+                    "flatpak": l.flatpak,
+                    "winget": l.winget.map(|(id, _)| id),
+                })
+            })
+            .collect();
+        let tout = serde_json::json!({
+            "format": 1,
+            "flathub_pas_libre": FLATHUB_PAS_LIBRE,
+            "logiciels": logiciels,
+        });
+        let mut texte = serde_json::to_string_pretty(&tout).expect("JSON du catalogue");
+        texte.push('\n');
+        texte
+    }
+
+    const CHEMIN_EXPORTE: &str = "outils/catalogue-sources.json";
+
+    /// Le fichier lu par le contrôle des sources est celui du catalogue compilé, à l'octet près : un logiciel ajouté,
+    /// un identifiant changé sans le refaire, et ce test échoue (le contrôle ne vérifierait pas ce qui est publié).
+    #[test]
+    fn catalogue_exporte_a_jour() {
+        let attendu = catalogue_exporte();
+        let commite = include_str!("../../outils/catalogue-sources.json");
+        assert!(
+            commite == attendu,
+            "{CHEMIN_EXPORTE} n'est plus le catalogue : le refaire par \
+             « cargo test --locked -q logiciels::tests::ecrire_catalogue_exporte -- --ignored --exact », relire son diff, \
+             puis committer"
+        );
+    }
+
+    /// Le seul geste qui écrit le fichier : demandé par son nom (`--ignored`), jamais dans un `cargo test` ordinaire,
+    /// et seulement dans le dépôt (chemin du manifeste), jamais dans les données de l'ordinateur.
+    #[test]
+    #[ignore = "écrit outils/catalogue-sources.json : seulement demandé par son nom"]
+    fn ecrire_catalogue_exporte() {
+        let chemin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(CHEMIN_EXPORTE);
+        std::fs::write(&chemin, catalogue_exporte()).expect("écriture du catalogue exporté");
+    }
 }

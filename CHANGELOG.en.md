@@ -25,6 +25,10 @@ example, finds it, to rebuild it if needed.
 - **Guide: Linux commons folded.** A distribution's menu shows its step-by-step guides and programs, then a single
   line “Commands common to Linux” that opens them. Their numbers do not change: “1.20.3” still works, in the menu
   as in vanguard guide, which still shows them all.
+- **Catalogue sources checked before each release.** The software Vanguard offers to install is checked at its
+  source: Arch package present and not flagged out of date, Flathub app neither end-of-life nor relicensed, winget
+  ID still there, Debian and Fedora packages present. A degraded source, or one that could not be checked, stops the
+  release; nothing counts as healthy without an answer.
 
 ## November 22, 2026: version 0.97.0
 

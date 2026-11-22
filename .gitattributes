@@ -4,3 +4,6 @@
 # Le corpus de détection octet pour octet : des cas notent l'empreinte d'un fichier (COM-INT-002), que la conversion
 # CRLF de la CI Windows changeait ; le fichier-piège passait alors pour touché.
 tests/corpus-detection/** -text
+# Le catalogue exporté, comparé octet pour octet au catalogue compilé (logiciels::tests) : la CI Windows le lirait
+# en CRLF.
+outils/catalogue-sources.json text eol=lf
