@@ -6,7 +6,9 @@
 //! « ↓ » disent combien de lignes sont cachées. Sans vrai terminal (réponses envoyées par un tube : tests, scripts), ou
 //! dans une fenêtre minuscule, la réponse se lit ligne par ligne, comme avant ; un mot qui ne désigne qu'un seul choix
 //! le choisit. Pendant une recherche, la fin du mot le plus probable s'affiche en gris (`prediction`), et Tab ou →
-//! la complète : la même prédiction dans tous les menus et les listes à cocher. Dans une fenêtre assez large
+//! la complète : la même prédiction dans tous les menus et les listes à cocher. « / » ouvre « Rechercher dans
+//! Vanguard » depuis n'importe quel menu (`rechercher_partout`, l'index du menu principal) ; dans une liste à cocher,
+//! il ne filtre que la liste : en sortir pour chercher ailleurs perdrait les cases déjà cochées. Dans une fenêtre assez large
 //! (`COLONNES_AVEC_APERCU`), un panneau à droite montre la ligne en surbrillance : son titre, sa description et ce
 //! qu'elle ouvre ; plus étroite, le menu reste tel quel.
 
@@ -420,16 +422,22 @@ fn largeur_des_touches<'a>(trouves: impl Iterator<Item = &'a Choisissable<'a>>) 
 
 /// Sans terminal : la réponse se lit ligne par ligne. Un mot qui n'est pas une touche cherche : un seul choix trouvé
 /// est choisi ; plusieurs sont montrés avec leur touche, et la question revient.
-fn par_ligne(choix: &[Choisissable<'_>], touches: &[&str], invite: &str) -> String {
+/// `partout` : « / » en tête de la réponse demande la recherche dans tout Vanguard (« /wifi » cherche « wifi ») ;
+/// `premiere` : la réponse déjà donnée, lue avant toute question (ce qui suivait « / »).
+fn par_ligne(choix: &[Choisissable<'_>], touches: &[&str], invite: &str, partout: bool, premiere: Option<&str>) -> Fin {
+    let mut premiere = premiere.map(str::to_string);
     loop {
-        let reponse = demander(invite);
+        let reponse = premiere.take().unwrap_or_else(|| demander(invite));
+        if partout && let Some(reste) = reponse.trim().strip_prefix('/') {
+            return Fin::Partout(reste.trim().to_string());
+        }
         if !est_une_recherche(&reponse, touches) {
-            return reponse;
+            return Fin::Choix(Some(reponse));
         }
         let mut trouves: Vec<&Choisissable> = choix.iter().filter(|c| correspond(&reponse, &c.cherche)).collect();
         trouves.sort_by_key(|c| rang(&reponse, &c.nom));
         match trouves.as_slice() {
-            [seul] => return seul.touche.to_string(),
+            [seul] => return Fin::Choix(Some(seul.touche.to_string())),
             [] => trp!(
                 "  Rien ne correspond à « {reponse} ».",
                 "  Nothing matches “{reponse}”."
@@ -807,6 +815,10 @@ pub fn choisir_sans_defaut(lignes: &[Ligne], invite: &str, depart: &str, echap: 
     if au_clavier(choisissables(lignes).iter().any(|c| c.visible)) {
         return choisir(lignes, invite, depart, echap);
     }
+    if en_route() {
+        noter_retour(true);
+        return None;
+    }
     let colonne = colonne(lignes);
     imprimer_lignes(lignes, colonne);
     let r = demander_ou_defaut(invite);
@@ -830,17 +842,23 @@ struct Aides {
     prediction: String,
 }
 
-fn aides_du_menu(gauche_revient: bool, echap: &str) -> Aides {
-    let menu = if gauche_revient {
+/// `slash` : « / » ouvre « Rechercher dans Vanguard » ; sans menu principal (le guide ouvert seul), l'aide n'en parle pas.
+fn aides_du_menu(gauche_revient: bool, slash: bool, echap: &str) -> Aides {
+    let menu = if gauche_revient && !slash {
         trf!(
             "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · un mot : chercher · Échap/← {echap}{RESET}",
             "  {GRIS}↑ ↓ select · Enter/→ run · a word: search · Esc/← {echap}{RESET}"
         )
+    } else if gauche_revient {
+        trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · mot ou / : chercher · Échap/← {echap}{RESET}",
+            "  {GRIS}↑ ↓ select · Enter/→ run · a word or /: search · Esc/← {echap}{RESET}"
+        )
     } else {
         // Le menu principal : « s » (Paramètres) et « q » n'y ont plus de ligne à eux.
         trf!(
-            "  {GRIS}↑ ↓ choisir · Entrée ouvrir · un mot : chercher · s réglages · q quitter{RESET}",
-            "  {GRIS}↑ ↓ select · Enter open · a word: search · s settings · q quit{RESET}"
+            "  {GRIS}↑ ↓ choisir · Entrée ouvrir · mot ou / : chercher · s réglages · q quitter{RESET}",
+            "  {GRIS}↑ ↓ select · Enter open · a word or /: search · s settings · q quit{RESET}"
         )
     };
     Aides {
@@ -890,6 +908,10 @@ struct EtatMenu {
     tape: String,
     /// La ligne en cours vient de la souris : la liste ne défile pas pour elle (voir `fenetre_indexee`).
     survol: bool,
+    /// L'écran « Rechercher dans Vanguard » (`rechercher_partout`) : la recherche reste à l'écran, même vide.
+    partout: bool,
+    /// Ce qui est tapé se cherche (`est_une_recherche`) ; sinon, au plus un raccourci (« 5.2 »).
+    cherche: bool,
 }
 
 /// Ce que la recherche en cours a trouvé (vide hors d'une recherche).
@@ -909,16 +931,151 @@ fn au_clavier(des_lignes_visibles: bool) -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient && des_lignes_visibles
 }
 
+/// Comment finit un passage dans un menu : un choix (`None` : revenir), ou « / », la recherche dans tout Vanguard
+/// demandée, avec ce qui suivait « / » sur la ligne lue (rien au clavier).
+enum Fin {
+    Choix(Option<String>),
+    Partout(String),
+}
+
+/// Ce que voit la recherche dans tout Vanguard (« / ») : les lignes du menu principal, cachées comprises. Posé par le
+/// menu principal, seul à savoir ouvrir ce qu'elle trouve (`menu::recherche::ouvrir_touche`) : sans lui (le guide
+/// ouvert seul par sa commande), « / » reste un caractère tapé, comme avant.
+type Index = fn() -> Vec<Ligne>;
+static INDEX_GLOBAL: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+
+/// La touche trouvée par « / » depuis un sous-menu, en route vers le menu principal : chaque menu, liste ou pause
+/// rencontré d'ici là revient aussitôt (comme Échap), puis le menu principal l'ouvre par son aiguillage.
+static EN_ROUTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Les menus traversés en route. Au-delà de `RETOURS_MAX`, la touche est oubliée : un écran qui redemanderait sans fin
+/// après Échap tournerait à vide, alors que le plus profond des menus n'est qu'à une dizaine de niveaux.
+static RETOURS_EN_ROUTE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const RETOURS_MAX: usize = 64;
+
+/// Le menu principal se déclare : « / » ouvre désormais « Rechercher dans Vanguard » sur ces lignes.
+pub(crate) fn poser_index_global(index: fn() -> Vec<Ligne>) {
+    if let Ok(mut i) = INDEX_GLOBAL.lock() {
+        *i = Some(index);
+    }
+}
+
+fn index_global() -> Option<fn() -> Vec<Ligne>> {
+    INDEX_GLOBAL.lock().ok().and_then(|i| *i)
+}
+
+/// La touche que « / » a trouvée depuis un sous-menu, à ouvrir par le menu principal ; lue une fois.
+pub(crate) fn destination_demandee() -> Option<String> {
+    RETOURS_EN_ROUTE.store(0, std::sync::atomic::Ordering::Relaxed);
+    EN_ROUTE.lock().ok().and_then(|mut d| d.take())
+}
+
+fn mettre_en_route(touche: String) {
+    RETOURS_EN_ROUTE.store(0, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut d) = EN_ROUTE.lock() {
+        *d = Some(touche);
+    }
+}
+
+/// Une touche est-elle en route vers le menu principal ? L'écran qui le demande revient alors sans rien montrer.
+fn en_route() -> bool {
+    let Ok(mut d) = EN_ROUTE.lock() else {
+        return false;
+    };
+    if d.is_none() {
+        return false;
+    }
+    if RETOURS_EN_ROUTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= RETOURS_MAX {
+        *d = None;
+        RETOURS_EN_ROUTE.store(0, std::sync::atomic::Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+/// Les lignes de l'écran « Rechercher dans Vanguard » : son cadre, puis tout l'index, sans l'en-tête du menu principal.
+fn lignes_de_recherche_partout(index: Vec<Ligne>) -> Vec<Ligne> {
+    let mut lignes = vec![Ligne::cadre(
+        &format!(
+            "{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {}",
+            tr!("Rechercher dans Vanguard", "Search Vanguard")
+        ),
+        tr!("outils, réglages et guide", "tools, settings and guide"),
+    )];
+    lignes.extend(
+        index
+            .into_iter()
+            .filter(|l| matches!(l, Ligne::Choix { .. } | Ligne::Cachee { .. })),
+    );
+    lignes
+}
+
+/// L'écran « Rechercher dans Vanguard » : tout l'index (outils, réglages, parcours, guide), comme l'invite du menu
+/// principal, mais depuis n'importe quel menu. `debut` : ce qui est déjà tapé. Rend la touche choisie (un résultat ou
+/// un raccourci tapé, « 5.2 ») ; `None` : Échap, rien à ouvrir.
+fn rechercher_partout(debut: &str) -> Option<String> {
+    let lignes = lignes_de_recherche_partout(index_global()?());
+    let invite = format!(
+        "  {ACCENT}›{RESET} {}",
+        tr!("Tapez ce que vous cherchez : ", "Type what you are looking for: ")
+    );
+    match choisir_une_fois(&lignes, &invite, "", tr!("revenir", "back"), true, Some(debut)) {
+        Fin::Choix(c) => c.filter(|c| !c.trim().is_empty()),
+        Fin::Partout(_) => None,
+    }
+}
+
+/// Un menu, et « / » qui y ouvre la recherche dans tout Vanguard : Échap y ramène au même menu ; un résultat choisi
+/// part vers le menu principal (`mettre_en_route`), ou y est rendu directement quand c'est lui (`gauche_revient`
+/// faux).
 fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_revient: bool) -> Option<String> {
+    if gauche_revient && en_route() {
+        return None;
+    }
+    loop {
+        match choisir_une_fois(lignes, invite, depart, echap, gauche_revient, None) {
+            Fin::Choix(c) => return c,
+            Fin::Partout(debut) => {
+                let Some(touche) = rechercher_partout(&debut) else {
+                    continue;
+                };
+                if !gauche_revient {
+                    return Some(touche);
+                }
+                mettre_en_route(touche);
+                return None;
+            }
+        }
+    }
+}
+
+/// Un passage dans un menu. `partout` : l'écran « Rechercher dans Vanguard », avec ce qui est déjà tapé.
+fn choisir_une_fois(
+    lignes: &[Ligne],
+    invite: &str,
+    depart: &str,
+    echap: &str,
+    gauche_revient: bool,
+    partout: Option<&str>,
+) -> Fin {
     let choix = choisissables(lignes);
     let touches: Vec<&str> = choix.iter().map(|c| c.touche).collect();
     // Les flèches ne parcourent que les lignes affichées ; la recherche, elle, voit aussi les lignes cachées.
     let visibles: Vec<&str> = choix.iter().filter(|c| c.visible).map(|c| c.touche).collect();
     let colonne = colonne(lignes);
     let clavier = au_clavier(!visibles.is_empty());
+    let slash = partout.is_none() && index_global().is_some();
     let Some(_mode) = clavier.then(ModeClavier::activer_avec_souris).flatten() else {
-        imprimer_lignes(lignes, colonne);
-        return Some(par_ligne(&choix, &touches, invite));
+        // L'écran de recherche, ligne par ligne : son cadre seul, pas les lignes du menu principal.
+        let montrees = match partout {
+            Some(_) => lignes
+                .split_first()
+                .map_or(&[][..], |(cadre, _)| std::slice::from_ref(cadre)),
+            None => lignes,
+        };
+        imprimer_lignes(montrees, colonne);
+        let premiere = partout.filter(|d| !d.trim().is_empty());
+        return par_ligne(&choix, &touches, invite, slash, premiere);
     };
     souris::nouvel_ecran();
 
@@ -929,10 +1086,12 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
             .unwrap_or(0),
         en_cours_trouve: 0,
         haut: 0,
-        tape: String::new(),
+        tape: partout.unwrap_or_default().to_string(),
         survol: false,
+        partout: partout.is_some(),
+        cherche: false,
     };
-    let aides = aides_du_menu(gauche_revient, echap);
+    let aides = aides_du_menu(gauche_revient, slash, echap);
     // Les mots du menu, lus à la première recherche seulement : pour la fin de mot proposée, et pour corriger une faute.
     let mut vocabulaire: Option<Vocabulaire> = None;
     let mut mots_du_menu: Option<Vec<String>> = None;
@@ -946,8 +1105,10 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         let grille = crate::ui::taille_terminal().ok();
         // Le cadre de tête suit la largeur de la fenêtre, redessiné avec le reste.
         let colonnes = grille.map(|(colonnes, _)| usize::from(colonnes));
-        let recherche = est_une_recherche(&etat.tape, &touches);
-        let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
+        etat.cherche = est_une_recherche(&etat.tape, &touches);
+        // L'écran « Rechercher dans Vanguard » reste une recherche, même vide ou sur un raccourci tapé.
+        let recherche = etat.cherche || etat.partout;
+        let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if etat.cherche {
             let mots = mots_du_menu
                 .get_or_insert_with(|| crate::recherche::vocabulaire(choix.iter().map(|c| c.cherche.as_str())));
             trier(&choix, &etat.tape, mots)
@@ -955,7 +1116,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
             (Vec::new(), Vec::new(), false)
         };
         etat.en_cours_trouve = etat.en_cours_trouve.min(trouves.len().saturating_sub(1));
-        let suite = if recherche {
+        let suite = if etat.cherche {
             vocabulaire
                 .get_or_insert_with(|| Vocabulaire::nouveau(&textes_du_menu(lignes)))
                 .suite(&etat.tape, |q| choix.iter().any(|c| correspond(q, &c.cherche)))
@@ -996,11 +1157,25 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         let Some(k) = geste_du_menu(grille, &zones, &mut etat, recherche) else {
             continue;
         };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        // « / » avant tout mot : la recherche dans tout Vanguard (sa propre boucle, une fois ce menu rendu au terminal).
+        if slash && !ctrl && k.code == KeyCode::Char('/') && etat.tape.is_empty() {
+            return Fin::Partout(String::new());
+        }
+        // Sur l'écran de recherche, Entrée sur ce qui n'est pas une recherche (« 5.2 », « u ») l'ouvre comme au menu.
+        if etat.partout
+            && !etat.cherche
+            && !etat.tape.trim().is_empty()
+            && (k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm'))))
+        {
+            let _ = sortie.write_all(b"\r\n");
+            return Fin::Choix(Some(std::mem::take(&mut etat.tape)));
+        }
         if let ControlFlow::Break(choisi) =
             touche_du_menu(k, &mut etat, &trouvailles, recherche, &visibles, gauche_revient)
         {
             let _ = sortie.write_all(b"\r\n");
-            return choisi;
+            return Fin::Choix(choisi);
         }
     }
 }
@@ -1087,11 +1262,11 @@ fn ecran_de_recherche(
             ecran.extend(l.split('\n').map(String::from));
         }
     }
-    ecran.push(ligne_section(&titre_de_recherche(
-        &etat.tape,
-        &t.corrections,
-        t.partiels,
-    )));
+    ecran.push(ligne_section(&if etat.cherche {
+        titre_de_recherche(&etat.tape, &t.corrections, t.partiels)
+    } else {
+        tr!("RECHERCHE", "SEARCH").to_string()
+    }));
     // Ce qui tient sous l'en-tête, au-dessus de l'aide et de la saisie ; au-delà, une ligne le dit.
     let au_dessus = if montre_entete { hauteur_entete } else { 0 };
     let mut place = rangees.saturating_sub(au_dessus.saturating_add(4)).max(1);
@@ -1104,7 +1279,24 @@ fn ecran_de_recherche(
         zones.push(Zone::ligne(ecran.len(), i));
         ecran.push(rendu_trouve(c, largeur, i == etat.en_cours_trouve));
     }
-    if t.trouves.is_empty() {
+    if !etat.cherche && etat.tape.trim().is_empty() {
+        ecran.push(format!(
+            "  {GRIS}{}{RESET}",
+            tr!(
+                "Tapez ce que vous cherchez : wifi, disque, mise à jour…",
+                "Type what you are looking for: wifi, disk, update…"
+            )
+        ));
+    } else if !etat.cherche {
+        ecran.push(format!(
+            "  {GRIS}{}{RESET}",
+            trf!(
+                "Entrée : ouvrir « {} », ou tapez d'autres lettres pour chercher.",
+                "Enter: open “{}”, or type more letters to search.",
+                couper(etat.tape.trim(), 20)
+            )
+        ));
+    } else if t.trouves.is_empty() {
         ecran.push(format!(
             "  {GRIS}{}{RESET}",
             tr!(
@@ -1413,6 +1605,10 @@ pub fn attendre_retour(question: &str) {
 /// La même pause, qui cesse d'attendre à `fin` : `false` si le temps est écoulé avant un appui. Hors d'un terminal,
 /// la ligne lue ne peut pas expirer.
 pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) -> bool {
+    // En route vers le menu principal : la pause est passée, comme d'un appui.
+    if en_route() {
+        return true;
+    }
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut sortie = std::io::stdout();
     let _ = write!(sortie, "{}", question_en_lignes(question));
@@ -1632,7 +1828,12 @@ fn rendu_case(n: usize, c: &Case, cochee: bool, colonne: usize, en_cours: bool) 
 /// l'état final des cases, ou `None` pour Échap. Sans terminal, les numéros à inverser se tapent sur une ligne
 /// (« 1 4 », « r »), et un mot cherche. Une case `fixe` garde son état.
 pub fn cocher(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
-    let etats = cocher_ou_revenir(titre, cases);
+    // En route vers le menu principal (« / » d'un sous-menu) : la liste revient sans rien cocher, comme Échap.
+    let etats = if en_route() {
+        None
+    } else {
+        cocher_ou_revenir(titre, cases)
+    };
     noter_retour(etats.is_none());
     etats
 }
@@ -1699,8 +1900,8 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
 
     let aides = Aides {
         menu: trf!(
-            "  {GRIS}↑ ↓  Espace cocher · R recommandés · / chercher · Entrée OK · Échap retour{RESET}",
-            "  {GRIS}↑ ↓  Space check · R recommended · / search · Enter confirm · Esc back{RESET}"
+            "  {GRIS}↑ ↓  Espace cocher · R recommandés · / filtrer · Entrée OK · Échap retour{RESET}",
+            "  {GRIS}↑ ↓  Space check · R recommended · / filter · Enter confirm · Esc back{RESET}"
         ),
         recherche: trf!(
             "  {GRIS}↑ ↓ choisir · Espace cocher · Entrée ou Échap : fin de la recherche{RESET}",
@@ -2267,6 +2468,61 @@ mod tests {
         assert_eq!(lignes_trouvees(" ", &cherche), [0, 1, 2]);
     }
 
+    /// Sans terminal, une réponse qui commence par « / » demande la recherche dans tout Vanguard quand un menu
+    /// principal existe ; sinon « / » reste une réponse comme une autre.
+    #[test]
+    fn barre_oblique_par_ligne() {
+        let rien: [Choisissable<'_>; 0] = [];
+        assert!(matches!(
+            par_ligne(&rien, &["1"], "", true, Some("/ wifi ")),
+            Fin::Partout(ref r) if r == "wifi"
+        ));
+        assert!(matches!(par_ligne(&rien, &["1"], "", true, Some("/")), Fin::Partout(ref r) if r.is_empty()));
+        assert!(matches!(
+            par_ligne(&rien, &["1"], "", false, Some("/")),
+            Fin::Choix(Some(ref r)) if r == "/"
+        ));
+        assert!(matches!(
+            par_ligne(&rien, &["1"], "", true, Some("1")),
+            Fin::Choix(Some(ref r)) if r == "1"
+        ));
+    }
+
+    /// L'écran « Rechercher dans Vanguard » garde ses propres titres et les seules lignes qu'on peut ouvrir.
+    #[test]
+    fn recherche_partout_garde_les_choix() {
+        let index = vec![
+            Ligne::cadre("VANGUARD", "menu"),
+            Ligne::Texte("une phrase".into()),
+            Ligne::choix("1", "Bilan", ""),
+            Ligne::cachee("5.2", "Réseau", "Wi-Fi", ""),
+        ];
+        let lignes = lignes_de_recherche_partout(index);
+        assert_eq!(lignes.len(), 3);
+        assert!(matches!(&lignes[0], Ligne::Cadre { gauche, .. } if gauche.contains("Rechercher dans Vanguard")));
+        assert!(matches!(&lignes[1], Ligne::Choix { touche, .. } if touche == "1"));
+        assert!(matches!(&lignes[2], Ligne::Cachee { touche, .. } if touche == "5.2"));
+    }
+
+    /// Une touche trouvée depuis un sous-menu traverse les écrans jusqu'au menu principal, qui la lit une fois ; un
+    /// écran qui redemanderait sans fin ne tourne pas à vide : elle est oubliée après `RETOURS_MAX` écrans.
+    #[test]
+    fn touche_en_route_vers_le_menu_principal() {
+        mettre_en_route("5.2".into());
+        assert!(en_route());
+        assert!(en_route());
+        assert_eq!(destination_demandee().as_deref(), Some("5.2"));
+        assert!(!en_route());
+        assert_eq!(destination_demandee(), None);
+
+        mettre_en_route("4".into());
+        for _ in 0..RETOURS_MAX {
+            assert!(en_route());
+        }
+        assert!(!en_route(), "oubliée après {RETOURS_MAX} écrans");
+        assert_eq!(destination_demandee(), None);
+    }
+
     /// Chaque ligne d'aide, dans les deux langues, tient dans `LARGEUR` colonnes : lue dans ce fichier, « {echap} »
     /// remplacé par un mot de dix lettres, plus long que ceux que les menus donnent.
     #[test]
@@ -2475,6 +2731,8 @@ mod tests {
             haut: 0,
             tape: tape.to_string(),
             survol: false,
+            partout: false,
+            cherche: false,
         }
     }
 

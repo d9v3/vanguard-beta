@@ -75,6 +75,11 @@ pub(crate) fn avis_du_nouveau_menu_vu() {
     });
 }
 
+/// L'index de « Rechercher dans Vanguard » : les lignes du menu principal, cachées comprises, sans son état.
+fn index_de_recherche() -> Vec<Ligne> {
+    lignes_du_menu(Vec::new())
+}
+
 pub(crate) async fn menu() {
     // La tête du journal notée dès l'ouverture du menu (preuve d'une prochaine mise à jour, `sceau::forme_d_avant`).
     crate::modele::journal::noter_version();
@@ -85,15 +90,26 @@ pub(crate) async fn menu() {
     parametres::partage::au_menu();
     // La ligne en surbrillance au retour dans le menu : la dernière choisie.
     let mut dernier = String::from("1");
+    // « / » dans n'importe quel menu cherche dans tout cet index ; ce qu'il trouve revient ici, au même aiguillage.
+    crate::selection::poser_index_global(index_de_recherche);
     loop {
-        print!("\x1b[2J\x1b[H");
-        let lignes = lignes_du_menu(etat_du_menu(reseau::surveillance::active(), nouveau_menu));
-        let invite = format!(
-            "  {ACCENT}›{RESET} {}",
-            tr!("Numéro, ou un mot à chercher : ", "Number, or a word to search: ")
-        );
-        let Some(choix) = choisir_au_sommet(&lignes, &invite, &dernier, tr!("quitter", "quit")) else {
-            break;
+        // Une touche trouvée par « / » dans un sous-menu, revenue jusqu'ici : elle s'ouvre sans repasser par le menu.
+        let choix = if let Some(touche) = crate::selection::destination_demandee() {
+            touche
+        } else {
+            print!("\x1b[2J\x1b[H");
+            let lignes = lignes_du_menu(etat_du_menu(reseau::surveillance::active(), nouveau_menu));
+            let invite = format!(
+                "  {ACCENT}›{RESET} {}",
+                tr!("Numéro, ou un mot à chercher : ", "Number, or a word to search: ")
+            );
+            match choisir_au_sommet(&lignes, &invite, &dernier, tr!("quitter", "quit")) {
+                Some(choix) => choix,
+                None => match crate::selection::destination_demandee() {
+                    Some(touche) => touche,
+                    None => break,
+                },
+            }
         };
         let choix = choix.trim().to_lowercase();
         if choix == "q" {

@@ -9,6 +9,14 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
+## 0.98 (in preparation)
+
+- **The “/” key everywhere.** In any menu, “/” opens “Search Vanguard”: all the tools, settings and guide, opened
+  as from the home menu; Esc brings you back to the menu you came from. In a checklist, “/” only filters the list,
+  to keep the boxes already checked.
+- **Badges on guide commands.** A command's page shows “⚠ changes the system”, “Administrator”, “Window” or
+  “Long”, drawn from what the guide already knows about it.
+
 ## November 22, 2026: version 0.97.0
 
 - **Troubleshoot with Claude, from the key: an option, off by default, and a verified download.** Claude Code,

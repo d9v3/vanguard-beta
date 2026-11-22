@@ -9,6 +9,14 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
+## 0.98 (en préparation)
+
+- **Touche « / » partout.** Dans n'importe quel menu, « / » ouvre « Rechercher dans Vanguard » : les outils, les
+  réglages et le guide entiers, ouverts comme depuis l'accueil ; Échap ramène au menu d'où vous veniez. Dans une
+  liste à cocher, « / » ne filtre que la liste, pour garder les cases déjà cochées.
+- **Pastilles des commandes du guide.** La page d'une commande montre « ⚠ modifie le système », « Administrateur »,
+  « Fenêtre » ou « Longue », tirées de ce que le guide sait déjà d'elle.
+
 ## 22 novembre 2026 : version 0.97.0
 
 - **Dépanner avec Claude, depuis la clé : une option, coupée par défaut, et un téléchargement vérifié.** Claude Code,

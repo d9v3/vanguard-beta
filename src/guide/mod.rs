@@ -950,6 +950,74 @@ fn etat(c: &Commande) -> String {
     }
 }
 
+/// Une pastille de la page d'une commande : ce que la table dit déjà d'elle, jamais saisi une à une.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pastille {
+    /// `modifie` : elle change quelque chose.
+    Modifie,
+    /// `sudo` dans sa ligne, ou l'obstacle `Administrateur` ou `Longue` (qui se lance en administrateur).
+    Administrateur,
+    /// L'obstacle `Fenetre`.
+    Fenetre,
+    /// L'obstacle `Longue`.
+    Longue,
+}
+
+impl Pastille {
+    fn texte(self) -> &'static str {
+        match self {
+            Pastille::Modifie => tr!("⚠ modifie le système", "⚠ changes the system"),
+            Pastille::Administrateur => tr!("Administrateur", "Administrator"),
+            Pastille::Fenetre => tr!("Fenêtre", "Window"),
+            Pastille::Longue => tr!("Longue", "Long"),
+        }
+    }
+}
+
+/// La ligne demande-t-elle les droits d'administrateur d'elle-même (« sudo pacman -Syu ») ?
+fn par_sudo(ligne: &str) -> bool {
+    ligne.split_whitespace().any(|m| m == "sudo")
+}
+
+/// Les pastilles d'une commande, dans l'ordre de la page : tirées de `modifie`, de `obstacle` et de sa ligne.
+pub(crate) fn pastilles(c: &Commande) -> Vec<Pastille> {
+    let mut p = Vec::new();
+    if c.modifie {
+        p.push(Pastille::Modifie);
+    }
+    if par_sudo(c.ligne) || matches!(c.obstacle, Obstacle::Administrateur | Obstacle::Longue) {
+        p.push(Pastille::Administrateur);
+    }
+    if c.obstacle == Obstacle::Fenetre {
+        p.push(Pastille::Fenetre);
+    }
+    if c.obstacle == Obstacle::Longue {
+        p.push(Pastille::Longue);
+    }
+    p
+}
+
+/// Les pastilles en une ligne, chacune en vidéo inverse (« ⚠ modifie le système » de la couleur de l'avertissement) ;
+/// `None` : aucune.
+fn ligne_des_pastilles(c: &Commande) -> Option<String> {
+    let p = pastilles(c);
+    if p.is_empty() {
+        return None;
+    }
+    let rendues: Vec<String> = p
+        .iter()
+        .map(|x| {
+            let teinte = if *x == Pastille::Modifie {
+                couleur(Niveau::Moyen)
+            } else {
+                GRIS
+            };
+            format!("{teinte}\x1b[7m {} \x1b[27m{RESET}", x.texte())
+        })
+        .collect();
+    Some(format!("  {}", rendues.join(" ")))
+}
+
 /// Une commande seule : ce qu'elle fait, puis la copier, ou la lancer ici quand elle ne fait que lire.
 fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
     let raison = lancement::pourquoi_pas(s, p, c);
@@ -974,6 +1042,10 @@ fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
         for (i, l) in lignes_de_commande(&commande, LARGEUR - 4).iter().enumerate() {
             let debut = if i == 0 { avertissement.as_str() } else { "" };
             lignes.push(Ligne::Texte(format!("  {debut}{GRAS}{l}{RESET}")));
+        }
+        if let Some(p) = ligne_des_pastilles(c) {
+            lignes.push(Ligne::Texte(String::new()));
+            lignes.push(Ligne::Texte(p));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.extend(
@@ -1549,6 +1621,49 @@ pub fn executer(quoi: &str, sommaire: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commande(ligne: &'static str, modifie: bool, obstacle: Obstacle) -> Commande {
+        Commande {
+            ligne,
+            ligne_en: "",
+            texte: ("Essai.", "Test."),
+            modifie,
+            obstacle,
+        }
+    }
+
+    #[test]
+    fn pastilles_viennent_des_tables() {
+        assert_eq!(pastilles(&commande("ls -l", false, Obstacle::Aucun)), []);
+        assert_eq!(
+            pastilles(&commande("sudo pacman -Syu", true, Obstacle::Aucun)),
+            [Pastille::Modifie, Pastille::Administrateur]
+        );
+        // « sudoedit » n'est pas « sudo » : le mot entier seulement.
+        assert_eq!(pastilles(&commande("sudoedit /etc/hosts", false, Obstacle::Aucun)), []);
+        assert_eq!(
+            pastilles(&commande("explorer", false, Obstacle::Fenetre)),
+            [Pastille::Fenetre]
+        );
+        // Longue = plusieurs minutes avec les droits d'administrateur : les deux pastilles.
+        assert_eq!(
+            pastilles(&commande("sfc /scannow", true, Obstacle::Longue)),
+            [Pastille::Modifie, Pastille::Administrateur, Pastille::Longue]
+        );
+        assert_eq!(
+            pastilles(&commande("net session", false, Obstacle::Administrateur)),
+            [Pastille::Administrateur]
+        );
+    }
+
+    #[test]
+    fn pastilles_tiennent_dans_la_largeur() {
+        for (_, _, c) in toutes() {
+            if let Some(l) = ligne_des_pastilles(c) {
+                assert!(largeur_affichee(&l) <= LARGEUR, "{} : {l}", c.ligne);
+            }
+        }
+    }
 
     /// Les chemins que d'autres citent (le test de la VM, le CHANGELOG, l'aide) ne changent jamais de sens : un
     /// système ou un programme ajouté va en fin de liste. Seul le retrait de macOS (7) a avancé d'un rang les trois

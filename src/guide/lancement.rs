@@ -114,7 +114,7 @@ pub(super) fn obstacle(c: &Commande) -> Option<&'static str> {
     if let Some(raison) = choisi_ailleurs(c) {
         return Some(raison);
     }
-    let obstacle = if c.ligne.split_whitespace().any(|m| m == "sudo") {
+    let obstacle = if super::par_sudo(c.ligne) {
         Obstacle::Administrateur
     } else {
         c.obstacle
