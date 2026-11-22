@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.96</title>
-<meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, GPL-3.0-or-later.">
+<title>Vanguard 0.97</title>
+<meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, GPL-3.0-or-later.">
 <meta name="theme-color" content="#f2f5f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Vanguard 0.96">
-<meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, Rust.">
+<meta property="og:title" content="Vanguard 0.97">
+<meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, Rust.">
 <meta property="og:url" content="https://d9v3.github.io/vanguard-beta/">
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
@@ -84,6 +84,13 @@ code { background: var(--surface-2); color: var(--encre); border-radius: var(--r
 .surtitre { font-size: .8125rem; line-height: 1.4; color: var(--discret); margin: 0; }
 .ouverture h1 { font-size: clamp(2rem, 3.6vw, 2.75rem); line-height: 1.12; letter-spacing: -.015em; max-width: 52rem; margin-top: .6rem; }
 .chapeau { color: var(--doux); font-size: 1.0625rem; line-height: 1.6; margin: 1rem 0 0; max-width: 50rem; }
+.vedette { display: grid; gap: .45rem; padding: 1.2rem 1.3rem 1.15rem; margin-top: 1.5rem; max-width: 50rem; }
+.vedette p { margin: 0; color: var(--doux); font-size: .9375rem; line-height: 1.6; }
+.vedette .etiquette { display: flex; align-items: center; gap: .55rem; color: var(--encre); font-weight: 500; font-size: 1rem; }
+.vedette .etiquette::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
+.vedette p[lang="en"] { color: var(--discret); font-size: .875rem; }
+.vedette .ouvrir { margin-top: .2rem; font-size: .8125rem; color: var(--discret); text-decoration: none; justify-self: start; }
+.vedette .ouvrir:hover { color: var(--lien); }
 .pastilles { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding: 0; list-style: none; }
 .pastille { display: inline-flex; align-items: center; min-height: 32px; padding: 0 .75rem; font-size: .8125rem; font-weight: 500; color: var(--encre); background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon-pastille); text-decoration: none; }
 a.pastille:hover { color: var(--encre); background: var(--surface-2); border-color: var(--trait-fort); }
@@ -320,7 +327,7 @@ details > summary::after { display: none; }
 </header>
 <div class="console" role="note" aria-label="État de la version">
 <div class="cadre">
-<p class="console-etat"><span>Version <b>0.96.0</b></span><span>publiée le <b>15 novembre 2026</b></span><span><b>4 445</b> tests sous Linux · <b>3 305</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
+<p class="console-etat"><span>Version <b>0.97.0</b></span><span>publiée le <b>22 novembre 2026</b></span><span><b>5 300</b> tests sous Linux · <b>4 086</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
 <form class="invite recherche" id="recherche" role="search" hidden>
 <label for="cherche"><b>vanguard ›</b><span class="cache-lecteur"> Chercher dans la page / Search this page</span></label>
 <input id="cherche" type="search" placeholder="chercher : rançongiciel, Wi-Fi, clé…  ( / )" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cherche-etat">
@@ -334,6 +341,12 @@ details > summary::after { display: none; }
 <p class="surtitre">Logiciel libre · GPL-3.0-or-later · écrit en Rust</p>
 <h1>Cyberdéfense portable des postes et des réseaux, depuis une clé USB</h1>
 <p class="chapeau">Un seul exécutable par système (Linux x86_64 statique, Windows x86_64), rien à installer. Il lit et juge sur l'ordinateur même, avec les droits du compte : l'administrateur n'est demandé que pour un geste accepté (pkexec, run0 ou sudo ; UAC). En HTTPS, il ne joint qu'une liste fermée de 28 hôtes. Il complète l'antivirus du système (Microsoft Defender, ClamAV) : il ne le remplace pas.</p>
+<div class="carte vedette">
+<p class="etiquette">La fenêtre de Vanguard</p>
+<p>Sur un bureau graphique, <code>vanguard</code> ouvre sa fenêtre : le bilan, la protection, le réseau et le journal en cartes, une console qui ne lance que sa liste fermée, et chaque geste montré avant d'être fait. Elle n'est lancée que si son empreinte est celle gravée dans le programme signé. Absente, le menu le dit et propose de l'ajouter par la mise à jour, vérifiée de la même façon.</p>
+<p lang="en">On a graphical desktop, <code>vanguard</code> opens its window: the check, protection, network and journal as cards, a console that runs only its closed list, and every action shown before it is done. It starts only if its fingerprint is the one built into the signed program. Missing, the menu says so and offers to add it through the update, checked the same way.</p>
+<a class="ouvrir" href="#prise-en-main">Visite guidée de la fenêtre · Guided tour →</a>
+</div>
 </div>
 <div class="stats">
 <div class="carte stat"><span class="etiquette">Bilan de l'ordinateur</span><span class="valeur">A → F</span><span class="detail">une note pour l'ordinateur, une par domaine du réseau</span><a class="ouvrir" href="#bilan">Ouvrir →</a></div>
@@ -343,7 +356,7 @@ details > summary::after { display: none; }
 <ol class="points">
 <li class="carte"><b>Il fait le bilan.</b> 139 règles à identifiant stable, chacune avec sa référence (CIS, Microsoft ou ANSSI ; MITRE ATT&amp;CK), une note de A à F pour l'ordinateur ; 34 fiches pour le réseau, en six notes.</li>
 <li class="carte"><b>Il cherche ce qui ne devrait pas être là.</b> Logiciels espions, programmes lancés en cachette, traces d'intrusion, rançongiciels ; un courriel ou un lien douteux examiné sans être ouvert.</li>
-<li class="carte"><b>Il corrige et bloque, après accord.</b> Chaque correction est montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
+<li class="carte"><b>Il corrige et bloque.</b> Pour l'instant, chaque correction attend votre accord : montrée avant d'être faite, notée avec l'état d'avant et annulable. Une menace trouvée se bloque d'un clic, la preuve relevée avant le geste.</li>
 <li class="carte"><b>Il dépanne.</b> Pas à pas quand Internet, le son ou l'ordinateur ne marchent plus comme avant ; les sauvegardes et le ménage en plus.</li>
 </ol>
 <p class="cap"><b>Défensif seulement.</b> Le code est ouvert (GPL) et chaque version est signée en Ed25519 : chacun peut voir ce que fait le programme et vérifier d'où il vient. Vanguard évolue souvent : lisez ce que fait chaque correction avant de l'accepter.</p>
@@ -393,7 +406,7 @@ details > summary::after { display: none; }
 </ul>
 <p class="touches">Un clic ou une touche saute l'ouverture. Dans la rubrique Vanguard, Animations « Réduites » la retire pour de bon.</p>
 <details class="plus"><summary>Qu'est-ce qui se lance tout seul ?</summary>
-<p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Rien de ce qui changerait l'ordinateur ne part seul : chaque changement est montré, puis lancé seulement après votre accord. Depuis la fenêtre, quatre gestes : retirer ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à jour de Vanguard. Les corrections de tout l'ordinateur, les réglages et la quarantaine restent pour l'instant dans le menu de Vanguard.</p>
+<p>Les premières lectures sont déjà parties quand la fenêtre s'affiche : leurs réponses arrivent pendant l'ouverture. Pour l'instant, rien de ce qui changerait l'ordinateur ne part seul : chaque changement est montré, puis lancé seulement après votre accord. Depuis la fenêtre, quatre gestes : retirer ou remettre un programme du démarrage, appliquer une correction du compte, la remettre comme avant, installer la mise à jour de Vanguard. Les corrections de tout l'ordinateur, les réglages et la quarantaine restent pour l'instant dans le menu de Vanguard.</p>
 </details>
 </div>
 </li>
@@ -628,8 +641,8 @@ details > summary::after { display: none; }
 <tbody>
 <tr><th scope="row">Versions signées</th><td data-col="Ce qui est fait">La dernière version est décrite par un manifeste (version, taille et SHA-256 du programme de chaque système) signé en Ed25519 hors de GitHub. Deux clés publiques sont gravées dans le programme : la principale, et une clé de secours gardée hors ligne qui peut révoquer la principale (révocation retenue dans l'état scellé, la principale n'est plus jamais acceptée). Vérification stricte (<code>verify_strict</code>) sous un domaine de signature (<code>vanguard-versions 1</code>, et <code>vanguard-historique 1</code> pour l'historique des versions : une signature ne vaut jamais pour l'autre fichier). Refusés : un manifeste mal signé, une version pas plus récente que la plus haute déjà vue (retenue, scellée), un programme dont la taille, l'empreinte ou la version gravée ne sont pas celles signées. Un manifeste de plus de 45 jours donne « non vérifié », jamais « à jour ». Rien ne s'installe sans accord.</td><td data-col="Pour le vérifier"><code>vanguard verifier-moi</code> : version, date du dernier commit, empreinte SHA-256, comparée à l'historique signé des versions ; programmes publiés à part, dans <a href="https://github.com/d9v3/vanguard-update">vanguard-update</a></td></tr>
 <tr><th scope="row">Le programme publié</th><td data-col="Ce qui est fait">Ses protections sont relues dans ses en-têtes avant chaque publication (<code>vanguard deploiement verifier-binaire</code>), et un programme qui en manque une ne part pas. Linux : ELF static-pie, marque du RELRO complet (BIND_NOW, appliqué par Vanguard lui-même au démarrage, car le démarrage de musl ne le fait pas), pile non exécutable, aucun segment à la fois écrivable et exécutable. Windows : ASLR (DYNAMIC_BASE, HIGH_ENTROPY_VA), DEP (NX_COMPAT), relocalisations présentes, DLL importées depuis System32 seulement, manifeste <code>asInvoker</code>. CFG et CET sont affichés, pas exigés. Compilé avec LTO et <code>overflow-checks = true</code> : un calcul qui déborde sur une donnée hostile s'arrête au lieu de repartir à zéro.</td><td data-col="Pour le vérifier"><code>vanguard deploiement verifier-binaire &lt;programme&gt;</code></td></tr>
-<tr><th scope="row">Le code</th><td data-col="Ce qui est fait"><code>#![deny(unsafe_code)]</code> à la racine ; l'unsafe n'est permis que module par module, chaque bloc avec son <code>// SAFETY:</code> exigé par clippy, et il est refusé sans recours (<code>forbid</code>) dans 89 modules. Compté à chaque passe de <code>outils/verifier.sh</code>. Clippy en mode pédant, avertissements traités comme des erreurs ; <code>unwrap</code>, <code>expect</code>, <code>panic!</code> et l'accès direct par indice refusés hors des tests. Le code est relu selon le <a href="https://github.com/d9v3/vanguard-beta/blob/master/CONFORMITE-ANSSI.md">guide Rust sécurisé de l'ANSSI</a>.</td><td data-col="Pour le vérifier"><code>outils/verifier.sh</code> (résumé de l'unsafe en fin de passe)</td></tr>
-<tr><th scope="row">Lecteurs de données hostiles</th><td data-col="Ce qui est fait">46 cibles de fuzzing (journaux .evtx et BinXML, en-têtes PE, SQLite, zip, tar, zstd, gzip, client DNS, réponse TLS, D-Bus, journal de systemd, règles YARA, courriel MIME…) : quelques secondes par cible à chaque passe de <code>verifier.sh</code>, cinq minutes par cible chaque nuit dans la CI. 6 preuves de Kani sur des lecteurs bornés (DNS, SQLite, zstd), compilées à chaque passe.</td><td data-col="Pour le vérifier"><code>fuzz/</code>, <code>outils/fuzz.sh</code>, <code>outils/preuves.sh</code></td></tr>
+<tr><th scope="row">Le code</th><td data-col="Ce qui est fait"><code>#![deny(unsafe_code)]</code> à la racine ; l'unsafe n'est permis que module par module, chaque bloc avec son <code>// SAFETY:</code> exigé par clippy, et il est refusé sans recours (<code>forbid</code>) dans 92 modules. Compté à chaque passe de <code>outils/verifier.sh</code>. Clippy en mode pédant, avertissements traités comme des erreurs ; <code>unwrap</code>, <code>expect</code>, <code>panic!</code> et l'accès direct par indice refusés hors des tests. Le code est relu selon le <a href="https://github.com/d9v3/vanguard-beta/blob/master/CONFORMITE-ANSSI.md">guide Rust sécurisé de l'ANSSI</a>.</td><td data-col="Pour le vérifier"><code>outils/verifier.sh</code> (résumé de l'unsafe en fin de passe)</td></tr>
+<tr><th scope="row">Lecteurs de données hostiles</th><td data-col="Ce qui est fait">47 cibles de fuzzing (journaux .evtx et BinXML, en-têtes PE, SQLite, zip, tar, zstd, gzip, client DNS, réponse TLS, D-Bus, journal de systemd, règles YARA, courriel MIME…) : quelques secondes par cible à chaque passe de <code>verifier.sh</code>, cinq minutes par cible chaque nuit dans la CI. 6 preuves de Kani sur des lecteurs bornés (DNS, SQLite, zstd), compilées à chaque passe.</td><td data-col="Pour le vérifier"><code>fuzz/</code>, <code>outils/fuzz.sh</code>, <code>outils/preuves.sh</code></td></tr>
 <tr><th scope="row">Régression de détection</th><td data-col="Ce qui est fait">74 cas fabriqués et inoffensifs (<code>tests/corpus-detection</code>) : chaque cas donne au jugement de sa règle des données fabriquées et exige un constat d'au moins la gravité attendue ; le même cas propre exige qu'elle se taise. Chaque règle qui cite une technique d'ATT&amp;CK, et chaque outil qui détecte, a son cas ou une raison d'exemption écrite.</td><td data-col="Pour le vérifier"><code>cargo test</code> (<code>src/modele/corpus.rs</code>)</td></tr>
 <tr><th scope="row">Dépendances</th><td data-col="Ce qui est fait">cargo deny (failles connues, licences, provenance), cargo audit, cargo vet (chaque bibliothèque relue par un tiers, ou exemptée). Chaque programme porte la liste de ses dépendances (cargo auditable). Nomenclature logicielle (SBOM) CycloneDX 1.5 à chaque version. Workflows de GitHub analysés par zizmor, actions épinglées par commit.</td><td data-col="Pour le vérifier"><code>cargo audit bin &lt;programme&gt;</code>, <a href="https://github.com/d9v3/vanguard-beta/blob/master/SECURITY.md">SECURITY.md</a></td></tr>
 <tr><th scope="row">Compilation reproductible</th><td data-col="Ce qui est fait">Une seule recette (<code>outils/compiler-version.sh</code>) : chaîne de <code>rust-toolchain.toml</code>, Cargo.lock tel quel, date du commit, chemins retirés. La chaîne C est la même partout : zig, vérifiée par son empreinte et sa signature. La CI recompile le même code et écrit ses empreintes dans son journal : un programme publié doit être identique, octet pour octet, à celui de la CI, sinon la publication s'arrête (passe-droit <code>VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1</code>, dit dans les notes de la version et dans l'historique signé).</td><td data-col="Pour le vérifier"><a href="https://github.com/d9v3/vanguard-beta/blob/master/CONTRIBUTING.md">CONTRIBUTING.md</a> (« Compilation reproductible »)</td></tr>
@@ -654,10 +667,10 @@ details > summary::after { display: none; }
 </details>
 <h3 class="sous-titre">Testé à chaque version</h3>
 <div class="chiffres">
-<div class="carte stat"><span class="valeur">≈ 447 100</span><span class="detail">lignes de code Rust</span></div>
-<div class="carte stat"><span class="valeur">4 445</span><span class="detail">tests sous Linux</span></div>
-<div class="carte stat"><span class="valeur">3 305</span><span class="detail">tests sous Windows (Wine)</span></div>
-<div class="carte stat"><span class="valeur">238</span><span class="detail">vérifications sur un vrai Windows</span></div>
+<div class="carte stat"><span class="valeur">≈ 476 400</span><span class="detail">lignes de code Rust</span></div>
+<div class="carte stat"><span class="valeur">5 300</span><span class="detail">tests sous Linux</span></div>
+<div class="carte stat"><span class="valeur">4 086</span><span class="detail">tests sous Windows (Wine)</span></div>
+<div class="carte stat"><span class="valeur">251</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
 </section>
@@ -665,7 +678,7 @@ details > summary::after { display: none; }
 <div class="tete-section">
 <p class="surtitre">Fonctions de sécurité, menace par menace</p>
 <h2>Ce qu'il lit, ce qu'il juge, ce qu'il fait</h2>
-<p>Pour chaque menace : ce que Vanguard lit (dans le système même, en Rust, sans lancer un programme à chaque lecture), ce qu'il juge, et ce qu'il peut faire. Rien n'est modifié sans accord ; chaque geste est montré avant d'être fait, noté avec l'état d'avant et s'annule, sauf ceux qui rallument une protection ; « Tout remettre comme avant » défait tout ce que Vanguard a changé.</p>
+<p>Pour chaque menace : ce que Vanguard lit (dans le système même, en Rust, sans lancer un programme à chaque lecture), ce qu'il juge, et ce qu'il peut faire. Le principe : Vanguard agit, vous gardez la main ; ce qui protège, entretient ou améliore est fait pour vous, noté, annulable exactement et rapporté après, et une baisse de protection reste votre choix. Pour l'instant, rien n'est modifié sans accord ; chaque geste est montré avant d'être fait, noté avec l'état d'avant et s'annule, sauf ceux qui rallument une protection ; « Tout remettre comme avant » défait tout ce que Vanguard a changé.</p>
 </div>
 <div class="tableau"><table class="menaces">
 <thead><tr><th scope="col">Menace</th><th scope="col">Ce qu'il lit</th><th scope="col">Ce qu'il juge</th><th scope="col">Ce qu'il peut faire</th></tr></thead>
@@ -821,7 +834,7 @@ details > summary::after { display: none; }
 <h2>Ce que Vanguard ne fait pas</h2>
 </div>
 <div class="principes">
-<div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
+<div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Vous gardez la main</b><span>Jamais une protection baissée, une connexion coupée ni vos données supprimées ou déplacées sans votre choix. Ce qui protège se fera de plus en plus seul, noté, annulable et rapporté après ; pour l'instant, chaque changement est montré avant d'être fait, et la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>
@@ -834,7 +847,7 @@ details > summary::after { display: none; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 447 100 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 476 400 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64</dd></div>
 <div><dt>Règles du bilan</dt><dd>139 règles à identifiant stable (<code>LNX-SSH-006</code>) : 95 sous Linux, 82 sous Windows, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
@@ -1062,7 +1075,7 @@ vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.96</p>
+<p class="surtitre">Nouveautés de la version 0.97</p>
 <h2>Ce qui vient d'arriver</h2>
 <p>Une version où Vanguard a sa fenêtre : livrée avec le programme, lancée seulement si c'est bien la sienne, et chaque geste montré avant d'être fait.</p>
 </div>
@@ -1192,7 +1205,7 @@ vanguard yara --complet</pre>
 </div>
 <h3 class="sous-titre">Le chemin principal : Vanguard sur votre ordinateur</h3>
 <ol class="chaine">
-<li><b>Télécharger</b>Sur la <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a>, le programme de votre système : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. Un seul exécutable, rien à installer pour le lancer. La fenêtre de Vanguard, facultative, est sur la même page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>) : posée dans le même dossier que le programme, elle s'ouvre au lieu du menu sur un bureau graphique, seulement si son empreinte est celle gravée dans le programme. Le menu du terminal reste là en SSH ou au Bureau à distance, en administrateur, ou avec <code>vanguard --menu</code>. Sous Linux, la fenêtre demande glibc, la bibliothèque C de presque toutes les distributions (sans elle, Alpine par exemple, le menu du terminal).</li>
+<li><b>Télécharger</b>Sur la <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a>, le programme de votre système : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. Un seul exécutable, rien à installer pour le lancer. La fenêtre de Vanguard, facultative, est sur la même page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>) : posée dans le même dossier que le programme, elle s'ouvre au lieu du menu sur un bureau graphique, seulement si son empreinte est celle gravée dans le programme ; absente, le menu le dit et propose de l'ajouter par « Mettre Vanguard à jour ». Le menu du terminal reste là en SSH ou au Bureau à distance, en administrateur, ou avec <code>vanguard --menu</code>. Sous Linux, la fenêtre demande glibc, la bibliothèque C de presque toutes les distributions (sans elle, Alpine par exemple, le menu du terminal).</li>
 <li><b>Vérifier l'empreinte</b>Avec <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>, posé à côté : <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> sous Linux ; sous Windows, <code>Get-FileHash</code>, à comparer à sa ligne. Une empreinte différente : ne pas le lancer.</li>
 <li><b>Le mettre sur l'ordinateur</b><code>vanguard raccourci</code> le copie dans son dossier sur cet ordinateur et le lance d'un clic (menu des applications sous Linux, Bureau sous Windows), après accord.</li>
 <li><b>Le tenir à jour</b><code>vanguard se-mettre-a-jour</code> prend la dernière version publiée, signée par l'auteur et vérifiée ; toujours sur accord, jamais une version plus ancienne.</li>
@@ -1231,7 +1244,7 @@ vanguard yara --complet</pre>
 <summary><span><h3>In English: download, check, install</h3><span class="resume">Download, check the checksum, keep it up to date.</span></span></summary>
 <div>
 <ol class="chaine">
-<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. A single executable, nothing to install to run it. The Vanguard window, optional, is on the same page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>): placed in the same folder as the program, it opens instead of the menu on a graphical desktop, only if its fingerprint is the one built into the program. The terminal menu stays over SSH or Remote Desktop, as administrator, or with <code>vanguard --menu</code>. On Linux, the window needs glibc, the C library of almost every distribution (without it, Alpine for example, use the terminal menu).</li>
+<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a>. A single executable, nothing to install to run it. The Vanguard window, optional, is on the same page (<a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-fenetre-linux-x86_64">Linux</a>): placed in the same folder as the program, it opens instead of the menu on a graphical desktop, only if its fingerprint is the one built into the program; missing, the menu says so and offers to add it through “Update Vanguard”. The terminal menu stays over SSH or Remote Desktop, as administrator, or with <code>vanguard --menu</code>. On Linux, the window needs glibc, the C library of almost every distribution (without it, Alpine for example, use the terminal menu).</li>
 <li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; on Windows, <code>Get-FileHash</code>, compared to its line. A different checksum: do not run it.</li>
 <li><b>Put it on the computer</b><code>vanguard shortcut</code> copies it to its folder on this computer and launches it in one click (applications menu on Linux, Desktop on Windows), after your consent.</li>
 <li><b>Keep it up to date</b><code>vanguard self-update</code> takes the latest published version, signed by the author and checked; always with your consent, never an older version.</li>
@@ -1243,7 +1256,7 @@ vanguard yara --complet</pre>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.96.0 · 15 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.97.0 · 22 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 <script>
 // Le bouton n'apparaît qu'avec le script : sans lui, la page suit l'appareil, comme avant.
