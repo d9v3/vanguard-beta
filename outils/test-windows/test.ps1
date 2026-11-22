@@ -1323,15 +1323,18 @@ function Console-Refuse($r, [string]$fichier, [string]$motif, [string]$quoi) {
 
 $profilBanc = [Environment]::GetFolderPath('UserProfile')
 $documentsBanc = Join-Path $profilBanc 'Documents'
+# Téléchargements, pas Documents, pour les cas 1 et 2 : l'accès contrôlé aux dossiers de Defender (actif dans la VM,
+# jamais baissé par ce banc) protège Documents et y refuse l'écriture de PowerShell (« fichier introuvable »).
+$telechargementsBanc = Join-Path $profilBanc 'Downloads'
 $marqueBanc = '{0:x}' -f (Get-Random -Maximum 0x7fffffff)
 $adminBanc = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 Etape 'Console (0.97) : fichier en ligne seulement (OneDrive à la demande, sans compte), refusé sans être rapatrié'
 if (-not $bancConsolePret) { Sautee "Aide P/Invoke non compilée : $bancConsoleErreur" }
-elseif (-not (Test-Path -LiteralPath $documentsBanc -PathType Container)) { Sautee "Pas de dossier $documentsBanc : la racine Documents du profil manque" }
-elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Documents, puis retirée) ?' 'o') {
+elseif (-not (Test-Path -LiteralPath $telechargementsBanc -PathType Container)) { Sautee "Pas de dossier $telechargementsBanc : la racine Téléchargements du profil manque" }
+elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Téléchargements, puis retirée) ?' 'o') {
     # Une racine laissée par une passe interrompue : retirée d'abord.
-    foreach ($reste in @(Get-ChildItem -LiteralPath $documentsBanc -Filter 'vg-banc-nuage-*' -Force -ErrorAction SilentlyContinue)) {
+    foreach ($reste in @(Get-ChildItem -LiteralPath $telechargementsBanc -Filter 'vg-banc-nuage-*' -Force -ErrorAction SilentlyContinue)) {
         Info "Reste d'une passe d'avant : $($reste.Name), retiré"
         [void][VgBancConsole.Nuage]::Desinscrire($reste.FullName)
         Remove-Item -LiteralPath $reste.FullName -Recurse -Force -ErrorAction SilentlyContinue
@@ -1339,7 +1342,7 @@ elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Docu
     $cleRacines = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager'
     $racinesAvant = @(Get-ChildItem -LiteralPath $cleRacines -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName }) -join ';'
     $nomNuage = "vg-banc-nuage-$marqueBanc"
-    $racineNuage = Join-Path $documentsBanc $nomNuage
+    $racineNuage = Join-Path $telechargementsBanc $nomNuage
     $reserve = Join-Path $racineNuage 'facture-en-ligne.pdf'
     $inscrite = $false
     try {
@@ -1360,7 +1363,7 @@ elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Docu
             elseif ($etatRacine.Erreur -ne 0 -or $etatRacine.EnLigne) { Sautee "La racine elle-même est illisible ou marquée en ligne ($etatRacine) : le refus ne viendrait pas du fichier" }
             else {
                 Ok "Vrai espace réservé déshydraté : RECALL_ON_DATA_ACCESS et étiquette de nuage (0x$('{0:X8}' -f $avant.Etiquette))"
-                $r = Console-Fichier 'console-en-ligne' "~\Documents\$nomNuage\facture-en-ligne.pdf"
+                $r = Console-Fichier 'console-en-ligne' "~\Downloads\$nomNuage\facture-en-ligne.pdf"
                 Console-Refuse $r 'console-en-ligne' $refusEnLigne 'Fichier en ligne seulement'
                 $apres = [VgBancConsole.Nuage]::Lire($reserve)
                 Info "Espace réservé après : $apres"
@@ -1387,15 +1390,15 @@ elseif (Question 'Faire ce test (une racine de synchronisation jetable sous Docu
 }
 
 # Le cas simple : l'attribut hors ligne (0x1000, « attrib +O ») sur un fichier ordinaire, sans nuage.
-if ($bancConsolePret -and (Test-Path -LiteralPath $documentsBanc -PathType Container)) {
-    $horsLigne = Join-Path $documentsBanc "vg-banc-hors-ligne-$marqueBanc.txt"
+if ($bancConsolePret -and (Test-Path -LiteralPath $telechargementsBanc -PathType Container)) {
+    $horsLigne = Join-Path $telechargementsBanc "vg-banc-hors-ligne-$marqueBanc.txt"
     try {
         [IO.File]::WriteAllText($horsLigne, 'contenu de test')
         [IO.File]::SetAttributes($horsLigne, [IO.FileAttributes]::Archive -bor [IO.FileAttributes]::Offline)
         $etat = [VgBancConsole.Nuage]::Lire($horsLigne)
         if ($etat.Erreur -ne 0 -or -not ($etat.Attributs -band 0x1000)) { Sautee "Attribut hors ligne (0x1000) pas posé : $etat" }
         else {
-            $r = Console-Fichier 'console-hors-ligne' "~\Documents\vg-banc-hors-ligne-$marqueBanc.txt"
+            $r = Console-Fichier 'console-hors-ligne' "~\Downloads\vg-banc-hors-ligne-$marqueBanc.txt"
             Console-Refuse $r 'console-hors-ligne' $refusEnLigne 'Fichier marqué hors ligne (attrib +O)'
         }
     }
@@ -1408,7 +1411,7 @@ if ($bancConsolePret -and (Test-Path -LiteralPath $documentsBanc -PathType Conta
     }
 }
 
-Etape 'Console (0.97) : un ancêtre du profil en « traverser seulement » ne bloque pas Documents'
+Etape 'Console (0.97) : un ancêtre du profil en « traverser seulement » ne bloque pas Téléchargements'
 # Le dossier des profils (C:\Users), pas le profil : c'est le cas que vise ACCES_ANCETRE (« un profil sous un dossier
 # en traverser seulement reste lisible »), et le profil de la session n'est pas touché. Un refus de liste
 # (FILE_LIST_DIRECTORY), pour ce compte seulement, en tête de la DACL, sans héritage ; écrit et remis par
@@ -1416,9 +1419,9 @@ Etape 'Console (0.97) : un ancêtre du profil en « traverser seulement » ne bl
 $profilsBanc = Split-Path -Parent $profilBanc
 if (-not $bancConsolePret) { Sautee "Aide P/Invoke non compilée : $bancConsoleErreur" }
 elseif (-not $adminBanc) { Sautee 'Pas administrateur : la DACL du dossier des profils ne peut pas être changée' }
-elseif (-not (Test-Path -LiteralPath $documentsBanc -PathType Container)) { Sautee "Pas de dossier $documentsBanc" }
+elseif (-not (Test-Path -LiteralPath $telechargementsBanc -PathType Container)) { Sautee "Pas de dossier $telechargementsBanc" }
 elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte quelques secondes, puis remise) ?" 'o') {
-    $fichierTraverse = Join-Path $documentsBanc "vg-banc-traverse-$marqueBanc.txt"
+    $fichierTraverse = Join-Path $telechargementsBanc "vg-banc-traverse-$marqueBanc.txt"
     $daclAvant = $null
     $posee = $false
     try {
@@ -1445,8 +1448,8 @@ elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte que
                 elseif ($liste) { Sautee "Le refus de liste ne s'applique pas à ce jeton (liste de $profilsBanc toujours permise) : rien à prouver" }
                 else {
                     Ok "Témoin : la liste de $profilsBanc est refusée à ce compte"
-                    $r = Console-Fichier 'console-traverse' "~\Documents\vg-banc-traverse-$marqueBanc.txt"
-                    Console-Lu $r "Fichier de Documents sous $profilsBanc en traverser seulement"
+                    $r = Console-Fichier 'console-traverse' "~\Downloads\vg-banc-traverse-$marqueBanc.txt"
+                    Console-Lu $r "Fichier de Téléchargements sous $profilsBanc en traverser seulement"
                 }
             }
         }
@@ -1515,7 +1518,14 @@ elseif (Question 'Faire ce test (Documents déplacé dans OneDrive quelques seco
             foreach ($d in $oneDriveBanc, $nouveauBanc) {
                 if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; [void]$crees.Insert(0, $d) }
             }
-            foreach ($f in $fichiersKfm) { [IO.File]::WriteAllText($f, 'contenu de test') }
+            # L'ancien <profil>\Documents peut être protégé par l'accès contrôlé aux dossiers (jamais baissé ici) :
+            # PowerShell n'y écrit pas, et seul le contrôle de l'ancien endroit est alors sauté, raison dite.
+            $ancienKfm = Join-Path $documentsBanc $nomKfm
+            $ancienErreur = $null
+            foreach ($f in $fichiersKfm) {
+                if ($f -ne $ancienKfm) { [IO.File]::WriteAllText($f, 'contenu de test') }
+                else { try { [IO.File]::WriteAllText($f, 'contenu de test') } catch { $ancienErreur = $_.Exception.Message } }
+            }
             # Le témoin : avant le déplacement, OneDrive\Documents n'est pas un endroit permis.
             $r = Console-Fichier 'console-kfm-avant' "~\OneDrive\Documents\$nomKfm"
             Console-Refuse $r 'console-kfm-avant' $refusHors 'Avant le déplacement, OneDrive\Documents'
@@ -1527,8 +1537,11 @@ elseif (Question 'Faire ce test (Documents déplacé dans OneDrive quelques seco
                 Ok "Windows donne Documents = $docsPendant"
                 $r = Console-Fichier 'console-kfm-nouveau' "~\OneDrive\Documents\$nomKfm"
                 Console-Lu $r 'Documents déplacé : un fichier dans OneDrive\Documents'
-                $r = Console-Fichier 'console-kfm-ancien' "~\Documents\$nomKfm"
-                Console-Lu $r 'Documents déplacé : un fichier resté dans l''ancien <profil>\Documents (toujours permis)'
+                if ($null -ne $ancienErreur) { Sautee "Ancien <profil>\Documents : PowerShell n'a pas pu y poser le fichier (accès contrôlé aux dossiers ? rien baissé) : $ancienErreur" }
+                else {
+                    $r = Console-Fichier 'console-kfm-ancien' "~\Documents\$nomKfm"
+                    Console-Lu $r 'Documents déplacé : un fichier resté dans l''ancien <profil>\Documents (toujours permis)'
+                }
                 $r = Console-Fichier 'console-kfm-onedrive' "~\OneDrive\$nomKfm"
                 Console-Refuse $r 'console-kfm-onedrive' $refusHors 'OneDrive lui-même'
             }
