@@ -258,10 +258,12 @@ verifier_binaires() { # système fichiers…
 # Une exécution de GitHub attendue au plus tant de secondes : un runner qui ne vient jamais (file d'attente bloquée)
 # tiendrait publier-version.sh ouvert pour toujours. Rend le code de gh run watch (--exit-status), 124 quand le délai
 # est passé, et le dit. Lue telle quelle par outils/essais-signature.sh.
+# --interval 60 : par défaut, gh relit l'exécution et chacun de ses travaux toutes les 3 s ; une CI complète d'une heure
+# vidait ainsi à elle seule la limite de GitHub (5 000 appels par heure, 0.97.0 coupée deux fois le 22 nov. 2026).
 attendre_execution() { # exécution, secondes au plus
   local code=0
   # -k : un gh qui ignore TERM est tué 10 s plus tard ; timeout rend alors 137 (KILL), le même délai passé.
-  timeout -k 10 "$2" gh run watch "$1" --exit-status >/dev/null 2>&1 || code=$?
+  timeout -k 10 "$2" gh run watch "$1" --exit-status --interval 60 >/dev/null 2>&1 || code=$?
   ((code != 137)) || code=124
   ((code != 124)) || echo "⚠ Exécution $1 de GitHub pas finie après $(($2 / 60)) minutes : attente abandonnée."
   return "$code"

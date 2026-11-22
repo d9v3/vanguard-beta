@@ -2273,7 +2273,8 @@ fn basses_de_la_ronde_7() {
 /// l'attente d'un cœur libre tombait sur une mesure et pas l'autre (« 33 ms puis 289 ms » sous la charge de
 /// verifier.sh, le 21 nov. 2026), sans que le masqueur soit quadratique. Ce temps avance par tics sous Windows (une
 /// dizaine de millisecondes, Wine compris) : chaque mesure répète l'appel autant de fois qu'il faut pour que la petite
-/// taille passe 50 ms, la grande avec le même nombre de fois.
+/// taille passe 50 ms (après un appel de chauffe, et encore sur la mesure retenue), la grande avec le même nombre de
+/// fois.
 #[test]
 fn detail_long_croissance_lineaire() {
     use std::time::Duration;
@@ -2292,14 +2293,25 @@ fn detail_long_croissance_lineaire() {
             }
             crate::essais::calcul_du_fil().saturating_sub(debut)
         };
+        // Un appel de chauffe d'abord : à froid, le premier appel passait seul les 50 ms et gardait 1 fois, puis la
+        // mesure à chaud tombait à deux tics de Windows (« 31.25ms puis 281.25ms (1 fois chacun) », CI du 22 nov.
+        // 2026). Et la petite taille retenue (le meilleur des 5) doit elle-même passer 50 ms, sinon on double.
+        let _ = calcul(&petit, 1);
         let mut fois = 1;
-        while calcul(&petit, fois) < Duration::from_millis(50) {
+        let (petit, quadruple) = loop {
+            while calcul(&petit, fois) < Duration::from_millis(50) {
+                assert!(fois < 1 << 16, "l'horloge du temps de calcul n'avance pas");
+                fois *= 2;
+            }
+            let (p, q) = (0..5)
+                .map(|_| (calcul(&petit, fois), calcul(&quadruple, fois)))
+                .fold((Duration::MAX, Duration::MAX), |(p, q), (a, b)| (p.min(a), q.min(b)));
+            if p >= Duration::from_millis(50) {
+                break (p, q);
+            }
             assert!(fois < 1 << 16, "l'horloge du temps de calcul n'avance pas");
             fois *= 2;
-        }
-        let (petit, quadruple) = (0..5)
-            .map(|_| (calcul(&petit, fois), calcul(&quadruple, fois)))
-            .fold((Duration::MAX, Duration::MAX), |(p, q), (a, b)| (p.min(a), q.min(b)));
+        };
         assert!(
             quadruple < petit.saturating_mul(8),
             "{petit:?} puis {quadruple:?} ({fois} fois chacun)"

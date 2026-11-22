@@ -848,9 +848,9 @@ details > summary::after { display: none; }
 </div>
 <dl class="specs">
 <div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 476 400 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
-<div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64</dd></div>
+<div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64 ; la fenêtre, facultative, à poser à côté (glibc sous Linux)</dd></div>
 <div><dt>Règles du bilan</dt><dd>139 règles à identifiant stable (<code>LNX-SSH-006</code>) : 95 sous Linux, 82 sous Windows, communes comprises ; 34 fiches d'audit du réseau</dd></div>
-<div><dt>Interface</dt><dd>Menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
+<div><dt>Interface</dt><dd>Fenêtre egui sur un bureau graphique (lancée seulement si son empreinte est celle gravée dans le programme), sinon menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
 <div><dt>Moteurs intégrés</dt><dd>moteur YARA maison (règles YARA, YARA-X en oracle des tests), reqwest + rustls/ring (HTTPS sans OpenSSL), tokio (scan asynchrone), client UPnP maison ; chaque bibliothèque vérifiée par cargo deny (failles connues, licences, provenance)</dd></div>
 <div><dt>Cryptographie</dt><dd>Ed25519 (versions signées, clé principale et clé de secours), SHA-256, BLAKE3 (intégrité, état de Vanguard et journal des événements scellés), XChaCha20-Poly1305 + Argon2 (carnet chiffré)</dd></div>
 <div><dt>Blocage</dt><dd>Montré avant d'agir : ufw, ou une table nftables <code>inet vanguard</code> écrite par netlink, sous Linux ; le Pare-feu Windows par son interface COM (INetFwPolicy2)  ; le programme revérifié dans la commande même de l'arrêt ; la liste des pilotes vulnérables de Microsoft écrite par Vanguard lui-même</dd></div>

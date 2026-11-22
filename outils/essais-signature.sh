@@ -1328,6 +1328,12 @@ awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ 
   /attendre_execution "\$RUN" [0-9]+/ { m = 1 } END { exit !(c && m) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh : chaque attente de GitHub (CI) a un délai" ||
   ko "publier-version.sh : un « gh run watch » sans délai"
+# Son gh run watch espacé (--interval d'au moins 30 s) : au rythme par défaut (3 s, chaque travail relu), une CI
+# d'une heure vidait la limite de GitHub et coupait la publication (0.97.0, 22 nov. 2026).
+awk '/^attendre_execution\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" |
+  grep -E '^[^#]*gh run watch [^#]*--interval ([3-9][0-9]|[1-9][0-9]{2,})( |$)' >/dev/null &&
+  ok "publier-version.sh : l'attente de la CI espace ses appels à GitHub" ||
+  ko "publier-version.sh : gh run watch sans --interval d'au moins 30 s (limite de GitHub)"
 
 # 6f. Les protections des programmes qui partent, lues par la copie Linux qui part : verifier_binaires, face à un faux
 # programme Linux qui note ce qu'on lui demande, lui passe le système attendu et chaque fichier, et rend son refus.
