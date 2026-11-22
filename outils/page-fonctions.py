@@ -18,6 +18,7 @@ la page prête. Rien n'est envoyé d'ici.
   - captures : celles du README (assets/captures, déjà masquées par outils/captures.py), en WebP sans perte et
     intégrées à la page (data:) : une seule page, sans fichier à côté, pour GitHub Pages comme pour claude.ai. Il y
     faut Pillow (python-pillow) ;
+  - nouveautés : les points en gras du paragraphe de la version dans CHANGELOG.md ;
   - visite guidée de la fenêtre : les captures de outils/captures-fenetre.sh (données inventées), prises dans
     --captures (défaut ~/.cache/vanguard-dev/captures-fenetre) ; une capture manquante arrête le rendu.
 
@@ -486,6 +487,53 @@ def a_venir(fichier: Path | None = None) -> str:
     return "\n".join(morceaux)
 
 
+# « Nouveautés » : les points en gras du paragraphe de la version dans CHANGELOG.md, refaits à chaque version (avant,
+# tenus à la main, ils restaient ceux de la version d'avant : la page de la 0.97 montrait ceux de la 0.96). Une version
+# sans paragraphe à elle arrête le rendu : jamais les nouveautés d'une autre version.
+HISTORIQUE_URL = f"https://github.com/{TICKET}/blob/master/CHANGELOG.md"
+LONGUEUR_DETAIL = 200
+
+
+def _phrase(md: str) -> str:
+    """La première phrase d'un texte de l'historique si elle tient en LONGUEUR_DETAIL signes, sinon rien."""
+    md = " ".join(md.split())
+    fin = re.search(r"[.!?](?= [A-ZÀ-ÝÉ«`(]|$)", md)
+    phrase = md[:fin.end()] if fin else md
+    if len(phrase) > LONGUEUR_DETAIL or phrase.count("`") % 2 or phrase.count("**") % 2:
+        return ""
+    return phrase
+
+
+def points_de_version(historique: str, v: str) -> list[tuple[str, str]]:
+    """(titre, première phrase) de chaque point « - **…** » du paragraphe « ## » de l'historique qui nomme la
+    version v (« ## 22 novembre 2026 : version 0.97.0 ») ; le premier, si plusieurs la nomment."""
+    titre_v = rf"^## [^\n]*\bversions? (?:[0-9.]+(?:,| et) )*{re.escape(v)}(?![0-9.])[^\n]*$"
+    m = re.search(titre_v + r"(.*?)(?=^## |\Z)", historique, re.S | re.M)
+    if not m:
+        sys.exit(f"✖ aucun paragraphe de CHANGELOG.md ne nomme la version {v} : nouveautés introuvables")
+    points = []
+    for bloc in re.split(r"^- ", m.group(1), flags=re.M)[1:]:
+        if t := re.match(r"\*\*(.+?)\*\*(.*)", bloc, re.S):
+            points.append((" ".join(t.group(1).split()).rstrip("."), _phrase(t.group(2))))
+    if not points:
+        sys.exit(f"✖ aucun point en gras dans le paragraphe de la version {v} de CHANGELOG.md")
+    return points
+
+
+def nouveautes(v: str, historique: str | None = None) -> str:
+    """Le corps de la section « Nouveautés » (HTML) : une phrase d'entrée, puis une carte par point de la version."""
+    if historique is None:
+        historique = (RACINE / "CHANGELOG.md").read_text(encoding="utf-8")
+    points = points_de_version(historique, v)
+    if confidentiel("\n".join(f"{t}\n{d}" for t, d in points)):
+        sys.exit("✖ « Nouveautés » : le texte de l'historique est refusé par outils/confidentialite.py")
+    lien = f'<a href="{HISTORIQUE_URL}">historique des versions</a>'
+    cartes = "\n".join(f"      <li><b>{_en_ligne(t)}</b>" + (f"<span>{_en_ligne(d)}</span>" if d else "") + "</li>"
+                        for t, d in points)
+    return (f"<p>{len(points)} changements dans la version {html.escape(v)}, tirés de son {lien}, où chacun se lit "
+            f'en entier.</p>\n    </div>\n    <ul class="nouveautes">\n{cartes}\n    </ul>')
+
+
 def alleger(page: str) -> str:
     """La page publiée sans ce qui ne sert qu'à la tenir : commentaires HTML et CSS, indentation et lignes vides. Les
     blocs <pre> gardent leurs espaces, qui y sont le texte même."""
@@ -558,6 +606,7 @@ def main():
     valeurs.update(jetons((RACINE / "fenetre/src/couleurs.rs").read_text(encoding="utf-8"),
                           (RACINE / "fenetre/src/dessin/mod.rs").read_text(encoding="utf-8")))
     valeurs["A_VENIR"] = a_venir(args.ticket)
+    valeurs["NOUVEAUTES"] = nouveautes(v)
     images = captures(args.captures)
     page = remplir((RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8"), valeurs | images)
     # Un « � », un invisible ou un caractère de contrôle écrit tel quel : l'outil Artifact refuse la page (0.94, U+FFFD

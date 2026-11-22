@@ -140,6 +140,62 @@ class AVenir(unittest.TestCase):
         self.assertNotIn("Documents", h)
 
 
+HISTORIQUE = """# Historique
+
+## 3 mars 2031 : version 9.8.7
+
+- **Un titre avec `code` et <balise>.** Une première phrase courte. Une seconde qu'on ne montre pas.
+- **Un autre titre** suivi d'un texte bien trop long pour une carte : """ + "mot " * 80 + """
+- un point sans gras, ignoré
+
+## 1er mars 2031 : version 9.8.6
+
+- **Ancien point.** Jamais montré.
+"""
+
+
+class Nouveautes(unittest.TestCase):
+    def test_points_de_sa_version_seulement_et_echappes(self):
+        h = pf.nouveautes("9.8.7", HISTORIQUE)
+        self.assertEqual(h.count("<li>"), 2)
+        self.assertIn("<b>Un titre avec <code>code</code> et &lt;balise&gt;</b>", h)
+        self.assertIn("<span>Une première phrase courte.</span>", h)
+        self.assertNotIn("seconde", h)
+        self.assertIn("<li><b>Un autre titre</b></li>", h)
+        self.assertNotIn("Ancien", h)
+        self.assertIn("2 changements dans la version 9.8.7", h)
+        self.assertIn(pf.HISTORIQUE_URL, h)
+
+    def test_version_absente_de_la_tete_echec_clair(self):
+        """Jamais les nouveautés d'une autre version : un préfixe (9.8), une version plus longue ou sans paragraphe."""
+        for v in ("9.8", "9.8.70", "9.8.5", "8.7"):
+            with self.subTest(v=v), self.assertRaises(SystemExit):
+                pf.nouveautes(v, HISTORIQUE)
+
+    def test_sans_point_en_gras_echec_clair(self):
+        with self.assertRaises(SystemExit):
+            pf.nouveautes("9.8.7", "## 3 mars 2031 : version 9.8.7\n\n- rien en gras\n")
+
+    def test_refus_de_confidentialite(self):
+        chemin = "C:\\" + "Users\\" + "Gas" + "ton\\Documents"
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            pf.nouveautes("9.8.7", f"## 3 mars 2031 : version 9.8.7\n\n- **Lire {chemin}.** Texte.\n")
+
+    def test_paragraphe_plus_bas_et_tete_en_preparation(self):
+        """La page d'une version se refait même quand la suivante est déjà « en préparation » en tête."""
+        h = pf.nouveautes("9.8.6", "## 9.9 (en préparation)\n\n- **Pas encore.** Non.\n\n" + HISTORIQUE)
+        self.assertIn("<b>Ancien point</b>", h)
+        self.assertNotIn("Pas encore", h)
+        self.assertNotIn("Un titre", h)
+
+    def test_vrai_historique(self):
+        """Le vrai CHANGELOG.md se lit pour la dernière version qu'il nomme."""
+        tete = re.search(r"^## [^\n]*version ([0-9]+\.[0-9]+\.[0-9]+)",
+                         (RACINE / "CHANGELOG.md").read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(tete)
+        self.assertIn("<li><b>", pf.nouveautes(tete.group(1)))
+
+
 class Remplir(unittest.TestCase):
     def test_un_seul_passage(self):
         page = pf.remplir("<!-- tête -->\n<p>{{A}}</p>\n<p>{{B}}</p>", {"A": "{{B}} /* garde */", "B": "deux"})
@@ -155,7 +211,7 @@ class Remplir(unittest.TestCase):
         """Le vrai gabarit : chaque trou a sa valeur, et la barre que document_entier cherche est là."""
         gabarit = (RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8")
         trous = set(re.findall(r"\{\{([A-Z_]+)\}\}", re.sub(r"<!--.*?-->", "", gabarit, count=1, flags=re.S)))
-        self.assertTrue({"JETONS", "A_VENIR", "FOND_CLAIR", "FOND_SOMBRE"} <= trous)
+        self.assertTrue({"JETONS", "A_VENIR", "NOUVEAUTES", "FOND_CLAIR", "FOND_SOMBRE"} <= trous)
         self.assertIn('<header class="barre-app"', gabarit)
 
 

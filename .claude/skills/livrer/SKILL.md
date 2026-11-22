@@ -49,9 +49,11 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    - page des fonctions : `deployer.sh` l'a refaite tout seul pour la version (docs/index.html, servie par GitHub
      Pages à https://d9v3.github.io/vanguard-beta/ : vérifier la ligne « Page des fonctions refaite »). Si des
      fonctions changent, les écrire AVANT la livraison dans outils/page-fonctions.html (rangée par menace, à la main
-     comme les README, avec les étiquettes « nouveau » et la section « Nouveautés ») ; les nombres (règles, commandes,
-     tests, VM) et la liste des commandes se remplissent seuls. Puis la même page sur claude.ai
-     (https://claude.ai/artifact/NG3P6Gq6XQaWRXqVvEFDMC, partagée par lien) : `python3 -I outils/page-fonctions.py`
-     (le fragment, sans --complet), `python3 -I outils/confidentialite.py --texte` dessus, puis l'outil Artifact à la
-     même adresse (`url`).
+     comme les README, avec les étiquettes « nouveau »). La section « Nouveautés » se remplit seule avec les points
+     en gras (`- **…**`) du paragraphe de CHANGELOG.md qui nomme la version (« … : version X.Y.Z » ; refus s'il
+     manque) : les écrire courts, la première phrase de chacun sert de détail. Les nombres (règles, commandes,
+     tests, VM) et la liste des commandes se remplissent seuls aussi. À CHAQUE version publiée, sans qu'on le
+     demande. Puis la même page sur claude.ai (https://claude.ai/artifact/NG3P6Gq6XQaWRXqVvEFDMC, partagée par
+     lien) : `python3 -I outils/page-fonctions.py` (le fragment, sans --complet),
+     `python3 -I outils/confidentialite.py --texte` dessus, puis l'outil Artifact à la même adresse (`url`).
 6. Compte rendu : la version, ce qui a changé, ce qui est vérifié, ce qui ne l'est pas encore (Windows réel…).

@@ -2,11 +2,12 @@
      version) et sur claude.ai (skill /livrer). Elle imite la fenêtre de Vanguard (vanguard-fenetre) : barre du haut
      à onglets, bande de console, titres à phrase grise, cartes. Les {{…}} sont remplis par outils/page-fonctions.py :
      version, date, nombres de règles, de commandes et de tests, liste des commandes, les couleurs (lues dans
-     fenetre/src/couleurs.rs et dessin/mod.rs) et « À venir » (lu dans le ticket public n° 1). Les fonctions et les
-     nouveautés se tiennent à la main, dans l'ordre des README : la sécurité de Vanguard lui-même d'abord, puis les
-     fonctions de sécurité menace par menace, « En plus », les systèmes, et l'installation en bas. Le long détail est
-     dans des menus déroulants (<details>) : replié à l'écran, trouvé quand même par la recherche du navigateur,
-     déplié à l'impression. Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
+     fenetre/src/couleurs.rs et dessin/mod.rs) et « À venir » (lu dans le ticket public n° 1). Les nouveautés
+     viennent du paragraphe de la version dans CHANGELOG.md ; les fonctions se tiennent à la main, dans l'ordre des
+     README : la sécurité de Vanguard lui-même d'abord, puis les fonctions de sécurité menace par menace,
+     « En plus », les systèmes, et l'installation en bas. Le long détail est dans des menus déroulants (<details>) :
+     replié à l'écran, trouvé quand même par la recherche du navigateur, déplié à l'impression. Rien de personnel :
+     ni nom, ni réseau, ni adresse Internet publique. -->
 <title>Vanguard {{VERSION_COURTE}}</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, GPL-3.0-or-later.">
 <meta name="theme-color" content="{{FOND_CLAIR}}" media="(prefers-color-scheme: light)">
@@ -910,9 +911,9 @@ footer a:hover { color: var(--encre); }
 
     <dl class="specs">
       <div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ {{LIGNES}} lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
-      <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64</dd></div>
+      <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64 ; la fenêtre, facultative, à poser à côté (glibc sous Linux)</dd></div>
       <div><dt>Règles du bilan</dt><dd>{{REGLES}} règles à identifiant stable (<code>LNX-SSH-006</code>) : {{REGLES_LINUX}} sous Linux, {{REGLES_WINDOWS}} sous Windows, communes comprises ; {{FICHES}} fiches d'audit du réseau</dd></div>
-      <div><dt>Interface</dt><dd>Menu au clavier, ou {{COMMANDES_CLI}} commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
+      <div><dt>Interface</dt><dd>Fenêtre egui sur un bureau graphique (lancée seulement si son empreinte est celle gravée dans le programme), sinon menu au clavier, ou {{COMMANDES_CLI}} commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
       <div><dt>Moteurs intégrés</dt><dd>moteur YARA maison (règles YARA, YARA-X en oracle des tests), reqwest + rustls/ring (HTTPS sans OpenSSL), tokio (scan asynchrone), client UPnP maison ; chaque bibliothèque vérifiée par cargo deny (failles connues, licences, provenance)</dd></div>
       <div><dt>Cryptographie</dt><dd>Ed25519 (versions signées, clé principale et clé de secours), SHA-256, BLAKE3 (intégrité, état de Vanguard et journal des événements scellés), XChaCha20-Poly1305 + Argon2 (carnet chiffré)</dd></div>
       <div><dt>Blocage</dt><dd>Montré avant d'agir : ufw, ou une table nftables <code>inet vanguard</code> écrite par netlink, sous Linux ; le Pare-feu Windows par son interface COM (INetFwPolicy2)  ; le programme revérifié dans la commande même de l'arrêt ; la liste des pilotes vulnérables de Microsoft écrite par Vanguard lui-même</dd></div>
@@ -1062,17 +1063,7 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Une version où Vanguard a sa fenêtre : livrée avec le programme, lancée seulement si c'est bien la sienne, et chaque geste montré avant d'être fait.</p>
-    </div>
-    <ul class="nouveautes">
-      <li><b>La fenêtre de Vanguard</b><span>Sur un bureau graphique, <code>vanguard</code> ouvre la fenêtre, sinon le menu du terminal, comme avant ; <code>vanguard --menu</code> le force.</span></li>
-      <li><b>Lancée seulement si c'est la sienne</b><span>Son empreinte SHA-256 est gravée dans le programme signé : une fausse fenêtre posée à côté n'est jamais lancée, et rien du compte n'y entre.</span></li>
-      <li><b>Corriger et remettre depuis la fenêtre</b><span>L'aperçu entier d'abord ; « Appliquer » et « Remettre comme avant » s'activent 2 secondes après, un geste à la fois (Linux).</span></li>
-      <li><b>Mettre à jour en voyant ce qui s'installe</b><span>D'où vient la mise à jour, sa version, son empreinte, sa taille et chaque programme remplacé, avant l'accord ; aussi <code>vanguard se-mettre-a-jour --voir</code>.</span></li>
-      <li><b>La fenêtre voyage avec le programme</b><span>La page de la version, les mises à jour et la clé la portent, vérifiée comme le programme, tout ou rien.</span></li>
-      <li><b>Programmes au démarrage sur accord</b><span>Retirer ou remettre une entrée demande l'accord donné pour ce geste ; une entrée changée depuis la liste est refusée.</span></li>
-      <li><b>Les programmes du système, pris par leur chemin</b><span>Jamais par le PATH du compte : un faux programme posé dans <code>~/.local/bin</code> ne cache plus une connexion ni une ligne du journal.</span></li>
-</ul>
+      {{NOUVEAUTES}}
   </section>
 
   <section id="en-cours">
