@@ -282,7 +282,9 @@ example, finds it, to rebuild it if needed.
   symbolic link, or moves a protected file out of its path (a rename used to hide the original path). An unreadable
   `deny.toml` no longer stops the audit of the other crates: only its own advisories all count.
 - **Dependency security.** wasmtime 48.0.9 (advisories RUSTSEC-2026-0566 to RUSTSEC-2026-0573: unbounded memory
-  growth in wasi, aborts on missing features, stale garbage-collector pointer, panics), brought in by YARA-X.
+  growth in wasi, aborts on missing features, stale garbage-collector pointer, panics), brought in by YARA-X;
+  url 2.5.9 (advisory RUSTSEC-2026-0592: a nested `blob:` URL overflowed the stack when computing its origin),
+  brought in by reqwest.
 - **Rust 1.100.0.** The programs are now built with the latest Rust release, which brings its fixes; its new
   clippy remarks are fixed in the code, without silencing any of them.
 

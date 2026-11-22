@@ -384,6 +384,11 @@ criteria = "safe-to-run"
 version = "0.1.15"
 criteria = "safe-to-deploy"
 
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "diff depuis 1.2.2 relu : un panic remplacé par une borne ; rien d'autre"
+
 [[exemptions.funty]]
 version = "2.0.0"
 criteria = "safe-to-run"
@@ -1226,8 +1231,9 @@ version = "0.0.4"
 criteria = "safe-to-run"
 
 [[exemptions.url]]
-version = "2.5.8"
+version = "2.5.9"
 criteria = "safe-to-deploy"
+notes = "RUSTSEC-2026-0592 corrigée ; diff de src/ depuis 2.5.8 relu : origine des blob: selon la norme, jeux d'encodage, analyse moins quadratique ; ni unsafe, ni E/S, ni dépendance nouvelle"
 
 [[exemptions.utf16-simd]]
 version = "0.2.0"
