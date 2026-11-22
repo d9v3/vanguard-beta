@@ -25,7 +25,8 @@
 #                                                 toute première publication seulement ; sinon, refusé)
 #   outils/signer-versions.sh --point-sur FICHIER …   le point sûr (voir plus bas) pris dans FICHIER (et FICHIER.sig)
 #   outils/signer-versions.sh --passe-droit NOM …     un passe-droit pris par outils/publier-version.sh pour cette
-#                                                 version (sans-empreintes-ci, sans-vm), gardé dans son bloc de
+#                                                 version (sans-empreintes-ci, sans-vm, sans-controle-sources),
+#                                                 gardé dans son bloc de
 #                                                 l'historique signé : jamais dans derniere.txt. Répétable.
 #   outils/signer-versions.sh --ci-apres COMMIT …     la compilation reproductible de la CI à laquelle les programmes
 #                                                 sont identiques a tourné sur COMMIT (40 chiffres hexadécimaux), un
@@ -67,7 +68,7 @@ while (($#)); do
     --premier) PREMIER=1 ;;
     --revoquer) REVOQUER=1 ;;
     --point-sur) POINT_SUR=${2:?--point-sur FICHIER}; shift ;;
-    --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm}"); shift ;;
+    --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm|sans-controle-sources}"); shift ;;
     --ci-apres) CI_APRES=${2:?--ci-apres COMMIT}; shift ;;
     *) ARGS+=("$1") ;;
   esac
@@ -91,7 +92,8 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 # rien, sinon croire à une révocation qui n'a pas eu lieu.
 [[ -z $REVOQUER || -n $SECOURS ]] || erreur "--revoquer va avec --secours : la principale ne se révoque pas elle-même"
 for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
-  [[ $p == sans-empreintes-ci || $p == sans-vm ]] || erreur "passe-droit inconnu : $p (sans-empreintes-ci ou sans-vm)"
+  [[ $p == sans-empreintes-ci || $p == sans-vm || $p == sans-controle-sources ]] ||
+    erreur "passe-droit inconnu : $p (sans-empreintes-ci, sans-vm ou sans-controle-sources)"
 done
 [[ -z $CI_APRES || $CI_APRES =~ ^[0-9a-f]{40}$ ]] || erreur "--ci-apres : un commit en 40 chiffres hexadécimaux"
 # Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, revocation_retenue) : les

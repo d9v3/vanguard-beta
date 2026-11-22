@@ -98,18 +98,6 @@ FAUX
     'if c == "trace": raise RuntimeError("plantage du garde-fou")' \
     'sys.exit(1 if c == "trouve" else 0 if c in ("muet", "zero") else int(c))' \
     >"$DEPOT/outils/confidentialite.py"
-  # Le faux contrôle des sources : sain par défaut ; $CAS/consigne-sources dit 1, 2, muet (code 0 sans témoin),
-  # trace (plantage) ou zero (« 0 vérifiée(s) ») ; ses arguments notés dans $CAS/vu-sources.
-  printf '%s\n' 'import os, sys' 'cas = os.environ["ESSAI_CAS"]' \
-    'open(cas + "/vu-sources", "w").write(" ".join(sys.argv[1:]))' \
-    'c = open(cas + "/consigne-sources").read().strip() if os.path.exists(cas + "/consigne-sources") else "0"' \
-    'if c == "0": print("Sources : 3 vérifiée(s), saines (0 admise(s)).")' \
-    'if c == "zero": print("Sources : 0 vérifiée(s), saines (0 admise(s)).")' \
-    'if c == "1": print("Sources : 1 dégradation(s) sur 3 vérifiée(s).")' \
-    'if c == "2": print("Sources : 1 non vérifiée(s) sur 3 : rien conclu.")' \
-    'if c == "trace": raise RuntimeError("plantage du contrôle")' \
-    'sys.exit({"1": 1, "2": 2}.get(c, 0))' \
-    >"$DEPOT/outils/controle-sources.py"
   chmod +x "$DEPOT"/outils/*.sh
   echo b >"$DEPOT/b"
   git -C "$DEPOT" init -q -b master
@@ -215,10 +203,6 @@ livrer lot
 ((CODE == 2)) || refus+=("un seul argument : code $CODE")
 livrer lot "$LOT" en-trop
 ((CODE == 2)) || refus+=("argument en trop : code $CODE")
-livrer lot "$LOT" --sans-controle-sources en-trop
-((CODE == 2)) || refus+=("contournement suivi d'un argument en trop : code $CODE")
-livrer lot --sans-controle-sources "$LOT"
-((CODE == 2)) || refus+=("contournement mal placé : code $CODE")
 livrer lot "$DEPOT"
 ((CODE == 2)) || refus+=("worktree = arbre principal : code $CODE")
 livrer master "$DEPOT"
@@ -587,86 +571,6 @@ if ((code_raison == 3 && CODE == 1)) && [[ -d $LOT ]] && grep -q "^    src/autre
   ok "deployer.sh en code 8 : avec sa raison, code 3 et dit ; sans raison, échec (code 1) ; jamais « livré »"
 else
   ko "deployer.sh en code 8 (avec raison $code_raison, sans raison $CODE) : $(tail -n 2 <<<"$sortie_raison")"
-fi
-
-# Le contrôle des sources (outils/controle-sources.py) : lancé après la vérification, sur les fichiers du lot,
-# avec le programme de master ; tout ce qui n'est pas « code 0 + N ≥ 1 vérifiée(s), saines » arrête la livraison.
-monter sources-sain
-livrer lot "$LOT"
-VERIFIE=$(cat "$CAS/vu-verifie" 2>/dev/null)
-ARGS="--catalogue $LOT/outils/catalogue-sources.json --admis $LOT/outils/controle-sources-admis.json"
-if ((CODE == 0)) && [[ $(tete master) == "$VERIFIE" && $(cat "$CAS/vu-sources" 2>/dev/null) == "$ARGS" ]] &&
-  grep -q "contrôle de master" <<<"$SORTIE" && grep -q "^✔ livré : [0-9a-f]*$" <<<"$SORTIE"; then
-  ok "sources saines : contrôle de master sur le catalogue du lot, livré sans mention"
-else
-  ko "sources saines (code $CODE) : $(tail -n 3 <<<"$SORTIE") ; vu : $(cat "$CAS/vu-sources" 2>&1)"
-fi
-for consigne in 1 2 muet trace zero; do
-  monter "sources-$consigne"
-  DEPART=$(tete master)
-  echo "$consigne" >"$CAS/consigne-sources"
-  livrer lot "$LOT"
-  case $consigne in
-    1) attendu="source(s) dégradée(s)" ;;
-    2) attendu="non vérifiée(s), rien conclu" ;;
-    *) attendu="contrôle en panne ou sans témoin" ;;
-  esac
-  if ((CODE == 1)) && rien_livre "$DEPART" && [[ -e $CAS/vu-verifie && -d $LOT ]] &&
-    grep -qF "✖ sources du catalogue : " <<<"$SORTIE" && grep -qF "$attendu" <<<"$SORTIE" &&
-    [[ ! -e $CAS/maison/.cache/vanguard-dev/controle-sources-contournements.log ]]; then
-    ok "sources « $consigne » : « $attendu », rien fusionné ni déployé, rien noté"
-  else
-    ko "sources « $consigne » (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
-  fi
-done
-
-# Le contournement : seulement par l'option tapée ; dit, noté (date, commit, branche, code ; aucun texte libre), et
-# rappelé dans « livré ». Une variable d'environnement ne contourne rien.
-monter sources-contourne
-DEPART=$(tete master)
-echo 2 >"$CAS/consigne-sources"
-SORTIE=$(cd "$DEPOT" && ESSAI_CAS=$CAS HOME=$CAS/maison VANGUARD_SANS_CONTROLE_SOURCES=1 \
-  VANGUARD_HORS_LIGNE=1 bash outils/livrer-branche.sh lot "$LOT" 2>&1)
-CODE=$?
-code_variable=$CODE
-rien_variable=$(rien_livre "$DEPART" && echo oui)
-livrer lot "$LOT" --sans-controle-sources
-VERIFIE=$(cat "$CAS/vu-verifie" 2>/dev/null)
-NOTE=$CAS/maison/.cache/vanguard-dev/controle-sources-contournements.log
-if ((code_variable == 1 && CODE == 0)) && [[ $rien_variable == oui && $(tete master) == "$VERIFIE" ]] &&
-  grep -q "⚠ sources du catalogue : source(s) non vérifiée(s)" <<<"$SORTIE" &&
-  grep -q "^✔ livré : .*(sources du catalogue non contrôlées : --sans-controle-sources)$" <<<"$SORTIE" &&
-  [[ $(wc -l <"$NOTE") -eq 1 ]] && grep -qE "^[0-9T:+-]+	$VERIFIE	lot	code 2$" "$NOTE"; then
-  ok "contournement : jamais par une variable ; par --sans-controle-sources, dit, noté sans texte libre, rappelé"
-else
-  ko "contournement (variable : $code_variable, option : $CODE) : $(tail -n 3 <<<"$SORTIE")"
-  ko "  noté : $(cat "$NOTE" 2>&1)"
-fi
-
-# Premier passage : master n'a jamais eu le contrôle, celui du lot sert, dit. Mais un contrôle retiré de master ne
-# laisse pas le lot apporter le sien (vide) : refus.
-monter sources-premier
-git -C "$DEPOT" rm -q outils/controle-sources.py
-git -C "$DEPOT" commit -q --amend -m départ
-git -C "$DEPOT" update-ref refs/remotes/origin/master master
-git -C "$LOT" rebase -q master
-printf 'print("Sources : 2 vérifiée(s), saines (0 admise(s)).")\n' >"$LOT/outils/controle-sources.py"
-git -C "$LOT" add outils/controle-sources.py && git -C "$LOT" commit -qm "le lot apporte le contrôle"
-livrer lot "$LOT"
-code_premier=$CODE sortie_premier=$SORTIE
-monter sources-retire
-git -C "$DEPOT" rm -q outils/controle-sources.py && git -C "$DEPOT" commit -qm "contrôle retiré"
-git -C "$DEPOT" update-ref refs/remotes/origin/master master
-DEPART=$(tete master)
-git -C "$LOT" rebase -q master
-printf 'print("Sources : 2 vérifiée(s), saines (0 admise(s)).")\n' >"$LOT/outils/controle-sources.py"
-git -C "$LOT" add outils/controle-sources.py && git -C "$LOT" commit -qm "le lot apporte un contrôle vide"
-livrer lot "$LOT"
-if ((code_premier == 0 && CODE == 1)) && grep -q "contrôle de le lot (master ne l'a pas encore)" <<<"$sortie_premier" &&
-  rien_livre "$DEPART" && grep -q "master n'a pas (ou plus) outils/controle-sources.py" <<<"$SORTIE"; then
-  ok "premier passage : contrôle du lot, dit ; contrôle retiré de master : le lot ne peut pas apporter le sien"
-else
-  ko "premier passage ($code_premier) / contrôle retiré ($CODE) : $(tail -n 2 <<<"$sortie_premier$SORTIE")"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }

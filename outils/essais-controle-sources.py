@@ -314,7 +314,12 @@ def principal():
     code, sortie = passer(reponses=flathub_avec(is_eol=True))
     verifier(degrade(code, sortie, "en fin de vie"), "Flathub : fin de vie", sortie)
     code, sortie = passer(reponses=flathub_avec(metadata={"flathub::verification::verified": None}))
-    verifier(degrade(code, sortie, "pas vérifié par son éditeur"), "Flathub : éditeur non vérifié", sortie)
+    verifier(code == 0 and "  ℹ KeePassXC · flathub org.keepassxc.KeePassXC : pas vérifié par son éditeur" in sortie
+             and "Sources : 7 vérifiée(s), saines" in sortie and "✖" not in sortie,
+             "Flathub : éditeur non vérifié, dit (ℹ), sans changer le code ni compter de dégradation", sortie)
+    code, sortie = passer(reponses=flathub_avec(is_eol=True, metadata={}))
+    verifier(degrade(code, sortie, "en fin de vie") and "ℹ KeePassXC" in sortie and sortie.count("✖") == 1,
+             "Flathub : fin de vie et éditeur non vérifié : une dégradation, une information", sortie)
     absents = {ARCH: reponse_json({"results": []}), FLAT: {"statut": 404, "corps": b"{}"},
                DEB: reponse_json([]), FED: {"statut": 400, "corps": b"400: Bad Request", "type": "text/plain"},
                MSIX: {"statut": 200, "corps": index_winget(ids=("GIMP.GIMP.3",)), "type": "application/octet-stream"}}

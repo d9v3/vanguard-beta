@@ -80,8 +80,13 @@ CONSTATS = {
     "perime": "marqué périmé",
     "fin-de-vie": "en fin de vie",
     "licence": "licence différente du catalogue",
-    "editeur-non-verifie": "pas vérifié par son éditeur",
     "hors-main": "hors de la section main",
+}
+# Dits (ligne « ℹ »), jamais une dégradation : ils ne changent pas le code de sortie, ni ne s'admettent. Un éditeur
+# qui n'a pas vérifié son application sur Flathub n'est pas une source qui s'est dégradée (beaucoup ne l'ont jamais
+# fait), mais vaut d'être su avant de la proposer.
+INFOS = {
+    "editeur-non-verifie": "pas vérifié par son éditeur",
 }
 
 
@@ -507,7 +512,7 @@ def lire_admis(chemin, aujourd_hui):
 def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_ligne=False):
     """Écrit le compte rendu sur la sortie et rend le code de sortie."""
     a_faire, refuses = taches(logiciels)
-    degradations, admises, non_verifies, sains, non_couverts = [], [], [], 0, 0
+    degradations, admises, non_verifies, sains, non_couverts, infos = [], [], [], 0, 0, []
     for source, ident, raison in refuses:
         non_verifies.append((source, ident, raison))
     index, branche, erreur_index, erreur_branche = None, None, None, None
@@ -546,6 +551,10 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
         except NonVerifie as e:
             non_verifies.append((source, ident, str(e)))
             continue
+        for constat, detail in constats:
+            if constat in INFOS:
+                infos.append((constat, detail, source, ident, logiciel["nom"]))
+        constats = [c for c in constats if c[0] not in INFOS]
         if not constats:
             sains += 1
         for constat, detail in constats:
@@ -565,6 +574,8 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
         print(f"  ≈ {source} {ident} : {CONSTATS[constat]}, admis le {date} jusqu'au {jusqu} ({propre(raison, 120)})")
     for source, ident, raison in non_verifies:
         print(f"  ? {source} {ident} : non vérifié ({propre(raison, 200)})")
+    for constat, detail, source, ident, nom in infos:
+        print(f"  ℹ {propre(nom, 40)} · {source} {ident} : {INFOS[constat]} ({propre(detail, 200)}) : dit, sans effet")
     if index is not None:
         print(f"  · index de winget du {index[1]} ({len(index[0])} identifiants)")
     if branche is not None:

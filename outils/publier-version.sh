@@ -36,7 +36,8 @@ versions() {
   fi | grep -E ' \(v[0-9]+\.[0-9]+\.[0-9]+\)$' | awk '{ v = $NF } !vu[v]++' || true
 }
 
-# Les passe-droits pris pour cette version (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) : dits en
+# Les passe-droits pris pour cette version (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM,
+# VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) : dits en
 # tête des notes de la page, et gardés dans l'historique signé (outils/signer-versions.sh --passe-droit), pas
 # seulement au terminal (relecture du lot correctifs-c6).
 PASSE_DROITS=()
@@ -53,6 +54,12 @@ without being matched against the CI's reproducible build (VANGUARD_PUBLIER_SANS
         printf '%s\n' "⚠ **Passe-droit** : programme Windows publié sans passe de la VM d'essais sur ce .exe \
 (VANGUARD_PUBLIER_SANS_VM)." "⚠ **Override**: Windows program published without a pass of the test VM on this .exe \
 (VANGUARD_PUBLIER_SANS_VM)." ""
+        ;;
+      sans-controle-sources)
+        printf '%s\n' "⚠ **Passe-droit** : version publiée sans que les sources du catalogue (Arch, Flathub, winget, \
+Debian, Fedora) aient été trouvées saines (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES)." "⚠ **Override**: version \
+published without the catalogue sources (Arch, Flathub, winget, Debian, Fedora) being found healthy \
+(VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES)." ""
         ;;
     esac
   done
@@ -193,6 +200,52 @@ verifier_compilation() {
   echo "$compile"
 }
 COMPILE=$(verifier_compilation) || { echo "$COMPILE"; exit 1; }
+# Les sources du catalogue (outils/controle-sources.py), avant toute requête à GitHub : un paquet Arch périmé, une
+# application Flathub en fin de vie ou de licence changée, un identifiant winget disparu, ou une source qu'on n'a pas
+# pu vérifier (réseau, délai, limite : code 2) arrêtent la publication. Le contrôle, le catalogue exporté et la liste
+# des admis sont pris dans le commit publié (arbre propre, vérifié plus haut ; la tête de master, vérifiée plus bas),
+# jamais dans des fichiers d'ici. Seul code 0 avec « Sources : N vérifiée(s), saines » (N ≥ 1) vaut sain ; une trace
+# de Python (code 1 sans le témoin « dégradation(s) ») est dite comme une panne. VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1
+# publie quand même, et le dit dans les notes et l'historique signé. --notes ne passe jamais ici : aucune requête.
+# Lue telle quelle par outils/essais-signature.sh.
+controle_des_sources() {
+  local dossier sortie="" code=0 cause
+  dossier=$(mktemp -d)
+  if git show "$COMMIT:outils/controle-sources.py" >"$dossier/controle-sources.py" 2>/dev/null &&
+    git show "$COMMIT:outils/catalogue-sources.json" >"$dossier/catalogue-sources.json" 2>/dev/null &&
+    git show "$COMMIT:outils/controle-sources-admis.json" >"$dossier/admis.json" 2>/dev/null; then
+    sortie=$(python3 -I "$dossier/controle-sources.py" --catalogue "$dossier/catalogue-sources.json" \
+      --admis "$dossier/admis.json" 2>&1) || code=$?
+    [[ -z $sortie ]] || printf '%s\n' "$sortie" | tail -n 40
+  else
+    code=-1
+  fi
+  rm -rf "$dossier"
+  if ((code == 0)) && grep -qE '^Sources : [1-9][0-9]* vérifiée\(s\), saines' <<<"$sortie"; then
+    echo "✔ Sources du catalogue contrôlées."
+    return 0
+  fi
+  if ((code == -1)); then
+    cause="contrôle, catalogue exporté ou liste des admis absent du commit publié"
+  elif ((code == 1)) && grep -qE '^Sources : [1-9][0-9]* dégradation\(s\)' <<<"$sortie"; then
+    cause="source(s) dégradée(s)"
+  elif ((code == 2)) && grep -q '^Sources : ' <<<"$sortie"; then
+    cause="source(s) non vérifiée(s), rien conclu"
+  else
+    cause="contrôle en panne ou sans témoin (code $code)"
+  fi
+  if [[ -n ${VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES:-} ]]; then
+    echo "⚠ Sources du catalogue : $cause ; publié quand même (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) : dit dans les \
+notes et l'historique signé."
+    PASSE_DROITS+=(sans-controle-sources)
+    return 0
+  fi
+  echo "Sources du catalogue : $cause : rien de publié."
+  echo "  (corriger le catalogue, admettre la dégradation dans outils/controle-sources-admis.json, réessayer plus tard,"
+  echo "  ou VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 outils/publier-version.sh pour publier quand même, et le dire.)"
+  return 1
+}
+controle_des_sources || exit 1
 git fetch -q --tags origin
 if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
   echo "Ce commit n'est pas la tête de master sur GitHub : lancer d'abord outils/deployer.sh."

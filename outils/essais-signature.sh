@@ -59,7 +59,8 @@
 #   6f. Les protections des programmes qui partent (vanguard deploiement verifier-binaire) : publier-version.sh les
 #      fait lire (verifier_binaires, face à un faux programme Linux) sur les copies Linux et Windows, après la relecture
 #      de leurs empreintes ; deployer.sh, sur ce qui part ; un refus arrête tout.
-#   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
+#   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM,
+#      VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt ; de même
 #      le commit entier d'une CI faite après la version (--ci-apres), retrouvé et revérifié par publier-version.sh.
@@ -1195,9 +1196,11 @@ programmes "$T/v-passe" 0.86.0+1792600000
 cp -r "$T/v-passe" "$T/v-sans"
 signer "$T/passe" "$T/v-sans" --premier || ko "passe-droit : signature sans passe-droit ($(tail -n 1 "$T/v-sans.log"))"
 ZEROS=$(printf '0%.0s' {1..64})
-if signer "$T/passe" "$T/v-passe" --premier --passe-droit sans-empreintes-ci --passe-droit sans-vm; then
+if signer "$T/passe" "$T/v-passe" --premier --passe-droit sans-empreintes-ci --passe-droit sans-vm \
+  --passe-droit sans-controle-sources; then
   grep -qxF "passe-droit-sans-empreintes-ci $ZEROS 0" "$T/v-passe/historique.txt" &&
     grep -qxF "passe-droit-sans-vm $ZEROS 0" "$T/v-passe/historique.txt" &&
+    grep -qxF "passe-droit-sans-controle-sources $ZEROS 0" "$T/v-passe/historique.txt" &&
     [[ $(sed -n 1p "$T/v-passe/historique.txt") == "version 0.86.0+1792600000" ]] &&
     ok "passe-droit : gardé dans le bloc de sa version de l'historique signé" ||
     ko "passe-droit absent de l'historique : $(cat "$T/v-passe/historique.txt")"
@@ -1213,7 +1216,7 @@ if signer "$T/passe" "$T/v-passe" --premier --passe-droit sans-empreintes-ci --p
   programmes "$T/v-passe87" 0.87.0+1792700000
   mkdir -p "$T/v-passe87/avant" && cp "$T/v-passe/historique.txt" "$T/v-passe/historique.txt.sig" "$T/v-passe87/avant/"
   if signer "$T/passe87" "$T/v-passe87"; then
-    awk '/^version 0.87/ { b = 87 } /^version 0.86/ { b = 86 } /^passe-droit-/ { p[b]++ } END { exit !(p[86] == 2 && !p[87]) }' \
+    awk '/^version 0.87/ { b = 87 } /^version 0.86/ { b = 86 } /^passe-droit-/ { p[b]++ } END { exit !(p[86] == 3 && !p[87]) }' \
       "$T/v-passe87/historique.txt" && ok "passe-droit : repris avec son bloc par la version suivante, pas au-delà" ||
       ko "passe-droit : perdu ou recopié dans la version suivante : $(cat "$T/v-passe87/historique.txt")"
   else
@@ -1258,10 +1261,11 @@ notes_avec() { # passe-droits
   PATH="$T/faux-gh-notes:$PATH" NOM=Vanguard VERSION=0.0.0 TAG=v0.0.0 TELECHARGER=téléchargement \
     bash -c "source '$T/notes.sh'; PASSE_DROITS=(\"\$@\"); notes" _ "$@" 2>&1
 }
-r=$(notes_avec sans-empreintes-ci sans-vm)
+r=$(notes_avec sans-empreintes-ci sans-vm sans-controle-sources)
 [[ $(head -n 1 <<<"$r") == "⚠ **Passe-droit**"*VANGUARD_PUBLIER_SANS_EMPREINTES_CI* ]] &&
   grep -q "Override.*VANGUARD_PUBLIER_SANS_EMPREINTES_CI" <<<"$r" &&
   grep -q "Passe-droit.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" && grep -q "Override.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" &&
+  [[ $(grep -c "VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES" <<<"$r") == 2 ]] &&
   ok "passe-droit : dit en tête des notes de la page, en français et en anglais" ||
   ko "passe-droit absent des notes : $(head -c 400 <<<"$r")"
 r=$(notes_avec)
@@ -1274,6 +1278,76 @@ awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sa
   END { exit !(a && b && p && s) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh note chaque passe-droit pris et le passe à la signature" ||
   ko "publier-version.sh : un passe-droit pris n'est ni noté ni signé"
+# Le contrôle des sources du catalogue (controle_des_sources, lue telle quelle) : pris dans le commit publié, il
+# arrête la publication sur tout ce qui n'est pas « code 0 + N ≥ 1 vérifiée(s), saines » ; le seul contournement,
+# VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES, devient le passe-droit sans-controle-sources (notes et historique signé).
+awk '/^controle_des_sources\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/controle-des-sources.sh"
+S=$T/sources
+mkdir -p "$S/outils"
+printf '%s\n' 'import os, sys' 'c = os.environ.get("ESSAI_SOURCES", "0")' \
+  'open(os.environ["ESSAI_VU"], "w").write(" ".join(a.rsplit("/", 1)[-1] for a in sys.argv))' \
+  'if c == "0": print("Sources : 3 vérifiée(s), saines (0 admise(s)).")' \
+  'if c == "zero": print("Sources : 0 vérifiée(s), saines (0 admise(s)).")' \
+  'if c == "1": print("Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
+  'if c == "2": print("Sources : 1 non vérifiée(s), 2 saine(s), 0 admise(s) : rien conclu.")' \
+  'if c == "trace": raise RuntimeError("plantage du contrôle")' \
+  'sys.exit({"1": 1, "2": 2}.get(c, 0))' >"$S/outils/controle-sources.py"
+echo '{}' >"$S/outils/catalogue-sources.json"
+echo '{"format": 1, "admis": []}' >"$S/outils/controle-sources-admis.json"
+git -C "$S" init -q -b master && git -C "$S" add -A &&
+  git -C "$S" -c user.name=alice -c user.email=alice@example.com commit -qm départ
+S_COMMIT=$(git -C "$S" rev-parse HEAD)
+# Ce qu'on a sous les yeux ne compte pas : le contrôle d'ici, changé sans commit, dirait toujours « sain ».
+printf 'print("Sources : 9 vérifiée(s), saines (0 admise(s)).")\n' >"$S/outils/controle-sources.py"
+controle() { # consigne, puis variables d'environnement : « code=N droits=… » et la sortie
+  local consigne=$1
+  shift
+  rm -f "$T/vu-sources"
+  (cd "$S" && env ESSAI_SOURCES="$consigne" ESSAI_VU="$T/vu-sources" "$@" COMMIT="$S_COMMIT" bash -c \
+    "source '$T/controle-des-sources.sh'; PASSE_DROITS=(); controle_des_sources; echo \"code=\$? droits=\${PASSE_DROITS[*]-}\"" 2>&1)
+}
+r=$(controle 0)
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=" && $r == *"✔ Sources du catalogue contrôlées."* &&
+  $(cat "$T/vu-sources" 2>&1) == "controle-sources.py --catalogue catalogue-sources.json --admis admis.json" ]] &&
+  ok "publier : sources saines, contrôle du commit publié (pas celui d'ici), aucun passe-droit" ||
+  ko "publier : sources saines mal traitées ($r ; vu : $(cat "$T/vu-sources" 2>&1))"
+refus=()
+for consigne in 1 2 zero trace muet; do
+  case $consigne in
+    1) attendu="source(s) dégradée(s)" ;;
+    2) attendu="non vérifiée(s), rien conclu" ;;
+    zero) attendu="contrôle en panne ou sans témoin (code 0)" ;;
+    trace) attendu="contrôle en panne ou sans témoin (code 1)" ;;
+    muet) attendu="contrôle en panne ou sans témoin (code 0)" ;;
+  esac
+  r=$(controle "$consigne")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"$attendu : rien de publié."* &&
+    $r == *"VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1"* ]] || refus+=("$consigne : $(tail -n 2 <<<"$r")")
+done
+((${#refus[@]} == 0)) && ok "publier : dégradation, non vérifié, panne, sans témoin : rien de publié, contournement dit" ||
+  ko "publier : contrôle des sources qui laisse publier : ${refus[*]}"
+r=$(controle 1 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources" &&
+  $r == *"⚠ Sources du catalogue : source(s) dégradée(s) ; publié quand même"* ]] &&
+  ok "publier : VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES devient le passe-droit sans-controle-sources, dit" ||
+  ko "publier : contournement des sources non noté ($r)"
+r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=" ]] && ok "publier : sources saines, aucun passe-droit même demandé" ||
+  ko "publier : passe-droit noté sans rien contourner ($r)"
+git -C "$S" rm -q --cached outils/controle-sources-admis.json &&
+  git -C "$S" -c user.name=alice -c user.email=alice@example.com commit -qm "sans admis"
+S_COMMIT=$(git -C "$S" rev-parse HEAD)
+r=$(controle 0)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"absent du commit publié : rien de publié."* &&
+  ! -e $T/vu-sources ]] && ok "publier : contrôle ou liste des admis absent du commit publié : rien de publié" ||
+  ko "publier : fichier du contrôle absent mal traité ($r)"
+# Le contrôle tourne avant toute requête à GitHub (git fetch, gh), après l'arrêt de --notes (qui n'en fait aucune).
+awk '/^if \[\[ \$\{1:-\} == --notes \]\]; then/ { n = NR } /^controle_des_sources \|\| exit 1$/ { c = NR }
+  /^git fetch -q --tags origin$/ && !f { f = NR }
+  /^[^#]*(gh |git fetch)/ && n && !g && NR > n + 4 && !/^ / { g = NR }
+  END { exit !(n && c > n + 3 && f == c + 1 && (g == 0 || g > c)) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : sources contrôlées avant toute requête à GitHub ; --notes s'arrête avant, sans requête" ||
+  ko "publier-version.sh : contrôle des sources absent, ou après une requête à GitHub, ou lancé par --notes"
 # Le commit entier de la CI faite après la version : retrouvé dans la ligne de master à partir de ses 12 premiers
 # chiffres, revérifié, puis passé à la signature ; introuvable, ou pas dans la ligne : rien de publié.
 awk '/CI_APRES_COMPLET=\$\(git rev-list/,/introuvable ou ambigu/' "$DEPOT/outils/publier-version.sh" >"$T/ci-apres-complet.sh"

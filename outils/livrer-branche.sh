@@ -2,7 +2,7 @@
 # Livre la publication du jour, une branche déjà commitée (commit de version « … (vX.Y.Z) » en tête) : rebase sur
 # master, garde-fou de confidentialité, vérification complète, fusion rapide dans master, déploiement
 # (outils/deployer.sh : binaire, clé, VM, GitHub, page de la version), puis ménage de la branche et du worktree.
-#   outils/livrer-branche.sh <branche> <worktree> [--sans-controle-sources]
+#   outils/livrer-branche.sh <branche> <worktree>
 # VANGUARD_INTERMEDIAIRE=1 : version intermédiaire d'une série (deployer.sh : sans page ni dépôt dans la VM).
 #
 # Ce qui est fusionné et déployé est le commit vérifié, noté juste après le rebase, jamais le nom de la branche : un
@@ -20,15 +20,8 @@
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
 set -euo pipefail
-usage() { echo "usage : $0 <branche> <worktree> [--sans-controle-sources]" >&2; exit 2; }
-# --sans-controle-sources : le seul contournement du contrôle des sources (plus bas), un choix de l'auteur tapé à la
-# livraison, montré et noté ; jamais une variable d'environnement, qui resterait posée sans qu'on la voie.
-CONTOURNER=""
-if [[ $# -eq 3 && $3 == --sans-controle-sources ]]; then
-  CONTOURNER=1
-elif [[ $# -ne 2 ]]; then
-  usage
-fi
+usage() { echo "usage : $0 <branche> <worktree>" >&2; exit 2; }
+[[ $# -eq 2 ]] || usage
 BRANCHE=$1
 [[ -n $BRANCHE && $BRANCHE != master ]] || { echo "✖ branche « $BRANCHE » : il faut la branche du lot, pas master" >&2; exit 2; }
 [[ -d $2 ]] || { echo "✖ $2 n'est pas un dossier (arguments inversés ? $0 <branche> <worktree>)" >&2; exit 2; }
@@ -117,56 +110,6 @@ grep -q "^Tout est vert" "$JOURNAUX/verif-$NOM.log" ||
 propre "$ARBRE" || { echo "✖ $ARBRE a changé pendant la vérification : rien n'est fusionné"; exit 1; }
 [[ $(git rev-parse HEAD) == "$SHA" && $(git rev-parse "refs/heads/$BRANCHE") == "$SHA" ]] ||
   { echo "✖ $BRANCHE a bougé pendant la vérification (vérifié : ${SHA:0:12}) : rien n'est fusionné"; exit 1; }
-# Les sources du catalogue (outils/controle-sources.py, conception C5) : une source qui s'est dégradée (paquet Arch
-# périmé, application Flathub en fin de vie ou de licence changée, identifiant winget disparu) arrête la livraison,
-# comme une source qu'on n'a pas pu vérifier (code 2 : réseau, délai, limite) ; seul --sans-controle-sources la laisse
-# passer, dit et noté (date, commit, code ; aucun texte libre). Après la vérification : le catalogue exporté
-# (outils/catalogue-sources.json) est alors prouvé égal au catalogue compilé (logiciels::tests).
-# Le contrôle est celui de master, comme le garde-fou de confidentialité : un lot qui le viderait ne se rendrait pas
-# vert lui-même. Seule exception, le premier passage, quand master ne l'a pas encore : celui du lot, dit.
-# Code 0 avec « Sources : N vérifiée(s), saines » (N ≥ 1), sinon rien n'est fusionné : une trace de Python sort en 1
-# sans le témoin « N dégradation(s) », dite comme une panne.
-CONTROLE=$(mktemp "$JOURNAUX/controle-sources.XXXXXX")
-trap 'rm -f "$JUGE" "$CONTROLE"' EXIT
-if git -C "$DEPOT" cat-file -e master:outils/controle-sources.py 2>/dev/null; then
-  git -C "$DEPOT" show master:outils/controle-sources.py >"$CONTROLE"
-  ORIGINE=master
-elif [[ -z $(git -C "$DEPOT" log -1 --format=%H master -- outils/controle-sources.py) ]] &&
-  git show "$SHA:outils/controle-sources.py" >"$CONTROLE" 2>/dev/null; then
-  # Seulement si master ne l'a jamais eu : un contrôle retiré de master (par un lot d'avant) ne laisse pas un lot
-  # apporter le sien, vide.
-  ORIGINE="le lot (master ne l'a pas encore)"
-else
-  echo "✖ master n'a pas (ou plus) outils/controle-sources.py, et le lot ne peut pas l'apporter : les sources ne sont"
-  echo "  pas contrôlées, rien n'est fusionné"
-  exit 1
-fi
-echo "· sources du catalogue (contrôle de $ORIGINE)"
-SOURCES=0
-SORTIE_SOURCES=$(python3 -I "$CONTROLE" --catalogue "$ARBRE/outils/catalogue-sources.json" \
-  --admis "$ARBRE/outils/controle-sources-admis.json" 2>&1) || SOURCES=$?
-[[ -z $SORTIE_SOURCES ]] || printf '%s\n' "$SORTIE_SOURCES" | tail -n 40
-CONTOURNE=""
-if ((SOURCES != 0)) || ! grep -qE '^Sources : [1-9][0-9]* vérifiée\(s\), saines' <<<"$SORTIE_SOURCES"; then
-  if ((SOURCES == 1)) && grep -qE '^Sources : [1-9][0-9]* dégradation\(s\)' <<<"$SORTIE_SOURCES"; then
-    CAUSE="source(s) dégradée(s)"
-  elif ((SOURCES == 2)) && grep -q '^Sources : ' <<<"$SORTIE_SOURCES"; then
-    CAUSE="source(s) non vérifiée(s), rien conclu"
-  else
-    CAUSE="contrôle en panne ou sans témoin (code $SOURCES)"
-  fi
-  if [[ -z $CONTOURNER ]]; then
-    echo "✖ sources du catalogue : $CAUSE : rien n'est fusionné"
-    echo "  corriger le catalogue, admettre la dégradation dans outils/controle-sources-admis.json (raison, date,"
-    echo "  jusqu_au), réessayer plus tard (réseau), ou relancer avec --sans-controle-sources (noté)"
-    exit 1
-  fi
-  printf '%s\t%s\t%s\tcode %s\n' "$(date -Iseconds)" "$SHA" "$BRANCHE" "$SOURCES" \
-    >>"$JOURNAUX/controle-sources-contournements.log"
-  echo "⚠ sources du catalogue : $CAUSE ; contourné par --sans-controle-sources, noté dans"
-  echo "  $JOURNAUX/controle-sources-contournements.log"
-  CONTOURNE=" (sources du catalogue non contrôlées : --sans-controle-sources)"
-fi
 echo "· fusion et déploiement"
 cd "$DEPOT"
 arbre_principal_pret || { echo "✖ rien n'est fusionné"; exit 1; }
@@ -220,4 +163,4 @@ if ((${#menage[@]})); then
   printf '⚠ livré (%s), ménage à finir à la main :\n' "${SHA:0:12}"
   printf '  %s\n' "${menage[@]}"
 fi
-echo "✔ livré : ${SHA:0:12}$CONTOURNE"
+echo "✔ livré : ${SHA:0:12}"
