@@ -670,7 +670,7 @@ details > summary::after { display: none; }
 <div class="carte stat"><span class="valeur">≈ 476 400</span><span class="detail">lignes de code Rust</span></div>
 <div class="carte stat"><span class="valeur">5 300</span><span class="detail">tests sous Linux</span></div>
 <div class="carte stat"><span class="valeur">4 086</span><span class="detail">tests sous Windows (Wine)</span></div>
-<div class="carte stat"><span class="valeur">250</span><span class="detail">vérifications sur un vrai Windows</span></div>
+<div class="carte stat"><span class="valeur">251</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
 </section>
@@ -1077,17 +1077,36 @@ vanguard yara --complet</pre>
 <div class="tete-section">
 <p class="surtitre">Nouveautés de la version 0.97</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>Une version où Vanguard a sa fenêtre : livrée avec le programme, lancée seulement si c'est bien la sienne, et chaque geste montré avant d'être fait.</p>
-</div>
-<ul class="nouveautes">
-<li><b>La fenêtre de Vanguard</b><span>Sur un bureau graphique, <code>vanguard</code> ouvre la fenêtre, sinon le menu du terminal, comme avant ; <code>vanguard --menu</code> le force.</span></li>
-<li><b>Lancée seulement si c'est la sienne</b><span>Son empreinte SHA-256 est gravée dans le programme signé : une fausse fenêtre posée à côté n'est jamais lancée, et rien du compte n'y entre.</span></li>
-<li><b>Corriger et remettre depuis la fenêtre</b><span>L'aperçu entier d'abord ; « Appliquer » et « Remettre comme avant » s'activent 2 secondes après, un geste à la fois (Linux).</span></li>
-<li><b>Mettre à jour en voyant ce qui s'installe</b><span>D'où vient la mise à jour, sa version, son empreinte, sa taille et chaque programme remplacé, avant l'accord ; aussi <code>vanguard se-mettre-a-jour --voir</code>.</span></li>
-<li><b>La fenêtre voyage avec le programme</b><span>La page de la version, les mises à jour et la clé la portent, vérifiée comme le programme, tout ou rien.</span></li>
-<li><b>Programmes au démarrage sur accord</b><span>Retirer ou remettre une entrée demande l'accord donné pour ce geste ; une entrée changée depuis la liste est refusée.</span></li>
-<li><b>Les programmes du système, pris par leur chemin</b><span>Jamais par le PATH du compte : un faux programme posé dans <code>~/.local/bin</code> ne cache plus une connexion ni une ligne du journal.</span></li>
-</ul>
+<p>26 changements dans la version 0.97.0, tirés de son <a href="https://github.com/d9v3/vanguard-beta/blob/master/CHANGELOG.md">historique des versions</a>, où chacun se lit en entier.</p>
+    </div>
+    <ul class="nouveautes">
+      <li><b>Dépanner avec Claude, depuis la clé : une option, coupée par défaut, et un téléchargement vérifié</b><span>Claude Code, l&#x27;assistant d&#x27;Anthropic, peut voyager sur la clé pour dépanner l&#x27;ordinateur d&#x27;un proche ; <code>CLAUDE_CLE=oui</code> dans <code>~/.config/vanguard/images-cle.conf</code> l&#x27;allume.</span></li>
+      <li><b>Sur l&#x27;ordinateur visité, le lanceur vérifie avant de lancer, puis efface</b><span>« Depanner avec Claude.bat » sous Windows (10 version 1809 ou plus récent), <code>bash -p …/Claude/depanner.sh</code> sous Linux ou sur SystemRescue démarré depuis la clé.</span></li>
+      <li><b>Ce que le lanceur refuse</b></li>
+      <li><b>Sur la clé, chaque binaire est relu au retour, et un seul sort est dit</b><span>Chaque binaire posé est noté (son empreinte) et relu entier au dépôt suivant, comme avant la reprise d&#x27;un déploiement arrêté.</span></li>
+      <li><b>Lever un blocage de version : <code>outils/claude-cle.sh --accepter-version X</code>, et <code>--annuler-acceptation</code></b><span>Le pointeur « stable » n&#x27;est pas signé : une version authentique plus récente, prise une fois, bloque ensuite les plus anciennes.</span></li>
+      <li><b>Limites dites, aussi dans le mode d&#x27;emploi de la clé</b></li>
+      <li><b>Le journal des erreurs et le brouillon de <code>vanguard signaler</code> passent par le masquage commun</b></li>
+      <li><b>Le journal du système est lu en entier, comme <code>journalctl</code></b><span>Après un redémarrage, le journal peut redonner à une nouvelle entrée le numéro d&#x27;une entrée plus ancienne.</span></li>
+      <li><b>Nouvelle porte de lecture pour les assistants d&#x27;IA (<code>vanguard mcp</code>), sous Linux seulement</b><span>Un assistant que vous branchez peut lire l&#x27;état de Vanguard, ses événements et ses constats, sans pouvoir rien changer.</span></li>
+      <li><b>Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus</b><span>Dans le doute, il masque.</span></li>
+      <li><b>Fenêtre absente : le menu le dit et propose de l&#x27;ajouter</b><span>Quand rien d&#x27;autre ne garde le menu, il dit en une ligne que la fenêtre manque et donne l&#x27;entrée « Mettre Vanguard à jour », qui l&#x27;ajoute après l&#x27;avoir montrée, vérifiée contre l&#x27;empreinte gravée.</span></li>
+      <li><b>Fenêtre : une rubrique en liste et page, en un clic</b></li>
+      <li><b>Fenêtre : elle ne relance que le <code>vanguard</code> qui l&#x27;a ouverte</b><span>Elle relançait le même chemin pendant des heures, sans revoir le contenu : un <code>vanguard</code> remplacé par ce compte lui faisait afficher ses réponses et recevait ses gestes.</span></li>
+      <li><b>La mise à jour pose aussi la fenêtre qui manque</b></li>
+      <li><b>Une fenêtre qui ne se lit pas ne bloque plus la mise à jour du programme</b></li>
+      <li><b>Console de la fenêtre : dix lectures de plus, et une valeur tapée</b></li>
+      <li><b>Console : les dossiers liés ou déclarés, jugés plus juste</b></li>
+      <li><b>Console sous Windows : trois cas de plus au banc de la VM</b></li>
+      <li><b>Linux : une mise à jour qui ne se vérifie pas dit pourquoi</b><span>Firmware : une erreur rendue par fwupd est nommée, et sinon fwupd est dit injoignable, avec sa cause ; le remède « fwupdmgr refresh », souvent faux, n&#x27;est plus donné.</span></li>
+      <li><b>Linux : le témoin de <code>journalctl</code> coupé au milieu d&#x27;une lettre accentuée ne passe plus pour vide</b><span>Avant, toutes les entrées des fichiers du journal semblaient cachées par journalctl (fausse alerte).</span></li>
+      <li><b>Un Vanguard arrêté au mauvais moment ne fait plus attendre deux minutes</b><span>Pour rester compatible avec les versions d&#x27;avant la 0.87, Vanguard pose aussi leur ancien fichier de verrou, créé vide puis marqué.</span></li>
+      <li><b>Le principe de Vanguard, réécrit : Vanguard agit, vous gardez la main</b></li>
+      <li><b>Les textes envoyés pour améliorer Vanguard masquent plus de formes</b></li>
+      <li><b>La veille de nuit juge chaque crate par ses propres exceptions</b><span>Elle passait <code>cargo audit</code> sur quatre <code>Cargo.lock</code> avec la seule liste d&#x27;avis admis de Vanguard, et depuis l&#x27;arbre, où <code>.cargo/audit.toml</code> taisait ces avis pour toutes les crates.</span></li>
+      <li><b>Sécurité des dépendances</b></li>
+      <li><b>Rust 1.100.0</b><span>Les programmes sont maintenant compilés avec la dernière version de Rust, qui apporte ses correctifs ; ses nouvelles remarques de clippy sont réglées dans le code, sans en faire taire aucune.</span></li>
+    </ul>
 </section>
 <section id="en-cours">
 <div class="tete-section">
