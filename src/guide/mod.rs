@@ -2046,6 +2046,56 @@ mod tests {
         }
     }
 
+    /// Sous Windows, rien ne voit tout seul qu'une commande demande l'administrateur (pas de sudo dans la ligne) :
+    /// les programmes que Windows refuse hors d'un terminal administrateur le disent par leur obstacle, même ajoutés
+    /// plus tard. Les réparations de plusieurs minutes (sfc, DISM qui écrit) sont Longue, administrateur compris.
+    #[test]
+    fn les_commandes_windows_administrateur_le_disent() {
+        const ADMINISTRATEUR: &[&str] = &[
+            "sfc ",
+            "dism /online",
+            "bcdedit",
+            "chkdsk c: /",
+            "sc config",
+            "sc.exe config",
+            "netsh winsock reset",
+            "netsh int ip reset",
+            "powercfg /h",
+            "reagentc",
+            "pnputil",
+            "takeown",
+            "checkpoint-computer",
+            "set-netconnectionprofile",
+            "restart-service",
+            "restart-netadapter",
+            "ipconfig /flushdns",
+            "clear-dnsclientcache",
+            "start-mpwdoscan",
+        ];
+        let mut vues = 0;
+        for (s, _, c) in toutes() {
+            if s != Systeme::Windows {
+                continue;
+            }
+            let ligne = c.ligne.to_lowercase();
+            if ADMINISTRATEUR.iter().any(|p| ligne.starts_with(p)) {
+                vues += 1;
+                assert!(
+                    matches!(c.obstacle, Obstacle::Administrateur | Obstacle::Longue),
+                    "{} : administrateur sous Windows, sans .sauf(Obstacle::Administrateur)",
+                    c.ligne
+                );
+            }
+            let longue = ligne.starts_with("sfc /scannow")
+                || (ligne.starts_with("dism /online") && !ligne.contains("/checkhealth"));
+            if longue {
+                assert_eq!(c.obstacle, Obstacle::Longue, "{} : plusieurs minutes", c.ligne);
+            }
+        }
+        // Un préfixe qui ne trouve plus rien (ligne réécrite) rendrait l'essai muet.
+        assert!(vues >= 20, "seulement {vues} commandes administrateur reconnues");
+    }
+
     /// Le test de la VM Windows (outils/test-windows/test.ps1) ouvre le guide par des chemins tapés : ils doivent mener
     /// aux commandes qu'il attend. Une marche à suivre ajoutée décale les numéros, et la passe de la VM ne le dirait
     /// que le jour de la publication.

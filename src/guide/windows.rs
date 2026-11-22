@@ -102,7 +102,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "sfc /scannow",
                 "Vérifie les fichiers de Windows et remplace ceux qui sont abîmés.",
                 "Checks Windows files and replaces the damaged ones.",
-            ),
+            )
+            .sauf(Obstacle::Longue),
             voir(
                 "DISM /Online /Cleanup-Image /ScanHealth",
                 "Vérifie l'image de Windows, sans rien réparer.",
@@ -113,12 +114,14 @@ pub const PROGRAMMES: &[Programme] = &[
                 "DISM /Online /Cleanup-Image /RestoreHealth",
                 "Répare l'image de Windows : à lancer avant sfc quand sfc n'y arrive pas.",
                 "Repairs the Windows image: run it before sfc when sfc cannot.",
-            ),
+            )
+            .sauf(Obstacle::Longue),
             changer(
                 "DISM /Online /Cleanup-Image /StartComponentCleanup",
                 "Fait de la place : retire les anciennes versions des composants.",
                 "Frees space: removes old versions of components.",
-            ),
+            )
+            .sauf(Obstacle::Longue),
         ],
     },
     Programme {
@@ -136,12 +139,14 @@ pub const PROGRAMMES: &[Programme] = &[
                 "chkdsk C: /f",
                 "Répare les erreurs ; pour C:, au prochain redémarrage.",
                 "Repairs the errors; for C:, at the next restart.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             changer(
                 "chkdsk C: /r",
                 "Répare aussi les secteurs défectueux (plusieurs heures).",
                 "Also repairs bad sectors (several hours).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -154,7 +159,7 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Adresse, routeur (passerelle), DNS et adresse MAC de chaque carte réseau.",
                 "Address, router (gateway), DNS and MAC address of each network card.",
             ),
-            changer("ipconfig /flushdns", "Vide le cache DNS.", "Clears the DNS cache."),
+            changer("ipconfig /flushdns", "Vide le cache DNS.", "Clears the DNS cache.").sauf(Obstacle::Administrateur),
             changer(
                 "ipconfig /release",
                 "Rend l'adresse donnée par le routeur (le réseau se coupe).",
@@ -213,12 +218,14 @@ pub const PROGRAMMES: &[Programme] = &[
                 "netsh winsock reset",
                 "Remet à zéro le catalogue des connexions réseau ; redémarrer ensuite.",
                 "Resets the network connection catalog; restart afterwards.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             changer(
                 "netsh int ip reset",
                 "Remet à zéro les réglages TCP/IP ; redémarrer ensuite.",
                 "Resets the TCP/IP settings; restart afterwards.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -255,7 +262,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Restart-NetAdapter -Name \"<nom>\"",
                 "Coupe puis rallume une carte réseau (administrateur ; son nom : Get-NetAdapter).",
                 "Turns a network card off and on (administrator; its name: Get-NetAdapter).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -314,7 +322,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Start-MpWDOScan",
                 "Redémarre et analyse avant que Windows démarre : contre les virus qui se cachent.",
                 "Restarts and scans before Windows starts: against malware that hides.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -332,7 +341,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Restart-Service <nom>",
                 "Redémarre un service (administrateur).",
                 "Restarts a service (administrator).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             voir(
                 "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10",
                 "Les 10 programmes qui ont pris le plus de processeur.",
@@ -440,7 +450,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "powercfg /hibernate off",
                 "Coupe la veille prolongée et rend la place de hiberfil.sys ; coupe aussi le démarrage rapide.",
                 "Turns hibernation off and frees hiberfil.sys space; also turns off fast startup.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -547,7 +558,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "rstrui",
                 "Ramène le système à un point de restauration (fenêtre).",
                 "Brings the system back to a restore point (window).",
-            ),
+            )
+            .sauf(Obstacle::Fenetre),
             voir(
                 "Get-ComputerRestorePoint",
                 "Les points de restauration (administrateur).",
@@ -558,7 +570,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Checkpoint-Computer -Description \"<texte>\"",
                 "Crée un point de restauration (administrateur ; un toutes les 24 heures au plus).",
                 "Creates a restore point (administrator; at most one every 24 hours).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -603,7 +616,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "net user <nom> /active:no",
                 "Désactive un compte sans l'effacer (administrateur).",
                 "Disables an account without deleting it (administrator).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -687,7 +701,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "wsl --install",
                 "Installe WSL et Ubuntu (puis redémarrage).",
                 "Installs WSL and Ubuntu (then restart).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             changer(
                 "wsl --install -d <nom>",
                 "Installe une autre distribution (Debian, openSUSE…).",
@@ -720,7 +735,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Clear-DnsClientCache",
                 "Vide le cache DNS (comme ipconfig /flushdns).",
                 "Empties the DNS cache (like ipconfig /flushdns).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             voir(
                 "Get-NetRoute -DestinationPrefix 0.0.0.0/0",
                 "La passerelle par défaut : l'adresse du routeur.",
@@ -779,7 +795,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "pnputil /delete-driver <nom> /uninstall",
                 "Retire un paquet de pilote (oemNN.inf).",
                 "Removes a driver package (oemNN.inf).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             voir("devmgmt.msc", "Le Gestionnaire de périphériques.", "Device Manager.").sauf(Obstacle::Fenetre),
         ],
     },
@@ -802,7 +819,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "sc.exe config <service> start= disabled",
                 "Empêche un service de démarrer.",
                 "Prevents a service from starting.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             voir(
                 "schtasks /query /fo TABLE",
                 "Les tâches planifiées.",
@@ -837,7 +855,7 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Is the recovery environment ready?",
             )
             .sauf(Obstacle::Administrateur),
-            changer("reagentc /enable", "Le réactive.", "Turns it back on."),
+            changer("reagentc /enable", "Le réactive.", "Turns it back on.").sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -859,7 +877,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "takeown /f <fichier>",
                 "Se rend propriétaire d'un fichier (terminal administrateur).",
                 "Takes ownership of a file (administrator terminal).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             voir(
                 "Get-Item <fichier> -Stream *",
                 "Les flux d'un fichier, dont la marque « téléchargé d'Internet » (Zone.Identifier).",
@@ -945,7 +964,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Set-NetConnectionProfile -Name <nom> -NetworkCategory Public",
                 "Passe un réseau en public, plus sûr hors de chez soi (terminal administrateur).",
                 "Makes a network public, safer away from home (administrator terminal).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
@@ -1010,7 +1030,8 @@ pub const PROGRAMMES: &[Programme] = &[
                 "mdsched",
                 "Teste la mémoire vive au prochain redémarrage (Diagnostic de la mémoire Windows).",
                 "Tests the memory at the next restart (Windows Memory Diagnostic).",
-            ),
+            )
+            .sauf(Obstacle::Fenetre),
         ],
     },
 ];
@@ -1060,12 +1081,14 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "DISM /Online /Cleanup-Image /RestoreHealth",
                 "D'abord, répare l'image de Windows depuis Windows Update (terminal administrateur, 10 à 30 min).",
                 "First, repairs the Windows image from Windows Update (administrator terminal, 10 to 30 min).",
-            ),
+            )
+            .sauf(Obstacle::Longue),
             changer(
                 "sfc /scannow",
                 "Puis vérifie et répare les fichiers de Windows.",
                 "Then checks and repairs Windows files.",
-            ),
+            )
+            .sauf(Obstacle::Longue),
             voir(
                 "Select-String $env:windir\\Logs\\CBS\\CBS.log '\\[SR\\]' | Select -Last 20",
                 "Ce que sfc a trouvé et réparé, d'après son journal.",
@@ -1076,7 +1099,8 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "chkdsk C: /f",
                 "Le disque : acceptez la vérification au prochain redémarrage (O).",
                 "The disk: accept the check at the next restart (Y).",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
             changer(
                 "shutdown /r /o /t 0",
                 "Ne démarre plus bien ? Redémarre vers les options de dépannage (réparation du démarrage, restauration).",
@@ -1086,7 +1110,8 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "rstrui",
                 "Ou revient à un point de restauration d'avant la panne.",
                 "Or goes back to a restore point from before the problem.",
-            ),
+            )
+            .sauf(Obstacle::Fenetre),
         ],
     },
     Programme {
@@ -1105,7 +1130,8 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "Does the Internet answer, without going through DNS?",
             ),
             voir("Resolve-DnsName example.com", "Le DNS répond-il ?", "Does DNS answer?"),
-            changer("ipconfig /flushdns", "Vide le cache DNS.", "Empties the DNS cache."),
+            changer("ipconfig /flushdns", "Vide le cache DNS.", "Empties the DNS cache.")
+                .sauf(Obstacle::Administrateur),
             changer(
                 "ipconfig /release; ipconfig /renew",
                 "Redemande une adresse au routeur.",
@@ -1115,8 +1141,9 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "netsh winsock reset",
                 "Toujours rien : remet à zéro la pile réseau (terminal administrateur)…",
                 "Still nothing: resets the network stack (administrator terminal)…",
-            ),
-            changer("netsh int ip reset", "…et TCP/IP…", "…and TCP/IP…"),
+            )
+            .sauf(Obstacle::Administrateur),
+            changer("netsh int ip reset", "…et TCP/IP…", "…and TCP/IP…").sauf(Obstacle::Administrateur),
             changer("shutdown /r /t 0", "…puis redémarre.", "…then restart."),
         ],
     },
@@ -1150,12 +1177,14 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "DISM /Online /Cleanup-Image /StartComponentCleanup",
                 "Retire les anciennes versions des composants de Windows (terminal administrateur).",
                 "Removes old versions of Windows components (administrator terminal).",
-            ),
+            )
+            .sauf(Obstacle::Longue),
             changer(
                 "powercfg /hibernate off",
                 "Supprime le fichier de veille prolongée (plusieurs Go) ; la veille prolongée disparaît.",
                 "Deletes the hibernation file (several GB); hibernation goes away.",
-            ),
+            )
+            .sauf(Obstacle::Administrateur),
         ],
     },
     Programme {
