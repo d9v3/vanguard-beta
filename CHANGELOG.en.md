@@ -9,7 +9,7 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
-## 0.97 (in preparation)
+## November 22, 2026: version 0.97.0
 
 - **Troubleshoot with Claude, from the key: an option, off by default, and a verified download.** Claude Code,
   Anthropic's assistant, can travel on the key to troubleshoot a relative's computer; `CLAUDE_CLE=oui` in

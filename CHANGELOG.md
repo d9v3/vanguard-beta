@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
-## 0.97 (en préparation)
+## 22 novembre 2026 : version 0.97.0
 
 - **Dépanner avec Claude, depuis la clé : une option, coupée par défaut, et un téléchargement vérifié.** Claude Code,
   l'assistant d'Anthropic, peut voyager sur la clé pour dépanner l'ordinateur d'un proche ; `CLAUDE_CLE=oui` dans
