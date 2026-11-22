@@ -246,6 +246,11 @@ example, finds it, to rebuild it if needed.
 - **Linux: a `journalctl` witness cut in the middle of an accented letter no longer looks empty.** Before, every
   entry of the journal files seemed hidden by journalctl (a false alarm). An unreadable witness is said "not
   verified", never counted as healthy.
+- **A Vanguard stopped at the wrong moment no longer makes others wait two minutes.** To stay compatible with versions
+  before 0.87, Vanguard also creates their old lock file, created empty and then marked. Stopped in between, it left
+  an empty file, which everyone took for a 0.86 still open: the journal, the settings notes and the device list stayed
+  blocked for two minutes. The file is now born already marked, in one step (a hard link; on a FAT key, as before). A
+  test watches it 3,000 times and must never see it without its mark.
 - **Vanguard's principle, rewritten: Vanguard acts, you stay in control.** What protects, maintains or improves the
   computer will be done on its own, with the previous state recorded, logged, exactly undoable and reported
   afterwards; only lowering a protection waits for your choice, and any action that cuts a connection, deletes or

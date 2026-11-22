@@ -262,6 +262,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Linux : le témoin de `journalctl` coupé au milieu d'une lettre accentuée ne passe plus pour vide.** Avant, toutes
   les entrées des fichiers du journal semblaient cachées par journalctl (fausse alerte). Un témoin illisible est dit
   « non vérifié », jamais compté comme sain.
+- **Un Vanguard arrêté au mauvais moment ne fait plus attendre deux minutes.** Pour rester compatible avec les
+  versions d'avant la 0.87, Vanguard pose aussi leur ancien fichier de verrou, créé vide puis marqué. Arrêté entre les
+  deux, il laissait un fichier vide, que chacun prenait pour une 0.86 encore ouverte : le journal, les notes des
+  réglages et la liste des appareils restaient bloqués deux minutes. Le fichier naît maintenant déjà marqué, d'un coup
+  (lien physique ; sur une clé FAT, comme avant). Un essai le guette 3 000 fois et ne doit jamais le voir sans sa
+  marque.
 - **Le principe de Vanguard, réécrit : Vanguard agit, vous gardez la main.** Ce qui protège, entretient ou améliore
   l'ordinateur se fera seul, l'état d'avant noté, journalisé, annulable exactement, avec un compte rendu après ; seule
   une baisse de protection attend votre choix, et reste demandé tout geste qui coupe une connexion, supprime ou déplace

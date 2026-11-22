@@ -393,6 +393,33 @@ const MARQUE_ANCIEN: &[u8] = b"vanguard: verrou du systeme / system lock\n";
 /// Au-delà, un fichier de l'ancien protocole sans marque est tenu pour abandonné : la règle des versions d'avant.
 const ANCIEN_ABANDONNE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Crée le fichier de l'ancien protocole déjà marqué, d'un coup (`AlreadyExists` s'il est là) : créé vide puis
+/// écrit, un Vanguard tué entre les deux laissait un fichier vide, que tous prennent pour une 0.86 vivante pendant
+/// `ANCIEN_ABANDONNE`. La marque s'écrit dans un fichier à côté, que seul le tenant du verrou du système touche,
+/// puis un lien physique la pose sous `chemin` (refusé s'il existe, comme `create_new`). Sans lien physique (FAT,
+/// exFAT d'une clé), on revient à la création puis l'écriture.
+fn creer_marque(chemin: &std::path::Path) -> std::io::Result<()> {
+    let mut nom = chemin.file_name().unwrap_or_default().to_os_string();
+    nom.push(".marque");
+    let provisoire = chemin.with_file_name(nom);
+    let _ = std::fs::remove_file(&provisoire);
+    let ecrit = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&provisoire)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, MARQUE_ANCIEN));
+    let lie = ecrit.and_then(|()| std::fs::hard_link(&provisoire, chemin));
+    let _ = std::fs::remove_file(&provisoire);
+    match lie {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(chemin)?;
+            let _ = std::io::Write::write_all(&mut f, MARQUE_ANCIEN);
+            Ok(())
+        }
+        autre => autre,
+    }
+}
+
 /// Le fichier sur lequel `Verrou::prendre_compatible` pose le verrou du système : `<nom sans .verrou>.lock`.
 pub(crate) fn nom_systeme(nom: &str) -> String {
     format!("{}.lock", nom.strip_suffix(".verrou").unwrap_or(nom))
@@ -454,10 +481,8 @@ impl Verrou {
         let fin = debut.checked_add(attente).unwrap_or(debut);
         loop {
             if !partage {
-                match std::fs::OpenOptions::new().write(true).create_new(true).open(&chemin) {
-                    Ok(mut f) => {
-                        use std::io::Write as _;
-                        let _ = f.write_all(MARQUE_ANCIEN);
+                match creer_marque(&chemin) {
+                    Ok(()) => {
                         v.ancien = Some(chemin);
                         return Ok(v);
                     }
@@ -1064,6 +1089,57 @@ mod tests {
         std::fs::write(&ancien, MARQUE_ANCIEN).unwrap();
         assert!(prendre(true).is_ok());
         assert!(prendre(false).is_ok());
+        std::fs::remove_dir_all(&dossier).unwrap();
+    }
+
+    /// Le fichier de l'ancien protocole naît avec sa marque : jamais vu vide par un autre. Un Vanguard tué entre la
+    /// création et l'écriture laissait un fichier vide, pris pour une 0.86 vivante pendant `ANCIEN_ABANDONNE` (CI du
+    /// 22 nov. 2026 : `tuer_vanguard_au_milieu_laisse_un_etat_coherent` refusé « un autre Vanguard change des
+    /// réglages »).
+    #[test]
+    fn verrou_ancien_jamais_vu_sans_marque() {
+        let dossier = crate::essais::temporaire().join(format!("vanguard-verrou-marque-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let ancien = dossier.join("notes.verrou");
+        let fini = std::sync::atomic::AtomicBool::new(false);
+        let (guetteur, erreur) = std::thread::scope(|s| {
+            let guetteur = s.spawn(|| {
+                let mut vus = 0u32;
+                while !fini.load(std::sync::atomic::Ordering::Relaxed) {
+                    if std::fs::read(&ancien).is_ok_and(|o| o != MARQUE_ANCIEN) {
+                        vus += 1;
+                    }
+                }
+                vus
+            });
+            // Jamais de panique ici : `scope` attendrait le guetteur, qui ne s'arrête qu'avec `fini` (essai bloqué
+            // 2 h sous Wine le 22 nov. 2026). Une erreur est notée et arrête la boucle.
+            let mut erreur = None;
+            for tour in 0..3000 {
+                // Sous Windows, le fichier que le guetteur lit pendant qu'on le retire reste « suppression en
+                // attente » un instant : le tour suivant le voit occupé. Une courte attente, comme les vrais appelants.
+                match Verrou::prendre_compatible(&dossier, "notes.verrou", false, std::time::Duration::from_secs(5)) {
+                    Ok(v) => drop(v),
+                    Err(e) => {
+                        erreur = Some(format!("tour {tour} : {e:?}"));
+                        break;
+                    }
+                }
+            }
+            fini.store(true, std::sync::atomic::Ordering::Relaxed);
+            (guetteur.join(), erreur)
+        });
+        let vus_sans_marque = guetteur.unwrap();
+        assert_eq!(erreur, None, "verrou refusé alors que personne d'autre ne le tient");
+        assert_eq!(vus_sans_marque, 0, "le fichier de l'ancien protocole vu sans sa marque");
+        // Rien de provisoire ne reste à côté.
+        let restes: Vec<_> = std::fs::read_dir(&dossier)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n != "notes.lock")
+            .collect();
+        assert!(restes.is_empty(), "{restes:?}");
         std::fs::remove_dir_all(&dossier).unwrap();
     }
 
