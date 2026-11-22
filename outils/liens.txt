@@ -96,6 +96,15 @@ ignorer https://github.com/alice/fuite
 ignorer https://raw.githubusercontent.com/alice/fuite
 ignorer https://codeload.github.com/alice/fuite
 
+# Adresses inventées des essais du masqueur des textes envoyés (src/amelioration/texte/tests*) : des entrées à
+# masquer, jamais ouvertes ; le domaine répond « introuvable » depuis le 22 nov. 2026.
+ignorer https://exemple.com/
+ignorer https://www.exemple.com/
+
+# Base des téléchargements de Claude Code (outils/claude-cle.sh) : le script y ajoute « stable » ou une version, la
+# base seule n'est pas une page.
+essai https://downloads.claude.ai/claude-code-releases https://downloads.claude.ai/claude-code-releases/stable
+
 # Adresse d'exemple du relais dans ses essais (relais/essais/relais.test.mjs) : jamais ouverte, le relais n'est pas
 # en service.
 ignorer https://relais.exemple.workers.dev
