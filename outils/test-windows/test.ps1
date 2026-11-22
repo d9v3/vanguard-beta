@@ -1434,6 +1434,8 @@ elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte que
             $sddl = "D:$($Matches[1])(D;;0x1;;;$sid)$($Matches[2])"
             $sd = New-Object Security.AccessControl.RawSecurityDescriptor($sddl)
             $octets = New-Object byte[] $sd.BinaryLength
+            # SE_DACL_AUTO_INHERIT_REQ : sans lui, SetFileSecurityW efface le drapeau AI (« D:PAI » relu « D:P »).
+            $sd.SetFlags($sd.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInheritRequired)
             $sd.GetBinaryForm($octets, 0)
             $posee = $true
             $err = [VgBancConsole.Nuage]::PoserDacl($profilsBanc, $octets)
@@ -1461,6 +1463,8 @@ elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte que
             try {
                 $sd = New-Object Security.AccessControl.RawSecurityDescriptor($daclAvant)
                 $octets = New-Object byte[] $sd.BinaryLength
+                # SE_DACL_AUTO_INHERIT_REQ : sans lui, SetFileSecurityW efface le drapeau AI (« D:PAI » relu « D:P »).
+                $sd.SetFlags($sd.ControlFlags -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInheritRequired)
                 $sd.GetBinaryForm($octets, 0)
                 $remise = [VgBancConsole.Nuage]::PoserDacl($profilsBanc, $octets)
             }
@@ -1469,7 +1473,7 @@ elseif (Question "Faire ce test (liste de $profilsBanc refusée à ce compte que
             try { $daclApres = (Get-Acl -LiteralPath $profilsBanc -ErrorAction Stop).GetSecurityDescriptorSddlForm('Access') } catch { $daclApres = "illisible : $($_.Exception.Message)" }
             if ($daclApres -ceq $daclAvant) { Ok "DACL de $profilsBanc remise à l'identique (SDDL comparé)" }
             else {
-                Bug ("état NON remis : DACL de $profilsBanc (remise : $remise ; avant gardé dans dacl-profils-avant.txt) ; à la main, en administrateur : " +
+                Bug ("état NON remis : DACL de $profilsBanc (remise : $remise ; relue : $daclApres ; avant gardé dans dacl-profils-avant.txt) ; à la main, en administrateur : " +
                     "`$s = New-Object Security.AccessControl.DirectorySecurity; `$s.SetSecurityDescriptorSddlForm('$daclAvant'); Set-Acl -LiteralPath '$profilsBanc' -AclObject `$s")
             }
         }
