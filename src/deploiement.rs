@@ -66,6 +66,10 @@ pub(crate) enum Etape {
         #[arg(long)]
         reprise: bool,
     },
+    /// Imprimer les sources du catalogue compilé (le JSON de outils/catalogue-sources.json, à l'octet près) : le
+    /// contrôle des sources de outils/publier-version.sh juge celles du programme qui part, pas un fichier du dépôt.
+    #[command(name = "catalogue-sources")]
+    CatalogueSources,
     /// Relire en entier une image de ISO/ (la moins récemment relue) et comparer son SHA-256 à la référence. Code 2 :
     /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée).
     #[command(name = "relire-image")]
@@ -105,6 +109,17 @@ pub(crate) fn executer(etape: Etape) -> i32 {
         Etape::Cle => return cle(),
         Etape::ComparerCle { racine, reprise } => return comparer_cle(&racine, reprise),
         Etape::RelireImage { racine, empreinte } => return relire_image(&racine, &empreinte),
+        // Écrit sans print! (qui panique sur une sortie fermée) ; une écriture ratée est un échec dit par le code.
+        Etape::CatalogueSources => {
+            if let Some(texte) = crate::logiciels::catalogue_exporte() {
+                use std::io::Write as _;
+                let mut sortie = std::io::stdout().lock();
+                sortie.write_all(texte.as_bytes()).and_then(|()| sortie.flush()).is_ok()
+            } else {
+                eprintln!("catalogue des sources : JSON impossible");
+                false
+            }
+        }
     };
     i32::from(!reussi)
 }

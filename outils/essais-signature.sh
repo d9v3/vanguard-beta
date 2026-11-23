@@ -774,11 +774,14 @@ GH
     ko "publier : étiquette retirée sans être notée ($r)"
   # Le passage lui-même : la page d'avant relevée avant la création de la nouvelle, et le retrait de son étiquette
   # après celui des pages, sous la même condition (mise à jour signée en ligne).
-  awk '/^PRECEDENTE=\$\(gh release view -R "\$DEPOT_CODE"/ { p = NR } /^gh release create "\$TAG" --target/ { c = NR }
+  awk '/^PRECEDENTE=\$\(gh release view -R "\$DEPOT_CODE"/ { p = NR } /^if ! gh release create "\$TAG" --target/ { c = NR }
+    /^  if ! gh release create "\$TAG" -R "\$DEPOT_VERSIONS"/ { v = NR } c && !x && /^  exit 1$/ { x = NR }
+    v && !y && /^    exit 1$/ { y = NR }
+    /^  if gh release view "\$TAG" -R "\$DEPOT_VERSIONS"/ { g = NR } g && !z && /^    exit 1$/ { z = NR }
     /^if \[\[ -z \$SIGNEE \|\| -n \$PUBLIEE_SIGNEE \]\]; then$/ { s = NR } s && /gh release delete "\$ancienne" --yes/ { d = NR }
     d && /^  retirer_etiquette_precedente \|\| true$/ { r = NR } s && !f && /^fi$/ { f = NR }
-    END { exit !(p && c && p < c && s > c && d > s && r > d && f > r) }' "$DEPOT/outils/publier-version.sh" &&
-    ok "publier-version.sh relève la page d'avant avant de publier, et retire son étiquette après sa page" ||
+    END { exit !(p && g && v && c && p < g && g < z && z < v && v < y && y < c && x > c && s > x && d > s && r > d && f > r) }' "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh relève la page d'avant, crée la page signée (déjà là ou échec : arrêt) avant celle du code, et retire l'étiquette d'avant après" ||
     ko "publier-version.sh : relevé ou retrait de l'étiquette d'avant hors de leur place"
 else
   echo "  (sauté : jq absent, pas de faux gh pour l'étiquette d'avant)"
@@ -1305,12 +1308,27 @@ awk '/passe_droit_demande VANGUARD_PUBLIER_SANS_EMPREINTES_CI;/ { e = 1 } e && /
 # Le contrôle des sources du catalogue (controle_des_sources, lue telle quelle) : pris dans le commit publié, il
 # arrête la publication sur tout ce qui n'est pas « code 0 + N ≥ 1 vérifiée(s), saines » ; le seul contournement,
 # VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES, devient le passe-droit sans-controle-sources (notes et historique signé).
-awk '/^passe_droit_demande\(\) \{/,/^\}/; /^JUGE_PYTHON=/; /^controle_des_sources\(\) \{/,/^\}/' \
+awk '/^passe_droit_demande\(\) \{/,/^\}/; /^repere\(\) /; /^JUGE_(PYTHON|GIT|DELAI)=/; /^juge_git\(\) /; /^objet_revu\(\) /
+  /^objet_verifie\(\) \{/,/^\}/; /^controle_des_sources\(\) \{/,/^\}/' \
   "$DEPOT/outils/publier-version.sh" >"$T/controle-des-sources.sh"
+# Le programme Linux publié, faux : il imprime « son » catalogue, celui que le contrôle doit juger (campagne C5,
+# n° 11 et 17), et son empreinte est dans un repère jetable, comme celui de compiler-version.sh.
+printf '#!/bin/sh\n[ "$*" = "deploiement catalogue-sources" ] || exit 9\necho "{\\"catalogue\\": \\"du-programme\\"}"\n' \
+  >"$T/faux-linux"
+chmod +x "$T/faux-linux"
+printf 'linux-x86_64 %s\n' "$(sha256sum "$T/faux-linux" | cut -d' ' -f1)" >"$T/repere"
 S=$T/sources
 mkdir -p "$S/outils"
 printf '%s\n' 'import os, sys' 'c = os.environ.get("ESSAI_SOURCES", "0")' \
   'open(os.environ["ESSAI_VU"], "w").write(" ".join(a.rsplit("/", 1)[-1] for a in sys.argv))' \
+  'open(os.environ["ESSAI_VU"] + ".cat", "w").write(open(sys.argv[sys.argv.index("--catalogue") + 1]).read())' \
+  'if c == "deux": print("Sources : 2 dégradation(s), 5 non vérifiée(s), 1 saine(s), 0 admise(s).")' \
+  'if c == "lignes": print("Sources : 1 non vérifiée(s), 2 saine(s), 0 admise(s) : rien conclu.")' \
+  'if c == "lignes": print("Sources : 3 dégradation(s), 4 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
+  'if c == "aucune": print("Sources : aucune source vérifiée : rien conclu.")' \
+  'if c == "decale": print("xx Sources : 3 vérifiée(s), saines (0 admise(s)).")' \
+  'if c == "decale1": print(" Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
+  'if c == "lent": import time; time.sleep(60)' \
   'if c == "0": print("Sources : 3 vérifiée(s), saines (0 admise(s)).")' \
   'if c == "zero": print("Sources : 0 vérifiée(s), saines (0 admise(s)).")' \
   'if c == "1": print("Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
@@ -1320,25 +1338,30 @@ printf '%s\n' 'import os, sys' 'c = os.environ.get("ESSAI_SOURCES", "0")' \
   'if c == "tue": print("Sources : 3 vérifiée(s), saines (0 admise(s))."); sys.stdout.flush(); os.kill(os.getpid(), 9)' \
   'if c == "long": print("✖ témoin-du-haut"); [print("  · ligne", i) for i in range(60)]' \
   'if c == "long": print("Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
-  'sys.exit({"1": 1, "2": 2, "3": 3, "long": 1}.get(c, 0))' >"$S/outils/controle-sources.py"
+  'sys.exit({"1": 1, "2": 2, "3": 3, "long": 1, "deux": 1, "lignes": 1, "aucune": 2, "decale1": 1}.get(c, 0))' \
+  >"$S/outils/controle-sources.py"
 echo '{}' >"$S/outils/catalogue-sources.json"
 echo '{"format": 1, "admis": []}' >"$S/outils/controle-sources-admis.json"
 git -C "$S" init -q -b master && git -C "$S" add -A &&
   git -C "$S" -c user.name=alice -c user.email=alice@example.com commit -qm départ
 S_COMMIT=$(git -C "$S" rev-parse HEAD)
-# Ce qu'on a sous les yeux ne compte pas : le contrôle d'ici, changé sans commit, dirait toujours « sain ».
+# Ce qu'on a sous les yeux ne compte pas : le contrôle d'ici, changé sans commit, dirait toujours « sain » ; la liste
+# des admis d'ici est d'un autre format (le faux contrôle ne la lit pas : c'est son nom qu'on regarde).
 printf 'print("Sources : 9 vérifiée(s), saines (0 admise(s)).")\n' >"$S/outils/controle-sources.py"
+echo '{"format": 2, "admis": ["d-ici"]}' >"$S/outils/controle-sources-admis.json"
 controle() { # consigne, puis variables d'environnement : « code=N droits=… » et la sortie
   local consigne=$1
   shift
-  rm -f "$T/vu-sources"
-  (cd "$S" && env ESSAI_SOURCES="$consigne" ESSAI_VU="$T/vu-sources" "$@" COMMIT="$S_COMMIT" bash -c \
-    "source '$T/controle-des-sources.sh'; PASSE_DROITS=(); controle_des_sources; echo \"code=\$? droits=\${PASSE_DROITS[*]-}\"" 2>&1)
+  rm -f "$T/vu-sources" "$T/vu-sources.cat"
+  (cd "$S" && env ESSAI_SOURCES="$consigne" ESSAI_VU="$T/vu-sources" LINUX="$T/faux-linux" REPERE="$T/repere" "$@" \
+    COMMIT="$S_COMMIT" bash -c "source '$T/controle-des-sources.sh'; [[ -z \${ESSAI_DELAI-} ]] || JUGE_DELAI=\$ESSAI_DELAI; \
+    PASSE_DROITS=(); controle_des_sources; echo \"code=\$? droits=\${PASSE_DROITS[*]-}\"" 2>&1)
 }
 r=$(controle 0)
 [[ $(tail -n 1 <<<"$r") == "code=0 droits=" && $r == *"✔ Sources du catalogue contrôlées."* &&
-  $(cat "$T/vu-sources" 2>&1) == "controle-sources.py --catalogue catalogue-sources.json --admis admis.json" ]] &&
-  ok "publier : sources saines, contrôle du commit publié (pas celui d'ici), aucun passe-droit" ||
+  $(cat "$T/vu-sources" 2>&1) == "controle-sources.py --catalogue catalogue-sources.json --admis controle-sources-admis.json" &&
+  $(cat "$T/vu-sources.cat" 2>&1) == '{"catalogue": "du-programme"}' ]] &&
+  ok "publier : sources saines, contrôle du commit publié (pas celui d'ici), catalogue du programme publié, aucun passe-droit" ||
   ko "publier : sources saines mal traitées ($r ; vu : $(cat "$T/vu-sources" 2>&1))"
 refus=()
 for consigne in 1 2 zero trace muet; do
@@ -1423,6 +1446,153 @@ r=$(controle 1 GIT_NO_REPLACE_OBJECTS=)
   ok "publier : git replace ignoré même avec GIT_NO_REPLACE_OBJECTS vide dans l'environnement" ||
   ko "publier : GIT_NO_REPLACE_OBJECTS vide rend git replace actif ($r)"
 git -C "$S" replace -d "$(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")" >/dev/null
+# Campagne C5, n° 21 : la parade vaut pour chaque fichier pris dans le commit (le contrôle et la liste des admis) ; un
+# remplacement de la liste des admis ne passe pas non plus (son contenu changerait le verdict).
+refus=()
+for f in controle-sources.py controle-sources-admis.json; do
+  id=$(git -C "$S" rev-parse "$S_COMMIT:outils/$f")
+  git -C "$S" replace "$id" "$SAIN_BLOB"
+  r=$(controle 1)
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"source(s) dégradée(s)"* ]] || refus+=("$f : $(tail -n 2 <<<"$r")")
+  git -C "$S" replace -d "$id" >/dev/null
+done
+((${#refus[@]} == 0)) && ok "publier : git replace ignoré pour le contrôle comme pour la liste des admis" ||
+  ko "publier : un fichier du commit remplacé par git replace : ${refus[*]}"
+# n° 18 : un objet libre réécrit sur le disque (même nom, autre contenu) : git le sert sans rien dire ; son empreinte
+# recalculée le trahit, et rien n'est publié, passe-droit ou non.
+id=$(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")
+objet="$S/.git/objects/${id:0:2}/${id:2}"
+cp "$objet" "$T/objet-garde"
+chmod u+w "$objet"
+/usr/bin/python3 -I -c 'import sys, zlib; c = b"print(\"Sources : 9 v\xc3\xa9rifi\xc3\xa9e(s), saines (0 admise(s)).\")\n"
+open(sys.argv[1], "wb").write(zlib.compress(b"blob %d\0" % len(c) + c))' "$objet"
+[[ $(git -C "$S" cat-file blob "$id") == *"9 vérifiée(s)"* ]] || ko "objet réécrit sans effet ici"
+refus=()
+for v in "" 1; do
+  r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$v")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"illisible ou altéré"* && ! -e $T/vu-sources ]] ||
+    refus+=("« $v » : $(tail -n 2 <<<"$r")")
+done
+cp "$T/objet-garde" "$objet"
+((${#refus[@]} == 0)) && ok "publier : objet git réécrit sur le disque : refusé par son empreinte, sans passe-droit" ||
+  ko "publier : objet git réécrit servi au juge : ${refus[*]}"
+# Le contrôle pris dans le commit doit être un fichier ordinaire (100644) : un lien symbolique (120000) ferait juger
+# le texte de sa cible, un exécutable (100755) n'est pas ce qui a été relu.
+lien=$(printf 'controle-sources-autre.py' | git -C "$S" hash-object -w --stdin)
+garde=$(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")
+refus=()
+for m in "120000,$lien" "100755,$garde"; do
+  rm -f "$T/index-mode"
+  GIT_INDEX_FILE="$T/index-mode" git -C "$S" read-tree "$S_COMMIT"
+  GIT_INDEX_FILE="$T/index-mode" git -C "$S" update-index --cacheinfo "$m,outils/controle-sources.py"
+  arbre=$(GIT_INDEX_FILE="$T/index-mode" git -C "$S" write-tree)
+  autre=$(git -C "$S" commit-tree "$arbre" -p "$S_COMMIT" -m "mode ${m%%,*}")
+  for v in "" 1; do
+    r=$(S_COMMIT=$autre controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$v")
+    [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"illisible ou altéré"* && ! -e $T/vu-sources ]] ||
+      refus+=("${m%%,*} « $v » : $(tail -n 2 <<<"$r")")
+  done
+done
+((${#refus[@]} == 0)) && ok "publier : contrôle en lien symbolique ou exécutable dans le commit : refusé, sans passe-droit" ||
+  ko "publier : contrôle d'un autre mode accepté : ${refus[*]}"
+# L'arbre lui-même réécrit sur le disque (même nom, il pointe vers un autre contrôle, dont l'empreinte est juste).
+# git 2.56 le refuse déjà en lisant l'arbre (ls-tree : « hash mismatch ») ; objet_revu en est la seconde garde,
+# pour un git qui ne le ferait pas : sa mutation survit ici, c'est voulu (cat-file, lui, ne revérifie rien).
+arbre_outils=$(git -C "$S" rev-parse "$S_COMMIT:outils")
+objet="$S/.git/objects/${arbre_outils:0:2}/${arbre_outils:2}"
+autre_arbre=$(git -C "$S" ls-tree "$S_COMMIT:outils" |
+  sed "s/blob $(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")/blob $SAIN_BLOB/" | git -C "$S" mktree)
+git -C "$S" cat-file tree "$autre_arbre" >"$T/arbre-brut"
+cp "$objet" "$T/arbre-garde"
+chmod u+w "$objet"
+/usr/bin/python3 -I -c 'import sys, zlib; c = open(sys.argv[2], "rb").read()
+open(sys.argv[1], "wb").write(zlib.compress(b"tree %d\0" % len(c) + c))' "$objet" "$T/arbre-brut"
+[[ $(git -C "$S" show "$S_COMMIT:outils/controle-sources.py") == *"9 vérifiée(s)"* ]] || ko "arbre réécrit sans effet ici"
+refus=()
+for v in "" 1; do
+  r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$v")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"illisible ou altéré"* && ! -e $T/vu-sources ]] ||
+    refus+=("« $v » : $(tail -n 2 <<<"$r")")
+done
+cp "$T/arbre-garde" "$objet"
+((${#refus[@]} == 0)) && ok "publier : arbre git réécrit sur le disque : refusé par son empreinte, sans passe-droit" ||
+  ko "publier : arbre git réécrit servi au juge : ${refus[*]}"
+# Le commit nommé en entier : un nom court ou une étiquette se résoudrait peut-être ailleurs que le commit compilé.
+r=$(S_COMMIT=${S_COMMIT:0:12} controle 0)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"illisible ou altéré"* ]] &&
+  ok "publier : commit donné par un nom court : refusé" || ko "publier : commit au nom court accepté ($(tail -n 2 <<<"$r"))"
+# n° 11 et 17 : le catalogue jugé est celui que le programme publié imprime ; un programme qui n'est pas celui de sa
+# compilation (empreinte), ou qui n'imprime rien, arrête tout, passe-droit ou non.
+printf '#!/bin/sh\nexit 3\n' >"$T/faux-linux-muet"
+chmod +x "$T/faux-linux-muet"
+printf 'linux-x86_64 %s\n' "$(sha256sum "$T/faux-linux-muet" | cut -d' ' -f1)" >"$T/repere-muet"
+printf 'linux-x86_64 %064d\n' 0 >"$T/repere-faux"
+printf '#!/bin/sh\nexit 0\n' >"$T/faux-linux-vide"
+chmod +x "$T/faux-linux-vide"
+printf 'linux-x86_64 %s\n' "$(sha256sum "$T/faux-linux-vide" | cut -d' ' -f1)" >"$T/repere-vide"
+refus=()
+for cas in "$T/faux-linux|$T/repere-faux" "$T/faux-linux-muet|$T/repere-muet" "$T/faux-linux-vide|$T/repere-vide"; do
+  for v in "" 1; do
+    r=$(controle 0 LINUX="${cas%%|*}" REPERE="${cas#*|}" VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$v")
+    [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"n'a pas imprimé son catalogue"* && ! -e $T/vu-sources ]] ||
+      refus+=("${cas%%|*} « $v » : $(tail -n 2 <<<"$r")")
+  done
+done
+((${#refus[@]} == 0)) && ok "publier : programme d'une autre empreinte ou muet : catalogue non jugé, rien de publié" ||
+  ko "publier : catalogue pris d'un programme non vérifié : ${refus[*]}"
+# n° 22 : -I tient le juge à l'écart de PYTHONPATH et PYTHONSTARTUP (un sitecustomize qui dirait « sain »).
+mkdir -p "$T/piege-python"
+printf '%s\n' 'import os' 'print("Sources : 9 vérifiée(s), saines (0 admise(s)).")' 'os._exit(0)' \
+  >"$T/piege-python/sitecustomize.py"
+r=$(controle 1 PYTHONPATH="$T/piege-python" PYTHONSTARTUP="$T/piege-python/sitecustomize.py")
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"source(s) dégradée(s)"* && $r != *"9 vérifiée(s)"* ]] &&
+  ok "publier : PYTHONPATH et PYTHONSTARTUP piégés sans effet sur le juge (-I)" ||
+  ko "publier : juge sous l'influence de PYTHONPATH ($r)"
+# n° 26 : les chiffres portés par le passe-droit sont ceux du dernier résumé, au début de sa ligne ; un témoin qui
+# n'est pas en début de ligne ne vaut rien ; la sortie d'erreur du juge est montrée.
+refus=()
+for cas in "deux|code1-degradations2-non-verifiees5" "lignes|code1-degradations3-non-verifiees4" \
+  "aucune|code2-degradations0-non-verifiees0" "decale1|code1-degradationsinconnu-non-verifieesinconnu"; do
+  r=$(controle "${cas%%|*}" VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+  [[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources-${cas#*|}" ]] || refus+=("${cas%%|*} : $(tail -n 1 <<<"$r")")
+done
+for cas in "decale|contrôle en panne ou sans témoin (code 0)" "decale1|contrôle en panne ou sans témoin (code 1)"; do
+  r=$(controle "${cas%%|*}")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"${cas#*|} : rien de publié."* ]] || refus+=("${cas%%|*} : $(tail -n 2 <<<"$r")")
+done
+r=$(controle trace)
+[[ $r == *"plantage du contrôle"* ]] || refus+=("trace cachée : $(tail -n 2 <<<"$r")")
+((${#refus[@]} == 0)) && ok "publier : chiffres du passe-droit exacts (dernier résumé, début de ligne), trace montrée" ||
+  ko "publier : résumé du contrôle mal lu : ${refus[*]}"
+# Le juge a une échéance : au-delà, il est arrêté, et c'est « rien conclu » (code 124), porté par le passe-droit.
+r=$(controle lent ESSAI_DELAI=2)
+r1=$(controle lent ESSAI_DELAI=2 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"contrôle trop long (2 s), arrêté : rien conclu : rien de publié."* &&
+  $(tail -n 1 <<<"$r1") == "code=0 droits=sans-controle-sources-code124-degradationsinconnu-non-verifieesinconnu" ]] &&
+  ok "publier : un juge trop long est arrêté par timeout (rien conclu, code 124 porté)" ||
+  ko "publier : juge sans échéance ($(tail -n 2 <<<"$r") / $(tail -n 1 <<<"$r1"))"
+# n° 19 : sans dossier temporaire, rien de publié, et jamais « contrôle absent du commit » sous passe-droit.
+refus=()
+for v in "" 1; do
+  r=$(controle 0 TMPDIR="$T/nexiste-pas" VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$v")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"dossier temporaire impossible"* && $r != *absent* ]] ||
+    refus+=("« $v » : $(tail -n 2 <<<"$r")")
+done
+((${#refus[@]} == 0)) && ok "publier : dossier temporaire impossible : rien de publié, sans passe-droit" ||
+  ko "publier : dossier temporaire raté mal dit : ${refus[*]}"
+# n° 28 : une valeur fausse d'un passe-droit arrête le script lui-même, pas seulement la fonction.
+awk '/^passe_droit_demande\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/passe-droit.sh"
+refus=()
+for valeur in 0 non " "; do
+  r=$(X="$valeur" bash -c "source '$T/passe-droit.sh'; passe_droit_demande X || true; echo suite" 2>&1)
+  [[ $r == *"seule la valeur 1"* && $r != *suite* ]] || refus+=("« $valeur » : $r")
+done
+r=$(X=1 bash -c "source '$T/passe-droit.sh'; passe_droit_demande X && echo pris" 2>&1)
+[[ $r == pris ]] || refus+=("1 : $r")
+r=$(X='' bash -c "source '$T/passe-droit.sh'; passe_droit_demande X || echo non" 2>&1)
+[[ $r == non ]] || refus+=("vide : $r")
+((${#refus[@]} == 0)) && ok "publier : valeur fausse d'un passe-droit : le script s'arrête (rien ne suit)" ||
+  ko "publier : valeur fausse d'un passe-droit qui laisse continuer : ${refus[*]}"
 # Les variables qui changent le magasin de certificats ou OpenSSL ne passent pas au contrôle.
 printf '%s\n' 'import os, sys' \
   'v = [n for n in ("SSL_CERT_FILE", "SSL_CERT_DIR", "OPENSSL_CONF", "OPENSSL_MODULES", "OPENSSL_ENGINES") if n in os.environ]' \

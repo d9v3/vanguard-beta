@@ -2,18 +2,20 @@
 """Contrôle des sources du catalogue des logiciels, avant chaque publication (conception-interface, ligne C5).
 
 Une source peut se dégrader en quelques mois (Bitwarden : extra/bitwarden marqué périmé, licence Flathub devenue non
-libre). Pour chaque source de outils/catalogue-sources.json (le catalogue compilé, sérialisé par l'essai Rust
-logiciels::tests::catalogue_exporte_a_jour, jamais lu dans le source par motifs) :
+libre). Pour chaque source du catalogue compilé (`--catalogue` : à la publication, celui qu'imprime le programme Linux
+qui part, `vanguard deploiement catalogue-sources` ; sans option, outils/catalogue-sources.json, sa copie tenue à
+jour par l'essai Rust logiciels::tests::catalogue_exporte_a_jour ; jamais lu dans le source par motifs) :
   - Arch : le paquet est dans core, extra ou multilib, et n'y est pas marqué périmé (flag_date, clé exigée) ;
   - Flathub : l'application existe, n'est pas en fin de vie, est vérifiée par son éditeur, et sa licence dit ce que dit
-    le catalogue (libre ou non, mêmes identifiants SPDX ; FLATHUB_PAS_LIBRE : non libre) ;
-  - winget : l'identifiant est dans l'index que télécharge winget lui-même (source2.msix du CDN de Microsoft, bâti
+    le catalogue (libre ou non, exactement les mêmes identifiants SPDX ; FLATHUB_PAS_LIBRE : non libre) ;
+  - winget : l'identifiant, casse comprise (le programme installe avec --exact), est dans l'index que télécharge winget lui-même (source2.msix du CDN de Microsoft, bâti
     depuis le dépôt microsoft/winget-pkgs ; sans l'API de GitHub, limitée à 60 requêtes par heure sans jeton) ;
   - Debian : le paquet binaire est dans stable, section main (API madison de ftp-master ; toute autre suite dans la
     réponse : non vérifié) ;
   - Fedora : le paquet est dans la dernière version publiée, la plus haute « current » de Bodhi (jamais rawhide ni une
     version en préparation, que mdapi liste aussi), cherché dans mdapi (le nom rendu doit être celui demandé) ;
-  - openSUSE : non couvert (aucune API publique simple en JSON sans compte), dit et compté. Aucun cask au catalogue.
+  - openSUSE : non couvert (aucune API publique simple en JSON sans compte), dit et compté. Aucun cask au catalogue ;
+  - Ubuntu et ses dérivées : non couvertes, dit (le programme y prend les noms de Debian, firefox-esr devenu firefox).
 
 Codes de sortie : 0 tout vérifié et sain (les dégradations admises sont montrées) ; 1 au moins une dégradation non
 admise ; 2 rien de dégradé trouvé, mais au moins une source non vérifiée (réseau, délai, réponse illisible, limite),
@@ -30,15 +32,17 @@ elle redevient une dégradation ; une admission qui ne sert plus à rien est dit
 
 Ce qui vient d'Internet est une donnée : HTTPS seulement, certificat vérifié contre le magasin du système (le chemin
 compilé dans OpenSSL, jamais SSL_CERT_FILE ni SSL_CERT_DIR ; OPENSSL_CONF, OPENSSL_MODULES, OPENSSL_ENGINES posées :
-rien conclu), hôtes en liste fermée, aucune redirection suivie, délai par opération et pour toute la requête (en-têtes
-compris), taille plafonnée, longueur annoncée tenue, JSON strict (clés en double, NaN refusés), types vérifiés ;
+rien conclu), hôtes en liste fermée, aucune redirection suivie, délai par opération, pour toute la requête (résolution
+du nom et connexion comprises) et pour tout le passage, taille plafonnée, longueur annoncée tenue, JSON strict (clés en double, NaN refusés), types vérifiés ;
 tout texte distant affiché est assaini (contrôles, bidi, invisibles retirés). Rien n'est écrit : tout reste en
-mémoire (l'index de winget compris, ouvert par sqlite3 en mémoire, en mode défensif). Aucun shell.
+mémoire (l'index de winget compris, ouvert par sqlite3 en mémoire, en mode défensif, valeurs plafonnées, schéma
+exigé colonne par colonne avant toute lecture : ni vue, ni table virtuelle, ni colonne calculée). Aucun shell.
 Essais hors ligne : outils/essais-controle-sources.py (faux serveur HTTPS local), lancé par verifier.sh.
   python3 -I outils/controle-sources.py [--catalogue F] [--admis F]
 """
 
 import datetime
+import hashlib
 import http.client
 import io
 import json
@@ -70,7 +74,10 @@ HOTES = {
     "bodhi.fedoraproject.org": ("/releases/",),
 }
 DELAI = 20  # secondes par opération réseau (connexion, lecture d'un morceau)
-DELAI_TOTAL = 60  # secondes par requête, du début à la fin de la lecture (un serveur qui goutte un octet à la fois)
+DELAI_TOTAL = 60  # secondes par requête, de la résolution du nom à la fin de la lecture (un serveur qui goutte)
+# Secondes pour tout le passage : une centaine de requêtes qui répondent chacune juste sous DELAI_TOTAL tiendraient
+# sinon la publication plus d'une heure (campagne C5, n° 2 et 9). Au-delà, chaque source restante est non vérifiée.
+DELAI_PASSAGE = 600
 PLAFOND_JSON = 2 * 1024 * 1024
 PLAFOND_MSIX = 16 * 1024 * 1024
 PLAFOND_INDEX = 64 * 1024 * 1024
@@ -94,6 +101,7 @@ CONSTATS = {
     "fin-de-vie": "en fin de vie",
     "licence": "licence différente du catalogue",
     "hors-main": "hors de la section main",
+    "casse": "identifiant d'une autre casse dans l'index (winget --exact ne le trouve pas)",
 }
 # Dits (ligne « ℹ »), jamais une dégradation : ils ne changent pas le code de sortie, ni ne s'admettent. Un éditeur
 # qui n'a pas vérifié son application sur Flathub n'est pas une source qui s'est dégradée (beaucoup ne l'ont jamais
@@ -107,17 +115,43 @@ class NonVerifie(Exception):
     """Une source qu'on n'a pas pu juger : jamais comptée saine."""
 
 
+# Caractères qui s'affichent vides, ou comme une lettre de remplissage, sans être des contrôles (catégorie Lo) : ils
+# servaient à pousser un faux « Sources : … saines » en début de ligne visuelle (campagne C5, n° 10).
+REMPLISSAGE = {"\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"}
+# Classes bidi qui changent le sens de ce qui suit, même portées par un caractère d'une autre catégorie.
+BIDI_ACTIFS = {"R", "AL", "RLE", "RLO", "LRE", "LRO", "PDF", "RLI", "LRI", "FSI", "PDI"}
+
+
 def propre(texte, longueur=160):
-    """Un texte venu d'ailleurs, sans rien qui agisse sur le terminal : contrôles (ESC compris), bidi, invisibles,
-    séparateurs de ligne et caractères non attribués deviennent « ? » ; coupé à `longueur`."""
+    """Un texte venu d'ailleurs, sans rien qui agisse sur le terminal : contrôles (ESC compris), invisibles (Cf),
+    marques qui se combinent (Mn, Me), espaces autres que l'espace simple, séparateurs de ligne, caractères de
+    remplissage, lettres de droite à gauche et caractères non attribués deviennent « ? » ; coupé à `longueur`."""
     if not isinstance(texte, str):
         texte = repr(texte)
     sortie = []
     for c in texte[: longueur + 1]:
         cat = unicodedata.category(c)
-        sortie.append("?" if cat[0] == "C" or cat in ("Zl", "Zp") else c)
+        mauvais = (
+            cat[0] == "C"
+            or cat in ("Zl", "Zp", "Mn", "Me")
+            or (cat == "Zs" and c != " ")
+            or c in REMPLISSAGE
+            or unicodedata.bidirectional(c) in BIDI_ACTIFS
+        )
+        sortie.append("?" if mauvais else c)
     t = "".join(sortie)
     return t if len(t) <= longueur else t[:longueur] + "…"
+
+
+def exact(texte, longueur):
+    """`propre(texte, longueur)`, suivi de l'empreinte de la valeur entière quand l'affichage la change ou la coupe :
+    une admission (liée au détail) vaut alors pour toute la valeur, pas pour ses `longueur` premiers caractères
+    (campagne C5, n° 8 et 14)."""
+    vu = propre(texte, longueur)
+    if vu == texte:
+        return vu
+    brut = texte if isinstance(texte, str) else repr(texte)
+    return f"{vu} [sha256:{hashlib.sha256(brut.encode('utf-8', 'surrogatepass')).hexdigest()[:16]}]"
 
 
 def json_strict(octets):
@@ -171,7 +205,9 @@ class Client:
     """HTTPS vers les seuls hôtes permis. `ctx` et `relier` ne changent que dans les essais (autorité et faux
     serveur locaux) : le nom vérifié dans le certificat reste toujours celui de l'hôte permis."""
 
-    def __init__(self, ctx=None, relier=None, pause=PAUSE, delai=DELAI, delai_total=DELAI_TOTAL):
+    def __init__(
+        self, ctx=None, relier=None, pause=PAUSE, delai=DELAI, delai_total=DELAI_TOTAL, delai_passage=DELAI_PASSAGE
+    ):
         # Une panne du magasin est gardée pour chaque requête (non vérifiée), pas levée ici : le compte rendu sort.
         self.ctx, self.erreur_ctx = ctx, None
         if self.ctx is None:
@@ -186,6 +222,8 @@ class Client:
         self.pause = pause
         self.delai = delai
         self.delai_total = delai_total
+        self.delai_passage = delai_passage
+        self.fin_passage = time.monotonic() + delai_passage
         self.injoignables = {}
         self.requetes = 0
 
@@ -197,20 +235,66 @@ class Client:
             raise NonVerifie(self.erreur_ctx)
         if hote in self.injoignables:
             raise NonVerifie(self.injoignables[hote])
+        passage = f"délai du passage dépassé ({self.delai_passage} s pour toutes les sources)"
+        if time.monotonic() + self.pause >= self.fin_passage:
+            raise NonVerifie(passage)
         if self.requetes:
             time.sleep(self.pause)
         self.requetes += 1
         ctx, (adresse, port), delai = self.ctx, self.relier(hote), self.delai
         prises, echu = [], threading.Event()
+        # L'échéance de la requête est aussi bornée par celle du passage : la dernière requête n'en déborde pas.
+        duree = min(self.delai_total, self.fin_passage - time.monotonic())
+        fin_requete = time.monotonic() + duree
+        coupe_passage = duree < self.delai_total
+
+        def echue():
+            return echu.is_set() or time.monotonic() >= fin_requete
+
+        def reste():
+            return max(0.01, min(delai, fin_requete - time.monotonic()))
 
         class Connexion(http.client.HTTPSConnection):
             def connect(self):
-                brute = socket.create_connection((adresse, port), timeout=delai)
-                prises.append(brute)
-                # Le nom vérifié est l'hôte permis, quelle que soit l'adresse jointe. Une coupure sans close_notify
-                # est une erreur, pas une fin de corps.
-                self.sock = ctx.wrap_socket(brute, server_hostname=hote, suppress_ragged_eofs=False)
-                prises.append(self.sock)
+                # Pourquoi pas socket.create_connection : sa résolution du nom n'a aucun délai, et il essaie chaque
+                # adresse pendant `delai` entier ; un hôte à N adresses muettes tenait N × 20 s, hors de l'échéance
+                # de la requête (campagne C5, n° 1). Ici, la résolution tourne dans un fil borné, et chaque
+                # tentative n'a que le temps qui reste à la requête.
+                trouve = []
+
+                def resoudre():
+                    try:
+                        trouve.append(socket.getaddrinfo(adresse, port, type=socket.SOCK_STREAM))
+                    except OSError as e:
+                        trouve.append(e)
+
+                fil = threading.Thread(target=resoudre, daemon=True)
+                fil.start()
+                fil.join(reste())
+                if not trouve:
+                    raise TimeoutError("résolution du nom trop lente")
+                if isinstance(trouve[0], OSError):
+                    raise trouve[0]
+                derniere = OSError("aucune adresse")
+                for famille, genre, proto, _, ou in trouve[0]:
+                    if echue():
+                        raise TimeoutError("échéance de la requête atteinte pendant la connexion")
+                    brute = socket.socket(famille, genre, proto)
+                    prises.append(brute)  # avant connect : la coupure la voit dès qu'elle existe
+                    try:
+                        brute.settimeout(reste())
+                        brute.connect(ou)
+                    except OSError as e:
+                        derniere = e
+                        brute.close()
+                        continue
+                    # Le nom vérifié est l'hôte permis, quelle que soit l'adresse jointe. Une coupure sans
+                    # close_notify est une erreur, pas une fin de corps.
+                    self.sock = ctx.wrap_socket(brute, server_hostname=hote, suppress_ragged_eofs=False)
+                    prises.append(self.sock)
+                    self.sock.settimeout(delai)
+                    return
+                raise derniere
 
         def couper():
             # L'échéance de toute la requête : le délai par opération ne borne pas un serveur qui goutte ses en-têtes
@@ -224,11 +308,13 @@ class Client:
                     pass
 
         def depasse():
+            if coupe_passage:
+                return NonVerifie(passage)
             raison = f"{hote} : délai dépassé ({self.delai_total} s pour toute la requête)"
             self.injoignables[hote] = raison
             return NonVerifie(raison)
 
-        minuterie = threading.Timer(self.delai_total, couper)
+        minuterie = threading.Timer(duree, couper)
         minuterie.daemon = True
         connexion = Connexion(hote, 443, timeout=delai, context=ctx)
         minuterie.start()
@@ -243,13 +329,13 @@ class Client:
             except ssl.SSLCertVerificationError as e:
                 raise NonVerifie(f"{hote} : certificat refusé ({propre(e.verify_message, 80)})") from None
             except (OSError, http.client.HTTPException) as e:
-                if echu.is_set():
+                if echue():
                     raise depasse() from None
                 raison = f"{hote} injoignable ({type(e).__name__} : {propre(str(e), 80)})"
                 if not isinstance(e, http.client.HTTPException):
                     self.injoignables[hote] = raison
                 raise NonVerifie(raison) from None
-            if echu.is_set():
+            if echue():
                 raise depasse()
             if reponse.status in absents:
                 return None
@@ -278,10 +364,10 @@ class Client:
                 try:
                     morceau = reponse.read1(65536)
                 except (OSError, http.client.HTTPException) as e:
-                    if echu.is_set():
+                    if echue():
                         raise depasse() from None
                     raise NonVerifie(f"{hote} : lecture interrompue ({type(e).__name__})") from None
-                if echu.is_set():
+                if echue():
                     raise depasse()
                 if not morceau:
                     break
@@ -330,13 +416,14 @@ def arch(client, nom):
         if drapeau is not None:
             if not isinstance(drapeau, str):
                 raise NonVerifie("archlinux.org : flag_date illisible")
-            constats.append(("perime", f"{r['repo']}/{nom} {propre(r.get('pkgver'), 40)} depuis le {propre(drapeau[:10], 10)}"))
+            # Valeurs entières liées (empreinte si l'affichage les coupe) : une admission vaut pour ce drapeau-là.
+            constats.append(("perime", f"{r['repo']}/{nom} {exact(r.get('pkgver'), 40)} depuis le {exact(drapeau, 40)}"))
     return constats
 
 
 def normaliser_licences(expression):
     """Les identifiants SPDX d'une expression, sans -only, -or-later ni + (une même licence, plus ou moins large) ;
-    les exceptions (après WITH) laissées de côté."""
+    les exceptions (après WITH) laissées de côté. Un morceau hors de l'alphabet SPDX : rien conclu (jamais deviné)."""
     morceaux = re.split(r"[\s()]+", expression)
     ids, apres_with = set(), False
     for m in morceaux:
@@ -354,6 +441,10 @@ def normaliser_licences(expression):
             if m.endswith(fin):
                 m = m[: -len(fin)]
                 break
+        if not m:
+            continue  # un « + » isolé : rien à comparer
+        if not re.fullmatch(r"[A-Za-z0-9.-]{1,80}", m):
+            raise NonVerifie(f"licence illisible ({propre(m, 40)})")
         ids.add(m.upper())
     return ids
 
@@ -381,19 +472,63 @@ def flathub(client, appli, licence, pas_libre):
     if not isinstance(libre, bool) or not isinstance(projet, str):
         raise NonVerifie("flathub.org : licence illisible")
     attendu_libre = licence is not None and not pas_libre
-    dit = f"Flathub : {propre(projet, 80)} ({'libre' if libre else 'non libre'})"
+    dit = f"Flathub : {exact(projet, 80)} ({'libre' if libre else 'non libre'})"
     if libre != attendu_libre:
         attendu = "libre" if attendu_libre else "non libre"
         constats.append(("licence", f"le catalogue la dit {attendu} ; {dit}"))
-    elif attendu_libre:
-        manquants = normaliser_licences(licence) - normaliser_licences(projet)
-        if manquants:
-            constats.append(("licence", f"catalogue {licence} ; {dit}"))
+    elif attendu_libre and normaliser_licences(licence) != normaliser_licences(projet):
+        # Les mêmes identifiants, dans les deux sens : une licence ajoutée par Flathub (« MIT AND LicenseRef-x »)
+        # change ce qu'on installe autant qu'une licence retirée (campagne C5, n° 7 et 13).
+        constats.append(("licence", f"catalogue {licence} ; {dit}"))
     return constats
 
 
+# Le schéma exigé des deux tables lues, colonne par colonne : (nom, type déclaré), dans l'ordre. Comparé à ce que
+# rend pragma_table_xinfo (le schéma analysé par SQLite), jamais au texte CREATE, qu'un commentaire déguise (n° 5).
+SCHEMA_METADATA = [("name", "TEXT"), ("value", "TEXT")]
+LONGUEUR_SQLITE = 1_000_000
+DELAI_SQLITE = 30
+
+
+def verifier_schema_winget(base):
+    """Refuse toute base qui ferait évaluer du code en la lisant : chaque objet de main doit être une table
+    ordinaire ou un index (ni vue, ni table virtuelle, ni ombre de table virtuelle), aucune colonne cachée ni
+    calculée nulle part, et les deux tables lues ont le schéma attendu. Tout ici lit le schéma analysé par SQLite
+    (pragma_table_list, pragma_table_xinfo), sans rien évaluer de la base."""
+    tables = base.execute("SELECT name, type FROM pragma_table_list WHERE schema = 'main'").fetchmany(1001)
+    if len(tables) > 1000:
+        raise NonVerifie("index de winget avec trop de tables")
+    for nom, genre in tables:
+        if genre in ("virtual", "shadow"):
+            # Une table virtuelle (fts5, rtree, un module chargé) ou l'une de ses tables d'ombre : son module ferait
+            # le travail de la lecture. Repérée par SQLite lui-même, quel que soit le texte de sa déclaration.
+            raise NonVerifie(f"index de winget avec une table virtuelle ({propre(nom, 40)}) refusé")
+        if genre != "table":
+            raise NonVerifie(f"index de winget avec un objet de type {propre(genre, 20)} ({propre(nom, 40)}) refusé")
+    noms = {nom for nom, _ in tables}
+    for table in ("packages", "metadata"):
+        if table not in noms:
+            raise NonVerifie(f"index de winget sans table {table}")
+    colonnes = {}
+    for nom in sorted(noms):
+        lignes = base.execute(
+            "SELECT name, upper(type), hidden FROM pragma_table_xinfo(?) ORDER BY cid", (nom,)
+        ).fetchmany(1001)
+        if len(lignes) > 1000:
+            raise NonVerifie("index de winget avec une table trop large")
+        # hidden : 1 colonne cachée (table virtuelle), 2 calculée VIRTUAL, 3 calculée STORED.
+        if any(h != 0 for _, _, h in lignes):
+            raise NonVerifie(f"index de winget avec une colonne cachée ou calculée ({propre(nom, 40)}) refusé")
+        colonnes[nom] = [(c, t) for c, t, _ in lignes]
+    if colonnes["metadata"] != SCHEMA_METADATA:
+        raise NonVerifie("index de winget : table metadata au schéma inattendu")
+    if ("id", "TEXT") not in colonnes["packages"]:
+        raise NonVerifie("index de winget sans colonne id (TEXT)")
+
+
+
 def lire_index_winget(client, aujourd_hui):
-    """Les identifiants de l'index de winget (source2.msix), en minuscules → identifiant exact ; tout en mémoire."""
+    """Les identifiants de l'index de winget (source2.msix), en minuscules → identifiants exacts ; tout en mémoire."""
     corps = client.obtenir(
         "cdn.winget.microsoft.com",
         "/cache/source2.msix",
@@ -432,26 +567,32 @@ def lire_index_winget(client, aujourd_hui):
         base.setconfig(sqlite3.SQLITE_DBCONFIG_TRUSTED_SCHEMA, False)
         base.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
         base.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_VIEW, False)
-        fin = time.monotonic() + 30
-        base.set_progress_handler(lambda: 1 if time.monotonic() > fin else 0, 10000)
+        # Aucune valeur (texte, blob, ni le SQL d'une requête) de plus d'un million d'octets : une colonne calculée
+        # qui fabrique un texte géant échoue « too big » au lieu de remplir la mémoire (campagne C5, n° 3). Posé
+        # avant deserialize, pour que rien de la base ne soit lu sans lui.
+        base.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, LONGUEUR_SQLITE)
+        base.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 100_000)
+        # La borne de temps est relue en Python toutes les 100 instructions de la machine de SQLite : une expression
+        # lente (randomblob, printf géant) ne la dépasse que d'une poignée d'instructions (n° 4).
+        fin = time.monotonic() + DELAI_SQLITE
+        base.set_progress_handler(lambda: 1 if time.monotonic() > fin else 0, 100)
         base.deserialize(donnees)
         base.execute("PRAGMA query_only = 1")
-        if base.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+        # quick_check évaluerait les CHECK (du code de la base) : ils sont ignorés, l'intégrité des pages reste lue.
+        base.execute("PRAGMA ignore_check_constraints = 1")
+        verifier_schema_winget(base)
+        # Après le refus du schéma : quick_check n'a plus devant lui que deux tables ordinaires, sans colonne
+        # calculée ni table virtuelle (rien de la base n'est évalué en lisant ses pages).
+        verdict = base.execute("PRAGMA quick_check").fetchmany(2)
+        if verdict != [("ok",)]:
             raise NonVerifie("index de winget abîmé (quick_check)")
-        # Une table virtuelle (fts5, ou un module chargé) a aussi le type « table » dans sqlite_master : c'est sa
-        # déclaration qui la trahit. Aucune n'est lue, où qu'elle soit (son module ferait le travail de la lecture).
-        for nom, sql in base.execute("SELECT name, sql FROM sqlite_master"):
-            if isinstance(sql, str) and re.match(r"\s*create\s+virtual\b", sql, re.IGNORECASE):
-                raise NonVerifie(f"index de winget avec une table virtuelle ({propre(nom, 40)}) refusé")
-        for table in ("packages", "metadata"):
-            genre = base.execute("SELECT type FROM sqlite_master WHERE name = ?", (table,)).fetchall()
-            if genre != [("table",)]:
-                raise NonVerifie(f"index de winget sans table {table}")
-        colonnes = {r[1] for r in base.execute("PRAGMA table_info(packages)")}
-        if not {"id"} <= colonnes:
-            raise NonVerifie("index de winget sans colonne id")
-        meta = dict(base.execute("SELECT name, value FROM metadata WHERE name = 'lastwritetime'").fetchall())
-        ecrit = meta.get("lastwritetime")
+        # Une seule ligne lastwritetime, de type texte et courte : jamais tout ramené en mémoire (fetchall).
+        lignes = base.execute(
+            "SELECT typeof(value), length(value), value FROM metadata WHERE name = 'lastwritetime' LIMIT 2"
+        ).fetchmany(2)
+        if len(lignes) != 1 or lignes[0][0] != "text" or lignes[0][1] > 11:
+            raise NonVerifie("index de winget sans date lisible")
+        ecrit = lignes[0][2]
         # Chiffres ASCII seulement (isdigit() accepte « ² ») ; 11 au plus, et fromtimestamp gardé : une année hors
         # de portée de datetime lève ValueError, OverflowError ou OSError.
         if not isinstance(ecrit, str) or not re.fullmatch(r"[0-9]{1,11}", ecrit):
@@ -464,22 +605,29 @@ def lire_index_winget(client, aujourd_hui):
         if age > INDEX_WINGET_AGE_MAX or age < -2:
             raise NonVerifie(f"index de winget daté du {date} : trop vieux (ou dans le futur) pour conclure")
         ids = {}
-        for (ident,) in base.execute("SELECT id FROM packages"):
-            if isinstance(ident, str):
-                ids.setdefault(ident.lower(), ident)
+        for genre, longueur, ident in base.execute("SELECT typeof(id), length(id), id FROM packages"):
+            # Un identifiant vraiment texte et de longueur permise ; le reste est laissé de côté sans être gardé.
+            if genre == "text" and longueur <= 128 and isinstance(ident, str):
+                ids.setdefault(ident.lower(), set()).add(ident)
         if not ids:
             raise NonVerifie("index de winget vide")
         return ids, date
-    except sqlite3.Error as e:
+    except (sqlite3.Error, UnicodeDecodeError) as e:
+        # UnicodeDecodeError : un texte qui n'est pas de l'UTF-8 valide, que sqlite3 ne décode qu'en le lisant.
         raise NonVerifie(f"index de winget illisible ({type(e).__name__})") from None
     finally:
         base.close()
 
 
 def winget(index, ident):
-    exact = index.get(ident.lower())
-    if exact is None:
+    """Vanguard installe par `winget install --id <id> --exact` (src/machine/windows/mod.rs) : --exact compare aussi
+    la casse, selon la documentation de winget. Un identifiant qui n'existe dans l'index que dans une autre casse ne
+    s'installerait donc pas : c'est un constat, pas une source saine (campagne C5, n° 6 et 12)."""
+    vus = index.get(ident.lower())
+    if not vus:
         return [("absent", "pas dans l'index de winget")]
+    if ident not in vus:
+        return [("casse", "l'index dit " + ", ".join(exact(v, 128) for v in sorted(vus)))]
     return []
 
 
@@ -512,7 +660,7 @@ def debian(client, nom):
     if not sections:
         return [("absent", "pas de paquet binaire dans stable")]
     if "main" not in sections:
-        return [("hors-main", "stable, section " + ", ".join(propre(s, 20) for s in sorted(sections)))]
+        return [("hors-main", "stable, section " + ", ".join(exact(s, 20) for s in sorted(sections)))]
     return []
 
 
@@ -635,7 +783,8 @@ def lire_admis(chemin, aujourd_hui):
         champs = CHAMPS_ADMIS
         if not isinstance(a, dict) or set(a) != set(champs) or not all(isinstance(a[c], str) for c in champs):
             raise NonVerifie(f"{chemin} : entrée illisible (champs attendus : {', '.join(champs)})")
-        if a["source"] not in SOURCES or a["constat"] not in CONSTATS or len(a["raison"].strip()) < 10:
+        # openSUSE n'est jamais jugé : une admission pour lui n'admettrait rien, elle tromperait seulement le lecteur.
+        if a["source"] not in SOURCES or a["source"] == "opensuse" or a["constat"] not in CONSTATS or len(a["raison"].strip()) < 10:
             raise NonVerifie(f"{chemin} : entrée {propre(a['identifiant'], 40)} : source, constat ou raison refusé")
         if not a["detail"].strip():
             raise NonVerifie(f"{chemin} : {propre(a['identifiant'], 40)} sans detail (la valeur exacte admise)")
@@ -695,6 +844,12 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
     for source, ident, raison in refuses:
         non_verifies.append((source, ident, raison))
     etat, servies, jugees = {}, set(), set()
+    # Une admission (valable ou échue) pour une source que le catalogue n'a pas (plus) : dite, et rien conclu tant
+    # qu'elle reste (campagne C5, n° 15) ; elle dirait sinon en silence qu'une dégradation est connue et admise.
+    connues = {(source, ident) for source, ident, _ in a_faire}
+    for cle in sorted(set(admis) | {c for c, _ in echus}):
+        if cle[:2] not in connues:
+            non_verifies.append((cle[0], cle[1], f"admission ({cle[2]}) pour une source absente du catalogue : à retirer"))
     for source, ident, logiciel in a_faire:
         if source == "opensuse":
             non_couverts += 1
@@ -763,6 +918,9 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
     if branche is not None:
         print(f"  · Fedora : {branche} (Bodhi), Debian : stable, Arch : {', '.join(DEPOTS_ARCH)}")
     print(f"  · non couverts : {non_couverts} paquet(s) openSUSE (aucune API publique simple) ; aucun cask au catalogue")
+    # Le programme installe aussi par apt sur Ubuntu et ses dérivées, avec les noms de Debian (firefox-esr y devient
+    # firefox) : rien n'est vérifié dans les dépôts d'Ubuntu, et c'est dit (campagne C5, n° 16).
+    print("  · non couverts : Ubuntu et ses dérivées (noms de Debian supposés, jamais vérifiés dans les dépôts d'Ubuntu)")
     if degradations:
         print(
             f"Sources : {len(degradations)} dégradation(s), {len(non_verifies)} non vérifiée(s), {sains} saine(s), "

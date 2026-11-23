@@ -705,7 +705,7 @@ if [[ $MODE != --rapide ]]; then
   etape python scripts_python &
   etape page-fonctions python3 -I outils/essais-page-fonctions.py &
   etape tickets python3 -I outils/essais-tickets-version.py &
-  etape controle-sources python3 -I outils/essais-controle-sources.py &
+  etape controle-sources /usr/bin/python3 -I outils/essais-controle-sources.py &
   etape relais relais &
   etape relais-schema python3 -I outils/relais-schema.py &
   etape liens python3 -I outils/liens.py --hors-ligne &

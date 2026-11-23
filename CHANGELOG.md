@@ -34,6 +34,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (aucune autre valeur) : le contrôle tourne tout de même, et son résultat
   (code, dégradations, sources non vérifiées) est dit dans les notes de la version et gardé dans l'historique signé.
   Une dégradation admise ne vaut que pour la valeur exacte notée, avec sa date.
+  Après une campagne d'attaque, le contrôle est plus strict : il juge la liste que le programme publié imprime
+  lui-même (pas un fichier qu'on pourrait changer à côté), lit son code et la liste des admis dans le commit publié
+  en revérifiant l'empreinte de chaque objet de git, et tout le passage a une limite de temps (10 min pour les
+  sources, 15 min en tout). L'index de winget est lu sans jamais faire tourner de code de la base, un identifiant
+  winget d'une autre casse est signalé, les licences doivent être les mêmes dans les deux sens, et Ubuntu est dit
+  non couvert. Une page de version signée est créée avant la page du code : un échec ne laisse plus de page à moitié.
 
 ## 22 novembre 2026 : version 0.97.0
 

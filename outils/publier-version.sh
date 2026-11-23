@@ -223,32 +223,84 @@ verifier_compilation() {
 COMPILE=$(verifier_compilation) || { echo "$COMPILE"; exit 1; }
 # Les sources du catalogue (outils/controle-sources.py), avant toute requête à GitHub : un paquet Arch périmé, une
 # application Flathub en fin de vie ou de licence changée, un identifiant winget disparu, ou une source qu'on n'a pas
-# pu vérifier (réseau, délai, limite : code 2) arrêtent la publication. Le contrôle, le catalogue exporté et la liste
-# des admis sont pris dans le commit publié (arbre propre, vérifié plus haut ; la tête de master, vérifiée plus bas),
-# jamais dans des fichiers d'ici, et sans les objets de remplacement (git replace : sans eux, l'arbre paraît propre
-# mais « git show » sert un autre contenu). Le juge est /usr/bin/python3, jamais celui du PATH, sans les variables
-# qui changent le magasin de certificats ou la configuration d'OpenSSL. Seul code 0 avec « Sources : N vérifiée(s),
-# saines » (N ≥ 1) vaut sain ; une trace de Python (code 1 sans le témoin « dégradation(s) »), un code 3 ou plus, un
-# signal sont dits comme une panne, et arrêtent aussi. La sortie est montrée en entier : jamais coupée, les lignes ✖
-# et ≈ restent à l'écran. VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 publie quand même, le contrôle ayant tourné : son
-# résultat (code, dégradations, non vérifiées, chiffres du résumé seulement) est ce qui est dit dans les notes et
-# l'historique signé. --notes ne passe jamais ici : aucune requête. Lue telle quelle par outils/essais-signature.sh.
+# pu vérifier (réseau, délai, limite : code 2) arrêtent la publication. Le catalogue jugé est celui des programmes
+# qui partent : imprimé par le programme Linux publié (`deploiement catalogue-sources`), d'une copie dont l'empreinte
+# est revérifiée contre celle de sa compilation, jamais outils/catalogue-sources.json, qu'un commit hors code peut
+# changer sans toucher aux programmes (campagne C5, n° 11 et 17). Le contrôle et la liste des admis sont pris dans le
+# commit publié (arbre propre, vérifié plus haut ; la tête de master, vérifiée plus bas), par /usr/bin/git, sans les
+# objets de remplacement (git replace), et chaque objet lu (commit, arbres, fichiers) a son empreinte recalculée :
+# un objet réécrit sur le disque n'est pas servi (n° 18). Le juge est /usr/bin/python3 -I, jamais celui du PATH,
+# sans les variables qui changent le magasin de certificats ou la configuration d'OpenSSL, sous `timeout` (15 min,
+# puis tué : un délai dépassé est « rien conclu »). Seul code 0 avec « Sources : N vérifiée(s), saines » (N ≥ 1)
+# vaut sain ; une trace de Python (code 1 sans le témoin « dégradation(s) »), un code 3 ou plus, un signal sont dits
+# comme une panne, et arrêtent aussi. Un objet altéré, un programme qui n'imprime pas son catalogue ou un dossier
+# temporaire impossible arrêtent tout, sans passe-droit possible (n° 19). La sortie est montrée en entier : jamais
+# coupée, les lignes ✖ et ≈ restent à l'écran. VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 publie quand même, le
+# contrôle ayant tourné : son résultat (code, dégradations, non vérifiées, chiffres du résumé seulement) est ce qui
+# est dit dans les notes et l'historique signé. --notes ne passe jamais ici : aucune requête. Lues telles quelles par
+# outils/essais-signature.sh.
 JUGE_PYTHON=/usr/bin/python3
+JUGE_GIT=/usr/bin/git
+JUGE_DELAI=900
+# Un fichier du commit publié, par son chemin sous la racine ($1, ex. outils/x.py), écrit dans $2 : code 0 extrait
+# et vérifié, 2 vraiment absent de l'arbre, 1 tout le reste (objet altéré, illisible, écriture impossible).
+juge_git() { GIT_NO_REPLACE_OBJECTS=1 "$JUGE_GIT" --no-replace-objects "$@"; }
+# L'empreinte d'un objet ($1 genre, $2 id), recalculée depuis son contenu : cat-file ne la revérifie pas pour un objet
+# libre, qu'on peut réécrire sur le disque sans que rien ne le voie.
+objet_revu() { [[ $(juge_git cat-file "$1" "$2" | juge_git hash-object -t "$1" --stdin 2>/dev/null) == "$2" ]]; }
+objet_verifie() {
+  local id contenu genre mode nom morceau
+  local -a chemin
+  id=$(juge_git rev-parse --verify -q "$COMMIT^{commit}" 2>/dev/null) && [[ $id == "$COMMIT" ]] && objet_revu commit "$id" || return 1
+  id=$(juge_git cat-file commit "$id" | sed -n '1s/^tree \([0-9a-f]\{40,64\}\)$/\1/p')
+  [[ -n $id ]] && objet_revu tree "$id" || return 1
+  IFS=/ read -ra chemin <<<"$1"
+  for morceau in "${chemin[@]}"; do
+    contenu=$(juge_git ls-tree "$id" -- "$morceau" 2>/dev/null) || return 1
+    [[ -n $contenu ]] || return 2
+    read -r mode genre id nom <<<"$contenu"
+    [[ $nom == "$morceau" && $id =~ ^[0-9a-f]{40,64}$ ]] || return 1
+    if [[ $morceau == "${chemin[-1]}" ]]; then
+      [[ $genre == blob && $mode == 100644 ]] || return 1
+    else
+      [[ $genre == tree ]] && objet_revu tree "$id" || return 1
+    fi
+  done
+  juge_git cat-file blob "$id" >"$2" 2>/dev/null || return 1
+  [[ $(juge_git hash-object -t blob --stdin <"$2") == "$id" ]]
+}
 controle_des_sources() {
-  local dossier sortie="" code=0 cause resume degr nonv
-  dossier=$(mktemp -d)
-  if GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/controle-sources.py" \
-    >"$dossier/controle-sources.py" 2>/dev/null &&
-    GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/catalogue-sources.json" \
-      >"$dossier/catalogue-sources.json" 2>/dev/null &&
-    GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/controle-sources-admis.json" \
-      >"$dossier/admis.json" 2>/dev/null; then
-    sortie=$(/usr/bin/env -u SSL_CERT_FILE -u SSL_CERT_DIR -u OPENSSL_CONF -u OPENSSL_MODULES -u OPENSSL_ENGINES \
+  local dossier sortie="" code=0 cause resume degr nonv f r
+  dossier=$(mktemp -d) && [[ -d $dossier ]] ||
+    { echo "Sources du catalogue : dossier temporaire impossible : rien de publié (sans passe-droit possible)."; return 1; }
+  for f in controle-sources.py controle-sources-admis.json; do
+    r=0
+    objet_verifie "outils/$f" "$dossier/$f" || r=$?
+    if ((r == 2)); then
+      code=-1
+    elif ((r != 0)); then
+      rm -rf "$dossier"
+      echo "Sources du catalogue : outils/$f du commit illisible ou altéré (empreinte d'un objet git fausse) :"
+      echo "  rien de publié (sans passe-droit possible : git fsck)."
+      return 1
+    fi
+  done
+  if ((code == 0)); then
+    # Le catalogue des programmes qui partent : une copie du programme Linux, revérifiée, qui l'imprime elle-même.
+    if ! { cp -- "$LINUX" "$dossier/vanguard" && chmod 700 "$dossier/vanguard" &&
+      [[ $(sha256sum "$dossier/vanguard" | cut -d' ' -f1) == "$(repere linux-x86_64)" ]] &&
+      /usr/bin/timeout 60 "$dossier/vanguard" deploiement catalogue-sources >"$dossier/catalogue-sources.json" &&
+      [[ -s $dossier/catalogue-sources.json ]]; }; then
+      rm -rf "$dossier"
+      echo "Sources du catalogue : le programme Linux publié n'a pas imprimé son catalogue : rien de publié"
+      echo "  (sans passe-droit possible : relancer outils/deployer.sh)."
+      return 1
+    fi
+    sortie=$(/usr/bin/timeout --kill-after=10 "$JUGE_DELAI" /usr/bin/env -u SSL_CERT_FILE -u SSL_CERT_DIR \
+      -u OPENSSL_CONF -u OPENSSL_MODULES -u OPENSSL_ENGINES \
       "$JUGE_PYTHON" -I "$dossier/controle-sources.py" --catalogue "$dossier/catalogue-sources.json" \
-      --admis "$dossier/admis.json" 2>&1) || code=$?
+      --admis "$dossier/controle-sources-admis.json" 2>&1) || code=$?
     [[ -z $sortie ]] || printf '%s\n' "$sortie"
-  else
-    code=-1
   fi
   rm -rf "$dossier"
   if ((code == 0)) && grep -qE '^Sources : [1-9][0-9]* vérifiée\(s\), saines' <<<"$sortie"; then
@@ -256,11 +308,13 @@ controle_des_sources() {
     return 0
   fi
   if ((code == -1)); then
-    cause="contrôle, catalogue exporté ou liste des admis absent du commit publié"
+    cause="contrôle ou liste des admis absent du commit publié"
   elif ((code == 1)) && grep -qE '^Sources : [1-9][0-9]* dégradation\(s\)' <<<"$sortie"; then
     cause="source(s) dégradée(s)"
   elif ((code == 2)) && grep -q '^Sources : ' <<<"$sortie"; then
     cause="source(s) non vérifiée(s), rien conclu"
+  elif ((code == 124)); then
+    cause="contrôle trop long ($JUGE_DELAI s), arrêté : rien conclu"
   elif ((code > 128)); then
     cause="contrôle arrêté par un signal (code $code)"
   else
@@ -834,17 +888,38 @@ retirer_etiquette_precedente() {
 }
 # La page « dernière » d'avant, relevée avant que celle-ci la remplace.
 PRECEDENTE=$(gh release view -R "$DEPOT_CODE" --json tagName -q .tagName 2>/dev/null || true)
-gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
-  "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json
-echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
+# La page signée d'abord (campagne C5, n° 20) : un passe-droit n'existe dans l'historique signé que si elle est en
+# ligne. Créée après la page du code, son échec laissait une page qui disait le passe-droit sans trace signée, et une
+# relance disait « déjà publiée ». Ici, son échec arrête tout avant la page du code : une relance refait tout.
 PUBLIEE_SIGNEE=""
-if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
-  "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
-  "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
+if [[ -n $SIGNEE ]]; then
+  if gh release view "$TAG" -R "$DEPOT_VERSIONS" >/dev/null 2>&1; then
+    echo "✖ $TAG est déjà dans $DEPOT_VERSIONS sans page du code : à régler à la main (DOSSIER gardé : $DOSSIER)."
+    trap - EXIT
+    exit 1
+  fi
+  if ! gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
+    "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
+    "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
+    "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
+    # Une page à moitié créée (fichiers manquants) est retirée, avec son étiquette : la relance repart de rien.
+    gh release delete "$TAG" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null 2>&1 || true
+    echo "✖ Version non publiée dans $DEPOT_VERSIONS : rien de publié, ni page du code ; relancer outils/publier-version.sh."
+    exit 1
+  fi
   echo "Version $TAG signée dans $DEPOT_VERSIONS : les Vanguard sans clé la proposeront."
   PUBLIEE_SIGNEE=1
+fi
+if ! gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
+  "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json; then
+  echo "✖ Page du code non créée${PUBLIEE_SIGNEE:+ (la mise à jour signée, elle, est en ligne)} : relancer gh release create \
+$TAG à la main (DOSSIER gardé : $DOSSIER) ; les pages d'avant restent."
+  trap - EXIT
+  exit 1
+fi
+echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
+if [[ -n $PUBLIEE_SIGNEE ]]; then
   # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
   # versions ; la signature suivante s'y comparera.
   POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
@@ -854,9 +929,6 @@ if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$N
   for ancienne in $(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
     gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null
   done
-elif [[ -n $SIGNEE ]]; then
-  echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer gh release create à la main (DOSSIER gardé : $DOSSIER)."
-  trap - EXIT
 fi
 # Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées
 # sans leur étiquette (sans --cleanup-tag) ; puis l'étiquette de la seule version qui précède, une fois tout relu

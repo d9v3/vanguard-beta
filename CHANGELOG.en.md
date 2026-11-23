@@ -33,6 +33,12 @@ example, finds it, to rebuild it if needed.
   full. Releasing anyway takes `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (no other value): the check still runs,
   and its result (code, degradations, unverified sources) is stated in the release notes and kept in the signed
   history. An accepted degradation only holds for the exact value noted, with its date.
+  After an attack campaign, the check is stricter: it judges the list the released program prints itself (not a
+  file that could be changed next to it), reads its code and the accepted list from the released commit while
+  re-checking the hash of every git object, and the whole run has a time limit (10 min for the sources, 15 min in
+  all). The winget index is read without ever running code from the database, a winget ID in another case is
+  reported, licences must match both ways, and Ubuntu is said to be not covered. The signed release page is now
+  created before the code page: a failure no longer leaves half a release.
 
 ## November 22, 2026: version 0.97.0
 

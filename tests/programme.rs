@@ -10151,3 +10151,25 @@ mod lance_par_la_fenetre {
         }
     }
 }
+
+/// Campagne C5, n° 11 et 17 : `outils/publier-version.sh` juge le catalogue que le programme publié imprime lui-même
+/// (`deploiement catalogue-sources`), jamais un fichier qu'un commit hors code changerait. L'étape doit imprimer
+/// exactement le JSON versionné, sans rien d'autre sur la sortie, et réussir.
+#[test]
+fn deploiement_imprime_le_catalogue_des_sources_a_l_octet_pres() {
+    let maison = maison_jetable();
+    let s = vanguard_dans(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["deploiement", "catalogue-sources"],
+        "",
+        60,
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert_eq!(
+        s.texte,
+        include_str!("../outils/catalogue-sources.json"),
+        "catalogue imprimé différent du versionné"
+    );
+}

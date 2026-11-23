@@ -24,6 +24,11 @@ l'autorité et l'adresse jointe changent.
  10. Champ absent : flag_date d'Arch, suite de Debian, nom du paquet Fedora, clé du catalogue, logiciel sans
      source, Bodhi incohérent : non vérifié, jamais sain.
  11. Magasin de certificats : SSL_CERT_FILE et SSL_CERT_DIR sans effet ; OPENSSL_CONF posée : rien conclu.
+ 12. Campagne C5 : adresses muettes et résolution lente bornées, échéance du passage, index de winget lu sans rien
+     évaluer (colonne calculée, table virtuelle déguisée, CHECK, valeur géante, borne de temps, bornes de date),
+     casse de winget, licences dans les deux sens, valeur longue liée par empreinte, caractères de remplissage,
+     admissions (hors catalogue, openSUSE, champ par champ), lecteurs de chaque source, vrai outil hors ligne.
+Sans openssl ou sans fts5 : « sauté » (code 77), jamais vert.
 Lancé par outils/verifier.sh (étape controle-sources).
   python3 -I outils/essais-controle-sources.py
 """
@@ -35,6 +40,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import ssl
 import subprocess
@@ -46,6 +52,17 @@ import time
 import traceback
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Sans openssl (l'autorité jetable) ou sans fts5 (les tables virtuelles piégées), ces essais ne prouvent rien : dit
+# « sauté » (77, compté par verifier.sh), jamais vert.
+if shutil.which("openssl") is None:
+    print("(sauté : openssl absent, pas d'autorité jetable pour le faux serveur)")
+    sys.exit(77)
+try:
+    sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE essai USING fts5(x)")
+except sqlite3.Error:
+    print("(sauté : SQLite sans fts5, les index piégés ne se fabriquent pas)")
+    sys.exit(77)
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("controle_sources", os.path.join(ICI, "controle-sources.py"))
@@ -297,7 +314,7 @@ def repondre(hote, chemin):
 
 def catalogue(**changes):
     logiciels = [
-        {"nom": "KeePassXC", "licence": "GPL-3.0", "paquets": {"arch": ["keepassxc"], "debian": ["keepassxc"],
+        {"nom": "KeePassXC", "licence": "GPL-3.0 AND LGPL-2.1", "paquets": {"arch": ["keepassxc"], "debian": ["keepassxc"],
                                                             "fedora": ["keepassxc"], "opensuse": ["keepassxc"]},
          "flatpak": "org.keepassxc.KeePassXC", "winget": "Mozilla.Firefox"},
         {"nom": "Commercial", "licence": "GPL-3.0", "paquets": {"arch": [], "debian": [], "fedora": [], "opensuse": []},
@@ -363,7 +380,7 @@ BODHI = ("bodhi.fedoraproject.org", "/releases/?state=current&rows_per_page=100"
 BRANCHES = ("mdapi.fedoraproject.org", "/branches")
 PERIME = reponse_json({"results": [{"pkgname": "keepassxc", "repo": "extra", "pkgver": "2.7",
                                     "flag_date": "2026-06-22T20:03:01Z"}]})
-DETAIL_PERIME = "extra/keepassxc 2.7 depuis le 2026-06-22"
+DETAIL_PERIME = "extra/keepassxc 2.7 depuis le 2026-06-22T20:03:01Z"
 
 
 def msix(corps):
@@ -463,7 +480,7 @@ def principal():
                                            "flag_date": "2026-11-20T00:00:00Z"}]})
     code, sortie = passer(admis=admis, reponses={ARCH: plus_tard})
     verifier(degrade(code, sortie, "marqué périmé") and f"pour « {DETAIL_PERIME} », constaté : « extra/keepassxc 2.7 "
-             "depuis le 2026-11-20 »" in sortie and "≈" not in sortie,
+             "depuis le 2026-11-20T00:00:00Z »" in sortie and "≈" not in sortie,
              "admis pour une autre valeur (nouveau drapeau) : une dégradation qui cite les deux", sortie)
     for nom, champ, valeur in (("un autre identifiant", "identifiant", "keepassxc-autre"),
                                ("une autre source", "source", "debian")):
@@ -562,8 +579,12 @@ def principal():
                                                      or c in "‮​ ⁦⁩")]
     verifier(code == 1 and not interdits and "2.7?]52;c;ZWNobyBwd24=?" in sortie,
              "séquences d'échappement, bidi, invisibles : retirés de l'affichage", repr(sortie))
+    code, sortie = passer(reponses=flathub_avec(project_license="MIT\x1b[2J‮", is_free_license=False))
+    verifier(code == 1 and "\x1b" not in sortie and "‮" not in sortie and "licence différente" in sortie,
+             "licence piégée : assainie", repr(sortie))
     code, sortie = passer(reponses=flathub_avec(project_license="MIT\x1b[2J‮", is_free_license=True))
-    verifier(code == 1 and "\x1b" not in sortie and "‮" not in sortie, "licence piégée : assainie", repr(sortie))
+    verifier(code == 2 and "\x1b" not in sortie and "‮" not in sortie and "licence illisible" in sortie,
+             "licence hors de l'alphabet SPDX : rien conclu, assainie", repr(sortie))
 
     print("6. Identifiant hostile dans le catalogue")
     for hostile in ("../../etc", "-rf", "a;b", "a b", "x\x1b[2J", "a/b", "a?name=b", "a%2e", "é", "", "a" * 200):
@@ -595,7 +616,7 @@ def principal():
         ("flux deflate abîmé", index_winget(piege="deflate"), "illisible"),
         ("entrée chiffrée", index_winget(piege="chiffre"), "illisible (RuntimeError)"),
         ("sans table", index_winget(piege="sans-table"), "sans table"),
-        ("vue à la place de la table", index_winget(piege="vue"), "sans table"),
+        ("vue à la place de la table", index_winget(piege="vue"), "de type view"),
         ("pas une archive", b"PK\x03\x04pas une archive", "illisible"),
         ("archive sans index", b"", "illisible"),
     ):
@@ -637,7 +658,12 @@ def principal():
     code, sortie = passer(env="1")
     verifier(code == 2 and not REQUETES and "hors ligne demandé" in sortie and time.monotonic() - debut < 1,
              "VANGUARD_HORS_LIGNE=1 : aucune requête, code 2", sortie)
-    c = cs.Client(relier=lambda h: ("127.0.0.1", 9), pause=0, delai=2)
+    # Un port ouvert puis refermé à l'instant : sûr d'être fermé ici (le 9 pourrait servir sur une machine).
+    libre = socket.socket()
+    libre.bind(("127.0.0.1", 0))
+    port_ferme = libre.getsockname()[1]
+    libre.close()
+    c = cs.Client(relier=lambda h: ("127.0.0.1", port_ferme), pause=0, delai=2)
     code, sortie = passer(c=c)
     verifier(code == 2 and "injoignable" in sortie and "saines" not in sortie,
              "serveurs injoignables : code 2, rien de sain", sortie)
@@ -758,8 +784,325 @@ def principal():
                  f"{variable} posée : rien conclu, code 2", fini.stdout + fini.stderr)
 
 
+# ── Campagne C5 : les contrôles ajoutés après elle, chacun essayé seul ──
+
+
+class FauxClient:
+    """Rend des réponses déjà lues, sans réseau : pour les lecteurs de chaque source, essayés un à un."""
+
+    def __init__(self, json_=None, octets=None):
+        self.json_, self.octets = json_ or {}, octets
+
+    def json(self, hote, chemin, **options):
+        r = self.json_.get((hote, chemin), self.json_.get(hote))
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    def obtenir(self, hote, chemin, **options):
+        return self.octets
+
+
+def msix_sql(script, ecrit="auto", date=AUJOURD_HUI):
+    """Un source2.msix dont la base est faite par `script` (SQL) ; `ecrit` : la date posée dans metadata."""
+    base = sqlite3.connect(":memory:")
+    base.executescript(script)
+    if ecrit == "auto":
+        ecrit = str(int(datetime.datetime(date.year, date.month, date.day, tzinfo=datetime.UTC).timestamp()))
+    if ecrit is not None:
+        base.execute("INSERT INTO metadata (name, value) VALUES ('lastwritetime', ?)", (ecrit,))
+    base.commit()
+    tampon = io.BytesIO()
+    with zipfile.ZipFile(tampon, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("Public/index.db", base.serialize())
+    return tampon.getvalue()
+
+
+SAINES_SQL = ("CREATE TABLE metadata (name TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);"
+              "CREATE TABLE packages (rowid INTEGER PRIMARY KEY, id TEXT NOT NULL, latest_version TEXT);"
+              "INSERT INTO packages (id) VALUES ('Mozilla.Firefox');")
+
+
+def index_lu(octets, aujourd_hui=AUJOURD_HUI):
+    """(index, None) ou (None, raison) : ce que rend lire_index_winget sur ces octets."""
+    try:
+        return cs.lire_index_winget(FauxClient(octets=octets), aujourd_hui), None
+    except cs.NonVerifie as e:
+        return None, str(e)
+
+
+def leve(fonction, *args):
+    """La raison du NonVerifie levé, ou None si rien n'est levé (le résultat est alors rendu à part)."""
+    try:
+        fonction(*args)
+    except cs.NonVerifie as e:
+        return str(e)
+    return None
+
+
+def admis_entree(**changes):
+    entree = {"source": "arch", "identifiant": "keepassxc", "constat": "perime", "detail": DETAIL_PERIME,
+              "raison": "correctif amont attendu, suivi", "date": "2026-11-01", "jusqu_au": "2026-12-31"}
+    entree.update(changes)
+    return entree
+
+
+def lire_admis_avec(*entrees):
+    chemin = ecrire("admis-essai.json", {"format": 2, "admis": list(entrees)})
+    try:
+        return cs.lire_admis(chemin, AUJOURD_HUI), None
+    except cs.NonVerifie as e:
+        return None, str(e)
+
+
+def section_12():
+    print("12. Campagne C5 : délais, schéma de l'index, casse, licences, admissions, lecteurs")
+    # n° 1 : un hôte à plusieurs adresses muettes. Une file d'attente pleine (listen(0), déjà remplie) laisse la
+    # connexion sans réponse ; la résolution patchée rend cinq fois cette adresse. Avant la correction : 5 × 1 s.
+    plein = socket.socket()
+    plein.bind(("127.0.0.1", 0))
+    plein.listen(0)
+    port_plein = plein.getsockname()[1]
+    remplis = []
+    for _ in range(4):
+        r = socket.socket()
+        r.setblocking(False)
+        r.connect_ex(("127.0.0.1", port_plein))
+        remplis.append(r)
+    time.sleep(0.2)
+    vraie = socket.getaddrinfo
+    adresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port_plein))] * 5
+    try:
+        socket.getaddrinfo = lambda *a, **k: adresses
+        c = cs.Client(ctx=client().ctx, relier=lambda h: ("muet.example", port_plein), pause=0, delai=1,
+                      delai_total=2)
+        debut = time.monotonic()
+        raison = leve(c.obtenir, *ARCH)
+        duree = time.monotonic() - debut
+        verifier(raison is not None and "délai dépassé" in raison and duree < 2.6,
+                 f"cinq adresses muettes : arrêté à l'échéance de la requête ({duree:.1f} s, 2 s permises)",
+                 str(raison))
+
+        def lente(*a, **k):
+            time.sleep(5)
+            return adresses
+
+        socket.getaddrinfo = lente
+        c = cs.Client(ctx=client().ctx, relier=lambda h: ("lent.example", port_plein), pause=0, delai=1,
+                      delai_total=2)
+        debut = time.monotonic()
+        raison = leve(c.obtenir, *ARCH)
+        duree = time.monotonic() - debut
+        verifier(raison is not None and duree < 2.6,
+                 f"résolution du nom qui ne finit pas : non vérifié en {duree:.1f} s", str(raison))
+    finally:
+        socket.getaddrinfo = vraie
+        for r in remplis:
+            r.close()
+        plein.close()
+
+    # n° 2 et 9 : l'échéance de tout le passage.
+    c = cs.Client(ctx=client().ctx, relier=lambda h: ("127.0.0.1", PORT), pause=0, delai_passage=0)
+    raison = leve(c.obtenir, *ARCH)
+    verifier(raison is not None and "délai du passage dépassé" in raison and c.requetes == 0,
+             "passage échu : plus aucune requête",
+             str(raison))
+    c = cs.Client(ctx=client().ctx, relier=lambda h: ("127.0.0.1", PORT), pause=0, delai=2, delai_total=8,
+                  delai_passage=1.5)
+    debut = time.monotonic()
+    code, sortie = passer(c=c, reponses=avec(*ARCH, statut=200, corps=b"", goutte=True))
+    duree = time.monotonic() - debut
+    verifier(non_verifie(code, sortie, "? arch keepassxc : non vérifié (délai du passage dépassé") and duree < 3,
+             f"serveur qui goutte, passage de 1,5 s : coupé à l'échéance du passage ({duree:.1f} s)", sortie)
+
+    # n° 3, 4 et 5 : l'index de winget, lu sans rien évaluer de la base.
+    cas = (
+        ("colonne calculée dans packages", SAINES_SQL.replace(
+            "latest_version TEXT)", "latest_version TEXT, x TEXT GENERATED ALWAYS AS (upper(id)) VIRTUAL)"),
+         "colonne cachée ou calculée"),
+        ("colonne calculée (STORED) dans metadata", SAINES_SQL.replace(
+            "value TEXT NOT NULL)", "value TEXT NOT NULL, x TEXT GENERATED ALWAYS AS (value) STORED)"),
+         "colonne cachée ou calculée"),
+        ("table virtuelle derrière un commentaire", SAINES_SQL + "CREATE VIRTUAL /* rien */ TABLE autre USING fts5(x);",
+         "table virtuelle"),
+        ("metadata à deux lignes lastwritetime", SAINES_SQL.replace("name TEXT PRIMARY KEY NOT NULL", "name TEXT")
+         + "INSERT INTO metadata VALUES ('lastwritetime', '1');", "sans date lisible"),
+        ("metadata au schéma faux (value INTEGER)", SAINES_SQL.replace("value TEXT NOT NULL", "value INTEGER"),
+         "schéma inattendu"),
+        ("packages.id INTEGER", SAINES_SQL.replace("id TEXT NOT NULL", "id INTEGER"), "sans colonne id"),
+        ("plus de 1000 tables", SAINES_SQL + "".join(f"CREATE TABLE t{i} (x TEXT);" for i in range(1001)),
+         "trop de tables"),
+        ("identifiants en blob ou trop longs seulement", SAINES_SQL.replace(
+            "('Mozilla.Firefox')", "(CAST('Mozilla.Firefox' AS BLOB)), ('" + "a" * 129 + "')"), "vide"),
+        ("valeur d'un million d'octets et plus", SAINES_SQL.replace(
+            "('Mozilla.Firefox')", "('Mozilla.Firefox'), ('" + "b" * 1_100_000 + "')"), "illisible"),
+    )
+    for nom, script, mot in cas:
+        index, raison = index_lu(msix_sql(script))
+        verifier(index is None and mot in (raison or ""), f"index de winget, {nom} : non vérifié ({mot})", str(raison))
+    index, raison = index_lu(msix_sql(SAINES_SQL, ecrit=None))
+    verifier(index is None and "sans date lisible" in (raison or ""), "index sans ligne lastwritetime : refusé",
+             str(raison))
+    base = sqlite3.connect(":memory:")
+    base.executescript(SAINES_SQL)
+    base.execute("INSERT INTO metadata VALUES ('lastwritetime', CAST('1795132800' AS BLOB))")
+    base.commit()
+    tampon = io.BytesIO()
+    with zipfile.ZipFile(tampon, "w") as z:
+        z.writestr("Public/index.db", base.serialize())
+    index, raison = index_lu(tampon.getvalue())
+    verifier(index is None and "sans date lisible" in (raison or ""), "date de l'index en blob : refusée", str(raison))
+    # Un CHECK qui lèverait s'il était évalué (zeroblob au-delà de la longueur permise) : quick_check ne l'évalue pas.
+    piege = SAINES_SQL.replace("latest_version TEXT)", "latest_version TEXT CHECK (length(zeroblob(2000000)) > 0))")
+    index, raison = index_lu(msix_sql(piege))
+    verifier(index is not None and "mozilla.firefox" in index[0], "CHECK de la base jamais évalué à la lecture",
+             str(raison))
+    ancien = cs.DELAI_SQLITE
+    cs.DELAI_SQLITE = -1
+    try:
+        index, raison = index_lu(msix_sql(SAINES_SQL))
+    finally:
+        cs.DELAI_SQLITE = ancien
+    verifier(index is None and "illisible" in (raison or ""),
+             "borne de temps de SQLite dépassée : lecture interrompue, non vérifié", str(raison))
+    for jours, lu in ((14, True), (15, False), (-2, True), (-3, False)):
+        index, raison = index_lu(msix_sql(SAINES_SQL, date=AUJOURD_HUI - datetime.timedelta(days=jours)))
+        verifier((index is not None) == lu, f"index daté de J{-jours:+d} : {'lu' if lu else 'refusé'}", str(raison))
+
+    # n° 6 et 12 : la casse de l'identifiant winget.
+    verifier((cs.winget({"mozilla.firefox": {"Mozilla.Firefox"}}, "mozilla.firefox") or [("",)])[0][0] == "casse",
+             "identifiant winget dans une autre casse : constat « casse »")
+    verifier(cs.winget({"mozilla.firefox": {"Mozilla.Firefox", "mozilla.firefox"}}, "mozilla.firefox") == [],
+             "identifiant winget présent dans sa casse exacte : sain")
+    verifier((cs.winget({"editeur.autre": {"Editeur.Autre"}}, "Editeur.Voulu") or [("",)])[0][0] == "absent",
+             "Editeur.Voulu absent quand seul Editeur.Autre est là : absent")
+    code, sortie = passer(cat=catalogue(winget="mozilla.firefox"))
+    verifier(degrade(code, sortie, "autre casse"), "catalogue en minuscules, index en majuscules : code 1", sortie)
+
+    # n° 7 et 13 : les licences, comparées dans les deux sens.
+    for nom, catal, projet, constat in (
+        ("licence ajoutée par Flathub", "GPL-3.0", "GPL-3.0-or-later AND MIT", True),
+        ("GPL-3.0 contre GPL-2.0-only", "GPL-3.0", "GPL-2.0-only", True),
+        ("même licence, -or-later et +", "GPL-3.0+", "GPL-3.0-or-later", False),
+        ("exception laissée de côté", "LGPL-2.1", "LGPL-2.1-only WITH Qt-exception-1.0", False),
+    ):
+        reponse = {"id": "org.exemple.Appli", "is_eol": False, "is_free_license": True, "project_license": projet,
+                   "metadata": {"flathub::verification::verified": True}}
+        constats = cs.flathub(FauxClient(json_={"flathub.org": reponse}), "org.exemple.Appli", catal, False)
+        verifier(any(c[0] == "licence" for c in constats) == constat,
+                 f"{nom} : {'constat licence' if constat else 'sain'}", repr(constats))
+    verifier(leve(cs.normaliser_licences, "GPL-3.0 AND <script>") is not None,
+             "morceau de licence hors de l'alphabet SPDX : rien conclu")
+
+    # n° 8 et 14 : une valeur coupée à l'affichage garde son empreinte ; l'admission vaut pour la valeur entière.
+    long_a, long_b = "2." + "9" * 60, "2." + "9" * 59 + "8"
+    verifier(cs.exact(long_a, 40) != cs.exact(long_b, 40) and "[sha256:" in cs.exact(long_a, 40),
+             "deux pkgver longs au même début : détails différents (empreinte)")
+    verifier(cs.exact("2.8.0", 40) == "2.8.0", "valeur courte et propre : affichée telle quelle")
+
+    def perime(pkgver):
+        return {ARCH: reponse_json({"results": [{"pkgname": "keepassxc", "repo": "extra", "pkgver": pkgver,
+                                                 "flag_date": "2026-06-22T20:03:01Z"}]})}
+
+    detail = f"extra/keepassxc {cs.exact(long_a, 40)} depuis le 2026-06-22T20:03:01Z"
+    admis = {"format": 2, "admis": [admis_entree(detail=detail)]}
+    code, sortie = passer(admis=admis, reponses=perime(long_a))
+    verifier(code == 0 and "admis le" in sortie, "pkgver long admis à l'identique : admis", sortie)
+    code, sortie = passer(admis=admis, reponses=perime(long_b))
+    verifier(degrade(code, sortie, "admis le 2026-11-01"), "autre pkgver long, même début : dégradation", sortie)
+
+    # n° 10 : rien qui agisse sur le terminal, ni qui ressemble à un blanc.
+    for c in ("\u3164", "\u2800", "\u115f", "\u00a0", "\u2003", "\u0301", "\u20dd", "\u05d0", "\u202e"):
+        verifier(cs.propre("a" + c + "b") == "a?b", f"propre() remplace U+{ord(c):04X}")
+    verifier(cs.propre("éa b-1.0") == "éa b-1.0", "propre() garde les lettres accentuées et l'espace simple")
+
+    # n° 15 et 16 : admissions hors du catalogue, openSUSE, Ubuntu dit.
+    for nom, entree in (("valable", admis_entree(identifiant="inexistant")),
+                        ("échue", admis_entree(identifiant="inexistant", date="2026-01-01", jusqu_au="2026-11-21"))):
+        code, sortie = passer(admis={"format": 2, "admis": [entree]})
+        verifier(non_verifie(code, sortie, "source absente du catalogue"),
+                 f"admission {nom} pour une source absente du catalogue : rien conclu", sortie)
+    _, raison = lire_admis_avec(admis_entree(source="opensuse"))
+    verifier(raison is not None and "refusé" in raison, "admission pour openSUSE (jamais jugé) : refusée", str(raison))
+    code, sortie = passer()
+    verifier(code == 0 and "Ubuntu et ses dérivées" in sortie, "compte rendu : Ubuntu dit non couvert", sortie)
+
+    # n° 29 : la liste des admis, champ par champ.
+    for nom, entree, lu in (
+        ("source inconnue", admis_entree(source="gentoo"), False),
+        ("jusqu_au avant date", admis_entree(jusqu_au="2026-10-01"), False),
+        ("champ en trop", {**admis_entree(), "note": "x"}, False),
+        ("raison faite d'espaces", admis_entree(raison=" " * 20), False),
+        ("constat d'information (pas une dégradation)", admis_entree(constat="editeur-non-verifie"), False),
+        ("jusqu_au égal à aujourd'hui", admis_entree(jusqu_au=AUJOURD_HUI.isoformat()), True),
+    ):
+        resultat, raison = lire_admis_avec(entree)
+        valable = resultat is not None and len(resultat[0]) == 1
+        verifier(valable == lu, f"admission, {nom} : {'admise' if lu else 'refusée'}", str(raison))
+    _, raison = lire_admis_avec(admis_entree(), admis_entree())
+    verifier(raison is not None and "deux fois" in raison, "admission en double : refusée", str(raison))
+    admis = {"format": 2, "admis": [admis_entree(detail=DETAIL_PERIME[:-1])]}
+    code, sortie = passer(admis=admis, reponses={ARCH: PERIME})
+    verifier(degrade(code, sortie, "admis le"), "détail constaté qui prolonge le détail admis : dégradation", sortie)
+
+    # n° 23 et 25 : les lecteurs de chaque source.
+    def madison(versions, nom="keepassxc"):
+        return FauxClient(json_={"api.ftp-master.debian.org": [{nom: {"stable": versions}}]})
+
+    for nom, c, attendu in (
+        ("arm64 seul", madison({"1": {"component": "main", "architectures": ["arm64"]}}), "absent"),
+        ("non-free seul", madison({"1": {"component": "non-free", "architectures": ["amd64"]}}), "hors-main"),
+        ("réponse d'un autre paquet", madison({"1": {"component": "main", "architectures": ["amd64"]}}, "autre"),
+         "absent"),
+    ):
+        constats = cs.debian(c, "keepassxc")
+        verifier(constats and constats[0][0] == attendu, f"Debian, {nom} : {attendu}", repr(constats))
+    raison = leve(cs.flathub, FauxClient(json_={"flathub.org": {"id": "org.KeePassXC.KeePassXC"}}),
+                  "org.keepassxc.KeePassXC", "GPL-3.0", False)
+    verifier(raison is not None and "autre application" in raison, "Flathub, id d'une autre casse : non vérifié",
+             str(raison))
+    raison = leve(cs.fedora, FauxClient(json_={"mdapi.fedoraproject.org": {"version": "1", "basename": "keepassxc-x"}}),
+                  "f45", "keepassxc")
+    verifier(raison is not None and "autre paquet" in raison, "Fedora, basename plus long : non vérifié", str(raison))
+    for nom, resultats, attendu in (
+        ("core-testing seul", [{"pkgname": "keepassxc", "repo": "core-testing", "pkgver": "1", "flag_date": None}],
+         "absent"),
+        ("flag_date vide", [{"pkgname": "keepassxc", "repo": "extra", "pkgver": "1", "flag_date": ""}], "perime"),
+    ):
+        constats = cs.arch(FauxClient(json_={"archlinux.org": {"results": resultats}}), "keepassxc")
+        verifier(constats and constats[0][0] == attendu, f"Arch, {nom} : {attendu}, jamais sain", repr(constats))
+    bodhi_gele = {"pages": 1, "releases": [{"name": "F45", "branch": "f45", "state": "frozen", "id_prefix": "FEDORA"}]}
+    raison = leve(cs.branche_fedora, FauxClient(json_={"bodhi.fedoraproject.org": bodhi_gele}))
+    verifier(raison is not None and "frozen" in raison, "Bodhi, version gelée dans les publiées : non vérifié",
+             str(raison))
+    for statut in (403, 500):
+        code, sortie = passer(reponses=avec(*FLAT, statut=statut, corps=b"{}", type="application/json"))
+        verifier(non_verifie(code, sortie, f"réponse {statut}"), f"Flathub répond {statut} : non vérifié", sortie)
+
+    # n° 27 : les variables d'OpenSSL, écrites en dur ; posée vide, elle compte aussi.
+    verifier(cs.ENV_OPENSSL == ("OPENSSL_CONF", "OPENSSL_MODULES", "OPENSSL_ENGINES"),
+             "variables d'OpenSSL refusées : les trois, nommées")
+    fini = subprocess.run([sys.executable, "-I", os.path.join(ICI, "controle-sources.py")], capture_output=True,
+                          text=True, env={"PATH": os.environ.get("PATH", ""), "VANGUARD_HORS_LIGNE": "1",
+                                          "OPENSSL_CONF": ""}, timeout=60)
+    verifier(fini.returncode == 2 and "OPENSSL_CONF posée" in fini.stdout, "OPENSSL_CONF posée vide : rien conclu",
+             fini.stdout + fini.stderr)
+
+    # n° 30 : le vrai outil, sur les vrais fichiers du dépôt, hors ligne ; le client par défaut ; la liste fermée.
+    fini = subprocess.run([sys.executable, "-I", os.path.join(ICI, "controle-sources.py")], capture_output=True,
+                          text=True, env={"PATH": os.environ.get("PATH", ""), "VANGUARD_HORS_LIGNE": "1"}, timeout=60)
+    verifier(fini.returncode == 2 and "non vérifiée(s)" in fini.stdout and "lecture impossible" not in fini.stdout,
+             "vrai outil, vrais catalogue et admis, hors ligne : lus, puis rien conclu", fini.stdout + fini.stderr)
+    verifier(cs.Client(ctx=client().ctx).relier("archlinux.org") == ("archlinux.org", 443),
+             "client par défaut : l'hôte permis, port 443")
+    raison = leve(client().obtenir, "flathub.org", "/cache/source2.msix")
+    verifier(raison is not None and "hors de la liste fermée" in raison,
+             "chemin de winget demandé à flathub.org : hors de la liste fermée", str(raison))
+
+
 try:
     principal()
+    section_12()
 finally:
     SERVEUR.shutdown()
     SANS_FEDORA.shutdown()
