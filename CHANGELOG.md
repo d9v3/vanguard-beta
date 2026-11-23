@@ -27,8 +27,13 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   toujours, au menu comme dans vanguard guide, qui les montre encore tous.
 - **Sources du catalogue contrôlées avant chaque publication.** Les logiciels que Vanguard vous propose d'installer
   sont vérifiés à la source : paquet Arch présent et non marqué périmé, application Flathub ni en fin de vie ni de
-  licence changée, identifiant winget toujours là, paquets Debian et Fedora présents. Une source dégradée ou qu'on n'a
-  pas pu vérifier arrête la publication ; rien n'est compté sain sans réponse.
+  licence changée, identifiant winget toujours là, paquets Debian et Fedora (version stable en cours, lue chez Fedora)
+  présents. Une source dégradée ou qu'on n'a pas pu vérifier arrête la publication ; une réponse incomplète, coupée
+  ou trop lente, un champ absent, un index winget abîmé ne comptent jamais comme sains. Le contrôle juge avec son
+  propre magasin de certificats, et sa sortie est montrée en entier. Publier quand même demande
+  `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (aucune autre valeur) : le contrôle tourne tout de même, et son résultat
+  (code, dégradations, sources non vérifiées) est dit dans les notes de la version et gardé dans l'historique signé.
+  Une dégradation admise ne vaut que pour la valeur exacte notée, avec sa date.
 
 ## 22 novembre 2026 : version 0.97.0
 

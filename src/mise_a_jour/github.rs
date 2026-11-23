@@ -915,6 +915,8 @@ mod tests {
         let historique = format!(
             "{MANIFESTE}passe-droit-sans-empreintes-ci {zeros} 0
 passe-droit-sans-vm {zeros} 0
+passe-droit-sans-controle-sources-code2-degradations0-non-verifiees3 {zeros} 0
+passe-droit-sans-controle-sources-codeabsent-degradationsinconnu-non-verifieesinconnu {zeros} 0
 "
         );
         let cle = cle_d_essai();

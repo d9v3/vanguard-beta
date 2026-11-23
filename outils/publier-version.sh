@@ -39,10 +39,22 @@ versions() {
 # Les passe-droits pris pour cette version (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM,
 # VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) : dits en
 # tête des notes de la page, et gardés dans l'historique signé (outils/signer-versions.sh --passe-droit), pas
-# seulement au terminal (relecture du lot correctifs-c6).
+# seulement au terminal (relecture du lot correctifs-c6). Celui du contrôle des sources porte le résultat du
+# contrôle, qui tourne quand même : sans-controle-sources-code<N|absent>-degradations<D|inconnu>-non-verifiees<V|
+# inconnu>. Des faits produits par l'outil seulement, jamais un texte libre.
 PASSE_DROITS=()
+# Un passe-droit ne se prend que par la valeur exacte « 1 » ; vide ou absent : non. Toute autre valeur (« 0 »,
+# « non », une espace) arrête tout : elle ne doit ni prendre le passe-droit sans qu'on le veuille, ni être ignorée
+# en silence (relecture C5, n° 19). Lue telle quelle par outils/essais-signature.sh.
+passe_droit_demande() {
+  local valeur=${!1-}
+  [[ -n $valeur ]] || return 1
+  [[ $valeur == 1 ]] && return 0
+  echo "$1=$(printf '%q' "$valeur") : seule la valeur 1 prend ce passe-droit (vide ou absente : non) ; rien de publié."
+  exit 1
+}
 passe_droits_notes() {
-  local p
+  local p c d v fr en
   for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
     case $p in
       sans-empreintes-ci)
@@ -55,11 +67,20 @@ without being matched against the CI's reproducible build (VANGUARD_PUBLIER_SANS
 (VANGUARD_PUBLIER_SANS_VM)." "⚠ **Override**: Windows program published without a pass of the test VM on this .exe \
 (VANGUARD_PUBLIER_SANS_VM)." ""
         ;;
-      sans-controle-sources)
+      sans-controle-sources-*)
+        [[ $p =~ ^sans-controle-sources-code([0-9]+|absent)-degradations([0-9]+|inconnu)-non-verifiees([0-9]+|inconnu)$ ]] ||
+          { echo "passe-droit illisible : $p" >&2; exit 1; }
+        c=${BASH_REMATCH[1]} d=${BASH_REMATCH[2]} v=${BASH_REMATCH[3]}
+        if [[ $c == absent ]]; then
+          fr="contrôle absent du commit publié" en="check missing from the published commit"
+        else
+          fr="code $c, $d dégradation(s), $v non vérifiée(s)" en="code $c, ${d/inconnu/unknown} degradation(s), \
+${v/inconnu/unknown} unverified"
+        fi
         printf '%s\n' "⚠ **Passe-droit** : version publiée sans que les sources du catalogue (Arch, Flathub, winget, \
-Debian, Fedora) aient été trouvées saines (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES)." "⚠ **Override**: version \
-published without the catalogue sources (Arch, Flathub, winget, Debian, Fedora) being found healthy \
-(VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES)." ""
+Debian, Fedora) aient été trouvées saines (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) ; résultat du contrôle : $fr." \
+"⚠ **Override**: version published without the catalogue sources (Arch, Flathub, winget, Debian, Fedora) being \
+found healthy (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES); check result: $en." ""
         ;;
     esac
   done
@@ -204,19 +225,28 @@ COMPILE=$(verifier_compilation) || { echo "$COMPILE"; exit 1; }
 # application Flathub en fin de vie ou de licence changée, un identifiant winget disparu, ou une source qu'on n'a pas
 # pu vérifier (réseau, délai, limite : code 2) arrêtent la publication. Le contrôle, le catalogue exporté et la liste
 # des admis sont pris dans le commit publié (arbre propre, vérifié plus haut ; la tête de master, vérifiée plus bas),
-# jamais dans des fichiers d'ici. Seul code 0 avec « Sources : N vérifiée(s), saines » (N ≥ 1) vaut sain ; une trace
-# de Python (code 1 sans le témoin « dégradation(s) ») est dite comme une panne. VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1
-# publie quand même, et le dit dans les notes et l'historique signé. --notes ne passe jamais ici : aucune requête.
-# Lue telle quelle par outils/essais-signature.sh.
+# jamais dans des fichiers d'ici, et sans les objets de remplacement (git replace : sans eux, l'arbre paraît propre
+# mais « git show » sert un autre contenu). Le juge est /usr/bin/python3, jamais celui du PATH, sans les variables
+# qui changent le magasin de certificats ou la configuration d'OpenSSL. Seul code 0 avec « Sources : N vérifiée(s),
+# saines » (N ≥ 1) vaut sain ; une trace de Python (code 1 sans le témoin « dégradation(s) »), un code 3 ou plus, un
+# signal sont dits comme une panne, et arrêtent aussi. La sortie est montrée en entier : jamais coupée, les lignes ✖
+# et ≈ restent à l'écran. VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 publie quand même, le contrôle ayant tourné : son
+# résultat (code, dégradations, non vérifiées, chiffres du résumé seulement) est ce qui est dit dans les notes et
+# l'historique signé. --notes ne passe jamais ici : aucune requête. Lue telle quelle par outils/essais-signature.sh.
+JUGE_PYTHON=/usr/bin/python3
 controle_des_sources() {
-  local dossier sortie="" code=0 cause
+  local dossier sortie="" code=0 cause resume degr nonv
   dossier=$(mktemp -d)
-  if git show "$COMMIT:outils/controle-sources.py" >"$dossier/controle-sources.py" 2>/dev/null &&
-    git show "$COMMIT:outils/catalogue-sources.json" >"$dossier/catalogue-sources.json" 2>/dev/null &&
-    git show "$COMMIT:outils/controle-sources-admis.json" >"$dossier/admis.json" 2>/dev/null; then
-    sortie=$(python3 -I "$dossier/controle-sources.py" --catalogue "$dossier/catalogue-sources.json" \
+  if GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/controle-sources.py" \
+    >"$dossier/controle-sources.py" 2>/dev/null &&
+    GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/catalogue-sources.json" \
+      >"$dossier/catalogue-sources.json" 2>/dev/null &&
+    GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects show "$COMMIT:outils/controle-sources-admis.json" \
+      >"$dossier/admis.json" 2>/dev/null; then
+    sortie=$(/usr/bin/env -u SSL_CERT_FILE -u SSL_CERT_DIR -u OPENSSL_CONF -u OPENSSL_MODULES -u OPENSSL_ENGINES \
+      "$JUGE_PYTHON" -I "$dossier/controle-sources.py" --catalogue "$dossier/catalogue-sources.json" \
       --admis "$dossier/admis.json" 2>&1) || code=$?
-    [[ -z $sortie ]] || printf '%s\n' "$sortie" | tail -n 40
+    [[ -z $sortie ]] || printf '%s\n' "$sortie"
   else
     code=-1
   fi
@@ -231,13 +261,27 @@ controle_des_sources() {
     cause="source(s) dégradée(s)"
   elif ((code == 2)) && grep -q '^Sources : ' <<<"$sortie"; then
     cause="source(s) non vérifiée(s), rien conclu"
+  elif ((code > 128)); then
+    cause="contrôle arrêté par un signal (code $code)"
   else
     cause="contrôle en panne ou sans témoin (code $code)"
   fi
-  if [[ -n ${VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES:-} ]]; then
-    echo "⚠ Sources du catalogue : $cause ; publié quand même (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) : dit dans les \
-notes et l'historique signé."
-    PASSE_DROITS+=(sans-controle-sources)
+  if passe_droit_demande VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES; then
+    # Le résultat, tiré du dernier résumé « Sources : » : des chiffres seulement, rien du texte qui l'entoure.
+    resume=$(grep '^Sources : ' <<<"$sortie" | tail -n 1 || true)
+    if [[ $resume =~ ^Sources\ :\ ([0-9]+)\ dégradation\(s\),\ ([0-9]+)\ non\ vérifiée\(s\) ]]; then
+      degr=${BASH_REMATCH[1]} nonv=${BASH_REMATCH[2]}
+    elif [[ $resume =~ ^Sources\ :\ ([0-9]+)\ non\ vérifiée\(s\), ]]; then
+      degr=0 nonv=${BASH_REMATCH[1]}
+    elif [[ $resume == "Sources : aucune source vérifiée : rien conclu." ]]; then
+      degr=0 nonv=0
+    else
+      degr=inconnu nonv=inconnu
+    fi
+    ((code == -1)) && code=absent
+    echo "⚠ Sources du catalogue : $cause ; publié quand même (VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES) : le résultat \
+(code $code, $degr dégradation(s), $nonv non vérifiée(s)) sera dit dans les notes et l'historique signé."
+    PASSE_DROITS+=("sans-controle-sources-code$code-degradations$degr-non-verifiees$nonv")
     return 0
   fi
   echo "Sources du catalogue : $cause : rien de publié."
@@ -245,6 +289,10 @@ notes et l'historique signé."
   echo "  ou VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 outils/publier-version.sh pour publier quand même, et le dire.)"
   return 1
 }
+# Une valeur fausse d'un passe-droit arrête tout, avant le moindre contrôle (passe_droit_demande).
+for passe in VANGUARD_PUBLIER_SANS_EMPREINTES_CI VANGUARD_PUBLIER_SANS_VM VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES; do
+  passe_droit_demande "$passe" || true
+done
 controle_des_sources || exit 1
 git fetch -q --tags origin
 if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
@@ -253,6 +301,10 @@ if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
 fi
 if gh release view "$TAG" >/dev/null 2>&1; then
   echo "La version $TAG est déjà publiée."
+  # Rien n'est publié ni signé : un passe-droit pris plus haut n'a servi à rien, et rien n'en est noté nulle part.
+  for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
+    echo "  (passe-droit $p : sans objet, la page existe déjà ; rien n'en est noté.)"
+  done
   exit 0
 fi
 # Aucun lien mort, avant d'attendre GitHub : les téléchargements du README (…/releases/latest/download/<nom>) visent
@@ -461,7 +513,7 @@ if ((CODE_CI == 0)); then
     [[ $CI_APRES_COMPLET =~ ^[0-9a-f]{40}$ ]] && descendant_hors_compilation "$COMPILE" "$CI_APRES_COMPLET" ||
       { echo "Commit de la CI $CI_APRES introuvable ou ambigu dans la ligne de master : rien de publié."; exit 1; }
   fi
-elif [[ -n ${VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-} ]]; then
+elif passe_droit_demande VANGUARD_PUBLIER_SANS_EMPREINTES_CI; then
   [[ -z $EMPREINTES_CI ]] || echo "$EMPREINTES_CI"
   echo "⚠ Programmes Linux et Windows publiés sans être ceux de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI) : dit dans les notes et l'historique signé."
   PASSE_DROITS+=(sans-empreintes-ci)
@@ -616,7 +668,7 @@ passe_de_la_vm() {
     [[ -z $ligne ]] || echo "$ligne [NON AUTHENTIFIÉ : historique.txt, file d'essais pas réinstallée]"
   fi
 }
-if [[ -n ${VANGUARD_PUBLIER_SANS_VM:-} ]]; then
+if passe_droit_demande VANGUARD_PUBLIER_SANS_VM; then
   echo "⚠ Programme Windows publié sans passe de la VM sur ce .exe (VANGUARD_PUBLIER_SANS_VM) : dit dans les notes et l'historique signé."
   PASSE_DROITS+=(sans-vm)
 else
@@ -655,6 +707,13 @@ python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64
 DEPOT_VERSIONS=d9v3/vanguard-update
 SIGNEE=""
 if ! gh repo view "$DEPOT_VERSIONS" >/dev/null 2>&1; then
+  # Un passe-droit (ou la CI d'après) n'est gardé que dans l'historique signé de ce dépôt : sans lui (absent, ou gh
+  # en panne, réseau, jeton : on ne distingue pas), la page dirait le passe-droit sans trace signée. Rien de publié.
+  if ((${#PASSE_DROITS[@]})) || [[ -n $CI_APRES_COMPLET ]]; then
+    echo "Dépôt public des versions injoignable ($DEPOT_VERSIONS) : le passe-droit ou la CI d'après n'entrerait pas dans \
+l'historique signé : rien de publié."
+    exit 1
+  fi
   echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
 else
   mkdir -p "$DOSSIER/avant"

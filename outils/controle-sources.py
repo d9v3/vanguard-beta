@@ -4,25 +4,34 @@
 Une source peut se dégrader en quelques mois (Bitwarden : extra/bitwarden marqué périmé, licence Flathub devenue non
 libre). Pour chaque source de outils/catalogue-sources.json (le catalogue compilé, sérialisé par l'essai Rust
 logiciels::tests::catalogue_exporte_a_jour, jamais lu dans le source par motifs) :
-  - Arch : le paquet est dans core, extra ou multilib, et n'y est pas marqué périmé (flag_date) ;
+  - Arch : le paquet est dans core, extra ou multilib, et n'y est pas marqué périmé (flag_date, clé exigée) ;
   - Flathub : l'application existe, n'est pas en fin de vie, est vérifiée par son éditeur, et sa licence dit ce que dit
     le catalogue (libre ou non, mêmes identifiants SPDX ; FLATHUB_PAS_LIBRE : non libre) ;
   - winget : l'identifiant est dans l'index que télécharge winget lui-même (source2.msix du CDN de Microsoft, bâti
     depuis le dépôt microsoft/winget-pkgs ; sans l'API de GitHub, limitée à 60 requêtes par heure sans jeton) ;
-  - Debian : le paquet binaire est dans stable, section main (API madison de ftp-master) ;
-  - Fedora : le paquet est dans la dernière version publiée (mdapi) ;
+  - Debian : le paquet binaire est dans stable, section main (API madison de ftp-master ; toute autre suite dans la
+    réponse : non vérifié) ;
+  - Fedora : le paquet est dans la dernière version publiée, la plus haute « current » de Bodhi (jamais rawhide ni une
+    version en préparation, que mdapi liste aussi), cherché dans mdapi (le nom rendu doit être celui demandé) ;
   - openSUSE : non couvert (aucune API publique simple en JSON sans compte), dit et compté. Aucun cask au catalogue.
 
 Codes de sortie : 0 tout vérifié et sain (les dégradations admises sont montrées) ; 1 au moins une dégradation non
 admise ; 2 rien de dégradé trouvé, mais au moins une source non vérifiée (réseau, délai, réponse illisible, limite),
 ou l'outil n'a pas pu juger. Un code 1 dit toujours « Sources : N dégradation(s) », un code 0 « Sources : N
-vérifiée(s), saines » : livrer-branche.sh exige ce témoin (une trace de Python sort aussi en 1).
+vérifiée(s), saines » : outils/publier-version.sh exige ce témoin (une trace de Python sort aussi en 1). Il tourne
+avant la page de la version, après l'envoi du code sur master par deployer.sh : une source dégradée retarde la page,
+pas le code. Une panne sur une seule source (réponse piégée qui fait lever n'importe quoi) rend cette source non
+vérifiée, jamais tout le passage : les dégradations déjà trouvées ailleurs restent dites, et le code 1 tient.
 
-Une dégradation connue n'est admise que par outils/controle-sources-admis.json (versionné : source, identifiant,
-constat, raison, date, jusqu_au) ; passé jusqu_au, elle redevient une dégradation.
+Une dégradation connue n'est admise que par outils/controle-sources-admis.json (versionné, format 2 : source,
+identifiant, constat, detail, raison, date, jusqu_au). L'admission vaut pour la valeur exacte constatée (detail) :
+si le constat du jour dit autre chose (autre licence, autre date du drapeau), c'est une dégradation. Passé jusqu_au,
+elle redevient une dégradation ; une admission qui ne sert plus à rien est dite (« admission inutile »).
 
-Ce qui vient d'Internet est une donnée : HTTPS seulement, certificat vérifié, hôtes en liste fermée, aucune
-redirection suivie, délai par requête, taille plafonnée, JSON strict (clés en double, NaN refusés), types vérifiés ;
+Ce qui vient d'Internet est une donnée : HTTPS seulement, certificat vérifié contre le magasin du système (le chemin
+compilé dans OpenSSL, jamais SSL_CERT_FILE ni SSL_CERT_DIR ; OPENSSL_CONF, OPENSSL_MODULES, OPENSSL_ENGINES posées :
+rien conclu), hôtes en liste fermée, aucune redirection suivie, délai par opération et pour toute la requête (en-têtes
+compris), taille plafonnée, longueur annoncée tenue, JSON strict (clés en double, NaN refusés), types vérifiés ;
 tout texte distant affiché est assaini (contrôles, bidi, invisibles retirés). Rien n'est écrit : tout reste en
 mémoire (l'index de winget compris, ouvert par sqlite3 en mémoire, en mode défensif). Aucun shell.
 Essais hors ligne : outils/essais-controle-sources.py (faux serveur HTTPS local), lancé par verifier.sh.
@@ -33,16 +42,19 @@ import datetime
 import http.client
 import io
 import json
+import lzma
 import os
 import re
 import socket
 import sqlite3
 import ssl
 import sys
+import threading
 import time
 import unicodedata
 import urllib.parse
 import zipfile
+import zlib
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOGUE = os.path.join(RACINE, "outils", "catalogue-sources.json")
@@ -55,6 +67,7 @@ HOTES = {
     "cdn.winget.microsoft.com": ("/cache/source2.msix",),
     "api.ftp-master.debian.org": ("/madison",),
     "mdapi.fedoraproject.org": ("/branches", "/f"),
+    "bodhi.fedoraproject.org": ("/releases/",),
 }
 DELAI = 20  # secondes par opération réseau (connexion, lecture d'un morceau)
 DELAI_TOTAL = 60  # secondes par requête, du début à la fin de la lecture (un serveur qui goutte un octet à la fois)
@@ -130,14 +143,45 @@ def json_strict(octets):
         raise NonVerifie(f"réponse illisible ({type(e).__name__})") from None
 
 
+# Variables lues par OpenSSL au chargement de Python, avant qu'on puisse rien y faire : un fichier de configuration
+# ou un module (fournisseur, moteur) qu'elles désignent peut changer ce que « certificat vérifié » veut dire.
+ENV_OPENSSL = ("OPENSSL_CONF", "OPENSSL_MODULES", "OPENSSL_ENGINES")
+
+
+def contexte_tls():
+    """Le contexte TLS du vrai passage. Pourquoi pas ssl.create_default_context() : il charge le magasin par
+    set_default_verify_paths, qui suit SSL_CERT_FILE et SSL_CERT_DIR même sous python3 -I ; une variable posée par
+    un profil suffisait à faire accepter une autorité de complaisance. Ici, le magasin est le chemin compilé dans
+    OpenSSL (openssl_cafile, openssl_capath : ceux du système), donné explicitement : l'environnement n'y peut rien,
+    que le script soit lancé par publier-version.sh ou à la main. Sans magasin lisible : rien vérifié."""
+    chemins = ssl.get_default_verify_paths()
+    fichier = chemins.openssl_cafile if chemins.openssl_cafile and os.path.isfile(chemins.openssl_cafile) else None
+    dossier = chemins.openssl_capath if chemins.openssl_capath and os.path.isdir(chemins.openssl_capath) else None
+    if fichier is None and dossier is None:
+        raise NonVerifie("aucun magasin de certificats du système lisible")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        ctx.load_verify_locations(cafile=fichier, capath=dossier)
+    except (OSError, ssl.SSLError) as e:
+        raise NonVerifie(f"magasin de certificats du système illisible ({type(e).__name__})") from None
+    return ctx
+
+
 class Client:
     """HTTPS vers les seuls hôtes permis. `ctx` et `relier` ne changent que dans les essais (autorité et faux
     serveur locaux) : le nom vérifié dans le certificat reste toujours celui de l'hôte permis."""
 
     def __init__(self, ctx=None, relier=None, pause=PAUSE, delai=DELAI, delai_total=DELAI_TOTAL):
-        self.ctx = ctx or ssl.create_default_context()
-        self.ctx.check_hostname = True
-        self.ctx.verify_mode = ssl.CERT_REQUIRED
+        # Une panne du magasin est gardée pour chaque requête (non vérifiée), pas levée ici : le compte rendu sort.
+        self.ctx, self.erreur_ctx = ctx, None
+        if self.ctx is None:
+            try:
+                self.ctx = contexte_tls()
+            except NonVerifie as e:
+                self.erreur_ctx = str(e)
+        if self.ctx is not None:
+            self.ctx.check_hostname = True
+            self.ctx.verify_mode = ssl.CERT_REQUIRED
         self.relier = relier or (lambda hote: (hote, 443))
         self.pause = pause
         self.delai = delai
@@ -149,21 +193,45 @@ class Client:
         """Le corps d'une réponse 200 (ou None pour un code de `absents`) ; tout le reste lève NonVerifie."""
         if hote not in HOTES or not any(chemin.startswith(p) for p in HOTES[hote]):
             raise NonVerifie(f"requête hors de la liste fermée : {propre(hote)}{propre(chemin)}")
+        if self.erreur_ctx:
+            raise NonVerifie(self.erreur_ctx)
         if hote in self.injoignables:
             raise NonVerifie(self.injoignables[hote])
         if self.requetes:
             time.sleep(self.pause)
         self.requetes += 1
-        debut = time.monotonic()
         ctx, (adresse, port), delai = self.ctx, self.relier(hote), self.delai
+        prises, echu = [], threading.Event()
 
         class Connexion(http.client.HTTPSConnection):
             def connect(self):
                 brute = socket.create_connection((adresse, port), timeout=delai)
-                # Le nom vérifié est l'hôte permis, quelle que soit l'adresse jointe.
-                self.sock = ctx.wrap_socket(brute, server_hostname=hote)
+                prises.append(brute)
+                # Le nom vérifié est l'hôte permis, quelle que soit l'adresse jointe. Une coupure sans close_notify
+                # est une erreur, pas une fin de corps.
+                self.sock = ctx.wrap_socket(brute, server_hostname=hote, suppress_ragged_eofs=False)
+                prises.append(self.sock)
 
+        def couper():
+            # L'échéance de toute la requête : le délai par opération ne borne pas un serveur qui goutte ses en-têtes
+            # ou son corps un octet à la fois. On ferme la prise sous la lecture en cours (la méthode de socket.socket,
+            # pas celle de SSLSocket qui oublierait l'état TLS), la lecture bloquée rend la main aussitôt.
+            echu.set()
+            for prise in list(prises):
+                try:
+                    socket.socket.shutdown(prise, socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        def depasse():
+            raison = f"{hote} : délai dépassé ({self.delai_total} s pour toute la requête)"
+            self.injoignables[hote] = raison
+            return NonVerifie(raison)
+
+        minuterie = threading.Timer(self.delai_total, couper)
+        minuterie.daemon = True
         connexion = Connexion(hote, 443, timeout=delai, context=ctx)
+        minuterie.start()
         try:
             try:
                 connexion.request(
@@ -175,14 +243,21 @@ class Client:
             except ssl.SSLCertVerificationError as e:
                 raise NonVerifie(f"{hote} : certificat refusé ({propre(e.verify_message, 80)})") from None
             except (OSError, http.client.HTTPException) as e:
+                if echu.is_set():
+                    raise depasse() from None
                 raison = f"{hote} injoignable ({type(e).__name__} : {propre(str(e), 80)})"
                 if not isinstance(e, http.client.HTTPException):
                     self.injoignables[hote] = raison
                 raise NonVerifie(raison) from None
+            if echu.is_set():
+                raise depasse()
             if reponse.status in absents:
                 return None
             if 300 <= reponse.status < 400:
-                ailleurs = urllib.parse.urlsplit(reponse.getheader("Location") or "").hostname or "?"
+                try:
+                    ailleurs = urllib.parse.urlsplit(reponse.getheader("Location") or "").hostname or "?"
+                except ValueError:  # « http://[x » : une adresse qui ne se découpe pas
+                    ailleurs = "?"
                 raise NonVerifie(f"{hote} : redirection (vers {propre(ailleurs, 60)}) jamais suivie")
             if reponse.status == 429 or (reponse.status == 403 and reponse.getheader("Retry-After")):
                 raise NonVerifie(f"{hote} : limite de requêtes atteinte (code {reponse.status}), réessayer plus tard")
@@ -195,24 +270,31 @@ class Client:
             if genre not in types:
                 raise NonVerifie(f"{hote} : type de réponse inattendu ({propre(genre, 60)})")
             annonce = reponse.getheader("Content-Length")
-            if annonce is not None and (not annonce.isdigit() or int(annonce) > plafond):
+            # Des chiffres ASCII seulement : str.isdigit() dit vrai pour « ² », que int() refuse.
+            if annonce is not None and (not re.fullmatch(r"[0-9]{1,12}", annonce) or int(annonce) > plafond):
                 raise NonVerifie(f"{hote} : réponse trop grande ou mal annoncée ({propre(annonce, 30)} octets)")
             morceaux, total = [], 0
             while True:
-                if time.monotonic() - debut > self.delai_total:
-                    raise NonVerifie(f"{hote} : délai dépassé ({self.delai_total} s)")
                 try:
                     morceau = reponse.read1(65536)
                 except (OSError, http.client.HTTPException) as e:
+                    if echu.is_set():
+                        raise depasse() from None
                     raise NonVerifie(f"{hote} : lecture interrompue ({type(e).__name__})") from None
+                if echu.is_set():
+                    raise depasse()
                 if not morceau:
                     break
                 total += len(morceau)
                 if total > plafond:
                     raise NonVerifie(f"{hote} : réponse de plus de {plafond} octets refusée")
                 morceaux.append(morceau)
+            # read1 ne lève pas IncompleteRead : un corps coupé avant la longueur annoncée finit comme un vrai.
+            if annonce is not None and total != int(annonce):
+                raise NonVerifie(f"{hote} : réponse incomplète ({total} octets sur {annonce} annoncés)")
             return b"".join(morceaux)
         finally:
+            minuterie.cancel()
             connexion.close()
 
     def json(self, hote, chemin, **options):
@@ -241,11 +323,14 @@ def arch(client, nom):
         return [("absent", "ni dans core, ni extra, ni multilib")]
     constats = []
     for r in trouves:
-        drapeau = r.get("flag_date")
+        # La clé est exigée : une réponse qui l'omet ne dit pas « pas périmé » (null le dit), elle ne dit rien.
+        if "flag_date" not in r:
+            raise NonVerifie("archlinux.org : flag_date absent de la réponse")
+        drapeau = r["flag_date"]
         if drapeau is not None:
             if not isinstance(drapeau, str):
                 raise NonVerifie("archlinux.org : flag_date illisible")
-            constats.append(("perime", f"{r['repo']}/{nom} {propre(r.get('pkgver'), 40)} depuis le {propre(drapeau, 10)}"))
+            constats.append(("perime", f"{r['repo']}/{nom} {propre(r.get('pkgver'), 40)} depuis le {propre(drapeau[:10], 10)}"))
     return constats
 
 
@@ -328,7 +413,17 @@ def lire_index_winget(client, aujourd_hui):
             raise NonVerifie("index de winget trop grand")
     except NonVerifie:
         raise
-    except (zipfile.BadZipFile, KeyError, OSError, EOFError, ValueError, NotImplementedError) as e:
+    except (
+        zipfile.BadZipFile,
+        KeyError,
+        OSError,
+        EOFError,
+        ValueError,
+        NotImplementedError,
+        zlib.error,  # flux deflate abîmé
+        RuntimeError,  # entrée marquée chiffrée (« password required »)
+        lzma.LZMAError,
+    ) as e:
         raise NonVerifie(f"index de winget illisible ({type(e).__name__})") from None
     base = sqlite3.connect(":memory:")
     try:
@@ -343,17 +438,28 @@ def lire_index_winget(client, aujourd_hui):
         base.execute("PRAGMA query_only = 1")
         if base.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise NonVerifie("index de winget abîmé (quick_check)")
-        genre = base.execute("SELECT type FROM sqlite_master WHERE name = 'packages'").fetchall()
-        if genre != [("table",)]:
-            raise NonVerifie("index de winget sans table packages")
+        # Une table virtuelle (fts5, ou un module chargé) a aussi le type « table » dans sqlite_master : c'est sa
+        # déclaration qui la trahit. Aucune n'est lue, où qu'elle soit (son module ferait le travail de la lecture).
+        for nom, sql in base.execute("SELECT name, sql FROM sqlite_master"):
+            if isinstance(sql, str) and re.match(r"\s*create\s+virtual\b", sql, re.IGNORECASE):
+                raise NonVerifie(f"index de winget avec une table virtuelle ({propre(nom, 40)}) refusé")
+        for table in ("packages", "metadata"):
+            genre = base.execute("SELECT type FROM sqlite_master WHERE name = ?", (table,)).fetchall()
+            if genre != [("table",)]:
+                raise NonVerifie(f"index de winget sans table {table}")
         colonnes = {r[1] for r in base.execute("PRAGMA table_info(packages)")}
         if not {"id"} <= colonnes:
             raise NonVerifie("index de winget sans colonne id")
         meta = dict(base.execute("SELECT name, value FROM metadata WHERE name = 'lastwritetime'").fetchall())
         ecrit = meta.get("lastwritetime")
-        if not isinstance(ecrit, str) or not ecrit.isdigit() or len(ecrit) > 12:
+        # Chiffres ASCII seulement (isdigit() accepte « ² ») ; 11 au plus, et fromtimestamp gardé : une année hors
+        # de portée de datetime lève ValueError, OverflowError ou OSError.
+        if not isinstance(ecrit, str) or not re.fullmatch(r"[0-9]{1,11}", ecrit):
             raise NonVerifie("index de winget sans date lisible")
-        date = datetime.datetime.fromtimestamp(int(ecrit), datetime.UTC).date()
+        try:
+            date = datetime.datetime.fromtimestamp(int(ecrit), datetime.UTC).date()
+        except (ValueError, OverflowError, OSError):
+            raise NonVerifie("index de winget sans date lisible") from None
         age = (aujourd_hui - date).days
         if age > INDEX_WINGET_AGE_MAX or age < -2:
             raise NonVerifie(f"index de winget daté du {date} : trop vieux (ou dans le futur) pour conclure")
@@ -388,30 +494,57 @@ def debian(client, nom):
         suites = bloc.get(nom, {})
         if not isinstance(suites, dict):
             raise NonVerifie("api.ftp-master.debian.org : réponse illisible")
-        for versions in suites.values():
+        for suite, versions in suites.items():
+            # Le filtre s=stable est fait par le serveur : on le revérifie. Une autre suite (unstable, testing)
+            # ne dit rien de stable, et ne doit pas être comptée comme si.
+            if suite != "stable":
+                raise NonVerifie(f"api.ftp-master.debian.org : suite inattendue ({propre(suite, 30)})")
             if not isinstance(versions, dict):
                 raise NonVerifie("api.ftp-master.debian.org : réponse illisible")
             for v in versions.values():
                 if not isinstance(v, dict) or not isinstance(v.get("architectures"), list):
                     raise NonVerifie("api.ftp-master.debian.org : réponse illisible")
+                if not isinstance(v.get("component"), str):
+                    raise NonVerifie("api.ftp-master.debian.org : section illisible")
                 # Un paquet binaire : construit pour amd64 ou pour toutes (pas seulement « source »).
                 if any(a in ("amd64", "all") for a in v["architectures"]):
-                    sections.add(v.get("component"))
+                    sections.add(v["component"])
     if not sections:
         return [("absent", "pas de paquet binaire dans stable")]
     if "main" not in sections:
-        return [("hors-main", "stable, section " + ", ".join(propre(s, 20) for s in sections))]
+        return [("hors-main", "stable, section " + ", ".join(propre(s, 20) for s in sorted(sections)))]
     return []
 
 
 def branche_fedora(client):
-    reponse = client.json("mdapi.fedoraproject.org", "/branches")
-    if not isinstance(reponse, list):
-        raise NonVerifie("mdapi.fedoraproject.org : liste des versions illisible")
-    nums = [int(b[1:]) for b in reponse if isinstance(b, str) and re.fullmatch(r"f[0-9]{2,3}", b)]
+    """La dernière version publiée de Fedora. Pourquoi Bodhi et pas le plus grand fNN de mdapi : mdapi liste toute
+    branche de koji, la version en préparation comprise (f46 quand f45 est la dernière publiée) ; seul Bodhi dit
+    l'état (current : publiée ; pending, frozen : pas encore). La branche retenue doit aussi être dans mdapi."""
+    reponse = client.json("bodhi.fedoraproject.org", "/releases/?state=current&rows_per_page=100")
+    if not isinstance(reponse, dict) or not isinstance(reponse.get("releases"), list) or reponse.get("pages") != 1:
+        raise NonVerifie("bodhi.fedoraproject.org : liste des versions illisible (ou sur plusieurs pages)")
+    nums = []
+    for r in reponse["releases"]:
+        if not isinstance(r, dict):
+            raise NonVerifie("bodhi.fedoraproject.org : version illisible")
+        if r.get("id_prefix") != "FEDORA":
+            continue  # EPEL, conteneurs, flatpaks : pas la distribution
+        nom, etat, branche = r.get("name"), r.get("state"), r.get("branch")
+        if not isinstance(nom, str) or not re.fullmatch(r"F[0-9]{2,3}", nom) or branche != f"f{nom[1:]}":
+            raise NonVerifie(f"bodhi.fedoraproject.org : version illisible ({propre(nom, 20)})")
+        if etat != "current":
+            # Demandé state=current au serveur : une autre réponse est revérifiée, jamais prise pour publiée.
+            raise NonVerifie(f"bodhi.fedoraproject.org : {propre(nom, 20)} en état {propre(etat, 20)} dans les publiées")
+        nums.append(int(nom[1:]))
     if not nums:
-        raise NonVerifie("mdapi.fedoraproject.org : aucune version publiée dans la liste")
-    return f"f{max(nums)}"
+        raise NonVerifie("bodhi.fedoraproject.org : aucune version publiée dans la liste")
+    branche = f"f{max(nums)}"
+    branches = client.json("mdapi.fedoraproject.org", "/branches")
+    if not isinstance(branches, list):
+        raise NonVerifie("mdapi.fedoraproject.org : liste des versions illisible")
+    if branche not in branches:
+        raise NonVerifie(f"mdapi.fedoraproject.org : {branche} (dernière publiée selon Bodhi) absente de mdapi")
+    return branche
 
 
 def fedora(client, branche, nom):
@@ -422,6 +555,9 @@ def fedora(client, branche, nom):
         return [("absent", f"pas dans Fedora {branche[1:]}")]
     if not isinstance(reponse, dict) or not isinstance(reponse.get("version"), str):
         raise NonVerifie("mdapi.fedoraproject.org : réponse illisible")
+    # Le nom rendu (basename : le paquet binaire, vérifié sur mdapi) doit être celui demandé, comme l'id de Flathub.
+    if reponse.get("basename") != nom:
+        raise NonVerifie(f"mdapi.fedoraproject.org : réponse pour un autre paquet ({propre(reponse.get('basename'), 40)})")
     return []
 
 
@@ -443,17 +579,23 @@ def valide(genre, ident):
     return isinstance(ident, str) and len(ident) <= 128 and MOTIFS[genre].fullmatch(ident) is not None
 
 
+CLES_LOGICIEL = {"nom", "licence", "paquets", "flatpak", "winget"}
+
+
 def taches(logiciels):
-    """(source, identifiant, logiciel) à vérifier, et les identifiants refusés (jamais envoyés)."""
+    """(source, identifiant, logiciel) à vérifier, et les identifiants refusés (jamais envoyés). Les clés de chaque
+    entrée sont exigées toutes : une clé renommée (« winget_id ») ne doit pas passer pour « pas de source »."""
     a_faire, refuses = [], []
     for l in logiciels:
-        if not isinstance(l, dict) or not isinstance(l.get("nom"), str):
-            refuses.append(("?", "?", "entrée du catalogue illisible"))
+        if not isinstance(l, dict) or not isinstance(l.get("nom"), str) or set(l) != CLES_LOGICIEL:
+            nom = l.get("nom") if isinstance(l, dict) else "?"
+            refuses.append(("?", propre(nom, 40), f"entrée du catalogue illisible (clés attendues : {', '.join(sorted(CLES_LOGICIEL))})"))
             continue
         paquets = l.get("paquets")
         if not isinstance(paquets, dict) or set(paquets) != {"arch", "debian", "fedora", "opensuse"}:
             refuses.append(("?", propre(l["nom"], 40), "paquets illisibles"))
             continue
+        avant = len(a_faire)
         for source in ("arch", "debian", "fedora", "opensuse"):
             liste = paquets[source]
             if not isinstance(liste, list):
@@ -465,48 +607,85 @@ def taches(logiciels):
                 else:
                     refuses.append((source, propre(p, 40), "identifiant hors de l'alphabet permis"))
         for source, genre in (("flathub", "flatpak"), ("winget", "winget")):
-            ident = l.get("flatpak" if source == "flathub" else "winget")
+            ident = l[genre]
             if ident is None:
                 continue
             if valide(genre, ident):
                 a_faire.append((source, ident, l))
             else:
                 refuses.append((source, propre(ident, 40), "identifiant hors de l'alphabet permis"))
+        # openSUSE n'est pas couvert : un logiciel qui n'a que lui (ou rien) n'a rien de vérifiable, et le dire.
+        if not any(t[0] != "opensuse" for t in a_faire[avant:]):
+            refuses.append(("?", propre(l["nom"], 40), "aucune source vérifiable pour ce logiciel"))
     return a_faire, refuses
 
 
+CHAMPS_ADMIS = ("source", "identifiant", "constat", "detail", "raison", "date", "jusqu_au")
+
+
 def lire_admis(chemin, aujourd_hui):
-    """Les dégradations admises encore valables : {(source, identifiant, constat): (raison, date, jusqu_au)}, et
-    celles échues (redevenues des dégradations, dites)."""
+    """Les dégradations admises encore valables : {(source, identifiant, constat): (detail, raison, date,
+    jusqu_au)}, et celles échues : [(clé, jusqu_au)]."""
     with open(chemin, "rb") as f:
         donnees = json_strict(f.read())
-    if not isinstance(donnees, dict) or donnees.get("format") != 1 or not isinstance(donnees.get("admis"), list):
-        raise NonVerifie(f"{chemin} : format inattendu")
-    admis, echus = {}, []
+    if not isinstance(donnees, dict) or donnees.get("format") != 2 or not isinstance(donnees.get("admis"), list):
+        raise NonVerifie(f"{chemin} : format inattendu (format 2 attendu)")
+    admis, echus, vus = {}, [], set()
     for a in donnees["admis"]:
-        champs = ("source", "identifiant", "constat", "raison", "date", "jusqu_au")
+        champs = CHAMPS_ADMIS
         if not isinstance(a, dict) or set(a) != set(champs) or not all(isinstance(a[c], str) for c in champs):
             raise NonVerifie(f"{chemin} : entrée illisible (champs attendus : {', '.join(champs)})")
         if a["source"] not in SOURCES or a["constat"] not in CONSTATS or len(a["raison"].strip()) < 10:
             raise NonVerifie(f"{chemin} : entrée {propre(a['identifiant'], 40)} : source, constat ou raison refusé")
+        if not a["detail"].strip():
+            raise NonVerifie(f"{chemin} : {propre(a['identifiant'], 40)} sans detail (la valeur exacte admise)")
         try:
             date = datetime.date.fromisoformat(a["date"])
             jusqu = datetime.date.fromisoformat(a["jusqu_au"])
         except ValueError:
             raise NonVerifie(f"{chemin} : date illisible pour {propre(a['identifiant'], 40)}") from None
+        if date > aujourd_hui:
+            raise NonVerifie(f"{chemin} : {propre(a['identifiant'], 40)} admis à une date future ({a['date']})")
         if jusqu < date or (jusqu - date).days > 366:
             raise NonVerifie(f"{chemin} : {propre(a['identifiant'], 40)} admis plus d'un an, ou jusqu_au avant date")
         cle = (a["source"], a["identifiant"], a["constat"])
-        if cle in admis:
+        if cle in vus:
             raise NonVerifie(f"{chemin} : {propre(a['identifiant'], 40)} admis deux fois")
+        vus.add(cle)
         if jusqu < aujourd_hui:
             echus.append((cle, a["jusqu_au"]))
         else:
-            admis[cle] = (a["raison"], a["date"], a["jusqu_au"])
+            admis[cle] = (a["detail"], a["raison"], a["date"], a["jusqu_au"])
     return admis, echus
 
 
 # ── Le passage ──
+
+
+def juger(client, source, ident, logiciel, pas_libre, aujourd_hui, etat):
+    """Les constats d'une source. `etat` garde la branche de Fedora et l'index de winget (ou leur panne), lus une
+    fois pour tout le passage."""
+    if source == "arch":
+        return arch(client, ident)
+    if source == "debian":
+        return debian(client, ident)
+    if source == "flathub":
+        return flathub(client, ident, logiciel["licence"], ident in pas_libre)
+    if source == "fedora":
+        cle, lire = "branche", lambda: branche_fedora(client)
+    else:
+        cle, lire = "index", lambda: lire_index_winget(client, aujourd_hui)
+    if cle not in etat:
+        try:
+            etat[cle] = (lire(), None)
+        except NonVerifie as e:
+            etat[cle] = (None, str(e))
+        except Exception as e:  # noqa: BLE001 : la panne est gardée, pour ne pas la relancer à chaque paquet
+            etat[cle] = (None, f"panne : {type(e).__name__}")
+    valeur, erreur = etat[cle]
+    if erreur:
+        raise NonVerifie(erreur)
+    return fedora(client, valeur, ident) if source == "fedora" else winget(valeur[0], ident)
 
 
 def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_ligne=False):
@@ -515,7 +694,7 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
     degradations, admises, non_verifies, sains, non_couverts, infos = [], [], [], 0, 0, []
     for source, ident, raison in refuses:
         non_verifies.append((source, ident, raison))
-    index, branche, erreur_index, erreur_branche = None, None, None, None
+    etat, servies, jugees = {}, set(), set()
     for source, ident, logiciel in a_faire:
         if source == "opensuse":
             non_couverts += 1
@@ -524,33 +703,16 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
             non_verifies.append((source, ident, "hors ligne demandé (VANGUARD_HORS_LIGNE=1)"))
             continue
         try:
-            if source == "arch":
-                constats = arch(client, ident)
-            elif source == "debian":
-                constats = debian(client, ident)
-            elif source == "fedora":
-                if branche is None and erreur_branche is None:
-                    try:
-                        branche = branche_fedora(client)
-                    except NonVerifie as e:
-                        erreur_branche = str(e)
-                if erreur_branche:
-                    raise NonVerifie(erreur_branche)
-                constats = fedora(client, branche, ident)
-            elif source == "flathub":
-                constats = flathub(client, ident, logiciel.get("licence"), ident in pas_libre)
-            else:
-                if index is None and erreur_index is None:
-                    try:
-                        index = lire_index_winget(client, aujourd_hui)
-                    except NonVerifie as e:
-                        erreur_index = str(e)
-                if erreur_index:
-                    raise NonVerifie(erreur_index)
-                constats = winget(index[0], ident)
+            constats = juger(client, source, ident, logiciel, pas_libre, aujourd_hui, etat)
         except NonVerifie as e:
             non_verifies.append((source, ident, str(e)))
             continue
+        except Exception as e:  # noqa: BLE001 : le filet par source (la frontière « donnée distante → non vérifié »)
+            # Une réponse piégée qui fait lever n'importe quoi (TypeError, ValueError…) rend cette source non
+            # vérifiée, pas tout le passage : les dégradations déjà trouvées restent dites, le code 1 tient.
+            non_verifies.append((source, ident, f"panne : {type(e).__name__}"))
+            continue
+        jugees.add((source, ident))
         for constat, detail in constats:
             if constat in INFOS:
                 infos.append((constat, detail, source, ident, logiciel["nom"]))
@@ -559,27 +721,47 @@ def controler(client, logiciels, pas_libre, admis, echus, aujourd_hui, hors_lign
             sains += 1
         for constat, detail in constats:
             cle = (source, ident, constat)
-            if cle in admis:
+            if cle not in admis:
+                degradations.append((cle, detail, logiciel["nom"]))
+                continue
+            servies.add(cle)
+            admis_detail, raison, date, jusqu = admis[cle]
+            if detail == admis_detail:
                 admises.append((cle, detail, admis[cle]))
             else:
-                degradations.append((cle, detail, logiciel["nom"]))
-    for cle, jusqu in echus:
-        # Une admission échue qui ne correspond plus à rien n'est pas une dégradation : seulement dite.
-        if any(d[0] == cle for d in degradations):
-            print(f"  ! admission échue le {jusqu} : {cle[0]} {cle[1]} ({cle[2]})")
-
-    for (source, ident, constat), detail, nom in degradations:
-        print(f"  ✖ {propre(nom, 40)} · {source} {ident} : {CONSTATS[constat]} ({propre(detail, 200)})")
-    for (source, ident, constat), detail, (raison, date, jusqu) in admises:
-        print(f"  ≈ {source} {ident} : {CONSTATS[constat]}, admis le {date} jusqu'au {jusqu} ({propre(raison, 120)})")
-    for source, ident, raison in non_verifies:
-        print(f"  ? {source} {ident} : non vérifié ({propre(raison, 200)})")
+                # L'admission vaut pour ce qui a été vu ce jour-là, pas pour tout changement du même genre.
+                degradations.append(
+                    (cle, f"admis le {date} pour « {propre(admis_detail, 100)} », constaté : « {detail} »", logiciel["nom"])
+                )
+    # Ce qui est dit d'abord : les infos et les non vérifiées, puis les admissions, et les dégradations en dernier,
+    # juste avant le résumé, pour qu'elles restent à l'écran (la sortie n'est jamais coupée, mais on lit le bas).
     for constat, detail, source, ident, nom in infos:
         print(f"  ℹ {propre(nom, 40)} · {source} {ident} : {INFOS[constat]} ({propre(detail, 200)}) : dit, sans effet")
+    for cle in sorted(admis):
+        if cle not in servies and cle[:2] in jugees:
+            print(f"  ℹ admission inutile, à retirer : {cle[0]} {propre(cle[1], 60)} ({cle[2]}) : constat disparu")
+    for cle, jusqu in echus:
+        if not any(d[0] == cle for d in degradations):
+            print(f"  ℹ admission échue le {jusqu}, à retirer : {cle[0]} {propre(cle[1], 60)} ({cle[2]})")
+    for source, ident, raison in non_verifies:
+        print(f"  ? {source} {ident} : non vérifié ({propre(raison, 200)})")
+    for (source, ident, constat), detail, (_, raison, date, jusqu) in admises:
+        print(
+            f"  ≈ {source} {ident} : {CONSTATS[constat]}, admis le {date} jusqu'au {jusqu} "
+            f"({propre(detail, 120)} ; {propre(raison, 120)})"
+        )
+    for cle, jusqu in echus:
+        if any(d[0] == cle for d in degradations):
+            print(f"  ! admission échue le {jusqu} : {cle[0]} {propre(cle[1], 60)} ({cle[2]})")
+    for (source, ident, constat), detail, nom in degradations:
+        print(f"  ✖ {propre(nom, 40)} · {source} {ident} : {CONSTATS[constat]} ({propre(detail, 260)})")
+    index = etat.get("index", (None, None))[0]
+    branche = etat.get("branche", (None, None))[0]
+    print(f"  · catalogue : {len(logiciels)} logiciel(s) lu(s), {len(a_faire)} source(s)")
     if index is not None:
         print(f"  · index de winget du {index[1]} ({len(index[0])} identifiants)")
     if branche is not None:
-        print(f"  · Fedora : {branche}, Debian : stable, Arch : {', '.join(DEPOTS_ARCH)}")
+        print(f"  · Fedora : {branche} (Bodhi), Debian : stable, Arch : {', '.join(DEPOTS_ARCH)}")
     print(f"  · non couverts : {non_couverts} paquet(s) openSUSE (aucune API publique simple) ; aucun cask au catalogue")
     if degradations:
         print(
@@ -612,6 +794,10 @@ def principal(argv, client=None, aujourd_hui=None):
             print(f"usage : controle-sources.py [--catalogue F] [--admis F] (option refusée : {propre(option, 40)})")
             return 2
     aujourd_hui = aujourd_hui or datetime.datetime.now(datetime.UTC).date()
+    posees = [v for v in ENV_OPENSSL if os.environ.get(v) is not None]
+    if posees and client is None:
+        print(f"Sources : rien conclu, {', '.join(posees)} posée(s) : OpenSSL les a lues avant nous (à retirer).")
+        return 2
     try:
         logiciels, pas_libre = lire_catalogue(catalogue)
         admis, echus = lire_admis(admis_chemin, aujourd_hui)

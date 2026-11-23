@@ -68,7 +68,7 @@ while (($#)); do
     --premier) PREMIER=1 ;;
     --revoquer) REVOQUER=1 ;;
     --point-sur) POINT_SUR=${2:?--point-sur FICHIER}; shift ;;
-    --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm|sans-controle-sources}"); shift ;;
+    --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm|sans-controle-sources-codeC-degradationsD-non-verifieesV}"); shift ;;
     --ci-apres) CI_APRES=${2:?--ci-apres COMMIT}; shift ;;
     *) ARGS+=("$1") ;;
   esac
@@ -91,9 +91,12 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 # Seule la clé de secours révoque (github.rs ne croit la ligne que d'elle) : signée par la principale, elle ne ferait
 # rien, sinon croire à une révocation qui n'a pas eu lieu.
 [[ -z $REVOQUER || -n $SECOURS ]] || erreur "--revoquer va avec --secours : la principale ne se révoque pas elle-même"
+# Le passe-droit des sources porte le résultat du contrôle (des chiffres seulement, écrits par publier-version.sh),
+# jamais un texte libre : une forme fermée, car le nom entre tel quel dans l'historique signé et public.
+SOURCES_FORME='^sans-controle-sources-code([0-9]{1,3}|absent)-degradations([0-9]{1,6}|inconnu)-non-verifiees([0-9]{1,6}|inconnu)$'
 for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
-  [[ $p == sans-empreintes-ci || $p == sans-vm || $p == sans-controle-sources ]] ||
-    erreur "passe-droit inconnu : $p (sans-empreintes-ci, sans-vm ou sans-controle-sources)"
+  [[ $p == sans-empreintes-ci || $p == sans-vm || $p =~ $SOURCES_FORME ]] ||
+    erreur "passe-droit inconnu : $p (sans-empreintes-ci, sans-vm ou sans-controle-sources-codeC-degradationsD-non-verifieesV)"
 done
 [[ -z $CI_APRES || $CI_APRES =~ ^[0-9a-f]{40}$ ]] || erreur "--ci-apres : un commit en 40 chiffres hexadécimaux"
 # Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, revocation_retenue) : les

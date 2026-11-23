@@ -606,7 +606,7 @@ JSON
     ko "publier : journal sans empreintes accepté ($r)"
   # Le passage lui-même : sans accord, rien de publié, sauf le passe-droit nommé, et dit.
   awk '/^EMPREINTES_CI=\$\(empreintes_de_la_ci\)/ { a = 1 }
-    a && /VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { p = 1 } p && /^  exit 1$/ { x = 1 } END { exit !(a && p && x) }' \
+    a && /passe_droit_demande VANGUARD_PUBLIER_SANS_EMPREINTES_CI;/ { p = 1 } p && /^  exit 1$/ { x = 1 } END { exit !(a && p && x) }' \
     "$DEPOT/outils/publier-version.sh" &&
     ok "publier-version.sh s'arrête sans les empreintes de la CI (passe-droit nommé seulement)" ||
     ko "publier-version.sh publie sans comparer Linux et Windows à la CI"
@@ -1197,10 +1197,10 @@ cp -r "$T/v-passe" "$T/v-sans"
 signer "$T/passe" "$T/v-sans" --premier || ko "passe-droit : signature sans passe-droit ($(tail -n 1 "$T/v-sans.log"))"
 ZEROS=$(printf '0%.0s' {1..64})
 if signer "$T/passe" "$T/v-passe" --premier --passe-droit sans-empreintes-ci --passe-droit sans-vm \
-  --passe-droit sans-controle-sources; then
+  --passe-droit sans-controle-sources-code2-degradations0-non-verifiees3; then
   grep -qxF "passe-droit-sans-empreintes-ci $ZEROS 0" "$T/v-passe/historique.txt" &&
     grep -qxF "passe-droit-sans-vm $ZEROS 0" "$T/v-passe/historique.txt" &&
-    grep -qxF "passe-droit-sans-controle-sources $ZEROS 0" "$T/v-passe/historique.txt" &&
+    grep -qxF "passe-droit-sans-controle-sources-code2-degradations0-non-verifiees3 $ZEROS 0" "$T/v-passe/historique.txt" &&
     [[ $(sed -n 1p "$T/v-passe/historique.txt") == "version 0.86.0+1792600000" ]] &&
     ok "passe-droit : gardé dans le bloc de sa version de l'historique signé" ||
     ko "passe-droit absent de l'historique : $(cat "$T/v-passe/historique.txt")"
@@ -1228,6 +1228,18 @@ fi
 rm -rf "$T/v-inconnu" && programmes "$T/v-inconnu" 0.86.0+1792600000
 signer "$T/passe" "$T/v-inconnu" --premier --passe-droit rien && ko "passe-droit inconnu accepté" ||
   ok "passe-droit : un nom inconnu est refusé"
+# Le passe-droit des sources entre tel quel dans l'historique public : seule la forme fermée (des chiffres écrits par
+# publier-version.sh) passe ; l'ancien nom nu, un mot, une espace, un chiffre de trop sont refusés (relecture C5).
+refus=0
+for mauvais in sans-controle-sources sans-controle-sources-code2-degradations0-non-verifiees3x \
+  sans-controle-sources-codeX-degradations0-non-verifiees3 "sans-controle-sources-code2-degradations0-non-verifiees 3" \
+  sans-controle-sources-code1234-degradations0-non-verifiees3 sans-controle-sources-code2-degradations-non-verifiees3; do
+  rm -rf "$T/v-inconnu" && programmes "$T/v-inconnu" 0.86.0+1792600000
+  signer "$T/passe" "$T/v-inconnu" --premier --passe-droit "$mauvais" || [[ -f $T/v-inconnu/historique.txt.sig ]] ||
+    refus=$((refus + 1))
+done
+((refus == 6)) && ok "passe-droit des sources : seule la forme code/dégradations/non vérifiées en chiffres est signée" ||
+  ko "passe-droit des sources : $((6 - refus)) nom(s) hors forme signé(s)"
 # La CI faite après la version (publier-version.sh, CI_APRES) : « ci-apres-COMMIT » dans le bloc de sa version, à la
 # forme que lit github.rs (relecture adverse du lot publier-version, T3) ; derniere.txt inchangé ; un commit qui n'a
 # pas la forme d'un sha complet est refusé.
@@ -1261,19 +1273,31 @@ notes_avec() { # passe-droits
   PATH="$T/faux-gh-notes:$PATH" NOM=Vanguard VERSION=0.0.0 TAG=v0.0.0 TELECHARGER=téléchargement \
     bash -c "source '$T/notes.sh'; PASSE_DROITS=(\"\$@\"); notes" _ "$@" 2>&1
 }
-r=$(notes_avec sans-empreintes-ci sans-vm sans-controle-sources)
+r=$(notes_avec sans-empreintes-ci sans-vm sans-controle-sources-code1-degradations1-non-verifiees0)
 [[ $(head -n 1 <<<"$r") == "⚠ **Passe-droit**"*VANGUARD_PUBLIER_SANS_EMPREINTES_CI* ]] &&
   grep -q "Override.*VANGUARD_PUBLIER_SANS_EMPREINTES_CI" <<<"$r" &&
   grep -q "Passe-droit.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" && grep -q "Override.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" &&
   [[ $(grep -c "VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES" <<<"$r") == 2 ]] &&
   ok "passe-droit : dit en tête des notes de la page, en français et en anglais" ||
   ko "passe-droit absent des notes : $(head -c 400 <<<"$r")"
+r=$(notes_avec sans-controle-sources-code2-degradations0-non-verifiees3)
+[[ $r == *"résultat du contrôle : code 2, 0 dégradation(s), 3 non vérifiée(s)."* &&
+  $r == *"check result: code 2, 0 degradation(s), 3 unverified."* ]] &&
+  ok "passe-droit des sources : son résultat (code, dégradations, non vérifiées) dit dans les notes, FR et EN" ||
+  ko "passe-droit des sources : résultat absent des notes : $(head -c 600 <<<"$r")"
+r=$(notes_avec sans-controle-sources-codeabsent-degradationsinconnu-non-verifieesinconnu)
+[[ $r == *"résultat du contrôle : contrôle absent du commit publié."* && $r == *"check missing from the published"* ]] &&
+  ok "passe-droit des sources : contrôle absent du commit, dit tel quel dans les notes" ||
+  ko "passe-droit des sources : contrôle absent mal dit : $(head -c 600 <<<"$r")"
+r=$(notes_avec "sans-controle-sources-code2-degradations0-non-verifiees3 ; texte")
+[[ $r == *"passe-droit illisible"* && $r != *"texte."* ]] && ok "passe-droit des sources hors forme : notes refusées" ||
+  ko "passe-droit des sources hors forme rendu dans les notes : $(head -c 400 <<<"$r")"
 r=$(notes_avec)
 [[ $r != *Passe-droit* && $r != *Override* && $r == *téléchargement* ]] && ok "notes sans passe-droit : rien de tel" ||
   ko "notes sans passe-droit : $(head -c 400 <<<"$r")"
 # Chaque passe-droit pris l'ajoute ; la signature le reçoit.
-awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sans-empreintes-ci\)/ { a = 1; e = 0 }
-  /VANGUARD_PUBLIER_SANS_VM:-/ { v = 1 } v && /PASSE_DROITS\+=\(sans-vm\)/ { b = 1; v = 0 }
+awk '/passe_droit_demande VANGUARD_PUBLIER_SANS_EMPREINTES_CI;/ { e = 1 } e && /PASSE_DROITS\+=\(sans-empreintes-ci\)/ { a = 1; e = 0 }
+  /passe_droit_demande VANGUARD_PUBLIER_SANS_VM;/ { v = 1 } v && /PASSE_DROITS\+=\(sans-vm\)/ { b = 1; v = 0 }
   /PASSES\+=\(--passe-droit "\$p"\)/ { p = 1 } /outils\/signer-versions.sh .*"\$\{PASSES\[@\]\}" "\$DOSSIER"/ { s = 1 }
   END { exit !(a && b && p && s) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh note chaque passe-droit pris et le passe à la signature" ||
@@ -1281,7 +1305,8 @@ awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sa
 # Le contrôle des sources du catalogue (controle_des_sources, lue telle quelle) : pris dans le commit publié, il
 # arrête la publication sur tout ce qui n'est pas « code 0 + N ≥ 1 vérifiée(s), saines » ; le seul contournement,
 # VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES, devient le passe-droit sans-controle-sources (notes et historique signé).
-awk '/^controle_des_sources\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/controle-des-sources.sh"
+awk '/^passe_droit_demande\(\) \{/,/^\}/; /^JUGE_PYTHON=/; /^controle_des_sources\(\) \{/,/^\}/' \
+  "$DEPOT/outils/publier-version.sh" >"$T/controle-des-sources.sh"
 S=$T/sources
 mkdir -p "$S/outils"
 printf '%s\n' 'import os, sys' 'c = os.environ.get("ESSAI_SOURCES", "0")' \
@@ -1291,7 +1316,11 @@ printf '%s\n' 'import os, sys' 'c = os.environ.get("ESSAI_SOURCES", "0")' \
   'if c == "1": print("Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
   'if c == "2": print("Sources : 1 non vérifiée(s), 2 saine(s), 0 admise(s) : rien conclu.")' \
   'if c == "trace": raise RuntimeError("plantage du contrôle")' \
-  'sys.exit({"1": 1, "2": 2}.get(c, 0))' >"$S/outils/controle-sources.py"
+  'if c == "3": print("Sources : 3 vérifiée(s), saines (0 admise(s)).")' \
+  'if c == "tue": print("Sources : 3 vérifiée(s), saines (0 admise(s))."); sys.stdout.flush(); os.kill(os.getpid(), 9)' \
+  'if c == "long": print("✖ témoin-du-haut"); [print("  · ligne", i) for i in range(60)]' \
+  'if c == "long": print("Sources : 1 dégradation(s), 0 non vérifiée(s), 2 saine(s), 0 admise(s).")' \
+  'sys.exit({"1": 1, "2": 2, "3": 3, "long": 1}.get(c, 0))' >"$S/outils/controle-sources.py"
 echo '{}' >"$S/outils/catalogue-sources.json"
 echo '{"format": 1, "admis": []}' >"$S/outils/controle-sources-admis.json"
 git -C "$S" init -q -b master && git -C "$S" add -A &&
@@ -1327,10 +1356,90 @@ done
 ((${#refus[@]} == 0)) && ok "publier : dégradation, non vérifié, panne, sans témoin : rien de publié, contournement dit" ||
   ko "publier : contrôle des sources qui laisse publier : ${refus[*]}"
 r=$(controle 1 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
-[[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources" &&
-  $r == *"⚠ Sources du catalogue : source(s) dégradée(s) ; publié quand même"* ]] &&
-  ok "publier : VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES devient le passe-droit sans-controle-sources, dit" ||
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources-code1-degradations1-non-verifiees0" &&
+  $r == *"⚠ Sources du catalogue : source(s) dégradée(s) ; publié quand même"* &&
+  $r == *"sera dit dans les notes et l'historique signé."* && -e $T/vu-sources ]] &&
+  ok "publier : VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 : le contrôle tourne, son résultat devient le passe-droit" ||
   ko "publier : contournement des sources non noté ($r)"
+# Relecture C5 : un code 3 ou plus, un signal, même avec le témoin sain, sont une panne ; le résultat du contrôle est
+# porté par le passe-droit quelle que soit la cause.
+refus=()
+for cas in "3|contrôle en panne ou sans témoin (code 3)" "tue|contrôle arrêté par un signal (code 137)"; do
+  r=$(controle "${cas%%|*}")
+  [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"${cas#*|} : rien de publié."* &&
+    $r != *"✔ Sources"* ]] || refus+=("${cas%%|*} : $(tail -n 2 <<<"$r")")
+done
+((${#refus[@]} == 0)) && ok "publier : un code 3 ou un signal, même avec « saines » écrit, arrête la publication" ||
+  ko "publier : code 3 ou signal pris pour sain : ${refus[*]}"
+refus=()
+for cas in "2|code2-degradations0-non-verifiees1" "trace|code1-degradationsinconnu-non-verifieesinconnu" \
+  "tue|code137-degradationsinconnu-non-verifieesinconnu" "zero|code0-degradationsinconnu-non-verifieesinconnu"; do
+  r=$(controle "${cas%%|*}" VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+  [[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources-${cas#*|}" ]] || refus+=("${cas%%|*} : $(tail -n 1 <<<"$r")")
+done
+((${#refus[@]} == 0)) && ok "publier : le passe-droit des sources porte le code et les chiffres du contrôle (ou « inconnu »)" ||
+  ko "publier : résultat du contrôle mal porté : ${refus[*]}"
+# Seule la valeur 1 prend le passe-droit : 0, une espace, « non » sont refusés (rien de publié), vide vaut absent.
+refus=()
+for valeur in 0 " " non oui 11; do
+  r=$(controle 1 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="$valeur")
+  [[ $r == *"VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES="*" : seule la valeur 1 prend ce passe-droit"* && $r != *"code=0"* ]] ||
+    refus+=("« $valeur » : $(tail -n 1 <<<"$r")")
+done
+r=$(controle 1 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"source(s) dégradée(s) : rien de publié."* ]] || refus+=("vide : $r")
+((${#refus[@]} == 0)) && ok "publier : passe-droit des sources pris pour la seule valeur 1 (0, espace, non : refus)" ||
+  ko "publier : valeur du passe-droit mal lue : ${refus[*]}"
+# Les deux autres passe-droits aussi, validés avant tout contrôle (la boucle, puis passe_droit_demande).
+awk '/^for passe in VANGUARD_PUBLIER_SANS_EMPREINTES_CI VANGUARD_PUBLIER_SANS_VM VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES; do$/ { b = NR }
+  b && NR == b + 1 && /^  passe_droit_demande "\$passe" \|\| true$/ { d = 1 }
+  /^controle_des_sources \|\| exit 1$/ { c = NR } END { exit !(b && d && c > b) }' "$DEPOT/outils/publier-version.sh" &&
+  ! grep -qE 'VANGUARD_PUBLIER_SANS_(EMPREINTES_CI|VM|CONTROLE_SOURCES):-' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : les trois passe-droits validés avant tout contrôle, plus aucun « non vide vaut oui »" ||
+  ko "publier-version.sh : un passe-droit lu sans passe_droit_demande, ou validé trop tard"
+# La sortie n'est jamais coupée : une ligne ✖ en tête de plus de 60 lignes reste à l'écran.
+r=$(controle long)
+[[ $r == *"✖ témoin-du-haut"* && $r == *"· ligne 0"* && $r == *"· ligne 59"* && $(tail -n 1 <<<"$r") == "code=1 droits=" ]] &&
+  ok "publier : sortie du contrôle montrée en entier (✖ du haut visible sur 60 lignes et plus)" ||
+  ko "publier : sortie du contrôle coupée ($(head -n 3 <<<"$r"))"
+# Le juge est /usr/bin/python3 : un python3 du PATH qui dit « sain » n'y change rien.
+mkdir -p "$T/faux-python"
+printf '#!/bin/sh\necho "Sources : 9 vérifiée(s), saines (0 admise(s))."\nexit 0\n' >"$T/faux-python/python3"
+chmod +x "$T/faux-python/python3"
+r=$(controle 1 PATH="$T/faux-python:$PATH")
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && -e $T/vu-sources && $r != *"9 vérifiée(s)"* ]] &&
+  ok "publier : un python3 placé dans le PATH ne juge pas les sources (/usr/bin/python3 seul)" ||
+  ko "publier : python3 du PATH pris pour juge ($r)"
+# Les objets de remplacement (git replace) ne servent pas un autre contrôle que celui du commit publié.
+SAIN_BLOB=$(printf 'print("Sources : 9 vérifiée(s), saines (0 admise(s)).")\n' | git -C "$S" hash-object -w --stdin)
+git -C "$S" replace "$(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")" "$SAIN_BLOB"
+[[ $(git -C "$S" show "$S_COMMIT:outils/controle-sources.py") == *"9 vérifiée(s)"* ]] || ko "git replace sans effet ici"
+r=$(controle 1)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && -e $T/vu-sources && $r == *"source(s) dégradée(s)"* ]] &&
+  ok "publier : un git replace sur le contrôle est ignoré (le contrôle du commit publié tourne)" ||
+  ko "publier : contrôle remplacé par git replace ($r)"
+r=$(controle 1 GIT_NO_REPLACE_OBJECTS=)
+[[ $(tail -n 1 <<<"$r") == "code=1 droits=" && -e $T/vu-sources ]] &&
+  ok "publier : git replace ignoré même avec GIT_NO_REPLACE_OBJECTS vide dans l'environnement" ||
+  ko "publier : GIT_NO_REPLACE_OBJECTS vide rend git replace actif ($r)"
+git -C "$S" replace -d "$(git -C "$S" rev-parse "$S_COMMIT:outils/controle-sources.py")" >/dev/null
+# Les variables qui changent le magasin de certificats ou OpenSSL ne passent pas au contrôle.
+printf '%s\n' 'import os, sys' \
+  'v = [n for n in ("SSL_CERT_FILE", "SSL_CERT_DIR", "OPENSSL_CONF", "OPENSSL_MODULES", "OPENSSL_ENGINES") if n in os.environ]' \
+  'open(os.environ["ESSAI_VU"], "w").write("vu")' \
+  'print("Sources : 3 vérifiée(s), saines (0 admise(s)).") if not v else print("posées :", *v)' \
+  'sys.exit(0 if not v else 2)' >"$T/controle-env.py"
+cp "$S/outils/controle-sources.py" "$T/controle-garde.py"
+cp "$T/controle-env.py" "$S/outils/controle-sources.py"
+git -C "$S" add outils/controle-sources.py &&
+  git -C "$S" -c user.name=alice -c user.email=alice@example.com commit -qm "env"
+S_ENV=$(git -C "$S" rev-parse HEAD)
+r=$(S_COMMIT=$S_ENV controle 0 SSL_CERT_FILE=/x SSL_CERT_DIR=/x OPENSSL_CONF=/x OPENSSL_MODULES=/x OPENSSL_ENGINES=/x)
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=" && $r == *"✔ Sources"* && $r != *posées* ]] &&
+  ok "publier : SSL_CERT_*, OPENSSL_* retirées de l'environnement du contrôle" ||
+  ko "publier : variables de certificats passées au contrôle ($r)"
+git -C "$S" reset -q --hard "$S_COMMIT"
+
 r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
 [[ $(tail -n 1 <<<"$r") == "code=0 droits=" ]] && ok "publier : sources saines, aucun passe-droit même demandé" ||
   ko "publier : passe-droit noté sans rien contourner ($r)"
@@ -1341,6 +1450,30 @@ r=$(controle 0)
 [[ $(tail -n 1 <<<"$r") == "code=1 droits=" && $r == *"absent du commit publié : rien de publié."* &&
   ! -e $T/vu-sources ]] && ok "publier : contrôle ou liste des admis absent du commit publié : rien de publié" ||
   ko "publier : fichier du contrôle absent mal traité ($r)"
+r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
+[[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources-codeabsent-degradationsinconnu-non-verifieesinconnu" ]] &&
+  ok "publier : contrôle absent + passe-droit : « absent » porté par le passe-droit" ||
+  ko "publier : contrôle absent mal porté ($r)"
+# Une version déjà publiée : rien de publié ni signé, et le passe-droit pris est dit sans objet (relecture C5, n°22).
+mkdir -p "$T/faux-gh-oui" && printf '#!/bin/sh\nexit 0\n' >"$T/faux-gh-oui/gh" && chmod +x "$T/faux-gh-oui/gh"
+awk '/^if gh release view "\$TAG" >\/dev\/null 2>&1; then$/,/^fi$/' "$DEPOT/outils/publier-version.sh" >"$T/deja.sh"
+r=$(PATH="$T/faux-gh-oui:$PATH" TAG=v0.0.0 bash -c "set -euo pipefail; \
+  PASSE_DROITS=(sans-controle-sources-code2-degradations0-non-verifiees1); source '$T/deja.sh'; echo suite" 2>&1)
+[[ $r == *"déjà publiée"* && $r == *"sans-controle-sources-code2-degradations0-non-verifiees1 : sans objet"* &&
+  $r != *suite* ]] && ok "publier : version déjà publiée, le passe-droit pris est dit sans objet, rien d'autre" ||
+  ko "publier : relance sur une version publiée mal dite ($r)"
+# Le dépôt public des versions injoignable (gh repo view en échec) avec un passe-droit : rien de publié (n°21).
+awk '/^if ! gh repo view "\$DEPOT_VERSIONS" >\/dev\/null 2>&1; then$/,/^else$/' "$DEPOT/outils/publier-version.sh" |
+  sed '$d' >"$T/depot-versions.sh" && echo "fi" >>"$T/depot-versions.sh"
+depot_versions() { # passe-droits… : la dernière ligne, « suite » si on continue
+  PATH="$T/faux-gh-notes:$PATH" DEPOT_VERSIONS=x/y CI_APRES_COMPLET=${CI_ESSAI-} bash -c "set -euo pipefail; \
+    PASSE_DROITS=(\"\$@\"); source '$T/depot-versions.sh'; echo suite" _ "$@" 2>&1 | tail -n 1
+}
+[[ $(depot_versions sans-vm) == *"rien de publié." && $(CI_ESSAI=$CI_SHA depot_versions) == *"rien de publié." &&
+  $(depot_versions) == suite ]] &&
+  ok "publier : dépôt des versions injoignable avec passe-droit ou CI d'après : rien de publié (sans : on continue)" ||
+  ko "publier : passe-droit publié sans historique signé ($(depot_versions sans-vm))"
+
 # Le contrôle tourne avant toute requête à GitHub (git fetch, gh), après l'arrêt de --notes (qui n'en fait aucune).
 awk '/^if \[\[ \$\{1:-\} == --notes \]\]; then/ { n = NR } /^controle_des_sources \|\| exit 1$/ { c = NR }
   /^git fetch -q --tags origin$/ && !f { f = NR }

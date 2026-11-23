@@ -27,8 +27,12 @@ example, finds it, to rebuild it if needed.
   as in vanguard guide, which still shows them all.
 - **Catalogue sources checked before each release.** The software Vanguard offers to install is checked at its
   source: Arch package present and not flagged out of date, Flathub app neither end-of-life nor relicensed, winget
-  ID still there, Debian and Fedora packages present. A degraded source, or one that could not be checked, stops the
-  release; nothing counts as healthy without an answer.
+  ID still there, Debian and Fedora packages (current stable release, read from Fedora) present. A degraded source,
+  or one that could not be checked, stops the release; an incomplete, cut or too slow answer, a missing field, a
+  damaged winget index never count as healthy. The check uses its own certificate store, and its output is shown in
+  full. Releasing anyway takes `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (no other value): the check still runs,
+  and its result (code, degradations, unverified sources) is stated in the release notes and kept in the signed
+  history. An accepted degradation only holds for the exact value noted, with its date.
 
 ## November 22, 2026: version 0.97.0
 
