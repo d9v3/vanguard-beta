@@ -40,7 +40,7 @@ fn livree_selon(g: Option<super::empreinte_fenetre::Gravee>) -> bool {
 }
 
 /// Le temps laissé à la fenêtre pour s'ouvrir (premier lancement sur un vieil ordinateur, pilote graphique lent).
-const ATTENTE: Duration = Duration::from_secs(20);
+pub(super) const ATTENTE: Duration = Duration::from_secs(20);
 
 /// Ce qui décide entre la fenêtre et le menu, lu une fois.
 #[derive(Debug, Clone, Copy, Default)]
@@ -767,7 +767,7 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     // Une seule fenêtre : celle qui est déjà ouverte, si c'est bien elle, revient devant ; sinon la fenêtre est
     // lancée sous le verrou du tour (voir `une_seule`).
     une_seule(
-        || super::une_fenetre::ramener(&attendue, chemin),
+        || super::une_fenetre::ramener(&attendue),
         |remplacer| lancer_la_fenetre(chemin, programme, &attendue, remplacer),
     )
 }
@@ -775,7 +775,9 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
 /// Une seule fenêtre autour d'un lancement : `ramener` d'abord. La fenêtre ramenée, rien n'est ouvert. Sinon
 /// `ouvrir` est appelé, le verrou du tour tenu jusqu'à son retour (un second lancement simultané attend que celle-ci
 /// ait dit « ouverte », puis la ramène), avec `remplacer` vrai quand ce qui écoute n'est pas une fenêtre de Vanguard
-/// qui répond (la nouvelle prend sa prise). Un canal refusé ou impossible, un verrou qui ne se prend pas : dits.
+/// vérifiée (la nouvelle prend sa prise) ; faux quand la fenêtre vérifiée, ou qui n'a pas pu l'être faute de
+/// réponse, n'a pas été ramenée (sa prise lui reste). Un canal refusé ou impossible, un verrou qui ne se prend pas :
+/// dits.
 fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl FnOnce(bool) -> Lancement) -> Lancement {
     use super::une_fenetre::Issue;
     let tour = ramener();
@@ -804,8 +806,23 @@ fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl Fn
             );
             true
         }
+        Issue::SansReponse(r) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "La fenêtre déjà ouverte n'a pas été ramenée ({}) : une nouvelle s'ouvre, sans prendre son canal.",
+                    "The already open window was not brought back ({}): a new one opens, without taking its channel.",
+                    r
+                )
+            );
+            false
+        }
     };
-    if let (Err(r), Issue::Personne | Issue::Refusee(_)) = (&tour.verrou, &tour.issue) {
+    // L'erreur du verrou est dite, sauf quand l'issue vient de la même cause et l'a déjà dite.
+    let deja_dite = |r: &String| matches!(&tour.issue, Issue::Indisponible(i) if i == r);
+    if let Err(r) = &tour.verrou
+        && !deja_dite(r)
+    {
         eprintln!(
             "{}",
             trf!(
@@ -1438,8 +1455,8 @@ mod tests {
         assert!(essayer().is_ok(), "verrou gardé après le lancement");
     }
 
-    /// Ce qui écoute n'est pas une fenêtre de Vanguard qui répond (refusé, muet, ancienne version) : la nouvelle
-    /// fenêtre prend la prise.
+    /// Ce qui écoute n'est pas une fenêtre de Vanguard vérifiée (refusé : un imposteur, une ancienne version) ou le
+    /// canal est impossible ici : la nouvelle fenêtre prend la prise.
     #[test]
     fn un_canal_refuse_fait_prendre_la_prise() {
         use super::super::une_fenetre::{Issue, Tour};
@@ -1456,5 +1473,23 @@ mod tests {
             assert!(matches!(lancement, Lancement::Ouverte), "{lancement:?}");
             assert_eq!(demande, Some(true));
         }
+    }
+
+    /// Constats 5 et 20 : une fenêtre vérifiée (ou muette) qui n'a pas été ramenée garde sa prise ; la nouvelle
+    /// s'ouvre sans la prendre.
+    #[test]
+    fn une_fenetre_sans_reponse_garde_sa_prise() {
+        use super::super::une_fenetre::{Issue, Tour};
+        let tour = || Tour {
+            issue: Issue::SansReponse("essai".into()),
+            verrou: Err("essai".into()),
+        };
+        let mut demande = None;
+        let lancement = une_seule(tour, |remplacer| {
+            demande = Some(remplacer);
+            Lancement::Ouverte
+        });
+        assert!(matches!(lancement, Lancement::Ouverte), "{lancement:?}");
+        assert_eq!(demande, Some(false), "la prise d'une fenêtre vérifiée serait prise");
     }
 }

@@ -428,6 +428,13 @@ jobs:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
           VANGUARD_ESSAI_CLASSES_DU_COMPTE: "1"
         run: cargo test --locked --target x86_64-pc-windows-msvc
+      # La fenêtre (fenetre/, caisse à part) : le serveur « une seule fenêtre » sur un vrai tube nommé, dont la
+      # première instance exigée, que Wine ne fait pas (outils/verifier.sh, étape fenetre-windows, l'y dit sauté).
+      - name: Essais de la fenêtre (une seule fenêtre) sur un vrai Windows
+        if: always()
+        env:
+          VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
+        run: cargo test --locked --manifest-path fenetre/Cargo.toml --target x86_64-pc-windows-msvc une_fenetre::
       - name: Tests sautés sur le vrai Windows
         if: always()
         env:

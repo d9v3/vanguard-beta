@@ -668,41 +668,61 @@ gardes :
   compte, fermés au groupe et aux autres), sans repli vers /tmp, créée avant le bac à sable et servie dès la fin de
   celui-ci ; sous Windows, un tube nommé d'une seule instance (FILE_FLAG_FIRST_PIPE_INSTANCE,
   PIPE_REJECT_REMOTE_CLIENTS), au nom lié au SID et à la session, dont la liste d'accès ne nomme que ce compte. Le
-  message est fermé : un octet « montre-toi », un octet « ok », délais courts, cadence bornée ; rien d'autre n'est
-  lu. Les modes en ligne de commande ne sont pas concernés (`src/demarrage/une_fenetre.rs`,
-  `fenetre/src/une_fenetre.rs`, `src/socle/une_fenetre.rs`).
+  message est fermé et de taille fixe : une demande (un octet et un nombre aléatoire frais de 16 octets), une réponse
+  (un octet et le même nombre), délais courts et bornés en tout ; rien d'autre n'est lu. La fenêtre sert une demande à
+  la fois et, entre deux retours devant, attend son tour (cadence) au lieu de sauter une demande. Elle ne répond que
+  si une fenêtre existe et a été priée de revenir : sans fenêtre (encore en train de s'ouvrir, ou sans écran), elle ne
+  répond rien et une fenêtre de plus s'ouvre. Les modes en ligne de commande ne sont pas concernés
+  (`src/demarrage/une_fenetre.rs`, `fenetre/src/une_fenetre.rs`, `src/socle/une_fenetre.rs`).
   - *Garanti.* Rien n'est envoyé avant que `vanguard` ait prouvé que le programme à l'autre bout est la fenêtre qu'il
-    aurait lancée ; sinon il n'envoie rien, le dit, et ouvre sa fenêtre comme avant (elle prend la place de
-    l'imposteur). Un autre compte ne reçoit rien et ne se fait pas passer pour la fenêtre. Un programme du même compte
-    qui prend le canal non plus, tant qu'il ne pilote pas la vraie fenêtre. Linux : c'est le processus qui parle qui
-    est vérifié, pas celui qui a ouvert l'écoute (qui peut avoir passé la prise à un autre, puis être devenu la vraie
-    image par exec). La fenêtre envoie d'abord un octet d'accueil, auquel le noyau attache son expéditeur
-    (SCM_CREDENTIALS et SCM_PIDFD, demandés avant la connexion). Cet expéditeur doit être du même compte et du même
-    espace de noms utilisateur (dans un espace de noms à lui, un processus peut faire mentir son `/proc/<pid>/exe`),
-    tenu par son pidfd pendant la lecture de son image, et son image doit avoir l'empreinte gravée. La réponse
-    « ok » doit venir du même processus. Windows : le tube doit avoir ce compte pour propriétaire et pour seul nom de
-    sa liste d'accès (GetSecurityInfo). Son processus serveur (GetNamedPipeServerProcessId), tenu ouvert jusqu'à la
-    fin de l'échange (son numéro n'est pas redonné entre-temps), doit être du même compte et de la même session. Le
-    chemin de son image doit mener au fichier même (même volume, même numéro) de la fenêtre posée à côté de
-    `vanguard`, et ce fichier doit avoir l'empreinte gravée. Deux lancements en même temps : un verrou par session,
-    tenu jusqu'à ce que la fenêtre lancée dise « ouverte » ; un verrou qui ne se prend pas est dit.
-  - *Pas garanti.* Du code du même compte qui pilote la vraie fenêtre (ptrace, LD_PRELOAD, injection sous Windows) :
-    il est déjà ce compte, et ce canal ne lui donne rien de plus qu'un octet. Sous Windows, c'est le fichier présent
-    au chemin de l'image qui est lu, pas l'image chargée en mémoire : un programme du même compte qui remplace ce
-    fichier après le lancement de son imposteur passerait (le fichier de la fenêtre est ouvert sans partage
-    d'écriture pendant la lecture, mais pas avant). La fenêtre ne reconnaît que le compte (Linux) ou la session
-    (Windows) de celui qui demande : un programme du même compte peut la faire revenir devant, au rythme de la
-    cadence, ou l'empêcher de répondre en occupant le canal (le service est en série) : une fenêtre de plus s'ouvre
-    alors. « Elle revient devant » n'est affirmé que si Hyprland a trouvé sa fenêtre ; ailleurs, `vanguard` dit
-    qu'il lui a été demandé de revenir (le bureau en décide). Sous Windows, le tube n'existe qu'une fois la fenêtre
-    affichée : un second lancement pendant ce court moment ouvre une seconde fenêtre (sans canal, la seconde le dit).
-    Un autre compte local qui prend le nom du tube d'avance annule la fonction pour la victime (refus d'accès :
-    `vanguard` le dit, et la fenêtre dit que le canal est déjà pris) ; il ne reçoit rien. La session du client est
-    lue d'après son processus (GetNamedPipeClientProcessId puis ProcessIdToSessionId) ; GetNamedPipeClientSessionId
+    aurait lancée ; sinon il n'envoie rien, le dit, et ouvre sa fenêtre comme avant. Sous Linux, elle prend la place
+    de l'imposteur ; sous Windows, l'imposteur garde le tube tant qu'il vit, et la nouvelle fenêtre n'a pas de canal
+    (elle réessaie de le créer toutes les 2 s). Un autre compte ne reçoit rien et ne se fait pas passer pour la
+    fenêtre. Un programme du même compte qui prend le canal non plus, tant qu'il ne pilote pas la vraie fenêtre. Une
+    réponse doit reprendre le nombre de la demande, et un octet qui attendait déjà dans le canal avant la demande est
+    refusé : une réponse écrite d'avance ne passe pas. Linux : c'est le processus qui parle qui est vérifié, pas celui
+    qui a ouvert l'écoute (qui peut avoir passé la prise à un autre, puis être devenu la vraie image par exec). La
+    fenêtre envoie d'abord un octet d'accueil, auquel le noyau attache son expéditeur (SCM_CREDENTIALS et SCM_PIDFD,
+    demandés avant la connexion). Cet expéditeur doit être du même compte et du même espace de noms utilisateur (dans
+    un espace de noms à lui, un processus peut faire mentir son `/proc/<pid>/exe`), tenu par son pidfd pendant la
+    lecture de son image, et son image doit avoir l'empreinte gravée. Chaque octet de la réponse doit venir du même
+    processus, et son image doit être encore le même fichier après la réponse. Windows : le tube doit avoir ce compte
+    pour propriétaire et pour seul nom de sa liste d'accès (GetSecurityInfo). Son processus serveur
+    (GetNamedPipeServerProcessId), tenu ouvert jusqu'à la fin de l'échange (son numéro n'est pas redonné entre-temps),
+    doit être du même compte, de la même session et d'un niveau d'intégrité au moins égal à celui de `vanguard` (un
+    programme du même compte enfermé en intégrité basse ne passe pas). Le fichier au chemin de son image doit avoir
+    l'empreinte gravée : une autre copie de la même version (clé USB, copie installée) est la même fenêtre. Deux
+    lancements en même temps : un verrou par session, tenu jusqu'à ce que la fenêtre lancée dise « ouverte » (le canal
+    existe déjà à ce moment) ; un verrou qui ne se prend pas est dit.
+  - as garanti.* Du code du même compte qui pilote la vraie fenêtre (ptrace, LD_PRELOAD, injection sous Windows) : il
+    est déjà ce compte, et ce canal ne lui donne rien de plus qu'un octet. Un programme du même compte peut aussi
+    lancer lui-même la vraie fenêtre sur un affichage caché (elle est vérifiée et répond : rien ne s'ouvre), effacer
+    la prise ou passer `--remplacer-prise`. Sous Windows, un imposteur qui passe sa poignée du tube à un complice,
+    puis finit, pourrait voir son numéro de processus redonné à une vraie fenêtre qu'il relance, que `vanguard`
+    vérifierait à sa place (non vérifié sur un vrai Windows). Sous Linux, un programme du même compte qui envoie
+    l'accueil, devient un autre programme par exec puis redevient la vraie image avant le dernier contrôle échappe aux
+    contrôles d'image ; il peut aussi, sans répondre, lire la demande (elle ne contient qu'un nombre jetable). Un
+    imposteur du même compte qui ne répond pas (Linux comme Windows) n'est pas délogé : il garde le canal, chaque
+    lancement le dit et ouvre une fenêtre de plus. Sous Windows, c'est le fichier présent au chemin de l'image qui est
+    lu, pas l'image chargée en mémoire : un programme du même compte qui remplace ce fichier après le lancement de son
+    imposteur passerait (le fichier de la fenêtre est ouvert sans partage d'écriture pendant la lecture, mais pas
+    avant). Le tube ne porte pas d'étiquette d'intégrité à lui : c'est `vanguard` qui compare les niveaux.
+    FILE_FLAG_FIRST_PIPE_INSTANCE n'est pas appliqué par Wine : son essai n'est conclu que sur un vrai Windows (CI).
+    La fenêtre ne reconnaît que le compte (Linux) ou la session (Windows) de celui qui demande : un programme du même
+    compte peut la faire revenir devant, au rythme de la cadence, ou l'empêcher de répondre en occupant le canal (le
+    service est en série ; un client est gardé au plus le temps de l'échange) : une fenêtre de plus s'ouvre alors. «
+    Elle revient devant » n'est affirmé que si Hyprland a accepté de lui donner le focus (sa fenêtre Wayland de classe
+    `vanguard`, pas une fenêtre XWayland) ; sinon, et ailleurs qu'Hyprland, `vanguard` dit qu'il lui a été demandé de
+    revenir (le bureau en décide). Chaque question à Hyprland est bornée à 2 s, et l'ensemble à environ 8 s. Au tout
+    début, avant que la fenêtre existe, un second lancement hors verrou (verrou non pris, lancé à la main, démarrage
+    de plus de 20 s) ouvre une seconde fenêtre. Un autre compte local qui prend le nom du tube d'avance annule la
+    fonction pour la victime (refus d'accès : `vanguard` le dit au lancement suivant ; la fenêtre, sans console, ne
+    peut pas le dire, et réessaie de créer le tube toutes les 2 s) ; il ne reçoit rien. La session du client est lue
+    d'après son processus (GetNamedPipeClientProcessId puis ProcessIdToSessionId) ; GetNamedPipeClientSessionId
     n'apporterait pas de garantie de plus, il n'est pas utilisé. Sous Windows, `--remplacer-prise` est sans effet : la
-    première instance du tube ne se prend pas à un vivant. Sans dossier ou tube sûr (pas de `XDG_RUNTIME_DIR`,
-    dossier ouvert ou à un autre compte, noyau sans SO_PASSPIDFD, avant Linux 6.5), aucun canal : une fenêtre de
-    plus, comme avant, jamais un canal moins sûr.
+    première instance du tube ne se prend pas à un vivant. Sans dossier ou tube sûr (pas de `XDG_RUNTIME_DIR`, dossier
+    ouvert ou à un autre compte, noyau sans SO_PASSPIDFD, avant Linux 6.5), aucun canal : une fenêtre de plus, comme
+    avant, jamais un canal moins sûr.
 - **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais (`vanguard-relais`)
   garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et no_new_privs,
   `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par son numéro

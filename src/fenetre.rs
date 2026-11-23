@@ -345,7 +345,7 @@ pub(crate) enum Hyprland {
     Absent,
     /// Sous Hyprland, mais aucune fenêtre à ce processus : rien à ramener.
     SansFenetre,
-    /// Sa fenêtre trouvée, et le focus demandé par son adresse.
+    /// Sa fenêtre trouvée, le focus demandé par son adresse, et Hyprland a répondu « ok ».
     Ramenee,
 }
 
@@ -378,11 +378,7 @@ mod systeme {
 
     impl Fenetre {
         pub(super) fn trouver() -> Option<Self> {
-            let signature = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
-            let socket = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
-                .join("hypr")
-                .join(signature)
-                .join(".socket.sock");
+            let socket = socket_hyprland()?;
             let parent = i64::from(std::os::unix::process::parent_id());
             let clients: Value = serde_json::from_str(&demander(&socket, "j/clients")?).ok()?;
             // Le terminal qui a lancé Vanguard lui-même : pas un shell entre eux. Une seule fenêtre à ce processus
@@ -486,43 +482,94 @@ mod systeme {
         (l > 0 && h > 0).then_some(Zone { x, y, l, h })
     }
 
+    /// Le socket de commandes de Hyprland : `XDG_RUNTIME_DIR/hypr/<signature>/.socket.sock`. `None` hors de Hyprland,
+    /// ou si la signature n'est pas un simple nom (un chemin absolu ou « .. » mènerait ailleurs).
+    fn socket_hyprland() -> Option<PathBuf> {
+        let signature = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+        let signature = signature_sure(signature.to_str()?)?;
+        Some(
+            PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
+                .join("hypr")
+                .join(signature)
+                .join(".socket.sock"),
+        )
+    }
+
+    /// Une signature d'instance de Hyprland : lettres, chiffres, « _ », « - » et « . », sans commencer par un point
+    /// (ni « .. »), 128 caractères au plus.
+    fn signature_sure(s: &str) -> Option<&str> {
+        let permis = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
+        (!s.is_empty() && s.len() <= 128 && !s.starts_with('.') && s.chars().all(permis)).then_some(s)
+    }
+
+    /// L'adresse de la fenêtre de Vanguard du processus `pid` dans la liste des fenêtres : même pid, classe
+    /// « vanguard » (l'app_id de la fenêtre) et fenêtre Wayland. Une fenêtre XWayland est écartée : son pid vient de
+    /// ce que le client X11 déclare lui-même (_NET_WM_PID), pas du noyau.
+    fn adresse_de_vanguard(clients: &Value, pid: i32) -> Option<String> {
+        let siennes: Vec<&Value> = clients
+            .as_array()?
+            .iter()
+            .filter(|c| {
+                c["pid"].as_i64() == Some(i64::from(pid))
+                    && c["class"].as_str() == Some("vanguard")
+                    && c["xwayland"].as_bool() == Some(false)
+            })
+            .collect();
+        // La fenêtre principale (titre de départ « Vanguard ») avant les autres du même processus (Coulisses).
+        let principale = siennes.iter().find(|c| c["initialTitle"].as_str() == Some("Vanguard"));
+        principale
+            .into_iter()
+            .chain(siennes.iter())
+            .find_map(|c| adresse(c["address"].as_str()?))
+    }
+
+    /// Hyprland a-t-il accepté la commande ? Seulement sur la réponse « ok » ; rien, une erreur ou autre chose : non.
+    fn accepte(reponse: Option<&str>) -> bool {
+        reponse.map(str::trim) == Some("ok")
+    }
+
     /// Ramène devant, sous Hyprland, la fenêtre du processus `pid` (déjà vérifié par l'appelant : c'est la fenêtre de
     /// Vanguard) : son adresse lue dans la liste des fenêtres, jamais prise d'ailleurs, puis le focus par cette
-    /// adresse (la commande de Hyprland 0.56, sinon l'ancienne ; sa réponse ne change rien : la fenêtre se demande
-    /// aussi le focus).
+    /// adresse (la commande de Hyprland 0.56, sinon l'ancienne). `Ramenee` seulement si Hyprland a répondu « ok » ;
+    /// sinon rien n'est confirmé (`Absent` : la fenêtre a été priée, elle se demande aussi le focus).
     pub(super) fn ramener(pid: i32) -> super::Hyprland {
         use super::Hyprland;
-        let Some(signature) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") else {
+        let Some(socket) = socket_hyprland() else {
             return Hyprland::Absent;
         };
-        let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
-            return Hyprland::Absent;
-        };
-        let socket = PathBuf::from(runtime).join("hypr").join(signature).join(".socket.sock");
         let Some(clients) = demander(&socket, "j/clients").and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
             return Hyprland::Absent;
         };
-        let Some(adresse) = clients
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|c| c["pid"].as_i64() == Some(i64::from(pid)))
-            .find_map(|c| adresse(c["address"].as_str()?))
-        else {
+        let Some(adresse) = adresse_de_vanguard(&clients, pid) else {
             return Hyprland::SansFenetre;
         };
-        let reponse = demander(
-            &socket,
-            &format!("/dispatch hl.dsp.focus({{ window = \"address:{adresse}\" }})"),
-        );
-        if reponse.as_deref().map(str::trim) != Some("ok") {
-            let _ = demander(&socket, &format!("/dispatch focuswindow address:{adresse}"));
+        let nouvelle = format!("/dispatch hl.dsp.focus({{ window = \"address:{adresse}\" }})");
+        if accepte(demander(&socket, &nouvelle).as_deref())
+            || accepte(demander(&socket, &format!("/dispatch focuswindow address:{adresse}")).as_deref())
+        {
+            Hyprland::Ramenee
+        } else {
+            Hyprland::Absent
         }
-        Hyprland::Ramenee
     }
 
-    /// Une commande au socket de Hyprland, et sa réponse ; une seconde au plus.
+    /// Une commande au socket de Hyprland, et sa réponse : `BORNE` au plus en tout, branchement compris (un socket
+    /// lent, qui goutte sa réponse ou dont la file est pleine, ne fige pas le lancement). L'échange vit dans un fil :
+    /// passé la borne, il est laissé à lui-même (il finit avec le processus) et la réponse est `None`.
     fn demander(socket: &std::path::Path, commande: &str) -> Option<String> {
+        const BORNE: Duration = Duration::from_secs(2);
+        let (socket, commande) = (socket.to_path_buf(), commande.to_owned());
+        let (envoi, reception) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("hyprland".into())
+            .spawn(move || {
+                let _ = envoi.send(echanger(&socket, &commande));
+            })
+            .ok()?;
+        reception.recv_timeout(BORNE).ok().flatten()
+    }
+
+    fn echanger(socket: &std::path::Path, commande: &str) -> Option<String> {
         let mut flux = UnixStream::connect(socket).ok()?;
         flux.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
         flux.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
@@ -535,6 +582,90 @@ mod systeme {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Campagne, constat 22 : seule une fenêtre Wayland de classe « vanguard » au bon pid est choisie, même
+        /// si une autre fenêtre (XWayland qui déclare ce pid, autre classe) vient avant elle dans la liste.
+        #[test]
+        fn seule_la_fenetre_wayland_de_vanguard_est_choisie() {
+            let fenetre = |adresse: &str, pid: i32, classe: &str, xwayland: bool| serde_json::json!({"address": adresse, "pid": pid, "class": classe, "xwayland": xwayland});
+            let liste = serde_json::json!([
+                fenetre("0x1", 42, "vanguard", true),
+                fenetre("0x2", 42, "faux", false),
+                fenetre("0x3", 7, "vanguard", false),
+                fenetre("0x4", 42, "vanguard", false),
+            ]);
+            assert_eq!(adresse_de_vanguard(&liste, 42).as_deref(), Some("0x4"));
+            assert_eq!(adresse_de_vanguard(&liste, 8), None);
+            let sans_champ = serde_json::json!([{"address": "0x5", "pid": 42, "class": "vanguard"}]);
+            assert_eq!(adresse_de_vanguard(&sans_champ, 42), None, "xwayland inconnu : écartée");
+            // Coulisses d'abord dans la liste : la principale est quand même choisie.
+            let deux = serde_json::json!([
+                {"address": "0x6", "pid": 42, "class": "vanguard", "xwayland": false, "initialTitle": "Vanguard — Coulisses"},
+                {"address": "0x7", "pid": 42, "class": "vanguard", "xwayland": false, "initialTitle": "Vanguard"},
+            ]);
+            assert_eq!(adresse_de_vanguard(&deux, 42).as_deref(), Some("0x7"));
+        }
+
+        /// Campagne, constat 21 : « revient devant » seulement sur « ok ».
+        #[test]
+        fn seul_ok_est_accepte() {
+            assert!(accepte(Some("ok")));
+            assert!(accepte(Some("ok\n")));
+            for refus in [
+                None,
+                Some(""),
+                Some("error: no such window"),
+                Some("okay"),
+                Some("not ok"),
+            ] {
+                assert!(!accepte(refus), "{refus:?}");
+            }
+        }
+
+        /// Campagne, constat 23 : la signature de l'instance est un simple nom.
+        #[test]
+        fn signature_d_un_simple_nom() {
+            let vraie = "7f1c0ae6b3d2f0f6a1b2c3d4e5f60718293a4b5c_1732370000_123456789";
+            assert_eq!(signature_sure(vraie), Some(vraie));
+            for piege in [
+                "",
+                "..",
+                ".",
+                "../x",
+                "/tmp/faux",
+                "a/b",
+                "a\0b",
+                ".cache",
+                &"a".repeat(129),
+            ] {
+                assert_eq!(signature_sure(piege), None, "{piege}");
+            }
+        }
+
+        /// Campagne, constat 23 : un socket qui accepte et ne répond jamais ne tient pas la question plus de la
+        /// borne, en tout.
+        #[test]
+        fn une_question_a_hyprland_est_bornee() {
+            // Sous /tmp : le chemin d'une prise Unix tient en 108 octets.
+            let d = crate::essais::Jetable::garder(PathBuf::from("/tmp").join(crate::essais::nom_unique("hy")));
+            let chemin = d.join(".socket.sock");
+            let prise = std::os::unix::net::UnixListener::bind(&chemin).unwrap();
+            // Goutte un octet toutes les 0,5 s, sans fin : chaque lecture rend avant son délai d'une seconde.
+            std::thread::spawn(move || {
+                if let Ok((mut f, _)) = prise.accept() {
+                    while f.write_all(b"o").is_ok() {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            });
+            // La question dans un fil : sans borne, l'essai échoue au bout de 4 s au lieu de rester pendu.
+            let (envoi, reception) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = envoi.send(demander(&chemin, "j/clients"));
+            });
+            let reponse = reception.recv_timeout(Duration::from_secs(4));
+            assert_eq!(reponse, Ok(None), "la question à Hyprland n'est pas bornée");
+        }
 
         #[test]
         fn adresse_verifiee() {

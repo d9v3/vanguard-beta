@@ -246,6 +246,34 @@ pub(crate) fn recevoir_avec_temoins(s: &std::os::unix::net::UnixStream) -> std::
     })
 }
 
+/// Un octet attend-il déjà dans la prise ? Regardé sans le prendre ni attendre (MSG_PEEK, MSG_DONTWAIT), et sans
+/// place pour les témoins : le noyau n'installe alors aucun descripteur (il marque seulement MSG_CTRUNC). `Ok(false)`
+/// : rien n'attend ; la fin de flux compte comme « rien » (la lecture qui suit la dira).
+#[cfg(target_os = "linux")]
+pub(crate) fn octet_en_attente(s: &std::os::unix::net::UnixStream) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut octet = 0u8;
+    // SAFETY: recv écrit au plus 1 octet dans `octet`, à nous et vivant pendant l'appel ; MSG_PEEK le laisse dans la
+    // prise, MSG_DONTWAIT n'attend pas.
+    let n = unsafe {
+        libc::recv(
+            s.as_raw_fd(),
+            (&raw mut octet).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if n < 0 {
+        let e = std::io::Error::last_os_error();
+        return if e.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(e)
+        };
+    }
+    Ok(n > 0)
+}
+
 /// Le processus tenu par `pidfd` vit-il encore ? pidfd_send_signal avec le signal 0 ne lui envoie rien : il dit
 /// seulement si le processus existe (ESRCH sinon).
 #[cfg(target_os = "linux")]

@@ -12,13 +12,14 @@ example, finds it, to rebuild it if needed.
 ## 0.98 (in preparation)
 
 - **Only one window.** Running `vanguard` again while its window is open asks that window to come back to the front
-  instead of opening another one, on Linux and Windows; on Hyprland, Vanguard says it came back only if it found it.
-  Commands (`vanguard bilan --json`…) do not change. The channel is private to your account (Linux: a session folder
-  only you can use; Windows: a pipe reserved to your account and session), and nothing is sent on it before checking
-  that it really is the Vanguard window speaking (same account, same fingerprint, and on Windows the pipe created by
-  your account for itself alone). If it is not, or if the channel cannot be made safe, a new window opens as before,
-  and Vanguard says so. Two launches at the same time open only one window; if their order cannot be guaranteed, it
-  is said. What remains outside the guarantee is written in the threat model.
+  instead of opening another one, on Linux and Windows; on Hyprland, Vanguard says it came back only if Hyprland
+  accepted it. Commands (`vanguard bilan --json`…) do not change. The channel is private to your account (Linux: a
+  session folder only you can use; Windows: a pipe reserved to your account and session), and nothing is sent on it
+  before checking that it really is the Vanguard window speaking (same account, same fingerprint, and on Windows the
+  pipe created by your account for itself alone), and the answer must repeat the request's random number. If it is
+  not, or if the channel cannot be made safe, a new window opens as before, and Vanguard says so. Two launches at the
+  same time open only one window; if their order cannot be guaranteed, it is said. What remains outside the guarantee
+  is written in the threat model.
 - **The “/” key everywhere.** In any menu, “/” opens “Search Vanguard”: all the tools, settings and guide, opened
   as from the home menu; Esc brings you back to the menu you came from. In a checklist, “/” only filters the list,
   to keep the boxes already checked.

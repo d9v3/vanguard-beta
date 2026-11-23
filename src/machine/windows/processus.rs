@@ -212,6 +212,38 @@ impl Tenu {
     }
 }
 
+impl Tenu {
+    /// Son niveau d'intégrité (le RID de l'étiquette de son jeton : 0x2000 moyen, 0x3000 élevé…) ; l'erreur, avec
+    /// son code.
+    pub(crate) fn integrite(&self) -> std::io::Result<u32> {
+        integrite_de(Some(self))
+    }
+}
+
+/// Le niveau d'intégrité de ce processus (voir `Tenu::integrite`).
+pub(crate) fn integrite() -> std::io::Result<u32> {
+    integrite_de(None)
+}
+
+fn integrite_de(processus: Option<&Tenu>) -> std::io::Result<u32> {
+    // TokenIntegrityLevel : un TOKEN_MANDATORY_LABEL, dont le premier champ pointe le SID « S-1-16-<RID> ».
+    const NIVEAU_D_INTEGRITE: u32 = 25;
+    let tampon = jeton_de(processus, NIVEAU_D_INTEGRITE)?;
+    sid_du_jeton(&tampon).as_deref().and_then(niveau_du_sid).ok_or_else(|| {
+        std::io::Error::other(crate::tr!(
+            "niveau d'intégrité illisible dans le jeton",
+            "integrity level unreadable in the token"
+        ))
+    })
+}
+
+/// Le RID d'une étiquette d'intégrité « S-1-16-<RID> » ; rien d'autre n'en est une.
+pub(crate) fn niveau_du_sid(sid: &str) -> Option<u32> {
+    sid.strip_prefix("S-1-16-")
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        .and_then(|n| n.parse().ok())
+}
+
 impl Drop for Tenu {
     // FFI : CloseHandle de la poignée tenue.
     #[allow(unsafe_code)]
@@ -665,6 +697,24 @@ fn sid_valide(sid: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Une étiquette d'intégrité se lit ; un autre SID, un RID vide ou signé ne passent pas.
+    #[test]
+    fn niveau_d_integrite_lu_du_sid() {
+        assert_eq!(niveau_du_sid("S-1-16-8192"), Some(0x2000));
+        assert_eq!(niveau_du_sid("S-1-16-12288"), Some(0x3000));
+        for faux in ["S-1-16-", "S-1-16--1", "S-1-5-21-1", "S-1-16-12a", "S-1-16-99999999999"] {
+            assert_eq!(niveau_du_sid(faux), None, "{faux}");
+        }
+    }
+
+    /// Le niveau d'intégrité de ce processus se lit (sous Wine aussi), par son jeton et par une poignée sur lui.
+    #[test]
+    fn niveau_d_integrite_de_ce_processus() {
+        let le_mien = integrite().unwrap();
+        let tenu = Tenu::ouvrir(std::process::id()).unwrap();
+        assert_eq!(tenu.integrite().unwrap(), le_mien);
+    }
     use crate::protection::blocage::suspension::Lu;
 
     /// PROCESSENTRY32W mise à zéro avant Process32FirstW (exercé sous Miri par outils/preuves.sh) : zéro est une

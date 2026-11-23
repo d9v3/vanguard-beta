@@ -2,9 +2,11 @@
 //! compte, même session graphique) de revenir devant. La règle commune est dans `socle::une_fenetre`.
 //!
 //! Frontière de confiance : le programme qui répond au bout du canal n'est cru que s'il est prouvé être la fenêtre
-//! de Vanguard que ce programme-ci aurait lancée. Rien n'est envoyé avant ; un échec est dit, et la fenêtre s'ouvre
-//! comme avant (le choix le plus sûr : un imposteur ne reçoit pas la demande et n'empêche pas la vraie fenêtre de
-//! s'ouvrir, qui prend sa place).
+//! de Vanguard que ce programme-ci aurait lancée. La demande n'est envoyée qu'après cette preuve ; un échec est dit,
+//! et une fenêtre s'ouvre (un imposteur refusé n'empêche pas la vraie fenêtre de s'ouvrir ; sous Linux, elle prend
+//! sa place). La demande porte un nombre aléatoire frais que la réponse doit reprendre, et un octet qui attendait
+//! déjà dans le canal avant elle est refusé : une réponse écrite d'avance, ou par un autre programme qui n'a pas lu
+//! la demande, ne passe pas.
 //!
 //! Linux : c'est le processus qui parle qui est vérifié, pas celui qui a ouvert l'écoute (qui peut avoir passé la
 //! prise à un autre, puis être devenu la vraie image par exec). La fenêtre envoie d'abord un octet d'accueil ; le
@@ -12,14 +14,16 @@
 //! sans être root de son espace de noms. Cet expéditeur doit être du même compte et du même espace de noms
 //! utilisateur (un espace de noms à soi permettrait de faire mentir `/proc/<pid>/exe`, PR_SET_MM_EXE_FILE), tenu par
 //! son pidfd pendant toute la lecture, et son image (`/proc/<pid>/exe`) doit avoir l'empreinte gravée dans ce
-//! programme. La réponse « ok » doit venir du même processus. Windows : le tube doit avoir ce compte pour
-//! propriétaire et pour seul nom de sa liste d'accès (un autre compte qui aurait pris le nom ne passe pas), son
-//! processus serveur, tenu ouvert jusqu'à la fin, est du même compte et de la même session, son image est le fichier
-//! même de la fenêtre posée à côté de ce programme (même volume, même numéro de fichier), et ce fichier a l'empreinte
-//! gravée.
+//! programme. Chaque octet de la réponse doit venir du même processus, et son image doit être encore le même
+//! fichier après la réponse (un exec entre la vérification et la réponse est refusé). Windows : le tube doit avoir
+//! ce compte pour propriétaire et pour seul nom de sa liste d'accès (un autre compte qui aurait pris le nom ne passe
+//! pas), son processus serveur, tenu ouvert jusqu'à la fin, est du même compte, de la même session et d'un niveau
+//! d'intégrité au moins égal, et le fichier de son image a l'empreinte gravée (une autre copie de la même version
+//! est la même fenêtre).
 //!
 //! Hors garantie (MODELE-DE-MENACE.md) : un programme du même compte qui pilote la vraie image (ptrace, LD_PRELOAD,
-//! ou sur Windows un fichier remplacé après le lancement) ; la vraie fenêtre figée.
+//! un exec puis un retour à la vraie image entre la réponse et le dernier contrôle, ou sur Windows un fichier
+//! remplacé après le lancement) ; la vraie fenêtre figée.
 //!
 //! Deux lancements en même temps : un verrou par session, tenu par l'appelant jusqu'à ce que la fenêtre lancée dise
 //! « ouverte » ; le second attend, puis la trouve et la ramène. Un verrou qui ne se prend pas est dit.
@@ -31,9 +35,19 @@ use crate::tr;
 
 /// Le premier essai du verrou : au-delà, un autre lancement est en cours, et c'est dit avant d'attendre le reste.
 const PREMIERE_ATTENTE: std::time::Duration = std::time::Duration::from_secs(1);
-/// Le plus long qu'un lancement attend le verrou d'un autre, en tout : le temps que la fenêtre de l'autre s'ouvre
-/// d'ordinaire. Au-delà, il essaie quand même le canal, puis ouvre une fenêtre (et le dit).
-const ATTENTE_VERROU: std::time::Duration = std::time::Duration::from_secs(10);
+/// Le plus long qu'un lancement attend le verrou d'un autre, en tout : tout le temps que l'autre attend sa fenêtre
+/// (`ATTENTE`), et un peu plus. Au-delà, il essaie quand même le canal, puis ouvre une fenêtre (et le dit).
+const ATTENTE_VERROU: std::time::Duration =
+    super::lancer_fenetre::ATTENTE.saturating_add(std::time::Duration::from_secs(5));
+
+/// Le plus long que `vanguard` attend l'accueil : la fenêtre sert un client à la fois, et en garde un au plus
+/// `DELAI + VERIFICATION` (lire sa demande), plus sa cadence (0,3 s) et l'attente de sa fenêtre (0,75 s), plus
+/// `DELAI` (répondre ; sous Windows, attendre que le client ferme) : environ 7 s. Un lancement qui arrive pendant ce
+/// temps attend son tour, plus une marge.
+const ATTENTE_ACCUEIL: std::time::Duration = regle::DELAI
+    .saturating_add(regle::VERIFICATION)
+    .saturating_add(regle::DELAI)
+    .saturating_add(std::time::Duration::from_secs(2));
 
 /// Le plus long que `vanguard` attend la vérification de ce qui écoute (se joindre, lire l'accueil, faire
 /// l'empreinte de l'image). Dans les essais seulement, 60 s : leur « fenêtre » est leur propre programme d'essai, de
@@ -41,23 +55,27 @@ const ATTENTE_VERROU: std::time::Duration = std::time::Duration::from_secs(10);
 const BORNE_VERIFICATION: std::time::Duration = if cfg!(test) {
     std::time::Duration::from_secs(60)
 } else {
-    regle::DELAI.saturating_add(regle::VERIFICATION)
+    ATTENTE_ACCUEIL.saturating_add(regle::VERIFICATION)
 };
 
 /// Ce qu'a donné la demande.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Issue {
-    /// La fenêtre déjà ouverte, vérifiée, a répondu « ok » : rien à lancer. Vrai : le bureau a confirmé l'avoir
-    /// ramenée (Hyprland) ; faux : elle a seulement été priée de revenir devant (le bureau en décide).
+    /// La fenêtre déjà ouverte, vérifiée, a répondu « ok » : rien à lancer. Vrai : Hyprland a répondu « ok » à
+    /// la demande de focus ; faux : elle a seulement été priée de revenir devant (le bureau en décide).
     Ramenee(bool),
     /// Aucune fenêtre n'écoute : la lancer.
     Personne,
     /// Quelque chose écoute, mais ce n'est pas la fenêtre de Vanguard (ou elle ne se laisse pas vérifier) : la
     /// demande n'est pas envoyée ; la raison.
     Refusee(String),
-    /// Le canal ne peut pas être sûr ici (dossier de session absent ou ouvert à d'autres, noyau trop ancien…) ou
-    /// la fenêtre n'a pas répondu à temps : la raison.
+    /// Le canal ne peut pas être sûr ici (dossier de session absent ou ouvert à d'autres, noyau trop ancien…) : la
+    /// raison.
     Indisponible(String),
+    /// Ce qui écoute n'a pas répondu à temps, ou la fenêtre vérifiée n'a pas été ramenée (muette, sans fenêtre
+    /// sous Hyprland, partie) : une nouvelle s'ouvre, mais sans lui prendre sa prise (ce peut être la vraie). La
+    /// raison.
+    SansReponse(String),
 }
 
 /// Une demande faite, avec le verrou qui ordonne les lancements de la session : à garder jusqu'à ce que la fenêtre
@@ -69,15 +87,12 @@ pub(super) struct Tour {
 }
 
 /// Demande à la fenêtre déjà ouverte de revenir devant, si c'est bien elle (`attendue` : l'empreinte gravée de la
-/// fenêtre ; `fenetre` : son chemin à côté de ce programme, que Windows compare à l'image du serveur).
-pub(super) fn ramener(attendue: &[u8; 32], fenetre: &Path) -> Tour {
+/// fenêtre).
+pub(super) fn ramener(attendue: &[u8; 32]) -> Tour {
     #[cfg(target_os = "linux")]
-    let (issue, verrou) = {
-        let _ = fenetre;
-        linux::ramener(attendue)
-    };
+    let (issue, verrou) = linux::ramener(attendue);
     #[cfg(windows)]
-    let (issue, verrou) = windows::ramener(attendue, fenetre);
+    let (issue, verrou) = windows::ramener(attendue);
     Tour { issue, verrou }
 }
 
@@ -216,44 +231,69 @@ mod linux {
 
     /// Joint la prise, vérifie qui parle, et seulement alors demande « montre-toi ». Puis, sous Hyprland, le focus
     /// à la fenêtre de ce processus-là (la fenêtre ne peut pas le prendre elle-même : son bac à sable lui interdit
-    /// la prise de Hyprland) : sans fenêtre à ce processus, rien n'est ramené, une fenêtre s'ouvre.
+    /// la prise de Hyprland). Une fenêtre vérifiée qui n'est pas ramenée garde sa prise (`SansReponse`).
     pub(super) fn joindre(prise: &Path, attendue: &[u8; 32], moi: u32, bureau: Bureau<'_>) -> Issue {
-        let (flux, accueil) = match verifie(prise, attendue, moi) {
+        let (flux, accueil, image) = match verifie(prise, attendue, moi) {
             Ok(v) => v,
             Err(issue) => return issue,
         };
-        if let Err(issue) = echanger(flux, &accueil) {
+        if let Err(issue) = echanger(flux, &accueil, image) {
             return issue;
         }
-        match bureau(accueil.pid) {
-            crate::fenetre::Hyprland::Absent => Issue::Ramenee(false),
-            crate::fenetre::Hyprland::Ramenee => Issue::Ramenee(true),
-            crate::fenetre::Hyprland::SansFenetre => Issue::Indisponible(trf!(
-                "aucune fenêtre du processus {} sous Hyprland",
-                "no window of process {} under Hyprland",
+        let issue = demander_au_bureau(accueil.pid, bureau);
+        // Partie pendant ce temps : rien n'a été ramené, quoi qu'ait dit le bureau.
+        if !crate::socle::pidfd_vivant(&accueil.pidfd) {
+            return Issue::SansReponse(trf!(
+                "le processus {} de la fenêtre est parti",
+                "window process {} left",
                 accueil.pid
-            )),
+            ));
+        }
+        issue
+    }
+
+    /// Le focus à la fenêtre du processus `pid`, sous Hyprland. Elle vient de répondre : sa fenêtre peut ne pas
+    /// encore être connue du bureau (une fenêtre qui s'ouvre) ; redemandé toutes les `PAS` pendant `ATTENTE` au plus.
+    fn demander_au_bureau(pid: i32, bureau: Bureau<'_>) -> Issue {
+        const PAS: std::time::Duration = std::time::Duration::from_millis(200);
+        const ATTENTE: std::time::Duration = std::time::Duration::from_secs(2);
+        let debut = std::time::Instant::now();
+        loop {
+            match bureau(pid) {
+                crate::fenetre::Hyprland::Absent => return Issue::Ramenee(false),
+                crate::fenetre::Hyprland::Ramenee => return Issue::Ramenee(true),
+                crate::fenetre::Hyprland::SansFenetre if debut.elapsed() < ATTENTE => std::thread::sleep(PAS),
+                crate::fenetre::Hyprland::SansFenetre => {
+                    return Issue::SansReponse(trf!(
+                        "aucune fenêtre du processus {} sous Hyprland",
+                        "no window of process {} under Hyprland",
+                        pid
+                    ));
+                }
+            }
         }
     }
 
     /// Se branche, lit l'accueil et vérifie son expéditeur, dans un fil, `BORNE_VERIFICATION` au plus : une prise
     /// à la file pleine, un processus muet ou une image lente à lire ne figent pas le lancement. Un fil abandonné
     /// ne peut plus rien envoyer : la prise ne revient qu'ici, et la demande ne part que d'ici.
-    fn verifie(prise: &Path, attendue: &[u8; 32], moi: u32) -> Result<(UnixStream, crate::socle::Expediteur), Issue> {
+    fn verifie(prise: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifie, Issue> {
         let (envoi, reception) = std::sync::mpsc::channel();
         let (p, a) = (prise.to_path_buf(), *attendue);
         let fil = crate::socle::fil::lancer("une-fenetre", move || {
             let _ = envoi.send(brancher_et_verifier(&p, &a, moi));
         });
+        // Un échec passager d'ici (fil, connexion, délai) n'est pas une raison de retirer la prise de la fenêtre
+        // qui l'a peut-être : `SansReponse`, la nouvelle fenêtre s'ouvre sans la prendre.
         if let Err(e) = fil {
-            return Err(Issue::Indisponible(trf!(
+            return Err(Issue::SansReponse(trf!(
                 "canal injoignable : {}",
                 "channel unreachable: {}",
                 e
             )));
         }
         reception.recv_timeout(super::BORNE_VERIFICATION).unwrap_or_else(|_| {
-            Err(Issue::Indisponible(
+            Err(Issue::SansReponse(
                 tr!(
                     "la fenêtre ouverte n'a pas répondu à temps",
                     "the open window did not answer in time"
@@ -263,11 +303,11 @@ mod linux {
         })
     }
 
-    fn brancher_et_verifier(
-        prise: &Path,
-        attendue: &[u8; 32],
-        moi: u32,
-    ) -> Result<(UnixStream, crate::socle::Expediteur), Issue> {
+    /// Ce que donne une vérification réussie : la prise, l'accueil (son expéditeur, tenu) et l'identité de l'image
+    /// vérifiée.
+    type Verifie = (UnixStream, crate::socle::Expediteur, Image);
+
+    fn brancher_et_verifier(prise: &Path, attendue: &[u8; 32], moi: u32) -> Result<Verifie, Issue> {
         let flux = match crate::socle::brancher_avec_temoins(prise) {
             Ok(f) => f,
             Err(e)
@@ -288,7 +328,7 @@ mod linux {
                 ));
             }
             Err(e) => {
-                return Err(Issue::Indisponible(trf!(
+                return Err(Issue::SansReponse(trf!(
                     "canal injoignable : {}",
                     "channel unreachable: {}",
                     e
@@ -305,8 +345,8 @@ mod linux {
                 .into(),
             ));
         }
-        if flux.set_read_timeout(Some(regle::DELAI)).is_err() {
-            return Err(Issue::Indisponible(
+        if flux.set_read_timeout(Some(super::ATTENTE_ACCUEIL)).is_err() {
+            return Err(Issue::SansReponse(
                 tr!("canal injoignable", "channel unreachable").into(),
             ));
         }
@@ -320,7 +360,7 @@ mod linux {
                 )));
             }
             Err(e) => {
-                return Err(Issue::Indisponible(trf!(
+                return Err(Issue::SansReponse(trf!(
                     "la fenêtre ouverte n'a pas accueilli : {}",
                     "the open window did not greet: {}",
                     e
@@ -336,23 +376,74 @@ mod linux {
                 .into(),
             ));
         }
-        verifier(&accueil, attendue, moi)?;
-        Ok((flux, accueil))
+        let image = verifier(&accueil, attendue, moi)?;
+        Ok((flux, accueil, image))
     }
 
-    /// Le processus qui a envoyé l'accueil est-il la fenêtre de Vanguard de ce compte ? Sinon l'issue (refusée ou
-    /// indisponible) : rien n'a été envoyé.
-    pub(super) fn verifier(accueil: &crate::socle::Expediteur, attendue: &[u8; 32], moi: u32) -> Result<(), Issue> {
-        let refus = |r: String| Err(Issue::Refusee(r));
+    /// L'identité d'un fichier (volume, numéro) : celle de l'image vérifiée, comparée de nouveau après la réponse.
+    pub(super) type Image = (u64, u64);
+
+    /// Ce qui a été lu du processus qui parle, pour `juger`.
+    pub(super) struct Faits {
+        pub(super) uid: u32,
+        pub(super) pid: i32,
+        /// Le processus que tient le pidfd reçu avec l'accueil.
+        pub(super) pid_du_pidfd: Option<i32>,
+        /// Son espace de noms utilisateur est-il le nôtre ?
+        pub(super) meme_espace: bool,
+        /// L'empreinte de son image, lue par le descripteur ouvert sur `/proc/<pid>/exe`.
+        pub(super) empreinte: std::io::Result<[u8; 32]>,
+        /// Vit-il encore après les lectures (le pidfd le tient : c'est le même processus) ?
+        pub(super) vivant: bool,
+    }
+
+    /// Le processus qui a envoyé l'accueil est-il la fenêtre de Vanguard de ce compte ? Lit les faits, puis les
+    /// juge ; l'identité de l'image vérifiée, ou l'issue (refusée) : rien n'a été envoyé.
+    pub(super) fn verifier(accueil: &crate::socle::Expediteur, attendue: &[u8; 32], moi: u32) -> Result<Image, Issue> {
+        use std::os::unix::fs::MetadataExt;
         let pid = accueil.pid;
-        if accueil.uid != moi {
+        let pid_du_pidfd = pid_du_pidfd(&accueil.pidfd);
+        let espace = |chemin: String| std::fs::read_link(chemin).ok();
+        let meme_espace = matches!(
+            (espace(format!("/proc/{pid}/ns/user")), espace("/proc/self/ns/user".into())),
+            (Some(lui), Some(nous)) if lui == nous
+        );
+        // L'image n'est lue que d'un processus qui a passé les contrôles simples (son coût, et rien à lire d'un
+        // autre compte).
+        let mut image = None;
+        let empreinte = if accueil.uid == moi && pid > 0 && pid_du_pidfd == Some(pid) && meme_espace {
+            std::fs::File::open(format!("/proc/{pid}/exe")).and_then(|f| {
+                let m = f.metadata()?;
+                image = Some((m.dev(), m.ino()));
+                super::empreinte(f, super::super::lancer_fenetre::TAILLE_MAX)
+            })
+        } else {
+            Err(std::io::Error::other("non lue"))
+        };
+        let faits = Faits {
+            uid: accueil.uid,
+            pid,
+            pid_du_pidfd,
+            meme_espace,
+            empreinte,
+            vivant: crate::socle::pidfd_vivant(&accueil.pidfd),
+        };
+        juger(&faits, attendue, moi)?;
+        image.ok_or_else(|| Issue::Refusee(tr!("image illisible", "unreadable image").into()))
+    }
+
+    /// Le jugement des faits, sans rien lire (essayé cas par cas) : chaque contrôle a son refus.
+    pub(super) fn juger(f: &Faits, attendue: &[u8; 32], moi: u32) -> Result<(), Issue> {
+        let refus = |r: String| Err(Issue::Refusee(r));
+        let pid = f.pid;
+        if f.uid != moi {
             return refus(trf!(
                 "le processus {} qui parle est d'un autre compte",
                 "speaking process {} belongs to another account",
                 pid
             ));
         }
-        if pid <= 0 || pid_du_pidfd(&accueil.pidfd) != Some(pid) {
+        if pid <= 0 || f.pid_du_pidfd != Some(pid) {
             return refus(trf!(
                 "le processus {} qui parle ne se laisse pas tenir",
                 "speaking process {} cannot be held",
@@ -361,32 +452,22 @@ mod linux {
         }
         // Un espace de noms utilisateur à lui (root dedans) lui permettrait de faire pointer son `/proc/<pid>/exe`
         // sur la vraie image (PR_SET_MM_EXE_FILE) : seul le nôtre est cru. La fenêtre n'en crée pas (Landlock).
-        let espace = |chemin: String| std::fs::read_link(chemin).ok();
-        match (
-            espace(format!("/proc/{pid}/ns/user")),
-            espace("/proc/self/ns/user".into()),
-        ) {
-            (Some(lui), Some(nous)) if lui == nous => {}
-            _ => {
-                return refus(trf!(
-                    "le processus {} qui parle est dans un autre espace de noms",
-                    "speaking process {} is in another namespace",
-                    pid
-                ));
-            }
+        if !f.meme_espace {
+            return refus(trf!(
+                "le processus {} qui parle est dans un autre espace de noms",
+                "speaking process {} is in another namespace",
+                pid
+            ));
         }
-        let lue = std::fs::File::open(format!("/proc/{pid}/exe"))
-            .and_then(|f| super::empreinte(f, super::super::lancer_fenetre::TAILLE_MAX));
-        // Toujours le même processus après les lectures : le pidfd le tenait, il vit encore.
-        if !crate::socle::pidfd_vivant(&accueil.pidfd) {
+        if !f.vivant {
             return refus(trf!(
                 "le processus {} qui parle est parti pendant la vérification",
                 "speaking process {} left during the check",
                 pid
             ));
         }
-        match lue {
-            Ok(e) if &e == attendue => Ok(()),
+        match &f.empreinte {
+            Ok(e) if e == attendue => Ok(()),
             Ok(_) => refus(trf!(
                 "le processus {} qui parle n'est pas la fenêtre de cette version de Vanguard (empreinte différente : \
                  un autre programme, ou une autre version)",
@@ -414,38 +495,98 @@ mod linux {
             .filter(|&n| n > 0)
     }
 
-    /// Un octet « montre-toi », un octet « ok » attendu, `DELAI` au plus pour chacun ; l'« ok » doit venir du
-    /// processus vérifié (celui de l'accueil, toujours tenu), pas d'un autre qui partagerait la prise.
-    fn echanger(mut flux: UnixStream, accueil: &crate::socle::Expediteur) -> Result<(), Issue> {
+    /// La demande, « montre-toi » et un nombre aléatoire frais ; la réponse attendue, « ok » et le même nombre,
+    /// `DELAI` au plus en tout. Chaque octet de la réponse doit venir du processus vérifié (celui de l'accueil,
+    /// toujours tenu), et son image doit être encore celle qui a été vérifiée (pas un exec entre-temps). Un octet
+    /// qui attendait déjà avant la demande ne peut pas en être la réponse : refusé, la demande n'est pas envoyée.
+    fn echanger(mut flux: UnixStream, accueil: &crate::socle::Expediteur, image: Image) -> Result<(), Issue> {
+        use std::os::unix::fs::MetadataExt;
         let muette = || {
-            Err(Issue::Indisponible(
+            Err(Issue::SansReponse(
                 tr!("la fenêtre ouverte n'a pas répondu", "the open window did not answer").into(),
             ))
         };
-        if flux.set_read_timeout(Some(regle::DELAI)).is_err() || flux.set_write_timeout(Some(regle::DELAI)).is_err() {
+        match crate::socle::octet_en_attente(&flux) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(Issue::Refusee(
+                    tr!(
+                        "une réponse attendait déjà dans le canal avant la demande",
+                        "an answer was already waiting in the channel before the request"
+                    )
+                    .into(),
+                ));
+            }
+            Err(_) => return muette(),
+        }
+        let mut jeton = [0u8; regle::JETON];
+        if getrandom::fill(&mut jeton).is_err() {
+            return Err(Issue::SansReponse(
+                tr!(
+                    "aucun nombre aléatoire pour la demande",
+                    "no random number for the request"
+                )
+                .into(),
+            ));
+        }
+        if flux.set_write_timeout(Some(regle::DELAI)).is_err() || flux.write_all(&regle::demande(&jeton)).is_err() {
             return muette();
         }
-        if flux.write_all(&[regle::DEMANDE]).is_err() {
-            return muette();
+        let fin = std::time::Instant::now()
+            .checked_add(regle::DELAI)
+            .unwrap_or_else(std::time::Instant::now);
+        let mut lu = Vec::with_capacity(regle::TAILLE);
+        while lu.len() < regle::TAILLE {
+            let reste = fin.saturating_duration_since(std::time::Instant::now());
+            if reste.is_zero() || flux.set_read_timeout(Some(reste)).is_err() {
+                return muette();
+            }
+            let octet = match crate::socle::recevoir_avec_temoins(&flux) {
+                Ok(o) => o,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(Issue::Refusee(trf!(
+                        "la réponse reçue ne dit pas qui parle ({})",
+                        "the answer received does not tell who speaks ({})",
+                        e
+                    )));
+                }
+                Err(_) => return muette(),
+            };
+            if octet.pid != accueil.pid || pid_du_pidfd(&octet.pidfd) != Some(accueil.pid) {
+                return Err(Issue::Refusee(trf!(
+                    "la réponse vient du processus {}, pas du processus vérifié {}",
+                    "the answer comes from process {}, not from the checked process {}",
+                    octet.pid,
+                    accueil.pid
+                )));
+            }
+            lu.push(octet.octet);
         }
-        let Ok(reponse) = crate::socle::recevoir_avec_temoins(&flux) else {
-            return muette();
-        };
-        let meme = reponse.pid == accueil.pid
-            && pid_du_pidfd(&reponse.pidfd) == Some(accueil.pid)
-            && crate::socle::pidfd_vivant(&accueil.pidfd);
-        if !meme {
-            return Err(Issue::Refusee(trf!(
-                "la réponse vient du processus {}, pas du processus vérifié {}",
-                "the answer comes from process {}, not from the checked process {}",
-                reponse.pid,
+        let encore = std::fs::metadata(format!("/proc/{}/exe", accueil.pid)).map(|m| (m.dev(), m.ino()));
+        if !crate::socle::pidfd_vivant(&accueil.pidfd) {
+            return Err(Issue::SansReponse(trf!(
+                "le processus {} de la fenêtre est parti",
+                "window process {} left",
                 accueil.pid
             )));
         }
-        if reponse.octet == regle::REPONSE {
+        if encore.ok() != Some(image) {
+            return Err(Issue::Refusee(trf!(
+                "le processus {} qui parle a changé d'image depuis sa vérification",
+                "speaking process {} changed image since its check",
+                accueil.pid
+            )));
+        }
+        if regle::reponse_juste(&lu, &jeton) {
             Ok(())
         } else {
-            muette()
+            Err(Issue::Refusee(
+                tr!(
+                    "la réponse ne reprend pas le nombre de la demande",
+                    "the answer does not repeat the request's number"
+                )
+                .into(),
+            ))
         }
     }
 }
@@ -459,7 +600,7 @@ mod windows {
     use crate::machine::windows::une_fenetre as tube;
     use crate::{tr, trf};
 
-    pub(super) fn ramener(attendue: &[u8; 32], fenetre: &Path) -> (Issue, Result<crate::socle::Verrou, String>) {
+    pub(super) fn ramener(attendue: &[u8; 32]) -> (Issue, Result<crate::socle::Verrou, String>) {
         let indisponible = |r: &str| (Issue::Indisponible(r.into()), Err(r.to_string()));
         let Some(sid) = crate::machine::windows::processus::sid() else {
             return indisponible(tr!("compte illisible", "account unreadable"));
@@ -472,25 +613,25 @@ mod windows {
         };
         let verrou = super::prendre_verrou(&crate::socle::dossier_local(), &format!("fenetre-{session}.verrou"))
             .map_err(String::from);
-        (joindre(&nom, &sid, session, attendue, fenetre), verrou)
+        (joindre(&nom, &sid, session, attendue), verrou)
     }
 
     /// Ouvre le tube, vérifie son serveur, et seulement alors demande « montre-toi » ; le tout dans un fil, borné :
     /// un serveur muet, une image lente à lire ou une écriture qui ne passe pas ne figent pas le lancement. Un fil
     /// abandonné n'envoie la demande qu'à un serveur vérifié.
-    pub(super) fn joindre(nom: &str, sid: &str, session: u32, attendue: &[u8; 32], fenetre: &Path) -> Issue {
+    pub(super) fn joindre(nom: &str, sid: &str, session: u32, attendue: &[u8; 32]) -> Issue {
         let (envoi, reception) = std::sync::mpsc::channel();
-        let (n, s, a, f) = (nom.to_string(), sid.to_string(), *attendue, fenetre.to_path_buf());
+        let (n, s, a) = (nom.to_string(), sid.to_string(), *attendue);
         let fil = crate::socle::fil::lancer("une-fenetre", move || {
-            let _ = envoi.send(dialoguer(&n, &s, session, &a, &f));
+            let _ = envoi.send(dialoguer(&n, &s, session, &a));
         });
         if let Err(e) = fil {
             return Issue::Indisponible(trf!("canal injoignable : {}", "channel unreachable: {}", e));
         }
-        // Ouvrir (occupé : `DELAI`), vérifier, puis l'échange (`DELAI`).
-        let borne = regle::DELAI.saturating_mul(2).saturating_add(super::BORNE_VERIFICATION);
+        // Ouvrir (occupé : `ATTENTE_ACCUEIL`), vérifier, puis l'échange (`DELAI`).
+        let borne = super::BORNE_VERIFICATION.saturating_add(regle::DELAI);
         reception.recv_timeout(borne).unwrap_or_else(|_| {
-            Issue::Indisponible(
+            Issue::SansReponse(
                 tr!(
                     "la fenêtre ouverte n'a pas répondu à temps",
                     "the open window did not answer in time"
@@ -500,38 +641,67 @@ mod windows {
         })
     }
 
-    fn dialoguer(nom: &str, sid: &str, session: u32, attendue: &[u8; 32], fenetre: &Path) -> Issue {
-        let client = match tube::Client::ouvrir(nom) {
+    fn dialoguer(nom: &str, sid: &str, session: u32, attendue: &[u8; 32]) -> Issue {
+        let client = match tube::Client::ouvrir(nom, super::ATTENTE_ACCUEIL) {
             Ok(Some(c)) => c,
             Ok(None) => return Issue::Personne,
-            // La liste d'accès du tube n'est pas pour ce compte : un autre compte a pris le nom avant la fenêtre.
+            // La liste d'accès du tube refuse ce compte : un autre compte a pris le nom, ou la fenêtre tourne en
+            // administrateur (un jeton élevé n'ouvre pas son tube à un jeton ordinaire). Rien ne dit lequel.
             Err(e) if e.raw_os_error() == Some(tube::ACCES_REFUSE) => {
                 return Issue::Refusee(
                     tr!(
-                        "le canal est tenu par un autre compte (il a pris son nom) : la fenêtre ouverte ne peut pas \
-                         être jointe",
-                        "the channel is held by another account (it took its name): the open window cannot be \
-                         reached"
+                        "le canal refuse ce compte (sans doute un autre compte qui a pris son nom, ou une fenêtre \
+                         lancée en administrateur)",
+                        "the channel refuses this account (probably another account that took its name, or a \
+                         window started as administrator)"
                     )
                     .into(),
                 );
             }
+            Err(e) if e.raw_os_error() == Some(tube::TUBE_OCCUPE) => {
+                return Issue::SansReponse(tr!("le canal est resté occupé", "the channel stayed busy").into());
+            }
             Err(e) => return Issue::Indisponible(trf!("canal injoignable : {}", "channel unreachable: {}", e)),
         };
         // `tenu` garde le processus vérifié (son numéro n'est pas redonné) jusqu'après la demande.
-        let (pid, tenu) = match verifier(&client, sid, session, attendue, fenetre) {
+        let (pid, tenu) = match verifier(&client, sid, session, attendue) {
             Ok(v) => v,
             Err(issue) => return issue,
         };
+        let mut jeton = [0u8; regle::JETON];
+        if getrandom::fill(&mut jeton).is_err() {
+            return Issue::SansReponse(
+                tr!(
+                    "aucun nombre aléatoire pour la demande",
+                    "no random number for the request"
+                )
+                .into(),
+            );
+        }
         // Le droit de passer devant, donné à la fenêtre (sans effet si ce programme-ci ne l'a pas lui-même).
         tube::permettre_premier_plan(pid);
-        let repondu = client.echanger();
+        let echange = client.echanger(&jeton);
         drop(tenu);
-        if repondu {
+        match echange {
             // Windows ne dit pas si la fenêtre est vraiment passée devant (il peut seulement la faire clignoter).
-            Issue::Ramenee(false)
-        } else {
-            Issue::Indisponible(tr!("la fenêtre ouverte n'a pas répondu", "the open window did not answer").into())
+            tube::Echange::Repondu => Issue::Ramenee(false),
+            tube::Echange::Muet => {
+                Issue::SansReponse(tr!("la fenêtre ouverte n'a pas répondu", "the open window did not answer").into())
+            }
+            tube::Echange::AttendaitDeja => Issue::Refusee(
+                tr!(
+                    "une réponse attendait déjà dans le canal avant la demande",
+                    "an answer was already waiting in the channel before the request"
+                )
+                .into(),
+            ),
+            tube::Echange::MauvaisNombre => Issue::Refusee(
+                tr!(
+                    "la réponse ne reprend pas le nombre de la demande",
+                    "the answer does not repeat the request's number"
+                )
+                .into(),
+            ),
         }
     }
 
@@ -542,7 +712,6 @@ mod windows {
         sid: &str,
         session: u32,
         attendue: &[u8; 32],
-        fenetre: &Path,
     ) -> Result<(u32, Tenu), Issue> {
         let refus = |r: String| Err(Issue::Refusee(r));
         // Le tube lui-même d'abord : créé par ce compte, pour ce compte seul. Le numéro de son créateur, lu ensuite,
@@ -570,8 +739,9 @@ mod windows {
                 ));
             }
         };
-        // Le processus tenu, le tube toujours branché : son serveur vit encore, c'est donc bien lui que la poignée
-        // tient (un numéro n'est redonné qu'après la fin du processus, et la poignée du tube ne s'hérite pas).
+        // Le processus tenu, le tube toujours branché : son serveur vit encore. La poignée du tube ne s'hérite pas et
+        // un numéro n'est redonné qu'après la fin du processus ; reste le cas d'une poignée passée exprès à un complice
+        // (DuplicateHandle) avant la fin de l'imposteur, noté dans « Pas garanti » du modèle de menace.
         if !client.branche() {
             return refus(trf!(
                 "le processus {} qui écoute est parti pendant la vérification",
@@ -579,12 +749,23 @@ mod windows {
                 pid
             ));
         }
-        if tenu.sid().ok().as_deref() != Some(sid) {
-            return refus(trf!(
-                "le processus {} qui écoute est d'un autre compte",
-                "listening process {} belongs to another account",
-                pid
-            ));
+        match tenu.sid() {
+            Ok(lui) if lui == sid => {}
+            Ok(_) => {
+                return refus(trf!(
+                    "le processus {} qui écoute est d'un autre compte",
+                    "listening process {} belongs to another account",
+                    pid
+                ));
+            }
+            Err(e) => {
+                return refus(trf!(
+                    "le compte du processus {} qui écoute est illisible : {}",
+                    "the account of listening process {} is unreadable: {}",
+                    pid,
+                    e
+                ));
+            }
         }
         if tube::session_de(pid) != Some(session) {
             return refus(trf!(
@@ -593,18 +774,38 @@ mod windows {
                 pid
             ));
         }
-        // Le fichier de la fenêtre, ouvert sans partage d'écriture : ses octets ne changent pas pendant la lecture.
-        // Il doit être le fichier même (volume, numéro) que le chemin de l'image du serveur désigne : la casse, un
-        // lien ou un nom court ne trompent pas la comparaison. Limite (MODELE-DE-MENACE.md) : c'est le fichier
-        // présent à ce chemin qui est lu, pas l'image chargée en mémoire.
-        let image = tenu.chemin();
-        let pas_elle = || {
-            refus(trf!(
-                "le processus {} qui écoute n'est pas la fenêtre posée à côté de ce programme ({})",
-                "listening process {} is not the window next to this program ({})",
-                pid,
-                image.as_deref().unwrap_or_default()
-            ))
+        // Un serveur d'un niveau d'intégrité plus bas (un programme du même compte bridé, « Low ») ne parle pas pour
+        // la fenêtre, qui tourne au niveau du compte.
+        match (tenu.integrite(), crate::machine::windows::processus::integrite()) {
+            (Ok(lui), Ok(moi)) if lui >= moi => {}
+            (Ok(lui), Ok(moi)) => {
+                return refus(trf!(
+                    "le processus {} qui écoute a un niveau d'intégrité plus bas ({:#x} < {:#x})",
+                    "listening process {} has a lower integrity level ({:#x} < {:#x})",
+                    pid,
+                    lui,
+                    moi
+                ));
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                return refus(trf!(
+                    "le niveau d'intégrité du processus {} qui écoute est illisible : {}",
+                    "the integrity level of listening process {} is unreadable: {}",
+                    pid,
+                    e
+                ));
+            }
+        }
+        // Le fichier de l'image du serveur, ouvert sans partage d'écriture : ses octets ne changent pas pendant la
+        // lecture, et c'est leur empreinte qui compte (une autre copie de la même version, ailleurs, est la même
+        // fenêtre). Limite (MODELE-DE-MENACE.md) : c'est le fichier présent à ce chemin qui est lu, pas l'image
+        // chargée en mémoire.
+        let Some(image) = tenu.chemin() else {
+            return refus(trf!(
+                "l'image du processus {} qui écoute est inconnue",
+                "the image of listening process {} is unknown",
+                pid
+            ));
         };
         let lu = {
             use std::os::windows::fs::OpenOptionsExt;
@@ -612,27 +813,9 @@ mod windows {
             std::fs::OpenOptions::new()
                 .read(true)
                 .share_mode(FILE_SHARE_READ)
-                .open(fenetre)
+                .open(Path::new(&image))
         };
-        let fichier = match lu {
-            Ok(f) => f,
-            Err(e) => {
-                return refus(trf!(
-                    "la fenêtre posée à côté de ce programme ne se lit pas : {}",
-                    "the window next to this program cannot be read: {}",
-                    e
-                ));
-            }
-        };
-        let de_l_image = image
-            .as_deref()
-            .and_then(|i| tube::ouvrir_pour_identite(Path::new(i)).ok())
-            .and_then(|f| tube::identite(&f));
-        match (de_l_image, tube::identite(&fichier)) {
-            (Some(i), Some(f)) if i == f => {}
-            _ => return pas_elle(),
-        }
-        match super::empreinte(fichier, super::super::lancer_fenetre::TAILLE_MAX) {
+        match lu.and_then(|f| super::empreinte(f, super::super::lancer_fenetre::TAILLE_MAX)) {
             Ok(e) if &e == attendue => Ok((pid, tenu)),
             Ok(_) => refus(trf!(
                 "le processus {} qui écoute n'est pas la fenêtre de cette version de Vanguard (empreinte différente : \
@@ -779,16 +962,28 @@ mod tests {
         std::io::stdout().flush().unwrap();
     }
 
-    /// Lit un octet, le note ; « ok » s'il est la demande.
+    /// Lit la demande, la note ; la réponse juste (« ok » et le même nombre) si c'en est une.
     fn lire_et_repondre(flux: &mut UnixStream, trace: &Path) {
-        flux.set_read_timeout(Some(LENT)).unwrap();
-        let mut octet = [0u8; 1];
-        if flux.read_exact(&mut octet).is_ok() {
-            noter(trace, octet[0]);
-            if octet == [regle::DEMANDE] {
-                let _ = flux.write_all(&[regle::REPONSE]);
-            }
+        if let Some(jeton) = lire_la_demande(flux, trace) {
+            let _ = flux.write_all(&regle::reponse(&jeton));
         }
+    }
+
+    /// Lit `TAILLE` octets (ou ce qui vient avant la fin), les note ; le nombre, si c'est une demande.
+    fn lire_la_demande(flux: &mut UnixStream, trace: &Path) -> Option<[u8; regle::JETON]> {
+        flux.set_read_timeout(Some(LENT)).unwrap();
+        let mut lu = Vec::new();
+        let mut octet = [0u8; 1];
+        while lu.len() < regle::TAILLE && flux.read_exact(&mut octet).is_ok() {
+            noter(trace, octet[0]);
+            lu.push(octet[0]);
+        }
+        regle::jeton_de_la_demande(&lu)
+    }
+
+    /// La trace d'une demande reçue : « montre-toi » suivi d'un nombre.
+    fn est_une_demande(trace: &[u8]) -> bool {
+        trace.len() == regle::TAILLE && trace.first() == Some(&regle::DEMANDE)
     }
 
     /// La fenêtre en petit : l'accueil, puis un octet lu et noté, « ok » à la demande.
@@ -929,6 +1124,63 @@ mod tests {
                 let mut flux = UnixStream::from(herite());
                 lire_et_repondre(&mut flux, &trace);
             }
+            // Un premier octet qui n'est pas l'accueil, avec de vrais témoins.
+            "accueil-faux" => {
+                let ecoute = lier();
+                dire("pret");
+                accepter(&ecoute, |mut flux| {
+                    flux.set_nonblocking(false).unwrap();
+                    if flux.write_all(b"X").is_ok() {
+                        lire_et_repondre(&mut flux, &trace);
+                    }
+                });
+            }
+            // Une réponse envoyée d'avance, juste après l'accueil, avant toute demande ; puis la vraie réponse.
+            "repond-d-avance" => {
+                let ecoute = lier();
+                dire("pret");
+                accepter(&ecoute, |mut flux| {
+                    flux.set_nonblocking(false).unwrap();
+                    if flux.write_all(&[regle::ACCUEIL, regle::REPONSE]).is_ok() {
+                        lire_et_repondre(&mut flux, &trace);
+                    }
+                });
+            }
+            // Lit la demande, mais répond « ok » sans son nombre (un nombre deviné : des zéros).
+            "repond-sans-le-jeton" => {
+                let ecoute = lier();
+                dire("pret");
+                accepter(&ecoute, |mut flux| {
+                    flux.set_nonblocking(false).unwrap();
+                    if flux.write_all(&[regle::ACCUEIL]).is_ok() && lire_la_demande(&mut flux, &trace).is_some() {
+                        let _ = flux.write_all(&regle::reponse(&[0; regle::JETON]));
+                    }
+                });
+            }
+            // Constat 27 : la bonne image accueille, attend que la demande soit là (sans la lire), puis devient un
+            // autre programme (exec de la copie modifiée, même processus, même pidfd) qui lit la demande et répond
+            // juste.
+            "accueille-puis-change-d-image" => {
+                use std::os::unix::process::CommandExt;
+                let ecoute = lier();
+                dire("pret");
+                ecoute.set_nonblocking(false).unwrap();
+                let (mut flux, _) = ecoute.accept().unwrap();
+                flux.set_nonblocking(false).unwrap();
+                if flux.write_all(&[regle::ACCUEIL]).is_err() {
+                    return;
+                }
+                let debut = std::time::Instant::now();
+                while !crate::socle::octet_en_attente(&flux).unwrap() {
+                    assert!(debut.elapsed() < LENT, "aucune demande");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                transmissible(&flux);
+                let mut c = commande(&copie_modifiee(), "repond-a-sa-place", &runtime, &trace);
+                c.env(DESCRIPTEUR, std::os::fd::AsRawFd::as_raw_fd(&flux).to_string());
+                let erreur = c.exec();
+                panic!("exec : {erreur}");
+            }
             // Un lancement de `vanguard` : ramène la fenêtre, ou, s'il n'y en a pas, « l'ouvre » : comme la vraie
             // fenêtre, elle tarde à écouter (vérification, démarrage), sous le verrou, rendu après « ouverte ».
             "lanceur" => {
@@ -982,7 +1234,11 @@ mod tests {
             return crate::essais::saute("noyau sans SO_PASSPIDFD (Linux 6.5)");
         }
         assert_eq!(issue, Issue::Ramenee(false));
-        assert_eq!(trace_de(&d.join("trace")), [regle::DEMANDE]);
+        assert!(
+            est_une_demande(&trace_de(&d.join("trace"))),
+            "{:?}",
+            trace_de(&d.join("trace"))
+        );
         arreter(ecoute);
     }
 
@@ -995,7 +1251,7 @@ mod tests {
         assert_eq!(attendre_ligne(&mut ecoute), "pret");
         let moi = crate::socle::uid();
         let issue = joindre(&prise(&d), &empreinte_de_l_essai(), moi, &|_| Hyprland::SansFenetre);
-        assert!(matches!(&issue, Issue::Indisponible(_)), "{issue:?}");
+        assert!(matches!(&issue, Issue::SansReponse(_)), "{issue:?}");
         let issue = joindre(&prise(&d), &empreinte_de_l_essai(), moi, &|_| Hyprland::Ramenee);
         assert_eq!(issue, Issue::Ramenee(true));
         arreter(ecoute);
@@ -1111,9 +1367,9 @@ mod tests {
         let d = runtime();
         let debut = std::time::Instant::now();
         let (issue, ecoute) = joindre_le_role(&d, "dort", &empreinte_de_l_essai(), crate::socle::uid());
-        assert!(matches!(&issue, Issue::Indisponible(_)), "{issue:?}");
+        assert!(matches!(&issue, Issue::SansReponse(_)), "{issue:?}");
         assert!(
-            debut.elapsed() < regle::DELAI + Duration::from_secs(5),
+            debut.elapsed() < super::ATTENTE_ACCUEIL + Duration::from_secs(5),
             "{:?}",
             debut.elapsed()
         );
@@ -1122,16 +1378,13 @@ mod tests {
 
     /// Un processus qui accueille puis meurt : jamais dit ramené. Le moment de sa mort n'est pas réglable d'ici
     /// (l'accueil part avant, la vérification tourne dans le fil du client) : mort pendant la vérification, il est
-    /// refusé (Refusee) ; mort juste après, il ne répond pas à l'échange (Indisponible). Les deux rouvrent une
+    /// refusé (Refusee) ; mort juste après, il ne répond pas à l'échange (SansReponse). Les deux rouvrent une
     /// fenêtre ; exiger l'un des deux ferait un essai qui échoue selon la charge de la machine.
     #[test]
     fn un_processus_parti_est_refuse() {
         let d = runtime();
         let (issue, ecoute) = joindre_le_role(&d, "accueille-et-meurt", &empreinte_de_l_essai(), crate::socle::uid());
-        assert!(
-            matches!(&issue, Issue::Refusee(_) | Issue::Indisponible(_)),
-            "{issue:?}"
-        );
+        assert!(matches!(&issue, Issue::Refusee(_) | Issue::SansReponse(_)), "{issue:?}");
         arreter(ecoute);
     }
 
@@ -1205,6 +1458,156 @@ mod tests {
         assert!(verrou.is_ok());
     }
 
+    /// Constats 1 et 27 : la bonne image accueille, puis devient un autre programme par exec (même processus,
+    /// même pidfd) qui lit la demande et répond juste : jamais ramenée. Refusée parce que l'image a changé depuis
+    /// sa vérification.
+    #[test]
+    fn accueille_puis_change_d_image() {
+        let d = runtime();
+        let (issue, ecoute) = joindre_le_role(
+            &d,
+            "accueille-puis-change-d-image",
+            &empreinte_de_l_essai(),
+            crate::socle::uid(),
+        );
+        assert!(
+            matches!(&issue, Issue::Refusee(r) if r.contains("changé d'image") || r.contains("changed image")),
+            "{issue:?}"
+        );
+        arreter(ecoute);
+    }
+
+    /// Constat 1 : une réponse qui attendait déjà avant la demande (envoyée juste après l'accueil) : refusée, la
+    /// demande n'est pas envoyée.
+    #[test]
+    fn une_reponse_d_avance_est_refusee() {
+        let d = runtime();
+        let (issue, ecoute) = joindre_le_role(&d, "repond-d-avance", &empreinte_de_l_essai(), crate::socle::uid());
+        assert!(
+            matches!(&issue, Issue::Refusee(r) if r.contains("attendait") || r.contains("waiting")),
+            "{issue:?}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            trace_de(&d.join("trace")).is_empty(),
+            "reçu {:?}",
+            trace_de(&d.join("trace"))
+        );
+        arreter(ecoute);
+    }
+
+    /// Constat 1 : « ok » sans le nombre de la demande : refusé.
+    #[test]
+    fn une_reponse_sans_le_nombre_est_refusee() {
+        let d = runtime();
+        let (issue, ecoute) = joindre_le_role(&d, "repond-sans-le-jeton", &empreinte_de_l_essai(), crate::socle::uid());
+        assert!(
+            matches!(&issue, Issue::Refusee(r) if r.contains("nombre") || r.contains("number")),
+            "{issue:?}"
+        );
+        arreter(ecoute);
+    }
+
+    /// Constat 31 : un premier octet qui n'est pas l'accueil, même de la bonne image : refusé, rien envoyé.
+    #[test]
+    fn un_accueil_faux_est_refuse() {
+        let d = runtime();
+        let (issue, ecoute) = joindre_le_role(&d, "accueil-faux", &empreinte_de_l_essai(), crate::socle::uid());
+        assert!(
+            matches!(&issue, Issue::Refusee(r) if r.contains("n'est pas celui") || r.contains("is not the window's")),
+            "{issue:?}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            trace_de(&d.join("trace")).is_empty(),
+            "reçu {:?}",
+            trace_de(&d.join("trace"))
+        );
+        arreter(ecoute);
+    }
+
+    /// Constat 31 : chaque contrôle du jugement a son refus, essayé seul (un fait faux à la fois).
+    #[test]
+    fn chaque_controle_du_jugement_refuse_son_cas() {
+        use super::linux::{Faits, juger};
+        let attendue = [7u8; 32];
+        let moi = 1000;
+        let bons = || Faits {
+            uid: moi,
+            pid: 42,
+            pid_du_pidfd: Some(42),
+            meme_espace: true,
+            empreinte: Ok(attendue),
+            vivant: true,
+        };
+        assert_eq!(juger(&bons(), &attendue, moi), Ok(()));
+        let motif = |f: Faits, fr: &str, en: &str| {
+            let issue = juger(&f, &attendue, moi);
+            assert!(
+                matches!(&issue, Err(Issue::Refusee(r)) if r.contains(fr) || r.contains(en)),
+                "{fr} : {issue:?}"
+            );
+        };
+        motif(Faits { uid: moi + 1, ..bons() }, "autre compte", "another account");
+        motif(
+            Faits {
+                pid_du_pidfd: Some(43),
+                ..bons()
+            },
+            "tenir",
+            "held",
+        );
+        motif(
+            Faits {
+                pid_du_pidfd: None,
+                ..bons()
+            },
+            "tenir",
+            "held",
+        );
+        motif(
+            Faits {
+                pid: 0,
+                pid_du_pidfd: Some(0),
+                ..bons()
+            },
+            "tenir",
+            "held",
+        );
+        motif(
+            Faits {
+                meme_espace: false,
+                ..bons()
+            },
+            "espace de noms",
+            "namespace",
+        );
+        motif(
+            Faits {
+                vivant: false,
+                ..bons()
+            },
+            "parti",
+            "left",
+        );
+        motif(
+            Faits {
+                empreinte: Ok([8; 32]),
+                ..bons()
+            },
+            "empreinte",
+            "fingerprint",
+        );
+        motif(
+            Faits {
+                empreinte: Err(std::io::Error::other("essai")),
+                ..bons()
+            },
+            "illisible",
+            "unreadable",
+        );
+    }
+
     /// Deux lancements en même temps (deux processus) : un seul ouvre la fenêtre, l'autre la ramène. La fenêtre
     /// lancée tarde à écouter (comme la vraie) : sans le verrou, les deux ouvriraient.
     #[test]
@@ -1236,7 +1639,6 @@ mod tests {
 mod essais_windows {
     use super::windows::joindre;
     use super::{Issue, regle};
-    use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::sync::mpsc::Receiver;
 
@@ -1299,9 +1701,20 @@ mod essais_windows {
             }
         }
 
-        /// Crée le tube `nom` (une instance, liste d'accès `sddl`) et le sert une fois dans un fil : l'octet reçu
-        /// (« montre-toi » reçoit « ok »), ou `None` si le client est parti sans rien écrire.
-        pub(super) fn servir_une_fois(nom: &str, sddl: &str) -> Receiver<Option<u8>> {
+        /// Ce que joue le serveur des essais.
+        #[derive(Clone, Copy)]
+        pub(super) enum Jeu {
+            /// La fenêtre : la réponse juste à la demande.
+            Juste,
+            /// « ok » envoyé d'avance, dès le branchement, puis la réponse juste.
+            Davance,
+            /// « ok » sans le nombre de la demande.
+            SansLeNombre,
+        }
+
+        /// Crée le tube `nom` (une instance, liste d'accès `sddl`) et le sert une fois dans un fil, selon `jeu` : les
+        /// octets reçus, ou `None` si le client est parti sans rien écrire.
+        pub(super) fn servir_une_fois(nom: &str, sddl: &str, jeu: Jeu) -> Receiver<Option<Vec<u8>>> {
             const OUVERTURE: u32 = 0x3 | 0x0008_0000;
             const MODE: u32 = 0x8;
             let mut descripteur: *mut c_void = std::ptr::null_mut();
@@ -1338,14 +1751,25 @@ mod essais_windows {
                 // SAFETY: la poignée est ouverte tant que `tube` vit ; attente simple, sans chevauchement. Un client
                 // branché entre la création et l'attente (ERROR_PIPE_CONNECTED) se lit pareil.
                 let _ = unsafe { ConnectNamedPipe(tube.as_raw_handle(), std::ptr::null_mut()) };
-                let mut octet = [0u8; 1];
-                let lu = matches!(tube.read(&mut octet), Ok(1)).then_some(octet[0]);
-                if lu == Some(super::regle::DEMANDE) {
+                if matches!(jeu, Jeu::Davance) {
                     let _ = tube.write_all(&[super::regle::REPONSE]);
+                }
+                let mut lu = Vec::new();
+                let mut octet = [0u8; 1];
+                while lu.len() < super::regle::TAILLE && matches!(tube.read(&mut octet), Ok(1)) {
+                    lu.push(octet[0]);
+                }
+                if let Some(jeton) = super::regle::jeton_de_la_demande(&lu) {
+                    let jeton = if matches!(jeu, Jeu::SansLeNombre) {
+                        [0; super::regle::JETON]
+                    } else {
+                        jeton
+                    };
+                    let _ = tube.write_all(&super::regle::reponse(&jeton));
                     // Attendre que le client ait lu et soit parti : la réponse n'est pas perdue à la fermeture.
                     let _ = tube.read(&mut octet);
                 }
-                let _ = envoi.send(lu);
+                let _ = envoi.send((!lu.is_empty()).then_some(lu));
             });
             reception
         }
@@ -1364,7 +1788,7 @@ mod essais_windows {
         format!(r"\\.\pipe\{}", crate::essais::nom_unique("une-fenetre"))
     }
 
-    fn essai() -> PathBuf {
+    fn essai() -> std::path::PathBuf {
         std::env::current_exe().unwrap()
     }
 
@@ -1372,21 +1796,6 @@ mod essais_windows {
     fn empreinte_de_l_essai() -> [u8; 32] {
         static E: OnceLock<[u8; 32]> = OnceLock::new();
         *E.get_or_init(|| super::empreinte(std::fs::File::open(essai()).unwrap(), u64::MAX).unwrap())
-    }
-
-    /// Une copie de ce programme d'essai : même empreinte, autre fichier (volume et numéro différents).
-    fn copie() -> PathBuf {
-        static C: OnceLock<PathBuf> = OnceLock::new();
-        C.get_or_init(|| {
-            // Sur un Windows sans le dépôt (programme d'essai copié seul), le dossier temporaire de Windows.
-            let dossier = Some(crate::essais::temporaire())
-                .filter(|d| d.is_dir())
-                .unwrap_or_else(std::env::temp_dir);
-            let c = dossier.join(format!("{}.exe", crate::essais::nom_unique("une-fenetre-copie")));
-            std::fs::copy(essai(), &c).unwrap();
-            c
-        })
-        .clone()
     }
 
     /// Ce que Wine ne sait pas imiter rend l'essai muet : sauté (seulement sous Wine), avec la raison. Sur le vrai
@@ -1403,18 +1812,22 @@ mod essais_windows {
     /// ne sait pas conclure (l'essai appelant saute : ses refus ne prouveraient rien).
     fn la_reference_passe() -> bool {
         let n = nom();
-        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap());
-        let issue = joindre(&n, &sid(), session(), &empreinte_de_l_essai(), &essai());
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::Juste);
+        let issue = joindre(&n, &sid(), session(), &empreinte_de_l_essai());
         if sous_wine_sans_conclure(&issue) {
             return false;
         }
         assert_eq!(issue, Issue::Ramenee(false));
-        assert_eq!(recu.recv().unwrap(), Some(regle::DEMANDE));
+        let lu = recu.recv().unwrap().unwrap();
+        assert!(
+            lu.len() == regle::TAILLE && lu.first() == Some(&regle::DEMANDE),
+            "{lu:?}"
+        );
         true
     }
 
     /// Le refus attendu, et rien n'a été envoyé au serveur.
-    fn refuse_sans_rien_envoyer(issue: &Issue, recu: &Receiver<Option<u8>>, motif: &str) {
+    fn refuse_sans_rien_envoyer(issue: &Issue, recu: &Receiver<Option<Vec<u8>>>, motif: &str) {
         assert!(
             matches!(issue, Issue::Refusee(r) if r.contains(motif)),
             "refus attendu ({motif}), obtenu {issue:?}"
@@ -1431,7 +1844,7 @@ mod essais_windows {
     #[test]
     fn sans_tube_personne() {
         assert_eq!(
-            joindre(&nom(), &sid(), session(), &empreinte_de_l_essai(), &essai()),
+            joindre(&nom(), &sid(), session(), &empreinte_de_l_essai()),
             Issue::Personne
         );
     }
@@ -1442,22 +1855,9 @@ mod essais_windows {
             return;
         }
         let n = nom();
-        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap());
-        let issue = joindre(&n, &sid(), session(), &[7; 32], &essai());
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::Juste);
+        let issue = joindre(&n, &sid(), session(), &[7; 32]);
         refuse_sans_rien_envoyer(&issue, &recu, "empreinte");
-    }
-
-    #[test]
-    fn un_autre_fichier_de_meme_contenu_ne_recoit_rien() {
-        if !la_reference_passe() {
-            return;
-        }
-        let n = nom();
-        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap());
-        let copie = copie();
-        let issue = joindre(&n, &sid(), session(), &empreinte_de_l_essai(), &copie);
-        let _ = std::fs::remove_file(&copie);
-        refuse_sans_rien_envoyer(&issue, &recu, crate::tr!("posée à côté", "next to this program"));
     }
 
     #[test]
@@ -1466,21 +1866,31 @@ mod essais_windows {
             return;
         }
         let n = nom();
-        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap());
-        let issue = joindre(&n, &sid(), session().wrapping_add(1), &empreinte_de_l_essai(), &essai());
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::Juste);
+        let issue = joindre(&n, &sid(), session().wrapping_add(1), &empreinte_de_l_essai());
         refuse_sans_rien_envoyer(&issue, &recu, crate::tr!("autre session", "another session"));
     }
 
-    /// Un tube que le client croit d'un autre compte (SID inventé, jamais celui de la machine).
+    /// Un tube que le client croit d'un autre compte (le SID d'exemple de la documentation de Microsoft, jamais
+    /// celui de la machine).
     #[test]
     fn un_autre_compte_ne_recoit_rien() {
         if !la_reference_passe() {
             return;
         }
         let n = nom();
-        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap());
-        let issue = joindre(&n, "S-1-5-21-1-2-3-1001", session(), &empreinte_de_l_essai(), &essai());
-        refuse_sans_rien_envoyer(&issue, &recu, crate::tr!("autre compte", "another account"));
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::Juste);
+        let issue = joindre(
+            &n,
+            "S-1-5-21-1004336348-1177238915-682003330-1001",
+            session(),
+            &empreinte_de_l_essai(),
+        );
+        refuse_sans_rien_envoyer(
+            &issue,
+            &recu,
+            crate::tr!("appartient à un autre compte", "belongs to another account"),
+        );
     }
 
     /// Une liste d'accès ouverte à d'autres (tout le monde, en plus de ce compte) : refusée.
@@ -1491,8 +1901,8 @@ mod essais_windows {
         }
         let n = nom();
         let s = sid();
-        let recu = serveur::servir_une_fois(&n, &format!("O:{s}D:P(A;;GA;;;{s})(A;;GA;;;WD)"));
-        let issue = joindre(&n, &s, session(), &empreinte_de_l_essai(), &essai());
+        let recu = serveur::servir_une_fois(&n, &format!("O:{s}D:P(A;;GA;;;{s})(A;;GA;;;WD)"), serveur::Jeu::Juste);
+        let issue = joindre(&n, &s, session(), &empreinte_de_l_essai());
         refuse_sans_rien_envoyer(
             &issue,
             &recu,
@@ -1508,10 +1918,38 @@ mod essais_windows {
         }
         let n = nom();
         let s = sid();
-        let recu = serveur::servir_une_fois(&n, &format!("O:{s}D:NO_ACCESS_CONTROL"));
-        let issue = joindre(&n, &s, session(), &empreinte_de_l_essai(), &essai());
+        let recu = serveur::servir_une_fois(&n, &format!("O:{s}D:NO_ACCESS_CONTROL"), serveur::Jeu::Juste);
+        let issue = joindre(&n, &s, session(), &empreinte_de_l_essai());
         // Windows en fait une liste absente (« ouvert à tous ») ; Wine, une liste vide (« illisible ») : refusé
         // pareil.
         refuse_sans_rien_envoyer(&issue, &recu, crate::tr!("canal", "channel"));
+    }
+
+    /// Constat 1 : une réponse qui attendait avant la demande : refusée, la demande n'est pas envoyée.
+    #[test]
+    fn une_reponse_d_avance_est_refusee() {
+        if !la_reference_passe() {
+            return;
+        }
+        let n = nom();
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::Davance);
+        let issue = joindre(&n, &sid(), session(), &empreinte_de_l_essai());
+        refuse_sans_rien_envoyer(&issue, &recu, crate::tr!("attendait", "waiting"));
+    }
+
+    /// Constat 1 : « ok » sans le nombre de la demande : refusé.
+    #[test]
+    fn une_reponse_sans_le_nombre_est_refusee() {
+        if !la_reference_passe() {
+            return;
+        }
+        let n = nom();
+        let recu = serveur::servir_une_fois(&n, &regle::sddl(&sid()).unwrap(), serveur::Jeu::SansLeNombre);
+        let issue = joindre(&n, &sid(), session(), &empreinte_de_l_essai());
+        assert!(
+            matches!(&issue, Issue::Refusee(r) if r.contains(crate::tr!("nombre", "number"))),
+            "{issue:?}"
+        );
+        assert!(recu.recv().unwrap().is_some());
     }
 }

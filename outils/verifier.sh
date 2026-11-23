@@ -229,6 +229,29 @@ tests_wine() {
   return "$resultat"
 }
 
+# Les essais Windows de la fenêtre (fenetre/) sous Wine : le vrai serveur « une seule fenêtre » (tube nommé, session,
+# message et son nombre, cadence, coupure d'un client déjà parti). Seulement eux : les autres essais de la fenêtre
+# lisent des chemins Unix et ne parlent pas de Windows. Ce que Wine ne fait pas comme Windows (première instance
+# exigée) s'y dit sauté, compté sous l'étape, jamais passé ; le vrai Windows de la CI les fait tourner en entier.
+# Un filtre qui ne trouverait plus rien rendrait 0 : au moins un essai passé est exigé.
+fenetre_wine() {
+  local prefixe resultat f journal
+  [[ -x $WINE ]] || { echo "Wine absent ($WINE ; VANGUARD_WINE pour un autre)"; return "$SAUTEE"; }
+  prefixe=$(mktemp -d "$TRAVAIL/wine-fenetre.XXXX")
+  journal=$TRAVAIL/fenetre-windows.cargo
+  f=$(sautes fenetre-windows)
+  DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=$prefixe WINEDEBUG=-all \
+    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$WINE VANGUARD_TESTS_SAUTES="Z:${f//\//\\}" \
+    CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target}/fenetre cargo test -q --locked --manifest-path fenetre/Cargo.toml \
+    --target x86_64-pc-windows-gnu une_fenetre:: >"$journal" 2>&1
+  resultat=$?
+  cat "$journal"
+  WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -k 2>/dev/null
+  WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -w 2>/dev/null
+  ((resultat == 0)) || return 1
+  grep -qE 'ok\. [1-9][0-9]* passed' "$journal" || { echo "✖ aucun essai « une_fenetre:: » n'a tourné : rien n'est conclu"; return 1; }
+}
+
 # Chaque script analysé, puis une faute que l'analyse laisse passer : PowerShell ne distingue pas les majuscules des
 # variables, si bien qu'un `$langues = @(...)` écrit au niveau du script range le tableau dans le paramètre
 # `[string]$Langues`, converti en « fr en » (vu dans la VM : tous les essais de console fondus en un seul). Un nom
@@ -326,7 +349,7 @@ extensions() {
 # La fenêtre de Vanguard (fenetre/, programme vanguard-fenetre) : crate à part, avec son Cargo.lock, hors du programme
 # vanguard. Linux en glibc (ses bibliothèques d'affichage se chargent à l'exécution, ce que musl ne sait pas faire) et
 # Windows. --target toujours dit : lancé d'ici, cargo lit le .cargo/config.toml de la racine (musl), pas celui de
-# fenetre/. Ses tests ne tournent que sous Linux : sous Wine, pas encore (dit au résumé). Puis les protections de ses
+# fenetre/. Ses tests Windows : étape fenetre-windows, plus bas (sous Wine). Puis les protections de ses
 # deux programmes, lues comme celles de vanguard (étape durcissement) : Linux avec --glibc (l'interpréteur de la glibc,
 # lui seul), Windows comme vanguard.exe (DLL de System32 seulement, manifeste, ASLR, DEP). Ses dépendances passent à
 # cargo deny (étape dépendances, fenetre/deny.toml), à cargo audit (failles connues) et à cargo vet
@@ -686,6 +709,7 @@ if [[ $MODE != --rapide ]]; then
     {
       etape clippy-windows clippy x86_64-pc-windows-gnu && etape tests-windows tests_wine &&
         etape regression-detection-windows regression_windows
+      etape fenetre-windows fenetre_wine
     } &
   fi
   etape powershell scripts_powershell &
@@ -772,10 +796,10 @@ raisons_des_sautes() {
 # Sous --ci, une étape absente (jamais lancée, ou tuée avant d'écrire son état) est aussi un échec : une étape
 # oubliée dans la liste laisserait sinon la CI verte (relecture 0.95, V-8). Seules exceptions, celles que --ci ne
 # lance pas exprès, nommées dans ABSENTES_CI :
-#   tests-windows, regression-detection-windows : pas de Wine dans la CI ; le travail Windows (vrai Windows) fait
-#                       tourner leur cargo test.
+#   tests-windows, regression-detection-windows, fenetre-windows : pas de Wine dans la CI ; le travail Windows (vrai
+#                       Windows) fait tourner leur cargo test.
 EXCLUES_CI=(preuves-compilees)
-ABSENTES_CI=(tests-windows regression-detection-windows)
+ABSENTES_CI=(tests-windows regression-detection-windows fenetre-windows)
 juger_etape() { # état [nom de l'étape]
   case $1 in
     ok) echo vert ;;
@@ -906,6 +930,8 @@ if [[ $MODE != --rapide ]]; then
     ligne tests-windows "tests Windows sous Wine ($(passes tests-windows))"
     raisons_des_sautes tests-windows
     ligne regression-detection-windows "régression de détection Windows ($(cas_qui_tirent regression-detection-windows) règles)"
+    ligne fenetre-windows "fenêtre, une seule fenêtre sous Wine ($(passes fenetre-windows))"
+    raisons_des_sautes fenetre-windows
   elif [[ -z $SEULEMENT ]]; then
     printf '  · %-34s non lancé (%s) : le vrai Windows de la CI fait tourner son cargo test\n' "régression de détection Windows" "$MODE" | tee -a "$RESUME"
     NON_VERIFIEES+=("tests Windows sous Wine")

@@ -1,19 +1,25 @@
 //! Une seule fenêtre, côté fenêtre : écouter, sur un canal privé au compte, la demande « montre-toi » d'un second
 //! lancement de `vanguard`, et revenir devant. La règle commune est `regle_une_fenetre` (src/socle/une_fenetre.rs).
 //!
-//! Ce qui arrive par le canal n'est qu'un octet : `DEMANDE` fait revenir la fenêtre devant (pas plus d'une fois par
-//! `CADENCE`), tout autre octet ferme la connexion. Rien d'autre n'est lu ni interprété ; chaque connexion a
-//! `DELAI + VERIFICATION` au plus pour parler (le client vérifie la fenêtre entre l'accueil et sa demande), puis elle
-//! est fermée. L'écoute vit dans un fil à elle : un client lent ou hostile ne fige jamais la fenêtre, au pire il
-//! occupe le canal ce temps-là par connexion. Une acceptation qui échoue attend, de plus en plus, avant la suivante.
+//! Ce qui arrive par le canal est un message fermé de `TAILLE` octets : `DEMANDE` suivi d'un nombre tiré au hasard
+//! par `vanguard`. Il fait revenir la fenêtre devant, et la réponse renvoie ce nombre (un programme qui aurait lu une
+//! demande ailleurs, ou répondu d'avance, ne peut donc pas faire passer sa réponse pour celle-ci). Tout autre message
+//! ferme la connexion ; rien d'autre n'est lu ni interprété. Deux demandes sont espacées de `CADENCE` au moins : une
+//! demande trop proche attend son tour (au plus `CADENCE`), elle n'est jamais répondue sans que la fenêtre revienne.
+//! Pas de réponse tant que la fenêtre n'existe pas (le fil d'écoute démarre avant elle) : `vanguard` ouvre alors une
+//! fenêtre de plus plutôt que de croire en avoir ramené une. Chaque connexion a `DELAI + VERIFICATION` au plus, en
+//! tout, pour parler (le client vérifie la fenêtre entre l'accueil et sa demande), puis elle est fermée. L'écoute vit
+//! dans un fil à elle : un client lent ou hostile ne fige jamais la fenêtre, au pire il occupe le canal ce temps-là
+//! par connexion. Une acceptation qui échoue attend, de plus en plus, avant la suivante.
 //!
 //! Linux : une prise Unix dans `XDG_RUNTIME_DIR/vanguard` (0700, à ce compte, vérifié), créée avant le bac à sable
 //! (qui interdit ensuite d'en créer), après la séparation du relais (qui n'en hérite donc pas). Un client d'un autre
 //! compte (SO_PEERCRED) est fermé sans réponse. Une prise vivante n'est retirée que sur `--remplacer-prise` (donné par
 //! `vanguard`, qui a vérifié qu'elle n'est pas une fenêtre de Vanguard qui répond) ; son nœud reste après la
 //! fermeture. Windows : un tube nommé lié au compte (SID) et à la session, liste d'accès à ce compte seul, première
-//! instance exigée (un tube du même nom déjà là, peut-être d'un imposteur : pas de canal, et c'est dit), clients
-//! distants refusés ; un client d'une autre session est fermé sans réponse.
+//! instance exigée (un tube du même nom déjà là, peut-être d'un imposteur : pas de canal, réessayé toutes les
+//! `REESSAI` jusqu'à ce que le nom se libère), clients distants refusés ; un client d'une autre session est fermé sans
+//! réponse.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -32,19 +38,57 @@ pub fn demandee() -> bool {
     DEMANDEE.swap(false, Ordering::AcqRel)
 }
 
-/// Garde la cadence : vrai si la dernière demande prise remonte à plus de `CADENCE`.
-fn a_son_tour(derniere: &mut Option<Instant>) -> bool {
-    let maintenant = Instant::now();
-    if derniere.is_some_and(|d| maintenant.saturating_duration_since(d) < CADENCE) {
-        return false;
-    }
-    *derniere = Some(maintenant);
-    true
+/// Le temps laissé au dessin de la fenêtre pour exister, quand une demande arrive juste après le démarrage du fil
+/// d'écoute (qui la précède) : sans fenêtre au bout, pas de réponse.
+const ATTENTE_FENETRE: Duration = Duration::from_millis(750);
+
+/// La première pause après une erreur d'acceptation.
+const PAUSE: Duration = Duration::from_millis(100);
+
+/// Le temps à attendre avant de servir une demande arrivée à `maintenant`, la précédente prise à `derniere` : zéro si
+/// elle remonte à `CADENCE` ou plus, le reste de la cadence sinon (une demande trop proche attend, elle n'est jamais
+/// sautée : sautée, elle serait répondue sans que la fenêtre revienne).
+fn attente_du_tour(derniere: Option<Instant>, maintenant: Instant) -> Duration {
+    derniere.map_or(Duration::ZERO, |d| {
+        CADENCE.saturating_sub(maintenant.saturating_duration_since(d))
+    })
 }
 
-/// Ce qu'une connexion a dit : vrai seulement pour exactement l'octet `DEMANDE`.
-fn juger(lu: Option<u8>) -> bool {
-    lu == Some(regle::DEMANDE)
+/// La pause après une erreur d'acceptation de plus : le double de la précédente, `DELAI` au plus (pas de boucle
+/// folle quand l'erreur dure : trop de descripteurs ouverts, mémoire).
+fn pause_suivante(pause: Duration) -> Duration {
+    pause.saturating_mul(2).min(regle::DELAI)
+}
+
+/// Fait revenir la fenêtre : `reveiller` dit si une fenêtre existe pour revenir. Réessayé `ATTENTE_FENETRE` au plus
+/// (la fenêtre naît juste après le fil d'écoute). Faux : personne à ramener, rien n'est répondu.
+fn faire_revenir(reveiller: &impl Fn() -> bool) -> bool {
+    let fin = Instant::now().checked_add(ATTENTE_FENETRE).unwrap_or_else(Instant::now);
+    loop {
+        if reveiller() {
+            return true;
+        }
+        if Instant::now() >= fin {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Une demande lue : attend son tour, fait revenir la fenêtre, et rend la réponse à écrire ; `None` (rien à
+/// répondre) si aucune fenêtre n'existe.
+fn servir_la_demande(
+    jeton: &[u8; regle::JETON],
+    derniere: &mut Option<Instant>,
+    reveiller: &impl Fn() -> bool,
+) -> Option<[u8; regle::TAILLE]> {
+    std::thread::sleep(attente_du_tour(*derniere, Instant::now()));
+    *derniere = Some(Instant::now());
+    DEMANDEE.store(true, Ordering::Release);
+    if !faire_revenir(reveiller) {
+        return None;
+    }
+    Some(regle::reponse(jeton))
 }
 
 #[cfg(target_os = "linux")]
@@ -58,9 +102,9 @@ mod linux {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
-    use super::{DEMANDEE, a_son_tour, juger, regle};
+    use super::{PAUSE, pause_suivante, regle, servir_la_demande};
 
     /// La prise prête, en attendant le fil d'écoute (créé après le bac à sable, qui ne vaut que pour les fils nés
     /// après lui).
@@ -71,8 +115,6 @@ mod linux {
     /// `vanguard` a vérifié que ce qui écoute à la place de la prise n'est pas une fenêtre de Vanguard qui répond
     /// (`--remplacer-prise`) : la nouvelle fenêtre la remplace même vivante.
     static REMPLACER: AtomicBool = AtomicBool::new(false);
-    /// La première pause après une erreur d'acceptation ; doublée à chaque erreur suivante, `DELAI` au plus.
-    const PAUSE: Duration = Duration::from_millis(100);
 
     /// Permet à `preparer` de remplacer une prise vivante (option `--remplacer-prise`, donnée par `vanguard`).
     pub fn permettre_remplacement() {
@@ -113,11 +155,8 @@ mod linux {
             return;
         };
         let _ = std::thread::Builder::new().name("une-fenetre".into()).spawn(move || {
-            servir(&prise, systeme::uid(), || {
-                if let Some(r) = REVEIL.get() {
-                    r();
-                }
-            });
+            // Vrai seulement quand la toile existe : avant, personne ne reviendrait devant.
+            servir(&prise, systeme::uid(), || REVEIL.get().map(|r| r()).is_some());
         });
     }
 
@@ -130,45 +169,47 @@ mod linux {
 
     /// Sert les connexions une à une, pour toujours (le fil finit avec la fenêtre). Une acceptation qui échoue
     /// (trop de descripteurs ouverts, mémoire) attend avant la suivante, de plus en plus : pas de boucle folle.
-    pub(crate) fn servir(prise: &UnixListener, moi: u32, reveiller: impl Fn()) {
+    pub(crate) fn servir(prise: &UnixListener, moi: u32, reveiller: impl Fn() -> bool) {
         let mut derniere: Option<Instant> = None;
         let mut pause = PAUSE;
         loop {
-            let Ok((flux, _)) = prise.accept() else {
+            let Ok((mut flux, _)) = prise.accept() else {
                 std::thread::sleep(pause);
-                pause = pause.saturating_mul(2).min(regle::DELAI);
+                pause = pause_suivante(pause);
                 continue;
             };
             pause = PAUSE;
-            if repondre(flux, moi) && a_son_tour(&mut derniere) {
-                DEMANDEE.store(true, std::sync::atomic::Ordering::Release);
-                reveiller();
+            let Some(jeton) = lire_la_demande(&mut flux, moi) else {
+                continue;
+            };
+            if let Some(reponse) = servir_la_demande(&jeton, &mut derniere, &reveiller) {
+                let _ = flux.write_all(&reponse);
             }
         }
     }
 
     /// Une connexion : du même compte ; l'accueil envoyé (il porte, par le noyau, ce processus-ci, que le client
-    /// vérifie) ; un seul octet lu (`DELAI + VERIFICATION` au plus : le client vérifie entre les deux) ; « ok »
-    /// répondu à la seule demande connue. Vrai si c'était elle.
-    fn repondre(mut flux: UnixStream, moi: u32) -> bool {
-        if systeme::compte_d_en_face(&flux) != Some(moi) {
-            return false;
+    /// vérifie) ; la demande lue en entier (`DELAI + VERIFICATION` au plus, en tout : le client vérifie entre les
+    /// deux, et un client qui goutte ses octets ne tient pas plus). Son nombre, si c'était bien une demande.
+    fn lire_la_demande(flux: &mut UnixStream, moi: u32) -> Option<[u8; regle::JETON]> {
+        if systeme::compte_d_en_face(flux) != Some(moi) || flux.set_write_timeout(Some(regle::DELAI)).is_err() {
+            return None;
         }
-        if flux.set_read_timeout(Some(regle::DELAI + regle::VERIFICATION)).is_err()
-            || flux.set_write_timeout(Some(regle::DELAI)).is_err()
-        {
-            return false;
+        flux.write_all(&[regle::ACCUEIL]).ok()?;
+        let fin = Instant::now().checked_add(regle::DELAI + regle::VERIFICATION)?;
+        let mut lu = [0u8; regle::TAILLE];
+        let mut n = 0;
+        while n < lu.len() {
+            let reste = fin.saturating_duration_since(Instant::now());
+            if reste.is_zero() || flux.set_read_timeout(Some(reste)).is_err() {
+                return None;
+            }
+            match flux.read(lu.get_mut(n..)?) {
+                Ok(0) | Err(_) => return None,
+                Ok(k) => n += k,
+            }
         }
-        if flux.write_all(&[regle::ACCUEIL]).is_err() {
-            return false;
-        }
-        let mut octet = [0u8; 1];
-        let lu = flux.read_exact(&mut octet).ok().map(|()| octet[0]);
-        if !juger(lu) {
-            return false;
-        }
-        let _ = flux.write_all(&[regle::REPONSE]);
-        true
+        regle::jeton_de_la_demande(&lu)
     }
 
     // raison : FFI de libc (getuid, getsockopt SO_PEERCRED, une connexion non bloquante), que std ne fait pas.
@@ -263,52 +304,73 @@ mod linux {
         }
 
         fn serveur(d: &std::path::Path) -> (std::path::PathBuf, std::sync::mpsc::Receiver<()>) {
-            serveur_pour(d, systeme::uid())
+            serveur_pour(d, systeme::uid(), true)
         }
 
-        /// Un serveur qui n'accepte que le compte `moi`.
-        fn serveur_pour(d: &std::path::Path, moi: u32) -> (std::path::PathBuf, std::sync::mpsc::Receiver<()>) {
+        /// Un serveur qui n'accepte que le compte `moi` ; `fenetre` : une fenêtre existe-t-elle à ramener ?
+        fn serveur_pour(
+            d: &std::path::Path,
+            moi: u32,
+            fenetre: bool,
+        ) -> (std::path::PathBuf, std::sync::mpsc::Receiver<()>) {
             let chemin = d.join("p.prise");
             let prise = UnixListener::bind(&chemin).unwrap();
             let (envoi, reception) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 servir(&prise, moi, move || {
-                    let _ = envoi.send(());
+                    if fenetre {
+                        let _ = envoi.send(());
+                    }
+                    fenetre
                 });
             });
             (chemin, reception)
         }
 
-        /// Se branche, lit l'accueil, envoie `octets`, rend la réponse.
-        fn demander(chemin: &std::path::Path, octets: &[u8]) -> Option<u8> {
+        /// Un nombre de demande d'essai, différent à chaque appel.
+        fn jeton(n: u8) -> [u8; regle::JETON] {
+            let mut j = [0x5A; regle::JETON];
+            j[0] = n;
+            j[regle::JETON - 1] = n.wrapping_mul(7);
+            j
+        }
+
+        /// Se branche, lit l'accueil, envoie `octets`, rend la réponse (vide si rien n'est venu).
+        fn demander(chemin: &std::path::Path, octets: &[u8]) -> Vec<u8> {
             let mut f = UnixStream::connect(chemin).unwrap();
             // Un client muet devant lui tient le serveur `DELAI + VERIFICATION` : l'accueil peut attendre autant.
             f.set_read_timeout(Some(regle::DELAI + regle::VERIFICATION + Duration::from_secs(2)))
                 .unwrap();
             let mut accueil = [0u8; 1];
-            f.read_exact(&mut accueil).ok()?;
+            if f.read_exact(&mut accueil).is_err() {
+                return Vec::new();
+            }
             assert_eq!(accueil, [regle::ACCUEIL]);
             f.write_all(octets).unwrap();
-            let mut r = [0u8; 1];
-            f.read_exact(&mut r).ok().map(|()| r[0])
+            let mut r = Vec::new();
+            let _ = f.read_to_end(&mut r);
+            r
         }
 
-        /// La seule demande connue est répondue « ok » et réveille la fenêtre ; un autre octet, un flot d'octets
-        /// commençant autrement, ou un client muet n'obtiennent rien et ne bloquent pas le suivant au-delà de DELAI.
+        /// La demande est répondue en renvoyant son nombre, et réveille la fenêtre ; un autre message (premier
+        /// octet faux, flot d'octets), ou un client muet n'obtiennent rien et ne bloquent pas le suivant au-delà de
+        /// `DELAI + VERIFICATION`.
         #[test]
         fn seule_la_demande_connue_est_repondue() {
             let d = dossier("serveur");
             let (chemin, reveil) = serveur(&d);
-            assert_eq!(demander(&chemin, &[regle::DEMANDE]), Some(regle::REPONSE));
+            assert_eq!(demander(&chemin, &regle::demande(&jeton(1))), regle::reponse(&jeton(1)));
             reveil.recv_timeout(Duration::from_secs(3)).unwrap();
             assert!(super::super::demandee());
-            assert_eq!(demander(&chemin, b"X"), None);
-            assert_eq!(demander(&chemin, &[b'Z'; 4096]), None);
-            // Un client muet : tenu DELAI au plus, puis le suivant passe.
+            let mut faux = regle::demande(&jeton(2));
+            faux[0] = b'X';
+            assert_eq!(demander(&chemin, &faux), Vec::<u8>::new());
+            assert_eq!(demander(&chemin, &[b'Z'; 4096]), Vec::<u8>::new());
+            // Un client muet : tenu DELAI + VERIFICATION au plus, puis le suivant passe.
             let _muet = UnixStream::connect(&chemin).unwrap();
             let debut = Instant::now();
-            std::thread::sleep(CADENCE_ESSAI);
-            assert_eq!(demander(&chemin, &[regle::DEMANDE]), Some(regle::REPONSE));
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(demander(&chemin, &regle::demande(&jeton(3))), regle::reponse(&jeton(3)));
             assert!(debut.elapsed() < regle::DELAI + regle::VERIFICATION + Duration::from_secs(2));
             // Rien d'autre n'a réveillé la fenêtre que les deux vraies demandes.
             reveil.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -316,29 +378,48 @@ mod linux {
             let _ = std::fs::remove_dir_all(&d);
         }
 
-        const CADENCE_ESSAI: Duration = Duration::from_millis(350);
+        /// Campagne, constat 6 : tant qu'aucune fenêtre n'existe (le fil d'écoute démarre avant elle), une demande
+        /// n'est pas répondue : `vanguard` ouvre une fenêtre plutôt que de croire en avoir ramené une.
+        #[test]
+        fn sans_fenetre_rien_n_est_repondu() {
+            let d = dossier("sans-fenetre");
+            let (chemin, _reveil) = serveur_pour(&d, systeme::uid(), false);
+            let debut = Instant::now();
+            assert_eq!(demander(&chemin, &regle::demande(&jeton(4))), Vec::<u8>::new());
+            assert!(
+                debut.elapsed() >= super::super::ATTENTE_FENETRE,
+                "la fenêtre a eu le temps de naître"
+            );
+            let _ = std::fs::remove_dir_all(&d);
+        }
 
         /// Un client d'un autre compte (SO_PEERCRED) n'obtient ni réponse ni réveil.
         #[test]
         fn un_autre_compte_n_obtient_rien() {
             let d = dossier("autre-compte");
-            let (chemin, reveil) = serveur_pour(&d, systeme::uid().wrapping_add(1));
-            assert_eq!(demander(&chemin, &[regle::DEMANDE]), None);
+            let (chemin, reveil) = serveur_pour(&d, systeme::uid().wrapping_add(1), true);
+            assert_eq!(demander(&chemin, &regle::demande(&jeton(5))), Vec::<u8>::new());
             assert!(reveil.recv_timeout(Duration::from_millis(300)).is_err());
             let _ = std::fs::remove_dir_all(&d);
         }
 
-        /// Une rafale de demandes ne réveille la fenêtre qu'une fois par CADENCE.
+        /// Campagne, constat 14 : une rafale de demandes est espacée de CADENCE, jamais sautée : chacune est
+        /// répondue et chacune a fait revenir la fenêtre (une réponse sans retour devant mentirait à `vanguard`).
         #[test]
-        fn une_rafale_est_bornee() {
+        fn une_rafale_attend_son_tour() {
             let d = dossier("rafale");
             let (chemin, reveil) = serveur(&d);
-            for _ in 0..20 {
-                assert_eq!(demander(&chemin, &[regle::DEMANDE]), Some(regle::REPONSE));
+            let debut = Instant::now();
+            for n in 0..5 {
+                assert_eq!(demander(&chemin, &regle::demande(&jeton(n))), regle::reponse(&jeton(n)));
             }
+            assert!(
+                debut.elapsed() >= super::super::CADENCE * 4,
+                "cadence gardée : {:?}",
+                debut.elapsed()
+            );
             std::thread::sleep(Duration::from_millis(100));
-            let reveils = reveil.try_iter().count();
-            assert!((1..=2).contains(&reveils), "{reveils} réveils pour une rafale de 20");
+            assert_eq!(reveil.try_iter().count(), 5, "un retour devant par réponse");
             let _ = std::fs::remove_dir_all(&d);
         }
 
@@ -393,16 +474,19 @@ mod linux {
 
 #[cfg(windows)]
 mod windows {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
-    use super::{DEMANDEE, a_son_tour, juger, regle};
+    use super::{PAUSE, pause_suivante, regle, servir_la_demande};
 
-    /// La première pause après une erreur d'attente de client ; doublée à chaque erreur suivante, `DELAI` au plus.
-    const PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+    /// Sans canal (le nom du tube est pris : une autre fenêtre de ce compte, ou un programme qui l'a créé avant),
+    /// la création est réessayée à cet intervalle : quand le nom se libère, cette fenêtre prend le canal.
+    const REESSAI: Duration = Duration::from_secs(2);
 
     /// Crée le tube et lance le fil d'écoute. `fenetre` : la poignée de la fenêtre (HWND), ramenée devant depuis ce
-    /// fil (sans passer par winit : sa demande de focus simule la touche Alt). Sans compte ou session lisibles, ou si
-    /// le tube existe déjà : pas de canal.
+    /// fil (sans passer par winit : sa demande de focus simule la touche Alt). Sans compte ou session lisibles : pas
+    /// de canal. Si le tube existe déjà : réessayé toutes les `REESSAI`, dans le fil d'écoute. La fenêtre n'a pas de
+    /// console où le dire (`windows_subsystem`) : c'est `vanguard` qui le dit au lancement suivant (canal refusé ou
+    /// fenêtre qui ne répond pas, une fenêtre de plus s'ouvre).
     pub fn ecouter(reveiller: impl Fn() + Send + 'static, fenetre: Option<isize>) {
         let Some(sid) = systeme::sid() else {
             return;
@@ -413,32 +497,33 @@ mod windows {
         let (Some(nom), Some(sddl)) = (regle::nom_tube(&sid, session), regle::sddl(&sid)) else {
             return;
         };
-        let Some(tube) = systeme::Tube::creer(&nom, &sddl) else {
-            // Le nom est déjà pris : une autre fenêtre de ce compte, ou un programme (d'un autre compte aussi) qui
-            // l'a créé avant. Dit, pour que « déjà ouverte » qui ne marche pas ait une raison visible.
-            eprintln!(
-                "vanguard-fenetre : {}",
-                crate::tr!(
-                    "le canal « une seule fenêtre » est déjà pris (une autre fenêtre, ou un autre programme) : \
-                     cette fenêtre ne pourra pas être ramenée",
-                    "the \"single window\" channel is already taken (another window, or another program): this \
-                     window cannot be brought back"
-                )
-            );
-            return;
-        };
+        // Premier essai ici, avant le premier dessin : le tube existe quand la fenêtre dit « ouverte » (fin du
+        // verrou des lancements), un second lancement le trouve.
+        let premier = systeme::Tube::creer(&nom, &sddl);
         let _ = std::thread::Builder::new().name("une-fenetre".into()).spawn(move || {
+            let tube = match premier {
+                Some(t) => t,
+                None => loop {
+                    std::thread::sleep(REESSAI);
+                    if let Some(t) = systeme::Tube::creer(&nom, &sddl) {
+                        break t;
+                    }
+                },
+            };
             servir(&tube, session, || {
-                if let Some(h) = fenetre {
-                    systeme::lever(h);
-                }
+                // Sans poignée de fenêtre, personne à ramener : rien n'est répondu.
+                let Some(h) = fenetre else {
+                    return false;
+                };
+                systeme::lever(h);
                 reveiller();
+                true
             });
         });
     }
 
     /// Sert les connexions une à une, pour toujours (le fil finit avec la fenêtre).
-    pub(crate) fn servir(tube: &systeme::Tube, session: u32, reveiller: impl Fn()) {
+    pub(crate) fn servir(tube: &systeme::Tube, session: u32, reveiller: impl Fn() -> bool) {
         let mut derniere: Option<Instant> = None;
         let mut pause = PAUSE;
         loop {
@@ -447,20 +532,19 @@ mod windows {
                 // couper la rend utilisable. Une erreur durable : une pause qui double, pas de boucle folle.
                 tube.couper();
                 std::thread::sleep(pause);
-                pause = pause.saturating_mul(2).min(regle::DELAI);
+                pause = pause_suivante(pause);
                 continue;
             }
             pause = PAUSE;
             // Le client vérifie ce tube entre son branchement et sa demande : `VERIFICATION` de plus pour lui.
-            let demande =
-                tube.session_du_client() == Some(session) && juger(tube.lire_un(regle::DELAI + regle::VERIFICATION));
-            if demande {
-                let tour = a_son_tour(&mut derniere);
-                if tour {
-                    DEMANDEE.store(true, std::sync::atomic::Ordering::Release);
-                    reveiller();
-                }
-                tube.ecrire_un(regle::REPONSE);
+            let jeton = if tube.session_du_client() == Some(session) {
+                tube.lire_message(regle::DELAI + regle::VERIFICATION)
+                    .and_then(|lu| regle::jeton_de_la_demande(&lu))
+            } else {
+                None
+            };
+            if let Some(reponse) = jeton.and_then(|j| servir_la_demande(&j, &mut derniere, &reveiller)) {
+                tube.ecrire(&reponse);
                 // Le client lit puis ferme : attendu, borné, avant de couper (couper jette ce qui n'est pas lu).
                 tube.attendre_fermeture(regle::DELAI);
             }
@@ -691,31 +775,52 @@ mod windows {
                 ok.then_some(disponibles)
             }
 
-            /// Un octet, attendu `delai` au plus (sans quoi une lecture sur un client muet ne rendrait jamais la
-            /// main).
-            pub(crate) fn lire_un(&self, delai: Duration) -> Option<u8> {
+            /// Un message de `TAILLE` octets, reçu en entier en `delai` au plus (sans quoi une lecture sur un client
+            /// muet, ou qui goutte ses octets, ne rendrait jamais la main). Seuls les octets déjà là sont lus : la
+            /// lecture ne bloque jamais.
+            pub(crate) fn lire_message(&self, delai: Duration) -> Option<[u8; super::regle::TAILLE]> {
                 let fin = Instant::now().checked_add(delai).unwrap_or_else(Instant::now);
-                loop {
-                    match self.disponibles()? {
-                        0 if Instant::now() < fin => std::thread::sleep(Duration::from_millis(20)),
-                        0 => return None,
-                        _ => break,
+                let mut lu = [0u8; super::regle::TAILLE];
+                let mut n = 0usize;
+                while n < lu.len() {
+                    let disponibles = usize::try_from(self.disponibles()?).unwrap_or(0);
+                    if disponibles == 0 {
+                        if Instant::now() >= fin {
+                            return None;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
                     }
+                    let voulus = u32::try_from(disponibles.min(lu.len() - n)).ok()?;
+                    let mut lus = 0u32;
+                    // SAFETY: au plus `voulus` octets écrits à partir de `lu[n]`, et `n + voulus <= TAILLE` : dans le
+                    // tableau, à nous ; ces octets sont déjà dans le tube (la lecture ne bloque pas).
+                    let ok = unsafe {
+                        ReadFile(
+                            self.0,
+                            lu.as_mut_ptr().add(n),
+                            voulus,
+                            &raw mut lus,
+                            std::ptr::null_mut(),
+                        )
+                    } != 0;
+                    if !ok || lus == 0 {
+                        return None;
+                    }
+                    n += usize::try_from(lus).ok()?;
                 }
-                let mut octet = 0u8;
-                let mut lus = 0u32;
-                // SAFETY: un octet au plus écrit dans `octet`, à nous ; des octets sont disponibles (la lecture ne
-                // bloque pas).
-                let ok = unsafe { ReadFile(self.0, &raw mut octet, 1, &raw mut lus, std::ptr::null_mut()) } != 0;
-                (ok && lus == 1).then_some(octet)
+                Some(lu)
             }
 
-            /// Écrit un octet (le tampon du tube en a la place : l'écriture ne bloque pas).
-            pub(crate) fn ecrire_un(&self, octet: u8) {
+            /// Écrit `octets` (le tampon du tube en a la place : l'écriture ne bloque pas).
+            pub(crate) fn ecrire(&self, octets: &[u8]) {
+                let Ok(taille) = u32::try_from(octets.len()) else {
+                    return;
+                };
                 let mut ecrits = 0u32;
-                // SAFETY: un octet lu depuis `octet`, à nous ; la poignée est ouverte.
+                // SAFETY: `taille` octets lus depuis `octets`, à nous et vivant ; la poignée est ouverte.
                 unsafe {
-                    WriteFile(self.0, &raw const octet, 1, &raw mut ecrits, std::ptr::null_mut());
+                    WriteFile(self.0, octets.as_ptr(), taille, &raw mut ecrits, std::ptr::null_mut());
                 }
             }
 
@@ -822,9 +927,9 @@ mod windows {
         }
 
         /// Un client : ouvre le tube (occupé par le client d'avant, réessayé deux secondes au plus, comme
-        /// `vanguard`), écrit `octets`, lit la réponse.
-        fn client(n: &str, octets: &[u8]) -> Option<u8> {
-            let fin = std::time::Instant::now() + Duration::from_secs(2);
+        /// `vanguard`), écrit `octets`, lit la réponse (vide si rien n'est venu).
+        fn client(n: &str, octets: &[u8]) -> Vec<u8> {
+            let fin = std::time::Instant::now() + Duration::from_secs(8);
             let mut f = loop {
                 match std::fs::OpenOptions::new().read(true).write(true).open(n) {
                     Ok(f) => break f,
@@ -834,26 +939,47 @@ mod windows {
                     Err(e) => panic!("tube injoignable : {e}"),
                 }
             };
-            f.write_all(octets).ok()?;
-            let mut r = [0u8; 1];
-            f.read_exact(&mut r).ok().map(|()| r[0])
+            if f.write_all(octets).is_err() {
+                return Vec::new();
+            }
+            let mut r = Vec::new();
+            let _ = f.read_to_end(&mut r);
+            r
         }
 
-        /// La seule demande connue est répondue « ok » et réveille la fenêtre ; un autre octet n'obtient rien.
-        #[test]
-        fn seule_la_demande_est_repondue() {
-            let n = nom("demande");
-            let tube = systeme::Tube::creer(&n, &sddl()).expect("tube");
+        fn jeton(n: u8) -> [u8; regle::JETON] {
+            let mut j = [0xA5; regle::JETON];
+            j[0] = n;
+            j
+        }
+
+        /// Le vrai serveur sur le tube `n`, dans un fil ; `fenetre` : une fenêtre existe-t-elle à ramener ? `decaler`
+        /// : la session attendue, décalée pour jouer un client d'une autre session.
+        fn lancer(n: &str, fenetre: bool, decaler: u32) -> std::sync::mpsc::Receiver<()> {
+            let tube = systeme::Tube::creer(n, &sddl()).expect("tube");
             let session = systeme::session_de(std::process::id()).expect("session");
             let (envoi, reveil) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                servir(&tube, session, move || {
-                    let _ = envoi.send(());
+                servir(&tube, session.wrapping_add(decaler), move || {
+                    if fenetre {
+                        let _ = envoi.send(());
+                    }
+                    fenetre
                 });
             });
-            assert_eq!(client(&n, &[regle::DEMANDE]), Some(regle::REPONSE));
+            reveil
+        }
+
+        /// La demande est répondue en renvoyant son nombre et réveille la fenêtre ; un autre message n'obtient rien.
+        #[test]
+        fn seule_la_demande_est_repondue() {
+            let n = nom("demande");
+            let reveil = lancer(&n, true, 0);
+            assert_eq!(client(&n, &regle::demande(&jeton(1))), regle::reponse(&jeton(1)));
             reveil.recv_timeout(Duration::from_secs(3)).expect("réveil");
-            assert_eq!(client(&n, b"X"), None);
+            let mut faux = regle::demande(&jeton(2));
+            faux[0] = b'X';
+            assert_eq!(client(&n, &faux), Vec::<u8>::new());
             assert!(reveil.recv_timeout(Duration::from_millis(300)).is_err());
         }
 
@@ -861,10 +987,49 @@ mod windows {
         #[test]
         fn une_autre_session_n_obtient_rien() {
             let n = nom("session");
+            let reveil = lancer(&n, true, 1);
+            assert_eq!(client(&n, &regle::demande(&jeton(3))), Vec::<u8>::new());
+            assert!(reveil.try_recv().is_err());
+        }
+
+        /// Campagne, constat 6 : sans fenêtre à ramener, rien n'est répondu.
+        #[test]
+        fn sans_fenetre_rien_n_est_repondu() {
+            let n = nom("sans-fenetre");
+            let _reveil = lancer(&n, false, 0);
+            assert_eq!(client(&n, &regle::demande(&jeton(4))), Vec::<u8>::new());
+        }
+
+        /// Campagne, constat 14 : une rafale attend son tour ; chaque réponse a fait revenir la fenêtre.
+        #[test]
+        fn une_rafale_attend_son_tour() {
+            let n = nom("rafale");
+            let reveil = lancer(&n, true, 0);
+            let debut = std::time::Instant::now();
+            for k in 0..3 {
+                assert_eq!(client(&n, &regle::demande(&jeton(k))), regle::reponse(&jeton(k)));
+            }
+            assert!(debut.elapsed() >= super::super::CADENCE * 2, "{:?}", debut.elapsed());
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(reveil.try_iter().count(), 3);
+        }
+
+        /// Campagne, constat 35 : un client venu et reparti avant que le serveur l'attende (ERROR_NO_DATA) ne
+        /// bloque pas le tube : coupé, il sert le client suivant.
+        #[test]
+        fn un_client_deja_parti_ne_bloque_pas_le_tube() {
+            let n = nom("parti");
             let tube = systeme::Tube::creer(&n, &sddl()).expect("tube");
+            drop(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&n)
+                    .expect("client parti"),
+            );
             let session = systeme::session_de(std::process::id()).expect("session");
-            std::thread::spawn(move || servir(&tube, session.wrapping_add(1), || {}));
-            assert_eq!(client(&n, &[regle::DEMANDE]), None);
+            std::thread::spawn(move || servir(&tube, session, || true));
+            assert_eq!(client(&n, &regle::demande(&jeton(5))), regle::reponse(&jeton(5)));
         }
     }
 }
@@ -873,20 +1038,44 @@ mod windows {
 mod tests {
     use super::*;
 
+    /// Une demande trop proche attend le reste de la cadence ; une demande assez loin, ou la première, n'attend pas.
     #[test]
-    fn seul_l_octet_de_demande_compte() {
-        assert!(juger(Some(regle::DEMANDE)));
-        for autre in [None, Some(0), Some(regle::REPONSE), Some(b'v'), Some(0xFF)] {
-            assert!(!juger(autre), "{autre:?}");
-        }
+    fn attente_du_tour_bornee() {
+        let maintenant = Instant::now();
+        assert_eq!(attente_du_tour(None, maintenant), Duration::ZERO);
+        assert_eq!(attente_du_tour(Some(maintenant), maintenant), CADENCE);
+        let il_y_a = |ms| maintenant.checked_sub(Duration::from_millis(ms)).unwrap();
+        assert_eq!(
+            attente_du_tour(Some(il_y_a(100)), maintenant),
+            Duration::from_millis(200)
+        );
+        assert_eq!(attente_du_tour(Some(il_y_a(300)), maintenant), Duration::ZERO);
+        assert_eq!(attente_du_tour(Some(il_y_a(5000)), maintenant), Duration::ZERO);
     }
 
+    /// Campagne, constat 35 : après des acceptations ratées, la pause double, plafonnée à `DELAI`, jamais nulle
+    /// (sans elle, une erreur qui dure ferait tourner le fil à fond).
     #[test]
-    fn cadence_bornee() {
-        let mut d = None;
-        assert!(a_son_tour(&mut d));
-        assert!(!a_son_tour(&mut d));
-        d = Instant::now().checked_sub(CADENCE + Duration::from_millis(1));
-        assert!(a_son_tour(&mut d));
+    fn la_pause_double_et_plafonne() {
+        let mut p = PAUSE;
+        let mut vues = vec![p];
+        for _ in 0..10 {
+            p = pause_suivante(p);
+            vues.push(p);
+        }
+        assert_eq!(vues[1], PAUSE * 2);
+        assert_eq!(vues[2], PAUSE * 4);
+        assert_eq!(*vues.last().unwrap(), regle::DELAI);
+        assert!(vues.iter().all(|v| *v >= PAUSE && *v <= regle::DELAI));
+    }
+
+    /// Une fenêtre qui naît pendant l'attente est ramenée ; aucune fenêtre au bout de `ATTENTE_FENETRE` : non.
+    #[test]
+    fn faire_revenir_attend_la_fenetre() {
+        let debut = Instant::now();
+        assert!(!faire_revenir(&|| false));
+        assert!(debut.elapsed() >= ATTENTE_FENETRE);
+        let essais = std::sync::atomic::AtomicU32::new(0);
+        assert!(faire_revenir(&|| essais.fetch_add(1, Ordering::Relaxed) >= 2));
     }
 }

@@ -4,19 +4,27 @@
 //! Un second lancement interactif de `vanguard` ne rouvre pas une fenêtre : il demande à celle qui est déjà ouverte
 //! de revenir devant. Le canal est privé au compte (Linux : une prise Unix dans un dossier de `XDG_RUNTIME_DIR` à ce
 //! compte seul ; Windows : un tube nommé dont le propriétaire et la liste d'accès ne nomment que ce compte, lié à sa
-//! session), et le message est fermé : un octet d'accueil (Linux), un octet « montre-toi », un octet « ok ». Rien
-//! d'autre n'est lu ni interprété. Avant d'envoyer la demande, `vanguard` vérifie que le programme qui lui parle
-//! est la fenêtre qu'il aurait lancée (même compte, même empreinte d'image). Ce qui est garanti, et ce qui ne l'est
-//! pas (un programme du même compte qui pilote la vraie image), est écrit dans MODELE-DE-MENACE.md.
+//! session), et le message est fermé : un octet d'accueil (Linux) ; la demande, un octet « montre-toi » suivi d'un
+//! nombre aléatoire frais (`JETON` octets) ; la réponse, un octet « ok » suivi du même nombre. La réponse est ainsi
+//! liée à cette demande-ci : un « ok » posé d'avance dans le canal, ou rejoué, ne vaut rien. Rien d'autre n'est lu
+//! ni interprété. Avant d'envoyer la demande, `vanguard` vérifie que le programme qui lui parle est la fenêtre qu'il
+//! aurait lancée (même compte, même empreinte d'image). Ce qui est garanti, et ce qui ne l'est pas (un programme du
+//! même compte qui pilote la vraie image), est écrit dans MODELE-DE-MENACE.md.
 //!
-//! Ce fichier ne fait que des calculs (noms, jugements) : ni appel au système, ni texte, ni `unsafe`.
+//! Ce fichier fait des calculs (noms, messages, jugements) et, sous Linux, crée et vérifie le dossier de la prise
+//! (`dossier_prive`) ; ni texte pour la personne, ni `unsafe`.
 
 use std::time::Duration;
 
-/// Le seul octet que `vanguard` envoie : « montre-toi ».
+/// Le premier octet de la demande de `vanguard` : « montre-toi ».
 pub const DEMANDE: u8 = b'V';
-/// Le seul octet que la fenêtre répond : « ok, je reviens devant ».
+/// Le premier octet de la réponse de la fenêtre : « ok, je suis revenue devant ».
 pub const REPONSE: u8 = b'K';
+/// La taille du nombre aléatoire qui suit `DEMANDE` et que la fenêtre renvoie après `REPONSE` : 128 bits, qu'un
+/// programme qui n'a pas lu la demande ne devine pas.
+pub const JETON: usize = 16;
+/// La taille d'une demande et d'une réponse : l'octet, puis le jeton. Rien de plus n'est lu.
+pub const TAILLE: usize = 1 + JETON;
 /// Linux : le premier octet, envoyé par la fenêtre dès la connexion acceptée. Il ne dit rien ; il porte, attachés
 /// par le noyau, le processus qui l'envoie (SCM_CREDENTIALS, SCM_PIDFD) : c'est ce processus-là, celui qui parle,
 /// que `vanguard` vérifie, et non celui qui a ouvert l'écoute (qui peut avoir passé la prise à un autre).
@@ -28,6 +36,45 @@ pub const DELAI: Duration = Duration::from_millis(1500);
 /// Le temps laissé à `vanguard` pour vérifier qui parle (lire l'image d'une dizaine de Mio et en faire l'empreinte)
 /// entre le branchement et la demande ; la fenêtre attend la demande `DELAI + VERIFICATION` au plus.
 pub const VERIFICATION: Duration = Duration::from_millis(3000);
+/// La demande, faite du jeton `jeton` (tiré au hasard par `vanguard`, à chaque demande).
+#[must_use]
+pub fn demande(jeton: &[u8; JETON]) -> [u8; TAILLE] {
+    message(DEMANDE, jeton)
+}
+
+/// La réponse à la demande qui portait `jeton`.
+#[must_use]
+pub fn reponse(jeton: &[u8; JETON]) -> [u8; TAILLE] {
+    message(REPONSE, jeton)
+}
+
+fn message(premier: u8, jeton: &[u8; JETON]) -> [u8; TAILLE] {
+    let mut m = [premier; TAILLE];
+    for (case, &o) in m.iter_mut().skip(1).zip(jeton) {
+        *case = o;
+    }
+    m
+}
+
+/// Ce que la fenêtre a lu est-il une demande ? Son jeton, à renvoyer ; `None` pour tout autre message (taille ou
+/// premier octet faux).
+#[must_use]
+// Lu par la fenêtre (fenetre/, qui inclut ce fichier) et par les essais ; pas par `vanguard`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn jeton_de_la_demande(lu: &[u8]) -> Option<[u8; JETON]> {
+    let (&premier, reste) = lu.split_first()?;
+    if premier != DEMANDE {
+        return None;
+    }
+    reste.try_into().ok()
+}
+
+/// Ce que `vanguard` a lu est-il la réponse à sa demande (celle qui portait `jeton`) ?
+#[must_use]
+pub fn reponse_juste(lu: &[u8], jeton: &[u8; JETON]) -> bool {
+    lu == reponse(jeton)
+}
+
 /// Le sous-dossier de `XDG_RUNTIME_DIR` (Linux) où vit la prise.
 #[cfg(unix)]
 pub const SOUS_DOSSIER: &str = "vanguard";
@@ -207,6 +254,7 @@ mod tests {
 
     #[test]
     fn nom_de_tube_lie_au_compte_et_a_la_session() {
+        // Le SID d'exemple de la documentation de Microsoft (aucun compte réel).
         let sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
         assert_eq!(
             nom_tube(sid, 2).as_deref(),
@@ -230,5 +278,30 @@ mod tests {
             assert_eq!(nom_tube(piege, 1), None, "{piege:?}");
             assert_eq!(sddl(piege), None, "{piege:?}");
         }
+    }
+
+    /// La réponse est liée à la demande : même jeton, bon premier octet, bonne taille ; tout le reste est refusé.
+    #[test]
+    fn la_reponse_reprend_le_jeton_de_la_demande() {
+        let jeton = [7u8; JETON];
+        let d = demande(&jeton);
+        assert_eq!(d[0], DEMANDE);
+        assert_eq!(jeton_de_la_demande(&d), Some(jeton));
+        assert!(reponse_juste(&reponse(&jeton), &jeton));
+        let mut autre = jeton;
+        autre[JETON - 1] ^= 1;
+        assert!(!reponse_juste(&reponse(&autre), &jeton), "un autre jeton");
+        assert!(!reponse_juste(&[REPONSE], &jeton), "l'octet seul, sans jeton");
+        assert!(!reponse_juste(&d, &jeton), "la demande renvoyée telle quelle");
+        let mut longue = reponse(&jeton).to_vec();
+        longue.push(0);
+        assert!(!reponse_juste(&longue, &jeton), "un octet de trop");
+        assert_eq!(jeton_de_la_demande(&[DEMANDE]), None, "sans jeton");
+        assert_eq!(jeton_de_la_demande(&reponse(&jeton)), None, "pas une demande");
+        let mut d_longue = d.to_vec();
+        d_longue.push(0);
+        assert_eq!(jeton_de_la_demande(&d_longue), None, "une demande trop longue");
+        assert_eq!(jeton_de_la_demande(&d[..JETON]), None, "une demande trop courte");
+        assert_eq!(jeton_de_la_demande(&[]), None);
     }
 }

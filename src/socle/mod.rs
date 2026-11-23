@@ -40,7 +40,9 @@ pub(crate) use fichiers::{
     refus_du_systeme, verrou_remplace,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use identite::{Expediteur, brancher_avec_temoins, compte_d_en_face, pidfd_vivant, recevoir_avec_temoins};
+pub(crate) use identite::{
+    Expediteur, brancher_avec_temoins, compte_d_en_face, octet_en_attente, pidfd_vivant, recevoir_avec_temoins,
+};
 #[cfg(unix)]
 pub(crate) use identite::{ecrivable, euid, uid};
 #[cfg(unix)]
