@@ -27,7 +27,7 @@ mod couleurs;
 mod coulisses;
 mod dessin;
 mod donnees;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod essais;
 mod lanceur;
 mod langue;
@@ -43,11 +43,17 @@ mod sortie;
 mod temps;
 #[cfg(windows)]
 mod travail;
+mod une_fenetre;
 // La valeur tapée après le nom d'une commande de la console : le fichier de `vanguard console`, compilé ici à
 // l'identique (une seule règle des deux côtés). Le jugement des chemins réels n'y sert qu'au relais (Linux).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[path = "../../src/socle/valeur_console.rs"]
 mod valeur;
+// Une seule fenêtre : la règle de `vanguard`, compilée ici à l'identique (noms, jugements, octets échangés). Ce qui ne
+// sert qu'au client (le verrou, les noms de l'autre système) reste inutilisé ici.
+#[allow(dead_code)]
+#[path = "../../src/socle/une_fenetre.rs"]
+mod regle_une_fenetre;
 
 use std::process::ExitCode;
 

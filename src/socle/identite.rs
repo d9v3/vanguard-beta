@@ -1,6 +1,6 @@
-//! Le compte du processus (getuid, geteuid), ce qu'il peut écrire (faccessat) et, sous Linux, le compte du programme à
-//! l'autre bout d'une prise Unix (SO_PEERCRED) : quatre appels à libc, une fois ici, pour que les modules qui s'en
-//! servent (dont le client D-Bus que lit le banc de fuzzing) restent sans `unsafe`.
+//! Le compte du processus (getuid, geteuid), ce qu'il peut écrire (faccessat) et, sous Linux, le programme à l'autre
+//! bout d'une prise Unix (SO_PEERCRED, SO_PEERPIDFD) : quelques appels à libc, une fois ici, pour que les modules qui
+//! s'en servent (dont le client D-Bus que lit le banc de fuzzing) restent sans `unsafe`.
 
 // FFI de libc : getuid, geteuid, faccessat et getsockopt n'ont pas d'équivalent sûr dans std.
 #![allow(unsafe_code)]
@@ -58,6 +58,79 @@ pub(crate) fn compte_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<u32
         )
     };
     (r == 0).then_some(cred.uid)
+}
+
+/// Le processus et le compte à l'autre bout de la prise (SO_PEERCRED), tels que le noyau les a notés quand il s'est
+/// branché (pour un serveur : quand il s'est mis à écouter) ; `None` si la question échoue.
+#[cfg(target_os = "linux")]
+pub(crate) fn processus_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<(i32, u32)> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: u32::MAX,
+        gid: 0,
+    };
+    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
+    // une prise ouverte que `s` garde.
+    let r = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut taille,
+        )
+    };
+    (r == 0 && cred.pid > 0).then_some((cred.pid, cred.uid))
+}
+
+/// Un descripteur qui tient le processus à l'autre bout de la prise (SO_PEERPIDFD, Linux 6.5 et plus) : tant qu'il
+/// est ouvert, il désigne ce processus-là, jamais un autre qui aurait repris son numéro. `None` sur un noyau plus
+/// ancien ou si la question échoue.
+#[cfg(target_os = "linux")]
+pub(crate) fn pidfd_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // include/uapi/asm-generic/socket.h ; la caisse libc ne l'exporte pas encore pour Linux.
+    const SO_PEERPIDFD: libc::c_int = 77;
+    let mut fd: libc::c_int = -1;
+    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::c_int>()).ok()?;
+    // SAFETY: getsockopt écrit au plus `taille` octets (un entier) dans `fd`, à nous et vivant pendant l'appel, sur une
+    // prise ouverte que `s` garde.
+    let r = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            (&raw mut fd).cast(),
+            &raw mut taille,
+        )
+    };
+    if r != 0 || fd < 0 {
+        return None;
+    }
+    // SAFETY: le noyau vient de créer ce descripteur pour nous (O_CLOEXEC) ; personne d'autre ne le possède, il est
+    // refermé une seule fois, par l'OwnedFd.
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+/// Le processus tenu par `pidfd` vit-il encore ? pidfd_send_signal avec le signal 0 ne lui envoie rien : il dit
+/// seulement si le processus existe (ESRCH sinon).
+#[cfg(target_os = "linux")]
+pub(crate) fn pidfd_vivant(pidfd: &std::os::fd::OwnedFd) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: appel système sans mémoire à nous (info nulle), sur un descripteur ouvert que `pidfd` garde ; le signal 0
+    // ne fait que vérifier.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            0,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    r == 0
 }
 
 #[cfg(test)]

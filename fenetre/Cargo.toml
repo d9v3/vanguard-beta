@@ -57,6 +57,9 @@ glutin = { version = "0.32.3", default-features = false, features = ["egl", "way
 # zbus_names et zvariant_derive, dits abandonnés (RUSTSEC-2026-0370, 0371, 0372 : fondus dans zbus 6, qu'accesskit
 # n'utilise pas encore) ; deny.toml les refuse sans exception. À rouvrir quand accesskit passera à zbus 6.
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit"] }
+# La poignée (HWND) de la fenêtre, pour la ramener devant (une seule fenêtre). La version qu'eframe tire déjà : rien
+# de nouveau dans Cargo.lock.
+raw-window-handle = "0.6.2"
 
 [target.'cfg(unix)'.dependencies]
 # Arrêter : tuer tout le groupe de l'enfant (killpg), pas seulement `vanguard` : ses propres enfants partiraient sinon

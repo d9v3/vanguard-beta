@@ -656,10 +656,25 @@ gardes :
   fixe de `vanguard`, jamais un nom venu de l'extérieur. La note du bilan n'est montrée que si Vanguard la dit fiable
   (`fiable` dans `audit --json`) ; quand des points n'ont pas pu être vérifiés, la note est dite incomplète, à côté du
   chiffre, avec leur nombre.
-- **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucun serveur, aucune page web, et
-  n'exécute aucun JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et
-  langue ne sont pas gardés). Les commandes qu'elle lance joignent Internet comme dans le terminal (par exemple
-  `test-connexion`, `logiciels-perimes`).
+- **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucune page web, et n'exécute aucun
+  JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et langue ne sont
+  pas gardés). Sa seule écoute est le canal privé d'une seule fenêtre, ci-dessous. Les commandes qu'elle lance
+  joignent Internet comme dans le terminal (par exemple `test-connexion`, `logiciels-perimes`).
+- **Une seule fenêtre (0.98).** Relancer `vanguard` quand sa fenêtre est ouverte la ramène devant, sans en ouvrir une
+  deuxième. Le canal est privé au compte et à la session graphique : sous Linux, une prise Unix (jamais abstraite)
+  dans `XDG_RUNTIME_DIR/vanguard`, dossier créé en 0700 puis vérifié avec son parent (vrais dossiers, à ce compte,
+  fermés au groupe et aux autres), sans repli vers /tmp, créée avant le bac à sable ; sous Windows, un tube nommé
+  d'une seule instance (FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_REJECT_REMOTE_CLIENTS) dont la liste d'accès ne nomme
+  que ce compte, au nom lié à son SID et à sa session. Le message est fermé : un octet « montre-toi », un octet
+  « ok », délais courts, cadence bornée ; la fenêtre ne répond qu'à son compte (SO_PEERCRED) ou à sa session
+  (Windows), et rien d'autre n'est lu. Avant d'envoyer cet octet, `vanguard` vérifie que le programme à l'autre bout
+  est la fenêtre qu'il aurait lancée : même compte, puis l'empreinte de son exécutable égale à celle qu'il grave
+  (Linux : SO_PEERPIDFD et `/proc/<pid>/exe`, le processus encore vivant après la lecture ; Windows :
+  GetNamedPipeServerProcessId, même session, chemin de l'image) ; sinon il n'envoie rien, le dit, et ouvre sa
+  fenêtre comme avant. Deux lancements simultanés : un verrou par session, un seul ouvre. Sans dossier ou tube sûr
+  (pas de `XDG_RUNTIME_DIR`, dossier ouvert ou à un autre compte, noyau sans SO_PEERPIDFD), aucun canal : une
+  fenêtre de plus, comme avant, jamais un canal moins sûr. Les modes en ligne de commande ne sont pas concernés
+  (`src/demarrage/une_fenetre.rs`, `fenetre/src/une_fenetre.rs`, `src/socle/une_fenetre.rs`).
 - **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais (`vanguard-relais`)
   garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et no_new_privs,
   `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par son numéro

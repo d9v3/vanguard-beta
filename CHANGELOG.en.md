@@ -11,6 +11,12 @@ example, finds it, to rebuild it if needed.
 
 ## 0.98 (in preparation)
 
+- **Only one window.** Running `vanguard` again while its window is open brings that window to the front instead of
+  opening another one, on Linux and Windows. Commands (`vanguard bilan --json`…) do not change. The channel is
+  private to your account (Linux: a session folder only you can use; Windows: a pipe reserved to your account and
+  session), and nothing is sent on it before checking that it really is the Vanguard window (same account, same
+  fingerprint). If it is not, or if the channel cannot be made safe, a new window opens as before, and Vanguard
+  says so. Two launches at the same time open only one window.
 - **The “/” key everywhere.** In any menu, “/” opens “Search Vanguard”: all the tools, settings and guide, opened
   as from the home menu; Esc brings you back to the menu you came from. In a checklist, “/” only filters the list,
   to keep the boxes already checked.

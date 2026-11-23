@@ -512,6 +512,10 @@ struct Fenetre {
 }
 
 impl eframe::App for Fenetre {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        suivre_une_fenetre(ctx);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         mouvement::regler(ui.ctx(), self.appli.animations_reduites);
         // Avant tout : une touche qui saute l'ouverture ne va pas aux écrans.
@@ -567,6 +571,34 @@ fn annoncer_ouverte() {
     let _ = crate::sortie::vers_le_neant();
 }
 
+/// Lance l'écoute « une seule fenêtre » (un second `vanguard` la ramène devant). Sous Windows, avec la poignée de
+/// la fenêtre, levée depuis le fil d'écoute.
+fn ecouter_une_fenetre(cc: &eframe::CreationContext<'_>) {
+    let ctx = cc.egui_ctx.clone();
+    let reveiller = move || ctx.request_repaint();
+    #[cfg(target_os = "linux")]
+    crate::une_fenetre::ecouter(reveiller);
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+            _ => None,
+        };
+        crate::une_fenetre::ecouter(reveiller, hwnd);
+    }
+}
+
+/// À chaque image : une demande reçue fait revenir la fenêtre devant. Sous Linux, par egui (réduite : rouverte ;
+/// puis le focus, que le bureau accorde ou signale) ; `vanguard` demande aussi le focus à Hyprland. Sous Windows,
+/// rien ici : le fil d'écoute l'a déjà fait par la poignée de la fenêtre.
+fn suivre_une_fenetre(ctx: &egui::Context) {
+    if crate::une_fenetre::demandee() && cfg!(not(windows)) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
 /// Ouvre la fenêtre et rend la main quand elle se ferme.
 pub fn ouvrir(programme: Result<Programme, String>, depuis_vanguard: bool) -> Result<(), String> {
     let options = eframe::NativeOptions {
@@ -584,6 +616,7 @@ pub fn ouvrir(programme: Result<Programme, String>, depuis_vanguard: bool) -> Re
             polices(&cc.egui_ctx);
             let sombre = cc.egui_ctx.system_theme() != Some(egui::Theme::Light);
             appliquer_theme(&cc.egui_ctx, sombre);
+            ecouter_une_fenetre(cc);
             let ctx = cc.egui_ctx.clone();
             let mut appli = Appli::nouvelle(programme, Arc::new(move || ctx.request_repaint()));
             appli.sombre = sombre;

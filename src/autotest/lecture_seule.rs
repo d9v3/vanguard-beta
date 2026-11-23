@@ -568,6 +568,11 @@ mod tests {
                 "Démarrage commun (processus élevé) ou de la personne (Vanguard non élevé, son compte) : remise d'un fichier depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction) ; copie déposée sans écraser (create_new, jamais à travers un lien) dans la quarantaine vérifiée, retirée si l'écriture échoue ; la plus ancienne copie retirée après une question non annulable (« non » par défaut), hors bilan",
             ),
             (
+                "machine/windows/une_fenetre.rs",
+                1,
+                "tube nommé de la fenêtre déjà ouverte, ouvert en lecture et écriture pour un octet « montre-toi » : rien n'est écrit sur le disque",
+            ),
+            (
                 "machine/assistant.rs",
                 1,
                 "terminal de la personne (/dev/tty) ouvert pour demander l'accord d'un geste : rien n'est écrit sur le disque",

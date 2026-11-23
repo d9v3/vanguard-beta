@@ -73,6 +73,7 @@ pub(crate) mod signature;
 mod ssh;
 mod ssh_ecriture;
 mod taches_ecriture;
+pub(crate) mod une_fenetre;
 mod verrouillage;
 pub(crate) mod wmi;
 mod wmi_ecriture;

@@ -11,6 +11,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 ## 0.98 (en préparation)
 
+- **Une seule fenêtre.** Relancer `vanguard` quand sa fenêtre est déjà ouverte la ramène devant au lieu d'en
+  ouvrir une autre, sous Linux et Windows. Les commandes (`vanguard bilan --json`…) ne changent pas. Le canal est
+  privé au compte (Linux : un dossier de session à vous seul ; Windows : un tube réservé à votre compte et à votre
+  session), et rien n'y est envoyé avant d'avoir vérifié que c'est bien la fenêtre de Vanguard (même compte, même
+  empreinte). Si ce n'est pas elle, ou si le canal ne peut pas être sûr, une nouvelle fenêtre s'ouvre comme avant,
+  et Vanguard le dit. Deux lancements en même temps n'ouvrent qu'une fenêtre.
 - **Touche « / » partout.** Dans n'importe quel menu, « / » ouvre « Rechercher dans Vanguard » : les outils, les
   réglages et le guide entiers, ouverts comme depuis l'accueil ; Échap ramène au menu d'où vous veniez. Dans une
   liste à cocher, « / » ne filtre que la liste, pour garder les cases déjà cochées.

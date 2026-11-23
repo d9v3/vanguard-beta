@@ -9,3 +9,6 @@ pub(crate) mod empreinte_fenetre;
 pub(crate) mod lancer_fenetre;
 #[cfg(target_os = "linux")]
 pub(crate) mod memfd;
+// Une seule fenêtre : la déjà ouverte est ramenée devant au lieu d'en ouvrir une seconde.
+#[cfg(any(target_os = "linux", windows))]
+mod une_fenetre;

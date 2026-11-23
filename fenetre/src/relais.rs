@@ -452,6 +452,9 @@ pub fn separer() {
                 }
                 Ok(pid) => {
                     drop(relais);
+                    // La prise « une seule fenêtre » : après la séparation (le relais ne la garde pas), avant le bac
+                    // (qui interdit d'en créer).
+                    crate::une_fenetre::preparer();
                     let bac = crate::bac_a_sable::restreindre();
                     let _ = CLIENT.set(Client::demarrer(fenetre, Some(pid)));
                     bac.phrase()
@@ -464,7 +467,9 @@ pub fn separer() {
     let _ = ETAT.set(etat);
 }
 
+/// Sans relais : la fenêtre reste libre, sa prise « une seule fenêtre » se crée quand même.
 fn absent(e: &str) -> (String, bool) {
+    crate::une_fenetre::preparer();
     crate::bac_a_sable::Bac::Absent {
         raison: crate::trf!(
             "le relais n'a pas pu démarrer : {}",

@@ -20,6 +20,8 @@ pub(crate) mod processus;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub(crate) mod relro;
 pub(crate) mod systeme;
+// Une seule fenêtre : la règle partagée avec vanguard-fenetre (noms du canal, jugement du dossier, octets échangés).
+pub(crate) mod une_fenetre;
 // Linux et Windows seulement : la descente sans lien de la Console (openat ; FILE_FLAG_OPEN_REPARSE_POINT).
 #[cfg(any(target_os = "linux", windows))]
 pub(crate) mod ouvrir_console;
@@ -38,7 +40,7 @@ pub(crate) use fichiers::{
     refus_du_systeme, verrou_remplace,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use identite::compte_d_en_face;
+pub(crate) use identite::{compte_d_en_face, pidfd_d_en_face, pidfd_vivant, processus_d_en_face};
 #[cfg(unix)]
 pub(crate) use identite::{ecrivable, euid, uid};
 #[cfg(unix)]

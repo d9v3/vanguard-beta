@@ -402,6 +402,16 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
     }
     match lancer(&chemin, programme) {
         Lancement::Ouverte => return true,
+        Lancement::Ramenee => {
+            eprintln!(
+                "{}",
+                tr!(
+                    "La fenêtre de Vanguard est déjà ouverte : elle revient devant.",
+                    "The Vanguard window is already open: it comes back to the front."
+                )
+            );
+            return true;
+        }
         Lancement::Refusee(r) => eprintln!(
             "{}",
             trf!(
@@ -426,6 +436,9 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
 enum Lancement {
     /// Elle a dit « ouverte ».
     Ouverte,
+    /// Déjà ouverte (vérifiée : la fenêtre de Vanguard de ce compte et de cette session) : ramenée devant, rien de
+    /// lancé.
+    Ramenee,
     /// Pas lancée : la raison.
     Refusee(String),
     /// Lancée, mais elle n'a pas dit « ouverte » à temps (arrêtée).
@@ -746,6 +759,30 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
             .into(),
         );
     };
+    // Une seule fenêtre : celle qui est déjà ouverte, si c'est bien elle, revient devant. Le tour (son verrou) vit
+    // jusqu'à la fin de ce lancement : un second lancement simultané attend que celle-ci ait dit « ouverte », puis la
+    // ramène. Un canal refusé ou impossible est dit, et la fenêtre s'ouvre comme avant.
+    let tour = super::une_fenetre::ramener(&attendue, chemin);
+    match &tour.issue {
+        super::une_fenetre::Issue::Ramenee => return Lancement::Ramenee,
+        super::une_fenetre::Issue::Personne => {}
+        super::une_fenetre::Issue::Refusee(r) => eprintln!(
+            "{}",
+            trf!(
+                "Fenêtre déjà ouverte non ramenée ({}) : rien ne lui est envoyé, une nouvelle s'ouvre.",
+                "Already open window not brought back ({}): nothing is sent to it, a new one opens.",
+                r
+            )
+        ),
+        super::une_fenetre::Issue::Indisponible(r) => eprintln!(
+            "{}",
+            trf!(
+                "Une seule fenêtre impossible ici ({}) : une nouvelle s'ouvre.",
+                "Single window impossible here ({}): a new one opens.",
+                r
+            )
+        ),
+    }
     // Ce programme-ci d'abord : sans son empreinte, la fenêtre refuserait chaque commande (`--empreinte-vanguard`).
     let soi = match empreinte_de_soi() {
         Ok(e) => e,
@@ -779,7 +816,9 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
     // ni un Ctrl+C tapé ensuite dans ce terminal.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    attendre_ouverte(c)
+    let lancement = attendre_ouverte(c);
+    drop(tour);
+    lancement
 }
 
 /// Démarre la commande de la fenêtre et attend qu'elle dise « ouverte » (`ATTENTE` au plus), sinon l'arrête.
