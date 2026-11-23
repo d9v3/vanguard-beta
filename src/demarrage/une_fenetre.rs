@@ -1102,6 +1102,9 @@ mod tests {
             }
             // Ce processus (la bonne image) accueille, puis un autre (la copie modifiée) lit la demande et répond.
             "accueil-puis-un-autre" => {
+                // La copie (le programme d'essai entier) se fait avant « pret » : faite après l'accueil, sous la
+                // charge des autres essais, elle mangeait le `DELAI` de la réponse et l'essai voyait une fenêtre muette.
+                let copie = copie_modifiee();
                 let ecoute = lier();
                 dire("pret");
                 accepter(&ecoute, |mut flux| {
@@ -1110,7 +1113,7 @@ mod tests {
                         return;
                     }
                     transmissible(&flux);
-                    let mut c = commande(&copie_modifiee(), "repond-a-sa-place", &runtime, &trace);
+                    let mut c = commande(&copie, "repond-a-sa-place", &runtime, &trace);
                     c.env(DESCRIPTEUR, std::os::fd::AsRawFd::as_raw_fd(&flux).to_string())
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
@@ -1162,6 +1165,8 @@ mod tests {
             // juste.
             "accueille-puis-change-d-image" => {
                 use std::os::unix::process::CommandExt;
+                // Avant « pret », comme pour « accueil-puis-un-autre ».
+                let copie = copie_modifiee();
                 let ecoute = lier();
                 dire("pret");
                 ecoute.set_nonblocking(false).unwrap();
@@ -1176,7 +1181,7 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 transmissible(&flux);
-                let mut c = commande(&copie_modifiee(), "repond-a-sa-place", &runtime, &trace);
+                let mut c = commande(&copie, "repond-a-sa-place", &runtime, &trace);
                 c.env(DESCRIPTEUR, std::os::fd::AsRawFd::as_raw_fd(&flux).to_string());
                 let erreur = c.exec();
                 panic!("exec : {erreur}");
