@@ -143,6 +143,11 @@ const PRISES: &[(&str, &[&str], &str)] = &[
         "imprimantes du réseau local, nommées par CUPS",
     ),
     ("reseau/cameras.rs", &[], "caméras du réseau local"),
+    (
+        "socle/identite.rs",
+        &[],
+        "prise Unix locale vers la fenêtre déjà ouverte (une seule fenêtre), jamais le réseau",
+    ),
     ("reseau/empoisonnement.rs", &[], "LLMNR et mDNS, réseau local"),
     ("reseau/scan.rs", &[], "balayage du réseau local"),
     (

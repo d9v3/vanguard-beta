@@ -456,6 +456,9 @@ pub fn separer() {
                     // (qui interdit d'en créer).
                     crate::une_fenetre::preparer();
                     let bac = crate::bac_a_sable::restreindre();
+                    // Le fil d'écoute naît après le bac (qui ne vaut que pour les fils créés après lui), et tout de
+                    // suite : une prise qui existe sans répondre ferait lancer une seconde fenêtre.
+                    crate::une_fenetre::demarrer();
                     let _ = CLIENT.set(Client::demarrer(fenetre, Some(pid)));
                     bac.phrase()
                 }
@@ -470,6 +473,7 @@ pub fn separer() {
 /// Sans relais : la fenêtre reste libre, sa prise « une seule fenêtre » se crée quand même.
 fn absent(e: &str) -> (String, bool) {
     crate::une_fenetre::preparer();
+    crate::une_fenetre::demarrer();
     crate::bac_a_sable::Bac::Absent {
         raison: crate::trf!(
             "le relais n'a pas pu démarrer : {}",

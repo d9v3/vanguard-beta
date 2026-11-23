@@ -337,9 +337,21 @@ fn mesure(place: Place) -> Option<Mesure> {
     })
 }
 
-/// Ramène devant la fenêtre du processus `pid` sous Hyprland (voir `systeme::ramener`) ; faux ailleurs.
+/// Ce que Hyprland a fait de la demande de ramener une fenêtre.
 #[cfg(target_os = "linux")]
-pub(crate) fn ramener_hyprland(pid: i32) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hyprland {
+    /// Pas sous Hyprland (ou son socket ne répond pas) : rien n'est confirmé, la fenêtre a seulement été priée.
+    Absent,
+    /// Sous Hyprland, mais aucune fenêtre à ce processus : rien à ramener.
+    SansFenetre,
+    /// Sa fenêtre trouvée, et le focus demandé par son adresse.
+    Ramenee,
+}
+
+/// Ramène devant la fenêtre du processus `pid` sous Hyprland (voir `systeme::ramener`).
+#[cfg(target_os = "linux")]
+pub(crate) fn ramener_hyprland(pid: i32) -> Hyprland {
     systeme::ramener(pid)
 }
 
@@ -476,17 +488,19 @@ mod systeme {
 
     /// Ramène devant, sous Hyprland, la fenêtre du processus `pid` (déjà vérifié par l'appelant : c'est la fenêtre de
     /// Vanguard) : son adresse lue dans la liste des fenêtres, jamais prise d'ailleurs, puis le focus par cette
-    /// adresse (la commande de Hyprland 0.56, sinon l'ancienne). Faux : pas Hyprland, ou aucune fenêtre à ce processus.
-    pub(super) fn ramener(pid: i32) -> bool {
+    /// adresse (la commande de Hyprland 0.56, sinon l'ancienne ; sa réponse ne change rien : la fenêtre se demande
+    /// aussi le focus).
+    pub(super) fn ramener(pid: i32) -> super::Hyprland {
+        use super::Hyprland;
         let Some(signature) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") else {
-            return false;
+            return Hyprland::Absent;
         };
         let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
-            return false;
+            return Hyprland::Absent;
         };
         let socket = PathBuf::from(runtime).join("hypr").join(signature).join(".socket.sock");
         let Some(clients) = demander(&socket, "j/clients").and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
-            return false;
+            return Hyprland::Absent;
         };
         let Some(adresse) = clients
             .as_array()
@@ -495,19 +509,16 @@ mod systeme {
             .filter(|c| c["pid"].as_i64() == Some(i64::from(pid)))
             .find_map(|c| adresse(c["address"].as_str()?))
         else {
-            return false;
+            return Hyprland::SansFenetre;
         };
         let reponse = demander(
             &socket,
             &format!("/dispatch hl.dsp.focus({{ window = \"address:{adresse}\" }})"),
         );
-        if reponse.as_deref().map(str::trim) == Some("ok") {
-            return true;
+        if reponse.as_deref().map(str::trim) != Some("ok") {
+            let _ = demander(&socket, &format!("/dispatch focuswindow address:{adresse}"));
         }
-        demander(&socket, &format!("/dispatch focuswindow address:{adresse}"))
-            .as_deref()
-            .map(str::trim)
-            == Some("ok")
+        Hyprland::Ramenee
     }
 
     /// Une commande au socket de Hyprland, et sa réponse ; une seconde au plus.

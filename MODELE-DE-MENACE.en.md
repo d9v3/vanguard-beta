@@ -627,24 +627,51 @@ safeguards:
   from outside. The check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`); when
   some points could not be checked, the grade is said to be incomplete, next to the number, with how many.
 - **No connection, no file.** The window opens no network port, no web page, and runs no JavaScript (no HTTP library
-  among its dependencies); it writes no file (theme and language are not kept). Its only listener is the private
-  single-window channel, below. The commands it runs reach the Internet as they do in the terminal (for example
+  among its dependencies); it writes no file (theme and language are not kept), except, on Linux, before its
+  sandbox, the `XDG_RUNTIME_DIR/vanguard` folder and the node of the single-window socket (below), which stays after it
+  closes and which the next window removes if it is dead. Its only listener is the private single-window channel,
+  below. The commands it runs reach the Internet as they do in the terminal (for example
   `test-connexion`, `logiciels-perimes`).
-- **Only one window (0.98).** Starting `vanguard` again while its window is open brings that window to the front
-  instead of opening a second one. The channel is private to the account and the graphical session: on Linux, a Unix
-  socket (never abstract) in `XDG_RUNTIME_DIR/vanguard`, a folder created as 0700 then checked along with its parent
-  (real folders, owned by this account, closed to group and others), with no fallback to /tmp, created before the
-  sandbox; on Windows, a single-instance named pipe (FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_REJECT_REMOTE_CLIENTS) whose
-  access list names only this account, its name tied to the account's SID and session. The message is closed: one
-  "show yourself" byte, one "ok" byte, short timeouts, bounded rate; the window answers only its own account
-  (SO_PEERCRED) or session (Windows), and nothing else is read. Before sending that byte, `vanguard` checks that the
-  program at the other end is the window it would have started: same account, then the hash of its executable equal
-  to the one it engraves (Linux: SO_PEERPIDFD and `/proc/<pid>/exe`, the process still alive after the read;
-  Windows: GetNamedPipeServerProcessId, same session, image path); otherwise it sends nothing, says so, and opens its
-  window as before. Two simultaneous starts: one lock per session, only one opens. Without a safe folder or pipe (no
-  `XDG_RUNTIME_DIR`, folder open or owned by another account, kernel without SO_PEERPIDFD), no channel: one more
-  window, as before, never a weaker channel. Command-line modes are not affected (`src/demarrage/une_fenetre.rs`,
+- **Only one window (0.98).** Starting `vanguard` again while its window is open asks that window to come back to the
+  front instead of opening a second one. The channel is private to the account and the graphical session: on Linux, a
+  Unix socket (never abstract) in `XDG_RUNTIME_DIR/vanguard`, a folder created as 0700 then checked along with its
+  parent (real folders, owned by this account, closed to group and others), with no fallback to /tmp, created before
+  the sandbox and served as soon as the sandbox is in place; on Windows, a single-instance named pipe
+  (FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_REJECT_REMOTE_CLIENTS), its name tied to the SID and session, whose access list
+  names only this account. The message is closed: one "show yourself" byte, one "ok" byte, short timeouts, bounded
+  rate; nothing else is read. Command-line modes are not affected (`src/demarrage/une_fenetre.rs`,
   `fenetre/src/une_fenetre.rs`, `src/socle/une_fenetre.rs`).
+  - *Guaranteed.* Nothing is sent before `vanguard` has proven that the program at the other end is the window it
+    would have started; otherwise it sends nothing, says so, and opens its window as before (which takes the
+    impostor's place). Another account receives nothing and cannot pass for the window. Neither can a program of the
+    same account that takes the channel, as long as it does not drive the real window. Linux: the process that
+    speaks is checked, not the one that opened the listener (which may have handed the socket to another, then
+    become the real image through exec). The window first sends a greeting byte, to which the kernel attaches its
+    sender (SCM_CREDENTIALS and SCM_PIDFD, requested before connecting). That sender must belong to the same account
+    and the same user namespace (inside a namespace of its own, a process can make its `/proc/<pid>/exe` lie), be held
+    by its pidfd while its image is read, and its image must have the engraved hash. The "ok" answer must come from
+    the same process. Windows: the pipe must have this account as owner and as the only name in its access list
+    (GetSecurityInfo). Its server process (GetNamedPipeServerProcessId), held open until the exchange ends (its number
+    is not reused meanwhile), must belong to the same account and session. The path of its image must lead to the very
+    file (same volume, same file number) of the window next to `vanguard`, and that file must have the engraved hash.
+    Two simultaneous starts: one lock per session, held until the started window says "open"; a lock that cannot be
+    taken is reported.
+  - *Not guaranteed.* Code of the same account that drives the real window (ptrace, LD_PRELOAD, injection on Windows):
+    it already is that account, and this channel gives it nothing more than one byte. On Windows, the file present at
+    the image path is read, not the image loaded in memory: a program of the same account that replaces that file after
+    starting its impostor would pass (the window file is opened without write sharing during the read, but not before).
+    The window only recognises the account (Linux) or session (Windows) of whoever asks: a program of the same account
+    can bring it to the front, at the bounded rate, or keep it from answering by occupying the channel (it is served one
+    connection at a time): one more window opens then. "It comes back to the front" is only stated when Hyprland found
+    its window; elsewhere, `vanguard` says it was asked to come back (the desktop decides). On Windows, the pipe exists
+    only once the window is shown: a second start during that short moment opens a second window (without a channel,
+    which the second one reports). Another local account that takes the pipe name first cancels the feature for its
+    victim (access denied: `vanguard` says so, and the window says the channel is already taken); it receives nothing.
+    The client's session is read from its process (GetNamedPipeClientProcessId then ProcessIdToSessionId);
+    GetNamedPipeClientSessionId would add no guarantee, so it is not used. On Windows, `--remplacer-prise` has no
+    effect: the first pipe instance cannot be taken from a live one. Without a safe folder or pipe (no
+    `XDG_RUNTIME_DIR`, folder open or owned by another account, kernel without SO_PASSPIDFD, before Linux 6.5), no
+    channel: one more window, as before, never a weaker channel.
 - **A sandbox (Linux).** At startup, before anything else, the window splits in two: a relay (`vanguard-relais`) keeps
   your account's rights and alone starts `vanguard`; the window locks itself in (Landlock and no_new_privs,
   `fenetre/src/bac_a_sable.rs`) and from then on only asks the relay for a command of the closed list, by its number

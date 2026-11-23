@@ -1,6 +1,6 @@
 //! vanguard-fenetre : la fenêtre de Vanguard. Elle lance `vanguard` (le programme posé à côté d'elle) avec une
 //! commande d'une liste fermée et montre ce qu'il répond ; elle ne change rien elle-même, n'ouvre aucune connexion et
-//! n'écrit aucun fichier. Le seul changement qu'elle peut demander, un programme retiré du démarrage ou remis, passe
+//! n'écrit aucun fichier, sauf (Linux) le nœud de sa prise « une seule fenêtre » (`une_fenetre.rs`). Le seul changement qu'elle peut demander, un programme retiré du démarrage ou remis, passe
 //! par une confirmation dans la fenêtre puis par `vanguard`, qui le rejuge (`appli.rs`). Options : `--langue fr|en`,
 //! `--depuis-vanguard` (dire à `vanguard` qu'elle s'est ouverte), `--vanguard <chemin absolu>` (le programme à lancer,
 //! donné par `vanguard` qui la lance d'une copie en mémoire : elle n'a alors plus de dossier) avec
@@ -62,6 +62,7 @@ use std::process::ExitCode;
 struct Options {
     langue: Option<bool>,
     depuis_vanguard: bool,
+    remplacer_prise: bool,
     vanguard: Option<std::path::PathBuf>,
     empreinte: Option<[u8; 32]>,
     version: bool,
@@ -73,6 +74,7 @@ fn options(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Options, St
     let mut o = Options {
         langue: None,
         depuis_vanguard: false,
+        remplacer_prise: false,
         vanguard: None,
         empreinte: None,
         version: false,
@@ -90,6 +92,9 @@ fn options(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Options, St
                 _ => return Err("--langue : fr ou en".into()),
             },
             "--depuis-vanguard" => o.depuis_vanguard = true,
+            // `vanguard` a vérifié que ce qui écoute à la prise « une seule fenêtre » n'est pas une fenêtre de
+            // Vanguard qui répond (une ancienne version, un imposteur) : la nouvelle la remplace (Linux).
+            "--remplacer-prise" => o.remplacer_prise = true,
             // Un chemin absolu, une fois : il remplace « à côté de la fenêtre », avec la même garde (`lanceur`).
             "--vanguard" => match args.next().map(std::path::PathBuf::from) {
                 Some(c) if c.is_absolute() && o.vanguard.is_none() => o.vanguard = Some(c),
@@ -167,6 +172,10 @@ fn main() -> ExitCode {
     // Avant le premier fil et la première bibliothèque d'affichage : le relais part à côté avec les droits du compte,
     // la fenêtre entre dans son bac à sable (`relais`, `bac_a_sable`).
     #[cfg(target_os = "linux")]
+    if o.remplacer_prise {
+        une_fenetre::permettre_remplacement();
+    }
+    #[cfg(target_os = "linux")]
     relais::separer();
     match dessin::ouvrir(lanceur::Programme::voisin(), o.depuis_vanguard) {
         Ok(()) => ExitCode::SUCCESS,
@@ -196,6 +205,7 @@ mod tests {
             Options {
                 langue: None,
                 depuis_vanguard: false,
+                remplacer_prise: false,
                 vanguard: None,
                 empreinte: None,
                 version: false
@@ -206,6 +216,7 @@ mod tests {
             Some(true)
         );
         assert!(lire(&["--depuis-vanguard"]).unwrap().depuis_vanguard);
+        assert!(lire(&["--remplacer-prise"]).unwrap().remplacer_prise);
         assert!(lire(&["--langue"]).is_err());
         assert!(lire(&["--langue", "de"]).is_err());
         assert!(lire(&["audit"]).is_err());

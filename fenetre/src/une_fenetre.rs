@@ -2,15 +2,18 @@
 //! lancement de `vanguard`, et revenir devant. La règle commune est `regle_une_fenetre` (src/socle/une_fenetre.rs).
 //!
 //! Ce qui arrive par le canal n'est qu'un octet : `DEMANDE` fait revenir la fenêtre devant (pas plus d'une fois par
-//! `CADENCE`), tout autre octet ferme la connexion. Rien d'autre n'est lu ni interprété ; chaque connexion a `DELAI`
-//! au plus pour parler, puis elle est fermée. L'écoute vit dans un fil à elle : un client lent ou hostile ne fige
-//! jamais la fenêtre, au pire il occupe le canal `DELAI` par connexion.
+//! `CADENCE`), tout autre octet ferme la connexion. Rien d'autre n'est lu ni interprété ; chaque connexion a
+//! `DELAI + VERIFICATION` au plus pour parler (le client vérifie la fenêtre entre l'accueil et sa demande), puis elle
+//! est fermée. L'écoute vit dans un fil à elle : un client lent ou hostile ne fige jamais la fenêtre, au pire il
+//! occupe le canal ce temps-là par connexion. Une acceptation qui échoue attend, de plus en plus, avant la suivante.
 //!
 //! Linux : une prise Unix dans `XDG_RUNTIME_DIR/vanguard` (0700, à ce compte, vérifié), créée avant le bac à sable
 //! (qui interdit ensuite d'en créer), après la séparation du relais (qui n'en hérite donc pas). Un client d'un autre
-//! compte (SO_PEERCRED) est fermé sans réponse. Windows : un tube nommé lié au compte (SID) et à la session, liste
-//! d'accès à ce compte seul, première instance exigée (un tube du même nom déjà là, peut-être d'un imposteur : pas
-//! de canal), clients distants refusés ; un client d'une autre session est fermé sans réponse.
+//! compte (SO_PEERCRED) est fermé sans réponse. Une prise vivante n'est retirée que sur `--remplacer-prise` (donné par
+//! `vanguard`, qui a vérifié qu'elle n'est pas une fenêtre de Vanguard qui répond) ; son nœud reste après la
+//! fermeture. Windows : un tube nommé lié au compte (SID) et à la session, liste d'accès à ce compte seul, première
+//! instance exigée (un tube du même nom déjà là, peut-être d'un imposteur : pas de canal, et c'est dit), clients
+//! distants refusés ; un client d'une autre session est fermé sans réponse.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -45,7 +48,7 @@ fn juger(lu: Option<u8>) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{ecouter, preparer};
+pub use linux::{demarrer, ecouter, permettre_remplacement, preparer};
 #[cfg(windows)]
 pub use windows::ecouter;
 
@@ -53,18 +56,31 @@ pub use windows::ecouter;
 mod linux {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::sync::Mutex;
-    use std::time::Instant;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     use super::{DEMANDEE, a_son_tour, juger, regle};
 
-    /// La prise prête, en attendant le fil d'écoute (créé après le bac à sable).
+    /// La prise prête, en attendant le fil d'écoute (créé après le bac à sable, qui ne vaut que pour les fils nés
+    /// après lui).
     static PRISE: Mutex<Option<UnixListener>> = Mutex::new(None);
+    /// De quoi redessiner aussitôt une demande reçue, donné par la toile quand elle existe ; avant, la demande
+    /// attend la première image.
+    static REVEIL: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+    /// `vanguard` a vérifié que ce qui écoute à la place de la prise n'est pas une fenêtre de Vanguard qui répond
+    /// (`--remplacer-prise`) : la nouvelle fenêtre la remplace même vivante.
+    static REMPLACER: AtomicBool = AtomicBool::new(false);
+    /// La première pause après une erreur d'acceptation ; doublée à chaque erreur suivante, `DELAI` au plus.
+    const PAUSE: Duration = Duration::from_millis(100);
+
+    /// Permet à `preparer` de remplacer une prise vivante (option `--remplacer-prise`, donnée par `vanguard`).
+    pub fn permettre_remplacement() {
+        REMPLACER.store(true, Ordering::Release);
+    }
 
     /// Crée la prise. À appeler dans le processus de la fenêtre, avant le bac à sable. Sans dossier de session privé
     /// ou sans nom de session simple : pas de prise (et donc une fenêtre de plus au prochain lancement, comme avant).
-    /// Une prise laissée par une fenêtre précédente est remplacée : `vanguard` ne lance une fenêtre que s'il n'en a
-    /// trouvé aucune qui réponde, sous son verrou.
     pub fn preparer() {
         let moi = systeme::uid();
         let Ok(dossier) = regle::dossier_prive(std::env::var_os("XDG_RUNTIME_DIR"), moi) else {
@@ -74,35 +90,56 @@ mod linux {
         let Some(nom) = regle::nom_prise(variable("WAYLAND_DISPLAY").as_deref(), variable("DISPLAY").as_deref()) else {
             return;
         };
-        preparer_dans(&dossier.join(nom));
+        preparer_dans(&dossier.join(nom), REMPLACER.load(Ordering::Acquire));
     }
 
-    /// Crée la prise à `chemin` (dans un dossier déjà vérifié).
-    pub(crate) fn preparer_dans(chemin: &std::path::Path) {
+    /// Crée la prise à `chemin` (dans un dossier déjà vérifié). Une prise laissée par une fenêtre partie (plus
+    /// personne n'écoute) est remplacée ; une prise où quelqu'un écoute encore ne l'est que si `remplacer` : sinon
+    /// une fenêtre ouverte à la main retirerait la prise de celle qui marche, qui ne serait plus jamais ramenée.
+    pub(crate) fn preparer_dans(chemin: &std::path::Path, remplacer: bool) {
+        if !remplacer && systeme::quelqu_un_ecoute(chemin) {
+            return;
+        }
         let _ = std::fs::remove_file(chemin);
         if let Ok(prise) = UnixListener::bind(chemin) {
             *PRISE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(prise);
         }
     }
 
-    /// Lance le fil d'écoute, si la prise est prête. `reveiller` : pour redessiner aussitôt une demande reçue (la
-    /// toile reste dans `dessin/`).
-    pub fn ecouter(reveiller: impl Fn() + Send + 'static) {
+    /// Lance le fil d'écoute, si la prise est prête : juste après le bac à sable, pour que la prise réponde dès
+    /// qu'elle existe (un `vanguard` qui la trouve muette lancerait une seconde fenêtre).
+    pub fn demarrer() {
         let Some(prise) = PRISE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else {
             return;
         };
-        let _ = std::thread::Builder::new()
-            .name("une-fenetre".into())
-            .spawn(move || servir(&prise, systeme::uid(), reveiller));
+        let _ = std::thread::Builder::new().name("une-fenetre".into()).spawn(move || {
+            servir(&prise, systeme::uid(), || {
+                if let Some(r) = REVEIL.get() {
+                    r();
+                }
+            });
+        });
     }
 
-    /// Sert les connexions une à une, pour toujours (le fil finit avec la fenêtre).
+    /// Donne de quoi redessiner aussitôt une demande reçue (la toile reste dans `dessin/`), et lance l'écoute si ce
+    /// n'est pas déjà fait.
+    pub fn ecouter(reveiller: impl Fn() + Send + Sync + 'static) {
+        let _ = REVEIL.set(Box::new(reveiller));
+        demarrer();
+    }
+
+    /// Sert les connexions une à une, pour toujours (le fil finit avec la fenêtre). Une acceptation qui échoue
+    /// (trop de descripteurs ouverts, mémoire) attend avant la suivante, de plus en plus : pas de boucle folle.
     pub(crate) fn servir(prise: &UnixListener, moi: u32, reveiller: impl Fn()) {
         let mut derniere: Option<Instant> = None;
-        for flux in prise.incoming() {
-            let Ok(flux) = flux else {
+        let mut pause = PAUSE;
+        loop {
+            let Ok((flux, _)) = prise.accept() else {
+                std::thread::sleep(pause);
+                pause = pause.saturating_mul(2).min(regle::DELAI);
                 continue;
             };
+            pause = PAUSE;
             if repondre(flux, moi) && a_son_tour(&mut derniere) {
                 DEMANDEE.store(true, std::sync::atomic::Ordering::Release);
                 reveiller();
@@ -110,13 +147,19 @@ mod linux {
         }
     }
 
-    /// Une connexion : du même compte, un seul octet lu (`DELAI` au plus), « ok » répondu à la seule demande
-    /// connue. Vrai si c'était elle.
+    /// Une connexion : du même compte ; l'accueil envoyé (il porte, par le noyau, ce processus-ci, que le client
+    /// vérifie) ; un seul octet lu (`DELAI + VERIFICATION` au plus : le client vérifie entre les deux) ; « ok »
+    /// répondu à la seule demande connue. Vrai si c'était elle.
     fn repondre(mut flux: UnixStream, moi: u32) -> bool {
         if systeme::compte_d_en_face(&flux) != Some(moi) {
             return false;
         }
-        if flux.set_read_timeout(Some(regle::DELAI)).is_err() || flux.set_write_timeout(Some(regle::DELAI)).is_err() {
+        if flux.set_read_timeout(Some(regle::DELAI + regle::VERIFICATION)).is_err()
+            || flux.set_write_timeout(Some(regle::DELAI)).is_err()
+        {
+            return false;
+        }
+        if flux.write_all(&[regle::ACCUEIL]).is_err() {
             return false;
         }
         let mut octet = [0u8; 1];
@@ -128,9 +171,53 @@ mod linux {
         true
     }
 
-    // raison : FFI de libc (getuid, getsockopt SO_PEERCRED), que std ne fait pas en version stable.
+    // raison : FFI de libc (getuid, getsockopt SO_PEERCRED, une connexion non bloquante), que std ne fait pas.
     #[allow(unsafe_code)]
     mod systeme {
+        /// Quelqu'un écoute-t-il à la prise `chemin` ? Une connexion non bloquante (une écoute figée à la file
+        /// pleine ne fige pas le démarrage) : refusée (ECONNREFUSED) ou sans fichier (ENOENT), personne ; acceptée,
+        /// en attente (EAGAIN) ou toute autre réponse, oui (dans le doute, la prise n'est pas retirée).
+        pub(super) fn quelqu_un_ecoute(chemin: &std::path::Path) -> bool {
+            use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+            use std::os::unix::ffi::OsStrExt;
+            let octets = chemin.as_os_str().as_bytes();
+            // SAFETY: socket ne lit aucune mémoire à nous.
+            let brut = unsafe {
+                libc::socket(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                    0,
+                )
+            };
+            if brut < 0 {
+                return true;
+            }
+            // SAFETY: `brut` vient d'être créé, valide, à personne d'autre : l'OwnedFd le referme une seule fois.
+            let fd = unsafe { OwnedFd::from_raw_fd(brut) };
+            // SAFETY: sockaddr_un est fait d'entiers et d'un tableau d'octets : tout à zéro est une valeur valide.
+            let mut adresse: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+            if octets.len() >= adresse.sun_path.len() || octets.contains(&0) {
+                return true;
+            }
+            let (Ok(famille), Ok(taille)) = (
+                libc::sa_family_t::try_from(libc::AF_UNIX),
+                libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_un>()),
+            ) else {
+                return true;
+            };
+            adresse.sun_family = famille;
+            for (case, &o) in adresse.sun_path.iter_mut().zip(octets) {
+                *case = libc::c_char::from_ne_bytes([o]);
+            }
+            // SAFETY: connect lit `taille` octets à `adresse`, à nous et vivante pendant l'appel.
+            let r = unsafe { libc::connect(fd.as_raw_fd(), (&raw const adresse).cast(), taille) };
+            r == 0
+                || !matches!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ECONNREFUSED | libc::ENOENT)
+                )
+        }
+
         /// Le compte réel du processus.
         pub(super) fn uid() -> u32 {
             // SAFETY: getuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
@@ -192,9 +279,15 @@ mod linux {
             (chemin, reception)
         }
 
+        /// Se branche, lit l'accueil, envoie `octets`, rend la réponse.
         fn demander(chemin: &std::path::Path, octets: &[u8]) -> Option<u8> {
             let mut f = UnixStream::connect(chemin).unwrap();
-            f.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            // Un client muet devant lui tient le serveur `DELAI + VERIFICATION` : l'accueil peut attendre autant.
+            f.set_read_timeout(Some(regle::DELAI + regle::VERIFICATION + Duration::from_secs(2)))
+                .unwrap();
+            let mut accueil = [0u8; 1];
+            f.read_exact(&mut accueil).ok()?;
+            assert_eq!(accueil, [regle::ACCUEIL]);
             f.write_all(octets).unwrap();
             let mut r = [0u8; 1];
             f.read_exact(&mut r).ok().map(|()| r[0])
@@ -216,7 +309,7 @@ mod linux {
             let debut = Instant::now();
             std::thread::sleep(CADENCE_ESSAI);
             assert_eq!(demander(&chemin, &[regle::DEMANDE]), Some(regle::REPONSE));
-            assert!(debut.elapsed() < regle::DELAI + Duration::from_secs(2));
+            assert!(debut.elapsed() < regle::DELAI + regle::VERIFICATION + Duration::from_secs(2));
             // Rien d'autre n'a réveillé la fenêtre que les deux vraies demandes.
             reveil.recv_timeout(Duration::from_secs(3)).unwrap();
             assert!(reveil.try_recv().is_err());
@@ -249,19 +342,50 @@ mod linux {
             let _ = std::fs::remove_dir_all(&d);
         }
 
-        /// Une prise d'une fenêtre précédente est remplacée par la nouvelle.
+        /// Les essais qui passent par `PRISE` (une seule pour le processus) passent un à un.
+        static SERIE: Mutex<()> = Mutex::new(());
+
+        /// Une prise d'une fenêtre partie (plus personne n'écoute) est remplacée par la nouvelle.
         #[test]
         fn l_ancienne_prise_est_remplacee() {
+            let _seul = SERIE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let d = dossier("remplacee");
             let chemin = d.join("p.prise");
-            let ancienne = UnixListener::bind(&chemin).unwrap();
-            preparer_dans(&chemin);
+            drop(UnixListener::bind(&chemin).unwrap());
+            assert!(chemin.exists(), "le nœud d'une prise fermée reste");
+            preparer_dans(&chemin, false);
             let nouvelle = PRISE.lock().unwrap().take().expect("prise créée");
-            drop(ancienne);
             let _client = UnixStream::connect(&chemin).unwrap();
             nouvelle.set_nonblocking(true).unwrap();
             std::thread::sleep(Duration::from_millis(50));
             assert!(nouvelle.accept().is_ok(), "la nouvelle prise reçoit les connexions");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// Une prise où une fenêtre écoute encore n'est pas retirée par une fenêtre ouverte à côté ; elle l'est
+        /// seulement quand `vanguard` le demande (`--remplacer-prise`).
+        #[test]
+        fn une_prise_vivante_n_est_pas_retiree() {
+            let _seul = SERIE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let d = dossier("vivante");
+            let chemin = d.join("p.prise");
+            let ancienne = UnixListener::bind(&chemin).unwrap();
+            ancienne.set_nonblocking(true).unwrap();
+            preparer_dans(&chemin, false);
+            assert!(
+                PRISE.lock().unwrap().take().is_none(),
+                "la nouvelle fenêtre n'a pas pris la prise"
+            );
+            let _client = UnixStream::connect(&chemin).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            // La sonde de `preparer_dans`, puis ce client : l'ancienne reçoit toujours.
+            assert!(ancienne.accept().is_ok(), "l'ancienne prise reçoit toujours");
+            preparer_dans(&chemin, true);
+            let nouvelle = PRISE.lock().unwrap().take().expect("remplacée sur demande");
+            let _client = UnixStream::connect(&chemin).unwrap();
+            nouvelle.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(nouvelle.accept().is_ok());
             let _ = std::fs::remove_dir_all(&d);
         }
     }
@@ -272,6 +396,9 @@ mod windows {
     use std::time::Instant;
 
     use super::{DEMANDEE, a_son_tour, juger, regle};
+
+    /// La première pause après une erreur d'attente de client ; doublée à chaque erreur suivante, `DELAI` au plus.
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
 
     /// Crée le tube et lance le fil d'écoute. `fenetre` : la poignée de la fenêtre (HWND), ramenée devant depuis ce
     /// fil (sans passer par winit : sa demande de focus simule la touche Alt). Sans compte ou session lisibles, ou si
@@ -287,6 +414,17 @@ mod windows {
             return;
         };
         let Some(tube) = systeme::Tube::creer(&nom, &sddl) else {
+            // Le nom est déjà pris : une autre fenêtre de ce compte, ou un programme (d'un autre compte aussi) qui
+            // l'a créé avant. Dit, pour que « déjà ouverte » qui ne marche pas ait une raison visible.
+            eprintln!(
+                "vanguard-fenetre : {}",
+                crate::tr!(
+                    "le canal « une seule fenêtre » est déjà pris (une autre fenêtre, ou un autre programme) : \
+                     cette fenêtre ne pourra pas être ramenée",
+                    "the \"single window\" channel is already taken (another window, or another program): this \
+                     window cannot be brought back"
+                )
+            );
             return;
         };
         let _ = std::thread::Builder::new().name("une-fenetre".into()).spawn(move || {
@@ -302,13 +440,20 @@ mod windows {
     /// Sert les connexions une à une, pour toujours (le fil finit avec la fenêtre).
     pub(crate) fn servir(tube: &systeme::Tube, session: u32, reveiller: impl Fn()) {
         let mut derniere: Option<Instant> = None;
+        let mut pause = PAUSE;
         loop {
             if !tube.attendre_client() {
-                // Une erreur durable : pas de boucle folle.
-                std::thread::sleep(regle::DELAI);
+                // Un client venu et reparti avant l'attente (ERROR_NO_DATA) laisse l'instance branchée à rien : la
+                // couper la rend utilisable. Une erreur durable : une pause qui double, pas de boucle folle.
+                tube.couper();
+                std::thread::sleep(pause);
+                pause = pause.saturating_mul(2).min(regle::DELAI);
                 continue;
             }
-            let demande = tube.session_du_client() == Some(session) && juger(tube.lire_un(regle::DELAI));
+            pause = PAUSE;
+            // Le client vérifie ce tube entre son branchement et sa demande : `VERIFICATION` de plus pour lui.
+            let demande =
+                tube.session_du_client() == Some(session) && juger(tube.lire_un(regle::DELAI + regle::VERIFICATION));
             if demande {
                 let tour = a_son_tour(&mut derniere);
                 if tour {

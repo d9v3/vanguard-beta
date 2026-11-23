@@ -463,6 +463,21 @@ fn identite_du_fichier(chemin: &str) -> Option<String> {
     Some(cle_de_fichier(&info))
 }
 
+/// Le numéro de série du volume et l'identifiant du fichier d'une poignée ouverte (sans la date d'écriture : deux
+/// chemins mènent au même fichier si et seulement si ces deux nombres sont les mêmes). `None` si Windows refuse.
+pub(super) fn identite_de_fichier(poignee: *mut c_void) -> Option<(u32, u64)> {
+    let mut info = InformationFichier::default();
+    // SAFETY: l'appelant garde la poignée ouverte pendant l'appel ; `info` est une BY_HANDLE_FILE_INFORMATION à
+    // nous, que l'appel remplit sans en sortir.
+    if unsafe { GetFileInformationByHandle(poignee, &raw mut info) } == 0 {
+        return None;
+    }
+    Some((
+        info.volume,
+        (u64::from(info.index_haut) << 32) | u64::from(info.index_bas),
+    ))
+}
+
 fn cle_de_fichier(info: &InformationFichier) -> String {
     format!(
         "{:08x}:{:08x}{:08x}:{:08x}{:08x}",

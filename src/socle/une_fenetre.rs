@@ -3,10 +3,11 @@
 //!
 //! Un second lancement interactif de `vanguard` ne rouvre pas une fenêtre : il demande à celle qui est déjà ouverte
 //! de revenir devant. Le canal est privé au compte (Linux : une prise Unix dans un dossier de `XDG_RUNTIME_DIR` à ce
-//! compte seul ; Windows : un tube nommé dont la liste d'accès ne nomme que ce compte, lié à sa session), et le
-//! message est fermé : un octet « montre-toi », un octet « ok ». Rien d'autre n'est lu ni interprété. Avant
-//! d'envoyer quoi que ce soit, `vanguard` vérifie que le programme à l'autre bout est bien la fenêtre qu'il aurait
-//! lancée (même compte, même empreinte) : un autre programme ne peut pas s'en faire passer pour elle.
+//! compte seul ; Windows : un tube nommé dont le propriétaire et la liste d'accès ne nomment que ce compte, lié à sa
+//! session), et le message est fermé : un octet d'accueil (Linux), un octet « montre-toi », un octet « ok ». Rien
+//! d'autre n'est lu ni interprété. Avant d'envoyer la demande, `vanguard` vérifie que le programme qui lui parle
+//! est la fenêtre qu'il aurait lancée (même compte, même empreinte d'image). Ce qui est garanti, et ce qui ne l'est
+//! pas (un programme du même compte qui pilote la vraie image), est écrit dans MODELE-DE-MENACE.md.
 //!
 //! Ce fichier ne fait que des calculs (noms, jugements) : ni appel au système, ni texte, ni `unsafe`.
 
@@ -16,9 +17,17 @@ use std::time::Duration;
 pub const DEMANDE: u8 = b'V';
 /// Le seul octet que la fenêtre répond : « ok, je reviens devant ».
 pub const REPONSE: u8 = b'K';
+/// Linux : le premier octet, envoyé par la fenêtre dès la connexion acceptée. Il ne dit rien ; il porte, attachés
+/// par le noyau, le processus qui l'envoie (SCM_CREDENTIALS, SCM_PIDFD) : c'est ce processus-là, celui qui parle,
+/// que `vanguard` vérifie, et non celui qui a ouvert l'écoute (qui peut avoir passé la prise à un autre).
+#[cfg(unix)]
+pub const ACCUEIL: u8 = b'A';
 /// Le plus long qu'un côté attend l'autre, à chaque étape (se joindre, lire, écrire) : un bout lent ou muet est
 /// abandonné, il ne bloque rien.
 pub const DELAI: Duration = Duration::from_millis(1500);
+/// Le temps laissé à `vanguard` pour vérifier qui parle (lire l'image d'une dizaine de Mio et en faire l'empreinte)
+/// entre le branchement et la demande ; la fenêtre attend la demande `DELAI + VERIFICATION` au plus.
+pub const VERIFICATION: Duration = Duration::from_millis(3000);
 /// Le sous-dossier de `XDG_RUNTIME_DIR` (Linux) où vit la prise.
 #[cfg(unix)]
 pub const SOUS_DOSSIER: &str = "vanguard";
@@ -135,13 +144,14 @@ pub fn nom_tube(sid: &str, session: u32) -> Option<String> {
     sid_valide(sid).then(|| format!(r"\\.\pipe\vanguard-fenetre-{sid}-{session}"))
 }
 
-/// La liste d'accès du tube (Windows) : ce compte seul, tous les droits ; protégée (`P`) : rien d'hérité. Ni
-/// SYSTEM ni les administrateurs : la fenêtre n'a affaire qu'à son propre compte. Servie à la fenêtre seule (qui
-/// crée le tube) : inutilisée dans `vanguard`.
+/// Le descripteur de sécurité du tube (Windows) : propriétaire ce compte (`O:`, nommé exprès : un jeton
+/// administrateur élevé aurait sinon « Administrateurs » pour propriétaire par défaut), liste d'accès à ce compte
+/// seul, tous les droits, protégée (`P`) : rien d'hérité. Ni SYSTEM ni les administrateurs : la fenêtre n'a affaire
+/// qu'à son propre compte. `vanguard` exige ce propriétaire et cette liste avant de parler au tube.
 #[cfg(any(windows, test))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn sddl(sid: &str) -> Option<String> {
-    sid_valide(sid).then(|| format!("D:P(A;;GA;;;{sid})"))
+    sid_valide(sid).then(|| format!("O:{sid}D:P(A;;GA;;;{sid})"))
 }
 
 #[cfg(test)]
@@ -204,7 +214,9 @@ mod tests {
         );
         assert_eq!(
             sddl(sid).as_deref(),
-            Some("D:P(A;;GA;;;S-1-5-21-1004336348-1177238915-682003330-1001)")
+            Some(
+                "O:S-1-5-21-1004336348-1177238915-682003330-1001D:P(A;;GA;;;S-1-5-21-1004336348-1177238915-682003330-1001)"
+            )
         );
         for piege in [
             "",

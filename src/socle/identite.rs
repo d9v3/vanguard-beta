@@ -1,8 +1,10 @@
 //! Le compte du processus (getuid, geteuid), ce qu'il peut écrire (faccessat) et, sous Linux, le programme à l'autre
-//! bout d'une prise Unix (SO_PEERCRED, SO_PEERPIDFD) : quelques appels à libc, une fois ici, pour que les modules qui
-//! s'en servent (dont le client D-Bus que lit le banc de fuzzing) restent sans `unsafe`.
+//! bout d'une prise Unix (SO_PEERCRED ; et, octet par octet, le processus qui l'a envoyé : SCM_CREDENTIALS,
+//! SCM_PIDFD) : quelques appels à libc, une fois ici, pour que les modules qui s'en servent (dont le client D-Bus que
+//! lit le banc de fuzzing) restent sans `unsafe`.
 
-// FFI de libc : getuid, geteuid, faccessat et getsockopt n'ont pas d'équivalent sûr dans std.
+// FFI de libc : getuid, geteuid, faccessat, getsockopt, socket, connect et recvmsg n'ont pas d'équivalent sûr dans
+// std.
 #![allow(unsafe_code)]
 
 /// Le compte réel du processus.
@@ -60,58 +62,188 @@ pub(crate) fn compte_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<u32
     (r == 0).then_some(cred.uid)
 }
 
-/// Le processus et le compte à l'autre bout de la prise (SO_PEERCRED), tels que le noyau les a notés quand il s'est
-/// branché (pour un serveur : quand il s'est mis à écouter) ; `None` si la question échoue.
+/// SO_PASSPIDFD et SCM_PIDFD (include/uapi/asm-generic/socket.h, Linux 6.5) : la caisse libc ne les exporte pas
+/// encore pour Linux.
 #[cfg(target_os = "linux")]
-pub(crate) fn processus_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<(i32, u32)> {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: u32::MAX,
-        gid: 0,
-    };
-    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
-    // une prise ouverte que `s` garde.
-    let r = unsafe {
-        libc::getsockopt(
-            s.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut cred).cast(),
-            &raw mut taille,
-        )
-    };
-    (r == 0 && cred.pid > 0).then_some((cred.pid, cred.uid))
+const SO_PASSPIDFD: libc::c_int = 76;
+#[cfg(target_os = "linux")]
+const SCM_PIDFD: libc::c_int = 0x04;
+
+/// Se branche à la prise `chemin` en demandant d'abord au noyau (SO_PASSCRED, SO_PASSPIDFD) d'attacher à chaque
+/// octet reçu le processus qui l'a envoyé. Posé avant `connect` : le noyau décide à l'envoi s'il attache ces
+/// témoins, donc un octet envoyé dès l'acceptation doit déjà les trouver demandés. Une erreur `Unsupported` : ce
+/// noyau ne sait pas tenir l'expéditeur (SO_PASSPIDFD, Linux 6.5).
+#[cfg(target_os = "linux")]
+pub(crate) fn brancher_avec_temoins(chemin: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: socket ne lit aucune mémoire à nous ; le descripteur rendu (s'il est valide) n'est qu'à nous.
+    let brut = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if brut < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `brut` vient d'être créé, valide, à personne d'autre : l'OwnedFd le referme une seule fois.
+    let fd = unsafe { OwnedFd::from_raw_fd(brut) };
+    let oui: libc::c_int = 1;
+    let taille_oui = libc::socklen_t::try_from(std::mem::size_of::<libc::c_int>()).map_err(std::io::Error::other)?;
+    for (option, sans) in [(libc::SO_PASSCRED, false), (SO_PASSPIDFD, true)] {
+        // SAFETY: setsockopt lit `taille_oui` octets (un entier) à `oui`, à nous et vivant pendant l'appel.
+        let r = unsafe {
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                (&raw const oui).cast(),
+                taille_oui,
+            )
+        };
+        if r != 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(if sans && e.raw_os_error() == Some(libc::ENOPROTOOPT) {
+                std::io::Error::from(std::io::ErrorKind::Unsupported)
+            } else {
+                e
+            });
+        }
+    }
+    let octets = chemin.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un est fait d'entiers et d'un tableau d'octets : tout à zéro est une valeur valide.
+    let mut adresse: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    // Le chemin et son zéro final doivent tenir dans sun_path.
+    if octets.len() >= adresse.sun_path.len() || octets.contains(&0) {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    adresse.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(std::io::Error::other)?;
+    for (case, &o) in adresse.sun_path.iter_mut().zip(octets) {
+        *case = libc::c_char::from_ne_bytes([o]);
+    }
+    let taille = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_un>()).map_err(std::io::Error::other)?;
+    // SAFETY: connect lit `taille` octets à `adresse`, une structure à nous vivante pendant l'appel, sur le
+    // descripteur que `fd` garde.
+    let r = unsafe { libc::connect(fd.as_raw_fd(), (&raw const adresse).cast(), taille) };
+    if r != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(std::os::unix::net::UnixStream::from(fd))
 }
 
-/// Un descripteur qui tient le processus à l'autre bout de la prise (SO_PEERPIDFD, Linux 6.5 et plus) : tant qu'il
-/// est ouvert, il désigne ce processus-là, jamais un autre qui aurait repris son numéro. `None` sur un noyau plus
-/// ancien ou si la question échoue.
+/// Un octet reçu, avec le processus qui l'a envoyé, tel que le noyau l'a noté à l'envoi.
 #[cfg(target_os = "linux")]
-pub(crate) fn pidfd_d_en_face(s: &std::os::unix::net::UnixStream) -> Option<std::os::fd::OwnedFd> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    // include/uapi/asm-generic/socket.h ; la caisse libc ne l'exporte pas encore pour Linux.
-    const SO_PEERPIDFD: libc::c_int = 77;
-    let mut fd: libc::c_int = -1;
-    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::c_int>()).ok()?;
-    // SAFETY: getsockopt écrit au plus `taille` octets (un entier) dans `fd`, à nous et vivant pendant l'appel, sur une
-    // prise ouverte que `s` garde.
-    let r = unsafe {
-        libc::getsockopt(
-            s.as_raw_fd(),
-            libc::SOL_SOCKET,
-            SO_PEERPIDFD,
-            (&raw mut fd).cast(),
-            &raw mut taille,
-        )
+#[derive(Debug)]
+pub(crate) struct Expediteur {
+    /// L'octet.
+    pub(crate) octet: u8,
+    /// Son numéro (SCM_CREDENTIALS), vu depuis ce processus.
+    pub(crate) pid: i32,
+    /// Son compte (SCM_CREDENTIALS).
+    pub(crate) uid: u32,
+    /// Un descripteur qui le tient (SCM_PIDFD) : tant qu'il est ouvert, il ne désigne que ce processus-là.
+    pub(crate) pidfd: std::os::fd::OwnedFd,
+}
+
+/// Lit un octet d'une prise branchée par `brancher_avec_temoins`, avec son expéditeur. Refusé (erreur) : fin de flux,
+/// témoins absents ou tronqués, ou des descripteurs joints (SCM_RIGHTS, jamais attendus ici : refermés aussitôt).
+/// Les délais de lecture de la prise s'appliquent.
+#[cfg(target_os = "linux")]
+pub(crate) fn recevoir_avec_temoins(s: &std::os::unix::net::UnixStream) -> std::io::Result<Expediteur> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let mut octet = 0u8;
+    let mut morceau = libc::iovec {
+        iov_base: (&raw mut octet).cast(),
+        iov_len: 1,
     };
-    if r != 0 || fd < 0 {
-        return None;
+    // Place pour les témoins (ucred, un pidfd) et pour quelques descripteurs qu'un expéditeur hostile joindrait :
+    // ils sont reçus pour être refermés, et un surplus est tronqué (MSG_CTRUNC : refusé). Aligné sur 8 octets.
+    let mut controle = [0u64; 64];
+    // SAFETY: msghdr est fait d'entiers et de pointeurs : tout à zéro (pointeurs nuls) est une valeur valide.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &raw mut morceau;
+    message.msg_iovlen = 1;
+    message.msg_control = controle.as_mut_ptr().cast();
+    message.msg_controllen = std::mem::size_of_val(&controle)
+        .try_into()
+        .map_err(std::io::Error::other)?;
+    // SAFETY: recvmsg écrit au plus 1 octet dans `octet` (par `morceau`) et au plus `msg_controllen` octets dans
+    // `controle`, tous à nous et vivants pendant l'appel ; MSG_CMSG_CLOEXEC : les descripteurs reçus ne passent pas
+    // à un programme lancé.
+    let n = unsafe { libc::recvmsg(s.as_raw_fd(), &raw mut message, libc::MSG_CMSG_CLOEXEC) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: le noyau vient de créer ce descripteur pour nous (O_CLOEXEC) ; personne d'autre ne le possède, il est
-    // refermé une seule fois, par l'OwnedFd.
-    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+    let mut temoins: Option<libc::ucred> = None;
+    let mut pidfd: Option<OwnedFd> = None;
+    let mut joints = false;
+    // SAFETY: `message` vient d'être rempli par recvmsg ; CMSG_FIRSTHDR et CMSG_NXTHDR ne rendent que des en-têtes
+    // dans `controle` (ou nul), bornés par msg_controllen.
+    let mut entete = unsafe { libc::CMSG_FIRSTHDR(&raw const message) };
+    while !entete.is_null() {
+        // SAFETY: `entete` est non nul et pointe un en-tête entier dans `controle` (garanti par CMSG_*HDR).
+        let (niveau, genre, longueur) = unsafe { ((*entete).cmsg_level, (*entete).cmsg_type, (*entete).cmsg_len) };
+        // SAFETY: les données suivent l'en-tête dans le même tampon.
+        let donnees = unsafe { libc::CMSG_DATA(entete) };
+        let debut = donnees.addr().saturating_sub(entete.addr());
+        // Jamais au-delà du tampon, quoi que dise l'en-tête.
+        let fin_du_tampon = controle
+            .as_ptr()
+            .addr()
+            .saturating_add(std::mem::size_of_val(&controle));
+        let utiles = usize::try_from(longueur)
+            .unwrap_or(0)
+            .saturating_sub(debut)
+            .min(fin_du_tampon.saturating_sub(donnees.addr()));
+        if niveau == libc::SOL_SOCKET {
+            let entier = std::mem::size_of::<libc::c_int>();
+            match genre {
+                libc::SCM_RIGHTS | SCM_PIDFD => {
+                    // SAFETY: `utiles` octets de données suivent l'en-tête (cmsg_len), dans `controle` (borné plus
+                    // haut), vivant et non modifié pendant cet emprunt.
+                    let octets = unsafe { std::slice::from_raw_parts(donnees.cast_const(), utiles) };
+                    for brut in octets.chunks_exact(entier) {
+                        let Ok(brut) = <[u8; 4]>::try_from(brut).map(libc::c_int::from_ne_bytes) else {
+                            continue;
+                        };
+                        if brut < 0 {
+                            continue;
+                        }
+                        // SAFETY: le noyau vient d'installer ce descripteur pour nous ; personne d'autre ne le
+                        // possède : l'OwnedFd le referme une seule fois (aussitôt pour ce qui n'est pas gardé).
+                        let fd = unsafe { OwnedFd::from_raw_fd(brut) };
+                        if genre == SCM_PIDFD && pidfd.is_none() {
+                            pidfd = Some(fd);
+                        } else {
+                            joints = true;
+                        }
+                    }
+                }
+                libc::SCM_CREDENTIALS if utiles >= std::mem::size_of::<libc::ucred>() => {
+                    // SAFETY: une ucred entière suit l'en-tête (vérifié par `utiles`) ; lecture non alignée.
+                    temoins = Some(unsafe { donnees.cast::<libc::ucred>().read_unaligned() });
+                }
+                _ => {}
+            }
+        }
+        // SAFETY: comme CMSG_FIRSTHDR : l'en-tête suivant dans `controle`, ou nul.
+        entete = unsafe { libc::CMSG_NXTHDR(&raw const message, entete) };
+    }
+    let refus = |quoi: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, quoi.to_string());
+    if n == 0 {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+    }
+    if message.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(refus("MSG_CTRUNC"));
+    }
+    if joints {
+        return Err(refus("SCM_RIGHTS"));
+    }
+    let (Some(c), Some(pidfd)) = (temoins, pidfd) else {
+        return Err(refus("SCM_CREDENTIALS/SCM_PIDFD"));
+    };
+    Ok(Expediteur {
+        octet,
+        pid: c.pid,
+        uid: c.uid,
+        pidfd,
+    })
 }
 
 /// Le processus tenu par `pidfd` vit-il encore ? pidfd_send_signal avec le signal 0 ne lui envoie rien : il dit

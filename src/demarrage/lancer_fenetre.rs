@@ -402,14 +402,19 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
     }
     match lancer(&chemin, programme) {
         Lancement::Ouverte => return true,
-        Lancement::Ramenee => {
-            eprintln!(
-                "{}",
+        Lancement::Ramenee(confirmee) => {
+            let texte = if confirmee {
                 tr!(
                     "La fenêtre de Vanguard est déjà ouverte : elle revient devant.",
                     "The Vanguard window is already open: it comes back to the front."
                 )
-            );
+            } else {
+                tr!(
+                    "La fenêtre de Vanguard est déjà ouverte : il lui a été demandé de revenir devant.",
+                    "The Vanguard window is already open: it was asked to come back to the front."
+                )
+            };
+            eprintln!("{texte}");
             return true;
         }
         Lancement::Refusee(r) => eprintln!(
@@ -436,9 +441,9 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
 enum Lancement {
     /// Elle a dit « ouverte ».
     Ouverte,
-    /// Déjà ouverte (vérifiée : la fenêtre de Vanguard de ce compte et de cette session) : ramenée devant, rien de
-    /// lancé.
-    Ramenee,
+    /// Déjà ouverte (vérifiée : la fenêtre de Vanguard de ce compte et de cette session) : rien de lancé. Vrai : le
+    /// bureau a confirmé la ramener ; faux : elle a été priée de revenir devant.
+    Ramenee(bool),
     /// Pas lancée : la raison.
     Refusee(String),
     /// Lancée, mais elle n'a pas dit « ouverte » à temps (arrêtée).
@@ -759,30 +764,65 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
             .into(),
         );
     };
-    // Une seule fenêtre : celle qui est déjà ouverte, si c'est bien elle, revient devant. Le tour (son verrou) vit
-    // jusqu'à la fin de ce lancement : un second lancement simultané attend que celle-ci ait dit « ouverte », puis la
-    // ramène. Un canal refusé ou impossible est dit, et la fenêtre s'ouvre comme avant.
-    let tour = super::une_fenetre::ramener(&attendue, chemin);
-    match &tour.issue {
-        super::une_fenetre::Issue::Ramenee => return Lancement::Ramenee,
-        super::une_fenetre::Issue::Personne => {}
-        super::une_fenetre::Issue::Refusee(r) => eprintln!(
+    // Une seule fenêtre : celle qui est déjà ouverte, si c'est bien elle, revient devant ; sinon la fenêtre est
+    // lancée sous le verrou du tour (voir `une_seule`).
+    une_seule(
+        || super::une_fenetre::ramener(&attendue, chemin),
+        |remplacer| lancer_la_fenetre(chemin, programme, &attendue, remplacer),
+    )
+}
+
+/// Une seule fenêtre autour d'un lancement : `ramener` d'abord. La fenêtre ramenée, rien n'est ouvert. Sinon
+/// `ouvrir` est appelé, le verrou du tour tenu jusqu'à son retour (un second lancement simultané attend que celle-ci
+/// ait dit « ouverte », puis la ramène), avec `remplacer` vrai quand ce qui écoute n'est pas une fenêtre de Vanguard
+/// qui répond (la nouvelle prend sa prise). Un canal refusé ou impossible, un verrou qui ne se prend pas : dits.
+fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl FnOnce(bool) -> Lancement) -> Lancement {
+    use super::une_fenetre::Issue;
+    let tour = ramener();
+    let remplacer = match &tour.issue {
+        Issue::Ramenee(confirmee) => return Lancement::Ramenee(*confirmee),
+        Issue::Personne => false,
+        Issue::Refusee(r) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "Fenêtre déjà ouverte non ramenée ({}) : rien ne lui est demandé, une nouvelle s'ouvre.",
+                    "Already open window not brought back ({}): nothing is asked of it, a new one opens.",
+                    r
+                )
+            );
+            true
+        }
+        Issue::Indisponible(r) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "Une seule fenêtre impossible ici ({}) : une nouvelle s'ouvre.",
+                    "Single window impossible here ({}): a new one opens.",
+                    r
+                )
+            );
+            true
+        }
+    };
+    if let (Err(r), Issue::Personne | Issue::Refusee(_)) = (&tour.verrou, &tour.issue) {
+        eprintln!(
             "{}",
             trf!(
-                "Fenêtre déjà ouverte non ramenée ({}) : rien ne lui est envoyé, une nouvelle s'ouvre.",
-                "Already open window not brought back ({}): nothing is sent to it, a new one opens.",
+                "Ordre des lancements non garanti ({}) : un lancement simultané pourrait ouvrir une seconde fenêtre.",
+                "Launch order not guaranteed ({}): a simultaneous launch could open a second window.",
                 r
             )
-        ),
-        super::une_fenetre::Issue::Indisponible(r) => eprintln!(
-            "{}",
-            trf!(
-                "Une seule fenêtre impossible ici ({}) : une nouvelle s'ouvre.",
-                "Single window impossible here ({}): a new one opens.",
-                r
-            )
-        ),
+        );
     }
+    let lancement = ouvrir(remplacer);
+    drop(tour);
+    lancement
+}
+
+/// Ouvre la fenêtre `chemin` (vérifiée de nouveau juste avant : l'empreinte `attendue`) et attend qu'elle dise
+/// « ouverte ». `remplacer` : elle prend la prise « une seule fenêtre » même si quelque chose y écoute.
+fn lancer_la_fenetre(chemin: &Path, programme: &Path, attendue: &[u8; 32], remplacer: bool) -> Lancement {
     // Ce programme-ci d'abord : sans son empreinte, la fenêtre refuserait chaque commande (`--empreinte-vanguard`).
     let soi = match empreinte_de_soi() {
         Ok(e) => e,
@@ -795,9 +835,9 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
         }
     };
     #[cfg(target_os = "linux")]
-    let verifiee = verifier(chemin, &attendue, crate::socle::uid());
+    let verifiee = verifier(chemin, attendue, crate::socle::uid());
     #[cfg(windows)]
-    let verifiee = verifier(chemin, &attendue);
+    let verifiee = verifier(chemin, attendue);
     // `verifiee` vit jusqu'à la fin : ce qu'elle tient reste ouvert jusqu'à « ouverte » ou l'échec (Linux : fermé
     // avant, le numéro de son descripteur pourrait désigner un autre fichier ; Windows : le fichier tenu).
     let verifiee = match verifiee {
@@ -812,13 +852,14 @@ fn lancer(chemin: &Path, programme: &Path) -> Lancement {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if remplacer {
+        c.arg("--remplacer-prise");
+    }
     // Son propre groupe de processus : la fermeture du terminal (SIGHUP au groupe de premier plan) ne la ferme pas,
     // ni un Ctrl+C tapé ensuite dans ce terminal.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    let lancement = attendre_ouverte(c);
-    drop(tour);
-    lancement
+    attendre_ouverte(c)
 }
 
 /// Démarre la commande de la fenêtre et attend qu'elle dise « ouverte » (`ATTENTE` au plus), sinon l'arrête.
@@ -1353,5 +1394,67 @@ mod tests {
         assert_eq!(refus_chemin(&f, &meta, moi), None);
         std::fs::set_permissions(&dossier, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Constat 24 : le câblage de `lancer`. Une fenêtre ramenée : rien n'est lancé.
+    #[test]
+    fn une_fenetre_ramenee_n_en_ouvre_pas_d_autre() {
+        use super::super::une_fenetre::{Issue, Tour};
+        for confirmee in [false, true] {
+            let tour = || Tour {
+                issue: Issue::Ramenee(confirmee),
+                verrou: Err("essai".into()),
+            };
+            let lancement = une_seule(tour, |_| panic!("une seconde fenêtre lancée"));
+            assert!(
+                matches!(lancement, Lancement::Ramenee(c) if c == confirmee),
+                "{lancement:?}"
+            );
+        }
+    }
+
+    /// Personne n'écoute : la fenêtre est lancée sans prendre la prise d'une autre, et le verrou des lancements est
+    /// tenu jusqu'à ce qu'elle dise « ouverte » (un second lancement attend, puis la ramène) ; rendu ensuite.
+    #[test]
+    fn le_verrou_est_tenu_jusqu_a_ouverte() {
+        use super::super::une_fenetre::{Issue, Tour};
+        use crate::socle::{SansVerrou, Verrou};
+        let d = crate::essais::Jetable::nouveau("une-seule");
+        let essayer = || Verrou::prendre(&d, "fenetre.verrou", false, std::time::Duration::ZERO);
+        let verrou = essayer().map_err(|_| "verrou d'essai").unwrap();
+        let tour = || Tour {
+            issue: Issue::Personne,
+            verrou: Ok(verrou),
+        };
+        let lancement = une_seule(tour, |remplacer| {
+            assert!(!remplacer, "la prise d'une fenêtre vivante serait prise");
+            assert!(
+                matches!(essayer(), Err(SansVerrou::Occupe)),
+                "verrou rendu avant « ouverte »"
+            );
+            Lancement::Ouverte
+        });
+        assert!(matches!(lancement, Lancement::Ouverte), "{lancement:?}");
+        assert!(essayer().is_ok(), "verrou gardé après le lancement");
+    }
+
+    /// Ce qui écoute n'est pas une fenêtre de Vanguard qui répond (refusé, muet, ancienne version) : la nouvelle
+    /// fenêtre prend la prise.
+    #[test]
+    fn un_canal_refuse_fait_prendre_la_prise() {
+        use super::super::une_fenetre::{Issue, Tour};
+        for issue in [Issue::Refusee("essai".into()), Issue::Indisponible("essai".into())] {
+            let tour = || Tour {
+                issue,
+                verrou: Err("essai".into()),
+            };
+            let mut demande = None;
+            let lancement = une_seule(tour, |remplacer| {
+                demande = Some(remplacer);
+                Lancement::Ouverte
+            });
+            assert!(matches!(lancement, Lancement::Ouverte), "{lancement:?}");
+            assert_eq!(demande, Some(true));
+        }
     }
 }
