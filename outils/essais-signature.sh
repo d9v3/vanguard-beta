@@ -1655,6 +1655,7 @@ r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
 # (absente juste avant, et gh ne dit pas qu'elle existait), et le point sûr est gardé avant la page du code.
 { cat "$DEPOT/outils/github-commun.sh"
   echo 'SIGNEE=1 PASSE_DROITS=() GARDER_DOSSIER=""'
+  grep -m1 '^trap .*GARDER_DOSSIER' "$DEPOT/outils/publier-version.sh"
   awk '/^PUBLIEE_SIGNEE=""$/,/^fi$/' "$DEPOT/outils/publier-version.sh"
   echo 'echo "suite gardé=$GARDER_DOSSIER signée=$PUBLIEE_SIGNEE"'; } >"$T/page-signee.sh"
 cat >"$T/gh-page.sh" <<'GH'
@@ -1723,7 +1724,7 @@ r=$(CREATION="HTTP 502" page_signee moitie absente la)
   ko "publier : page à moitié créée pas retirée ($r)"
 r=$(CREATION="HTTP 502" page_signee partie absente absente)
 [[ $r == *"rien de publié"*"create " && $r != *delete* && $r != *"à la main"* &&
-  -z $(ls -A "$T/page-partie/point") ]] &&
+  -z $(ls -A "$T/page-partie/point") && ! -e $T/page-partie/dossier ]] &&
   ok "publier : création ratée sans page laissée : rien à retirer, l'historique en attente est effacé" ||
   ko "publier : création ratée sans page laissée mal traitée ($r, $(ls -A "$T/page-partie/point"))"
 r=$(CREATION="HTTP 502" RETRAIT="HTTP 502" page_signee reste absente la)
@@ -1735,13 +1736,16 @@ r3=$(CREATION="already exists" page_signee existait2 absente la)
 [[ $r$r2$r3 != *"rien de publié"* && $r == *"DOSSIER gardé : $T/page-reste/dossier"* && $r2 == *"DOSSIER gardé : "* &&
   $r3 == *"DOSSIER gardé : "* && $(cat "$T/page-muette/point/sur.txt.en-attente" \
   "$T/page-muette/point/sur.txt.en-attente.sig") == $'historique\nsig' && ! -e $T/page-muette/point/sur.txt &&
-  -e $T/page-reste/point/sur.txt.en-attente && -e $T/page-existait2/point/sur.txt.en-attente ]] &&
+  -e $T/page-reste/point/sur.txt.en-attente && -e $T/page-existait2/point/sur.txt.en-attente &&
+  -f $T/page-reste/dossier/historique.txt && -f $T/page-muette/dossier/historique.txt &&
+  -f $T/page-existait2/dossier/historique.txt ]] &&
   ok "publier : page peut-être en ligne : jamais « rien de publié », DOSSIER et historique signé gardés en attente" ||
   ko "publier : page peut-être en ligne mal gardée ($r / $r2 / $r3)"
 # Un « en attente » d'une version d'avant, que celui d'ici n'a pas pu remplacer : jamais pris pour le point sûr.
 mkdir -p "$T/vieux-point/sur.txt.en-attente.sig/plein" && echo vieux >"$T/vieux-point/sur.txt.en-attente"
 r=$(POINT=$T/vieux-point/sur.txt page_signee vieux absente)
-[[ $r == *"pas gardé en attente"*"Point sûr de l'historique pas gardé"* && ! -e $T/vieux-point/sur.txt ]] &&
+[[ $r == *"pas gardé en attente"*"Point sûr de l'historique pas gardé"* && ! -e $T/vieux-point/sur.txt &&
+  -f $T/page-vieux/dossier/historique.txt ]] &&
   ok "publier : un historique en attente qui n'est pas celui d'ici ne devient jamais le point sûr" ||
   ko "publier : vieil historique en attente pris pour le point sûr ($r)"
 # La page signée revue en ligne par une relance : l'historique en attente devient le point sûr s'il est celui d'en
@@ -1901,7 +1905,7 @@ fin() { # script, puis VAR=valeur… : la sortie et le code, DOSSIER neuf et jet
 }
 EMP=sha256:$(echo sommes | sha256sum | cut -d' ' -f1)
 r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE="$EMP")
-[[ $r == *"déjà signée dans x/y"*"gh release create v0.0.0 --target c0ffee "*"/SHA256SUMS.txt "*"/vanguard.cdx.json"*"tickets-version.py --appliquer"*"code 4 dossier gardé notes" &&
+[[ $r == *"déjà signée dans x/y"*"Point sûr peut-être en retard"*"gh release create v0.0.0 --target c0ffee "*"/SHA256SUMS.txt "*"/vanguard.cdx.json"*"tickets-version.py --appliquer"*"code 4 dossier gardé notes" &&
   $r != *suite* ]] && ok "publier : déjà signée sans page du code : vu avant de signer, code 4, commande entière donnée" ||
   ko "publier : déjà signée sans page du code mal traitée ($r)"
 r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=sha256:autre)
