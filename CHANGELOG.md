@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
-## 0.98 (en préparation)
+## 24 novembre 2026 : version 0.98.0
 
 - **Une seule fenêtre.** Relancer `vanguard` quand sa fenêtre est déjà ouverte lui demande de revenir devant au lieu
   d'en ouvrir une autre, sous Linux et Windows ; sous Hyprland, Vanguard dit qu'elle est revenue seulement si Hyprland

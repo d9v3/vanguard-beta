@@ -95,7 +95,7 @@ Menu (↑ ↓ to select, Enter or → to run, Esc, ← or Backspace to go back; 
 opened for Vanguard takes the menu's size)
 Search: in any menu, type a word (wifi, disk, dns…): only the lines containing it stay, Enter opens the
 highlighted one, Esc clears it. In the main menu, it also finds each tool of the submenus (“6.1.3”: group 6,
-1st line, 3rd choice, which can also be typed as is) and each page of the guide.
+1st line, 3rd choice, which can also be typed as is) and each page of the guide. “/” searches all of Vanguard.
   ── SECURITY CHECK ──
   1  Full security check: computer and network, with what changed since the previous check
   2  Fix the problems found (each fix is shown, then confirmed)
@@ -201,7 +201,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        you type; each one can be copied, or run here if it only reads. And the tldr-pages examples, already on
        the key and updated every week: to copy only. From the command line:
        vanguard guide fedora, vanguard guide winget, vanguard guide dns cache, vanguard guide 6.7.2,
-       vanguard guide windows --summary. 10.10 Vanguard commands: every command, sorted like the menu, with its
+       vanguard guide windows --summary. 10.10 By topic: the programs of all systems by subject
+       (network, disks, security…). 10.9 Vanguard commands: every command, sorted like the menu, with its
        place in the menu; each page ends with its path and command ("Path: 10.6.7.2 · vanguard guide 6.7.2").
  11  Step-by-step troubleshooting › no Internet, Wi-Fi dropping, slow computer, no sound, printer, disk full:
        two or three questions, then Vanguard checks and suggests the right repair.

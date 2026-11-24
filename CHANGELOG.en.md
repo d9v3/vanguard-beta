@@ -9,7 +9,7 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
-## 0.98 (in preparation)
+## November 24, 2026: version 0.98.0
 
 - **Only one window.** Running `vanguard` again while its window is open asks that window to come back to the front
   instead of opening another one, on Linux and Windows; on Hyprland, Vanguard says it came back only if Hyprland

@@ -99,8 +99,9 @@ Pour commencer : lancer Vanguard, choisir « 1. Bilan de sécurité complet », 
 Menu (↑ ↓ pour choisir, Entrée ou → pour lancer, Échap, ← ou Retour arrière pour revenir ; ou le chiffre, puis
 Entrée ; la fenêtre ouverte pour Vanguard prend la taille du menu)
 Recherche : dans tout menu, un mot tapé (wifi, disque, dns…) ne laisse que les lignes qui le contiennent ;
-Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trouve aussi chaque outil des sous-menus
-(« 6.1.3 » : groupe 6, 1re ligne, 3e choix, aussi tapable tel quel) et chaque page du guide.
+Entrée ouvre celle en surbrillance, Échap efface. « / » cherche dans tout Vanguard.
+Au menu principal, elle trouve aussi chaque outil des sous-menus (« 6.1.3 » : groupe 6, 1re ligne,
+3e choix, aussi tapable tel quel) et chaque page du guide.
   ── BILAN DE SÉCURITÉ ──
   1  Bilan de sécurité complet : ordinateur, réseau, avec ce qui a changé depuis le bilan précédent
   2  Corriger les problèmes trouvés (chaque correction est montrée, puis confirmée)
@@ -207,8 +208,9 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        pas (mettre à jour, réparer, réseau, faire de la place…). Les commandes paraissent au fil de
        la frappe ; chacune se copie, ou se lance ici si elle ne fait que lire.
        Et les exemples de tldr-pages, déjà sur la clé et mis à jour chaque semaine : à copier seulement.
-       10.10 Commandes de Vanguard : chaque commande, rangée comme le menu, avec sa place au menu. Chaque page
+       10.9 Commandes de Vanguard : chaque commande, rangée comme le menu, avec sa place au menu. Chaque page
        finit par son chemin et sa commande (« Chemin : 10.6.7.2 · vanguard guide 6.7.2 »).
+       10.10 Par thème : les programmes de tous les systèmes rangés par sujet (réseau, disques, sécurité…).
        En ligne de commande : vanguard guide fedora, vanguard guide winget, vanguard guide cache dns,
        vanguard guide 6.7.2, vanguard guide windows --sommaire
  11  Dépanner pas à pas › pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante,

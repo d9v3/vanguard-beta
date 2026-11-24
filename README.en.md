@@ -691,7 +691,8 @@ up space, repair, firewall, NVIDIA drivers, new release…), its programs (pacma
 those common to Linux; Windows 11 has its step-by-step guides too (repair Windows, network, security, slowness…). You
 type what you are looking for: commands show up as you type, and Tab completes the word. Each command has its page:
 copy it, to type it here or on the computer of the person you help, or run it here when it only reads; its output
-scrolls in Vanguard, and Esc stops it. Every system can be read everywhere (Windows commands from Linux, for example),
+scrolls in Vanguard, and Esc stops it. Badges tell whether it changes the system, needs the administrator, opens a
+window or takes long, and “By topic” sorts the programs of all systems by subject (network, disks, security…). Every system can be read everywhere (Windows commands from Linux, for example),
 and the guide tells when a program is missing on this computer. On top of that, the examples of
 [tldr-pages](https://tldr.sh) (CC BY 4.0 license): over 30,000 community commands for Linux, Windows and other
 systems. The guide downloads them by itself, at most once a week, so do the monitoring and the monthly check-up
@@ -720,6 +721,10 @@ not checked them.
 - Keyboard menus: ↑ ↓ to move, Enter or → to select, Esc, ← or Backspace to go back (on the main menu, ← does nothing,
   so as not to quit by mistake; in a checklist, only Enter confirms). The window opened for Vanguard takes the menu's
   size and centers itself (Hyprland, Windows console).
+- A single window (Linux, Windows): running `vanguard` again brings the open one to the front, after checking that it
+  really is the one answering; otherwise a new one opens, and Vanguard says so.
+- “/” in any menu opens “Search Vanguard”: all the tools, settings and the whole guide (in a checklist, “/” only
+  filters the list).
 - Menus work with the mouse too: a click opens a line (checks it, in a checklist), hovering highlights it with its
   preview, the wheel scrolls, a right click goes back, and the keys on the help line (“Enter open”, “s settings”,
   “q quit”…) are clickable buttons. Linux, Windows and SSH. While a menu waits, Shift and drag selects text;

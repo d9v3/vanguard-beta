@@ -731,7 +731,9 @@ expliquée ; ⚠ marque celles qui changent quelque chose. Chaque distribution a
 programmes (pacman, dnf, apt, SELinux, AppArmor…), puis ceux communs à Linux ; Windows 11 a aussi ses marches à suivre
 (réparer Windows, réseau, sécurité, lenteur…). On tape ce qu'on cherche : les commandes paraissent au fil de la
 frappe, et Tab complète le mot. Chaque commande a sa page : la copier, pour la taper ici ou chez la personne qu'on
-aide, ou la lancer ici quand elle ne fait que lire ; sa sortie défile dans Vanguard, et Échap l'arrête. Tous les
+aide, ou la lancer ici quand elle ne fait que lire ; sa sortie défile dans Vanguard, et Échap l'arrête. Des pastilles
+disent si elle modifie le système, demande l'administrateur, ouvre une fenêtre ou est longue, et « Par thème » range
+les programmes de tous les systèmes par sujet (réseau, disques, sécurité…). Tous les
 systèmes sont lisibles partout (les commandes de Windows depuis Linux, par exemple), et le guide dit si un programme
 manque sur cet ordinateur. En plus, les exemples de [tldr-pages](https://tldr.sh) (licence CC BY 4.0) : plus de 30 000
 commandes de la communauté, pour Linux, Windows et d'autres systèmes, en français quand elles sont traduites. Le guide
@@ -763,6 +765,10 @@ vérifiées.
 - Menus au clavier : ↑ ↓ pour se déplacer, Entrée ou → pour choisir, Échap, ← ou Retour arrière pour revenir (au menu
   principal, ← ne fait rien, pour ne pas quitter par erreur ; dans une liste à cocher, seule Entrée confirme). La
   fenêtre ouverte pour Vanguard prend la taille du menu et se centre (Hyprland, console de Windows).
+- Une seule fenêtre (Linux, Windows) : relancer `vanguard` ramène devant celle qui est déjà ouverte, après avoir
+  vérifié que c'est bien elle qui répond ; sinon une nouvelle s'ouvre, et Vanguard le dit.
+- « / » dans n'importe quel menu ouvre « Rechercher dans Vanguard » : outils, réglages et guide entiers (dans une
+  liste à cocher, « / » ne filtre que la liste).
 - Menus à la souris aussi : un clic ouvre une ligne (la coche, dans une liste), la souris qui passe dessus la met en
   surbrillance avec son aperçu, la roulette défile, le clic droit revient, et les touches de la ligne d'aide (« Entrée
   ouvrir », « s réglages », « q quitter »…) se cliquent comme des boutons. Linux, Windows et SSH. Pendant qu'un menu
