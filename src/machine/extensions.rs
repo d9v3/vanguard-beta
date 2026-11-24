@@ -26,7 +26,7 @@ pub(super) fn lire_du_profil(chemin: &Path) -> std::io::Result<String> {
     lire_borne(chemin, PROFIL_MAX)
 }
 
-fn lire_borne(chemin: &Path, max: u64) -> std::io::Result<String> {
+pub(super) fn lire_borne(chemin: &Path, max: u64) -> std::io::Result<String> {
     #[cfg(unix)]
     let octets = crate::socle::lire_ordinaire_au_bout(chemin, max)?;
     #[cfg(windows)]

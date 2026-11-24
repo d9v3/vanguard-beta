@@ -137,7 +137,7 @@ fn reconnus(trouves: &[PathBuf]) -> Vec<Piege> {
         .map(|chemin| Piege {
             empreinte: match chemin.extension().and_then(|e| e.to_str()) {
                 // Le texte d'une version d'avant, s'il est exactement celui-là.
-                Some("txt") => std::fs::read(chemin)
+                Some("txt") => crate::socle::lire_ordinaire(chemin, PIEGE_MAX)
                     .ok()
                     .map(|o| blake3::hash(&o).to_hex().to_string())
                     .filter(|h| TEXTES_D_AVANT.contains(&h.as_str()))
@@ -212,8 +212,21 @@ fn juger_liste(lu: crate::sceau::Juge) -> Result<Vec<Piege>, Refus> {
     }
 }
 
+/// Un piège tient en quelques Kio : au-delà, ce n'est plus lui, sans le lire.
+const PIEGE_MAX: u64 = 1 << 20;
+
 fn etat(piege: &Piege) -> Etat {
-    match std::fs::read(&piege.chemin) {
+    match std::fs::symlink_metadata(&piege.chemin) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return renomme(&piege.chemin).map_or(Etat::Supprime, Etat::Renomme);
+        }
+        Err(_) => return Etat::Illisible,
+        // Un tube, un lien ou un périphérique mis à sa place : changé, et l'ouvrir figerait la passe. Sous Windows,
+        // OneDrive fait d'un vrai fichier un point d'analyse : la lecture en juge.
+        Ok(m) if m.len() > PIEGE_MAX || (cfg!(unix) && !m.is_file()) => return Etat::Modifie,
+        Ok(_) => {}
+    }
+    match crate::socle::lire_ordinaire(&piege.chemin, PIEGE_MAX) {
         Ok(octets) if blake3::hash(&octets).to_hex().as_str() == piege.empreinte => Etat::Intact,
         Ok(_) => Etat::Modifie,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -946,6 +959,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Un tube, un lien ou un fichier immense mis à la place d'un piège : changé, sans figer la passe à le lire.
+    #[cfg(unix)]
+    #[test]
+    fn un_piege_qui_n_est_plus_un_petit_fichier_est_change() {
+        let d = dossier_jetable("remplace");
+        let (pieges, _) = poser_dans(std::slice::from_ref(&d));
+        let ici = &pieges[0].chemin;
+        let copie = d.join("copie");
+        std::fs::rename(ici, &copie).unwrap();
+        std::os::unix::fs::symlink(&copie, ici).unwrap();
+        assert_eq!(etat(&pieges[0]), Etat::Modifie, "un lien, même vers le bon contenu");
+        std::fs::remove_file(ici).unwrap();
+        std::fs::File::create(ici).unwrap().set_len(PIEGE_MAX + 1).unwrap();
+        assert_eq!(etat(&pieges[0]), Etat::Modifie, "immense");
+        std::fs::remove_file(ici).unwrap();
+        crate::essais::tube_nomme(ici).unwrap();
+        assert_eq!(etat(&pieges[0]), Etat::Modifie, "un tube");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

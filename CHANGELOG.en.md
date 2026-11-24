@@ -18,10 +18,20 @@ example, finds it, to rebuild it if needed.
 - **Linux: an unreadable name no longer hides a program.** A program can put bytes that are not text in its name, or in
   the name of a file or a mount point. Vanguard then refused the whole system file showing them: the program vanished
   from its lists, a frozen program was reported as finished, or every mount became invisible. Those bytes now read as
-  the “�” character, and the rest still counts; a test refuses any strict reading of /proc coming back into the code.
+  the “�” character, and the rest still counts; a test spots the most common form of a strict
+  reading of /proc. A program of another account that erases its command line stays in the list, and a frozen program
+  whose file is renamed is still followed.
 - **What could not be read is said, never counted as healthy.** The hosts file, a browser profile's extensions, a
   session startup launcher, the list of accounts, the keyboard reading group or the mounts that exist but cannot be read
   now give an impossible or partial check instead of “nothing found”.
+- **Remote control: the green tick has to be earned.** After a removal, Vanguard reads again what is left: a startup
+  that could not be read, a file to delete by hand or a program still running prevent the tick, and are named. A
+  launcher whose name is not text is shown, to delete by hand; the suggested commands always quote the path.
+- **Launch guard (Linux).** Each reading of the mounts marks every file system again, instead of trusting an
+  already-seen number the kernel can give to another one. Mounts that could not be read give a medium alert in the
+  checkup, with the command that shows them.
+- **Bounded reads.** Decoy files, browser versions, logs read directly and the hash of a very large program are read
+  with a limit and only if they are real files: a pipe or a huge file put in their place no longer freezes the check.
 
 ## November 24, 2026: version 0.98.0
 

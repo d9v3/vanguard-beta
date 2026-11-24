@@ -912,7 +912,7 @@ pub fn post_quantique() -> Vec<Constat> {
                 continue;
             }
             let s = strategies(nom);
-            let version = std::fs::read_to_string(racine.join("Last Version"))
+            let version = super::extensions::lire_borne(&racine.join("Last Version"), 4 << 10)
                 .ok()
                 .and_then(|t| version_majeure(nom, &t));
             let lue = || version.map_or(Version::Illisible, Version::Lue);
@@ -976,7 +976,7 @@ pub fn post_quantique() -> Vec<Constat> {
                     Ok(prefs) => {
                         let coupure = coupure_profil(&prefs, defaut.as_ref());
                         let compatibilite =
-                            std::fs::read_to_string(chemin.join("compatibility.ini")).unwrap_or_default();
+                            super::extensions::lire_borne(&chemin.join("compatibility.ini"), 64 << 10).unwrap_or_default();
                         let sans = SansCoupure {
                             firefox: true,
                             version: version_famille_firefox(nom, &compatibilite)

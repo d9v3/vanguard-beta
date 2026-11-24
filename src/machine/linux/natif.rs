@@ -533,16 +533,22 @@ fn flatpak_apps_dans(installations: &[PathBuf]) -> Vec<String> {
 /// n'est pas un fichier ordinaire (le lien est suivi) ou ne se lit pas.
 pub(crate) fn lire_borne(chemin: &Path, max: u64) -> Option<String> {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     if !std::fs::metadata(chemin).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    // Jugé encore sur ce qui a été ouvert : échangé entre le regard et l'ouverture, un tube figerait la lecture.
+    let f = std::fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(chemin)
+        .ok()?;
+    if !f.metadata().is_ok_and(|m| m.is_file()) {
         return None;
     }
     // En octets : coupé à `max` au milieu d'un caractère, ou avec un commentaire en Latin-1, le fichier reste lu.
     let mut octets = Vec::new();
-    std::fs::File::open(chemin)
-        .ok()?
-        .take(max)
-        .read_to_end(&mut octets)
-        .ok()?;
+    f.take(max).read_to_end(&mut octets).ok()?;
     Some(crate::socle::texte_des_octets(octets))
 }
 

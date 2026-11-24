@@ -16,6 +16,17 @@ type Debut = (chrono::DateTime<chrono::Utc>, std::time::Instant);
 
 /// Ce qui n'a pas pu être lu, dans la langue du moment, et le nombre de sortes de traces lues.
 fn couverture(r: &Releve) -> Couverture {
+    let mut demarrage = crate::tr!(
+        "lancements au démarrage : pas tous lisibles",
+        "programs started at boot: not all readable"
+    )
+    .to_string();
+    // Nommés, au plus trois : un lanceur qui ne se lit pas, la personne peut l'ouvrir ou l'effacer.
+    if !r.demarrage_non_lu.is_empty() {
+        let suite = if r.demarrage_non_lu.len() > 3 { ", …" } else { "" };
+        let noms: Vec<&str> = r.demarrage_non_lu.iter().take(3).map(String::as_str).collect();
+        demarrage = format!("{demarrage} ({}{suite})", noms.join(", "));
+    }
     let sortes = [
         (
             r.lu.installes,
@@ -24,13 +35,7 @@ fn couverture(r: &Releve) -> Couverture {
                 "installed programs: their list cannot be read"
             ),
         ),
-        (
-            r.lu.demarrage,
-            crate::tr!(
-                "lancements au démarrage : pas tous lisibles",
-                "programs started at boot: not all readable"
-            ),
-        ),
+        (r.lu.demarrage, demarrage.as_str()),
         (
             r.lu.en_cours,
             crate::tr!(
@@ -87,11 +92,18 @@ pub(super) fn rien_dans_ce_qui_est_lu() -> &'static str {
 
 /// Le jugement du relevé (bilan et résultat). Rien trouvé sans avoir tout lu : le « rien trouvé » de `juger` affirmerait
 /// aussi ce qui n'a pas été lu.
+/// Ce qui n'a pas été lu est toujours un constat « non vérifié » à part, trouvaille ou non : dans la seule phrase d'un
+/// constat vert, le bilan le compterait vérifié.
 pub(super) fn juger_releve(r: &Releve, aujourd_hui: NaiveDate) -> Vec<Constat> {
-    let constats = juger(&r.trouvailles, aujourd_hui);
-    if constats.iter().all(|c| c.probleme.is_none()) && !non_lus(r).is_empty() {
-        return vec![ok(CAT, rien_dans_ce_qui_est_lu())];
+    let mut constats = juger(&r.trouvailles, aujourd_hui);
+    let non_lus = non_lus(r);
+    if non_lus.is_empty() {
+        return constats;
     }
+    if constats.iter().all(|c| c.probleme.is_none()) {
+        constats = vec![ok(CAT, rien_dans_ce_qui_est_lu())];
+    }
+    constats.push(impossible(CAT, &non_lus.join(crate::tr!(" ; ", "; "))));
     constats
 }
 
@@ -134,9 +146,26 @@ mod tests {
         };
         let r = resultat(Some(&sans_processus), aujourd_hui, debut());
         assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 3));
-        assert_eq!(
-            juger_releve(&sans_processus, aujourd_hui)[0].message,
-            rien_dans_ce_qui_est_lu()
+        let juges = juger_releve(&sans_processus, aujourd_hui);
+        assert_eq!(juges[0].message, rien_dans_ce_qui_est_lu());
+        assert!(juges.len() == 2 && !juges[1].verifie, "jamais vert sans le dire");
+        // Un lanceur illisible : nommé, et non vérifié au bilan.
+        let sans_demarrage = Releve {
+            lu: Lu {
+                demarrage: false,
+                ..TOUT_LU
+            },
+            demarrage_non_lu: ["/a.desktop", "/b.desktop", "/c.desktop", "/d.desktop"]
+                .map(String::from)
+                .to_vec(),
+            ..Releve::default()
+        };
+        let juges = juger_releve(&sans_demarrage, aujourd_hui);
+        assert!(juges.len() == 2 && juges[0].verifie && !juges[1].verifie);
+        assert!(
+            juges[1].message.contains("/a.desktop, /b.desktop, /c.desktop, …"),
+            "{}",
+            juges[1].message
         );
         assert_eq!(non_lus(&sans_processus).len(), 1);
         let tout = Releve {
@@ -159,16 +188,20 @@ mod tests {
                 retrait: vec!["rm -f x".into()],
                 arret: Vec::new(),
                 refuse: false,
+                a_la_main: false,
             }],
             lu: Lu {
                 fichiers: true,
                 ..Lu::default()
             },
+            ..Releve::default()
         };
         let res = resultat(Some(&r), jour("2026-10-24"), debut());
         assert_eq!(res.verdict(), "probleme");
         assert_eq!(res.pire(), Some(crate::risk::Niveau::Eleve));
         assert_eq!(res.constats[0].objet.as_deref(), Some("logiciel:AnyDesk"));
         assert_eq!(res.couverture.non_verifies.len(), 3, "le reste reste dit non vérifié");
+        let juges = juger_releve(&r, jour("2026-10-24"));
+        assert!(juges.len() == 2 && !juges[1].verifie, "même avec une trouvaille");
     }
 }

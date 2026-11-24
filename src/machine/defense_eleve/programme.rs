@@ -204,16 +204,33 @@ fn lire_borne(p: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     Ok(o)
 }
 
-/// Le SHA-256 d'un fichier lu jusqu'au bout, par morceaux.
-fn empreinte_lue(p: &Path) -> std::io::Result<String> {
+/// L'empreinte d'un programme trop gros pour être copié se calcule jusqu'à cette taille.
+const EMPREINTE_MAX: u64 = 1 << 30;
+
+/// Le SHA-256 d'un fichier d'au plus `max` octets, lu jusqu'au bout, par morceaux.
+fn empreinte_lue(p: &Path, max: u64) -> std::io::Result<String> {
     use std::io::Read as _;
-    let mut f = std::fs::File::open(p)?;
+    let f = std::fs::File::open(p)?;
+    let gros = || std::io::Error::other(tr!("trop gros : pas d'empreinte", "too big: no hash"));
+    // Un fichier creux de plusieurs Tio occuperait l'assistant élevé des heures, et ce qui suit n'est pas copié.
+    if f.metadata()?.len() > max {
+        return Err(gros());
+    }
+    // Il peut grandir pendant la lecture.
+    let mut f = f.take(max.saturating_add(1));
+    let mut lus = 0u64;
     let mut h = Sha256::new();
     let mut tampon = vec![0u8; 64 * 1024];
     loop {
         match f.read(&mut tampon) {
             Ok(0) => break,
-            Ok(n) => h.update(tampon.get(..n).unwrap_or_default()),
+            Ok(n) => {
+                lus = lus.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+                if lus > max {
+                    return Err(gros());
+                }
+                h.update(tampon.get(..n).unwrap_or_default());
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
@@ -290,7 +307,7 @@ pub(super) fn copier_traces_reel(pid: u32, v: &VueProcessus, date: u64) -> Resul
             let _ = writeln!(empreintes, "{}  exe", gestes_unix::hex(&Sha256::digest(&o)));
             fichier("exe", &o)?;
         }
-        Err(e) => match empreinte_lue(&exe) {
+        Err(e) => match empreinte_lue(&exe, EMPREINTE_MAX) {
             Ok(h) => {
                 let _ = writeln!(empreintes, "{h}  exe (pas copié : {e})");
             }
@@ -350,4 +367,28 @@ pub(super) fn creer_dossier_reel(p: &Path, mode: u32) -> Result<(), Echec> {
         .map_err(|e| echoue(e.to_string()))?;
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).map_err(|e| echoue(e.to_string()))?;
     dossier_sur(p, 0o022)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un programme trop gros n'a pas d'empreinte, et c'est dit avant de le lire : un fichier creux ne coûte rien à qui
+    /// l'a posé.
+    #[test]
+    fn une_empreinte_a_une_limite() {
+        let d = crate::essais::Jetable::nouveau("empreinte");
+        let f = d.join("exe");
+        std::fs::write(&f, "bonjour\n").unwrap();
+        assert_eq!(
+            empreinte_lue(&f, 8).unwrap(),
+            "9cec0af545144159bac85c7b908d5e0b9b0ef961497401c5ad8da26f065ad926"
+        );
+        assert!(empreinte_lue(&f, 7).unwrap_err().to_string().contains("trop gros"));
+        std::fs::File::create(&f).unwrap().set_len(1 << 40).unwrap();
+        assert!(empreinte_lue(&f, EMPREINTE_MAX).is_err());
+        // Sa taille n'annonce rien (0) : arrêté pendant la lecture.
+        let sans_taille = empreinte_lue(Path::new("/dev/zero"), 1000).unwrap_err();
+        assert!(sans_taille.to_string().contains("trop gros"));
+    }
 }

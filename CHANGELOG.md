@@ -19,10 +19,21 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   fichier ou d'un point de montage, des octets qui ne sont pas du texte. Vanguard refusait alors tout le fichier du
   système qui les montrait : le programme disparaissait de ses listes, un programme gelé était dit fini, ou tous les montages
   devenaient invisibles. Ces octets se lisent maintenant comme le caractère « � », et le reste compte toujours ; un
-  essai refuse qu'une lecture stricte de /proc revienne dans le code.
+  essai repère la forme la plus courante d'une lecture stricte de /proc. Un programme d'un autre compte qui efface sa
+  ligne de commande reste dans la liste, et un programme gelé dont le fichier est renommé reste suivi.
 - **Ce qui n'a pas pu être lu est dit, plus jamais compté comme sain.** Le fichier hosts, les extensions d'un profil de
   navigateur, un lanceur d'ouverture de session, la liste des comptes, le groupe de lecture du clavier ou les montages
   qui existent sans se lire donnent une vérification impossible ou partielle, au lieu de « rien trouvé ».
+- **Contrôle à distance : la coche verte se mérite.** Après un retrait, Vanguard relit ce qui reste : un démarrage qui
+  n'a pas pu être lu, un fichier à effacer à la main ou un programme encore en marche empêchent la coche, et sont
+  nommés. Un lanceur dont le nom n'est pas du texte est montré, à effacer à la main ; les commandes proposées mettent
+  toujours le chemin entre apostrophes.
+- **Garde des lancements (Linux).** Chaque lecture des montages remarque tous les systèmes de fichiers, au lieu de se
+  fier au numéro déjà vu, que le noyau peut redonner à un autre. Des montages qui n'ont pas pu être lus donnent une
+  alerte moyenne au bilan, avec la commande qui les montre.
+- **Des lectures bornées.** Les fichiers pièges, les versions des navigateurs, les journaux lus directement et
+  l'empreinte d'un très gros programme se lisent avec une limite et seulement si ce sont de vrais fichiers : un tube ou
+  un fichier immense mis à leur place ne fige plus la vérification.
 
 ## 24 novembre 2026 : version 0.98.0
 

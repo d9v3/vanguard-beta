@@ -112,6 +112,9 @@ struct Trouvaille {
     /// Son retrait est refusé (`retrait_garde`, la raison dans `ou`) : pas de conseil de le désinstaller autrement,
     /// les réglages du système passeraient par les mêmes scripts.
     refuse: bool,
+    /// Aucune commande ne le désigne sûrement (la raison dans `ou`) : il reste à la personne, même quand le reste du
+    /// logiciel est retiré.
+    a_la_main: bool,
 }
 
 /// Le logiciel dont un mot est reconnu au début d'un mot de `texte` (nom de programme, de paquet, de fichier…).
@@ -324,6 +327,12 @@ fn raisons_du_refus(siens: &[&Trouvaille]) -> Option<String> {
     (!raisons.is_empty()).then(|| raisons.join(tr!(" ; ", "; ")))
 }
 
+/// Ce qu'aucune commande ne retire (`a_la_main`, la raison dans `ou`), joint ; `None` s'il n'y en a pas.
+fn reste_a_la_main(siens: &[&Trouvaille]) -> Option<String> {
+    let reste: Vec<&str> = siens.iter().filter(|t| t.a_la_main).map(|t| t.ou.as_str()).collect();
+    (!reste.is_empty()).then(|| reste.join(tr!(" ; ", "; ")))
+}
+
 /// Retire chaque programme (une liste de commandes chacun) et dit, pour chacun, s'il est retiré. Ailleurs que sous
 /// Windows, les gestes d'un programme (arrêt et retrait d'un service système, lot U3) passent avant ses commandes,
 /// qui ne suivent que s'ils ont réussi : ne pas désinstaller un programme dont le service tourne encore. `Err(Some)` :
@@ -429,29 +438,42 @@ struct Lu {
 struct Releve {
     trouvailles: Vec<Trouvaille>,
     lu: Lu,
+    /// Les lancements au démarrage qui ne se lisent pas, quand ils se nomment.
+    demarrage_non_lu: Vec<String>,
 }
 
-/// La commande qui efface ce fichier, ou aucune : un nom hors UTF-8, rendu en texte, en désignerait un autre.
+/// Comment s'efface ce qui a été trouvé sur le disque.
 #[cfg(unix)]
-fn retrait_du_fichier(commande: &str, chemin: &std::path::Path) -> Vec<String> {
-    chemin
-        .to_str()
-        .map(|c| format!("{commande} {}", sh_chaine(c)))
-        .into_iter()
-        .collect()
+#[derive(Debug, Clone, Copy)]
+struct Effacement {
+    dossier: bool,
+    admin: bool,
 }
 
-/// Où est ce fichier, et ce qu'il faut savoir pour l'effacer quand aucune commande ne le désigne.
+/// Où est ce fichier, la commande qui l'efface, et s'il reste à la main : un nom hors UTF-8, rendu en texte, en
+/// désignerait un autre ; aucune commande alors, et c'est dit.
 #[cfg(unix)]
-fn ou_avec_retrait(chemin: &std::path::Path) -> String {
+fn ou_et_effacement(e: Effacement, chemin: &std::path::Path) -> (String, Vec<String>, bool) {
     let ou = chemin_affichable(chemin);
-    if chemin.to_str().is_some() {
-        return ou;
-    }
-    trf!(
-        "{ou} (nom hors UTF-8 : à effacer à la main)",
-        "{ou} (name not in UTF-8: to delete by hand)"
-    )
+    let Some(c) = chemin.to_str() else {
+        let ou = trf!(
+            "{ou} (nom hors UTF-8 : à effacer à la main)",
+            "{ou} (name not in UTF-8: to delete by hand)"
+        );
+        return (ou, Vec::new(), true);
+    };
+    let sudo = if e.admin { "sudo " } else { "" };
+    let quoi = if e.dossier { "rm -rf" } else { "rm -f" };
+    (ou, vec![format!("{sudo}{quoi} {}", sh_chaine(c))], false)
+}
+
+/// La commande qui arrête ce qui porte ce nom court ; `None` s'il ne se donne pas tel quel à pkill, qui lit une
+/// expression régulière : « a+b » n'arrêterait pas « a+b ».
+#[cfg(target_os = "linux")]
+fn arret_par_le_nom(comm: &str) -> Option<String> {
+    let simple = |c: char| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_');
+    (comm.starts_with(|c: char| c.is_ascii_alphanumeric()) && comm.chars().all(simple))
+        .then(|| format!("pkill -x {} || true", sh_chaine(comm)))
 }
 
 /// Un dossier lu, ou absent (rien à y trouver) ; `false` : il existe sans se lire.
@@ -542,6 +564,7 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         // L'objet : le logiciel par son nom français, le même quelle que soit la langue de l'interface.
         let constat = alerte(CAT, niveau, message).avec_objet(crate::modele::Objet::de("logiciel", logiciel.nom[0]));
         let retrait = lignes_du_retrait(&siens, false);
+        let reste = reste_a_la_main(&siens);
         constats.push(if connecte {
             constat.manuel(
                 tr!(
@@ -572,6 +595,10 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
                 ),
                 &[],
             )
+        } else if retrait.is_empty()
+            && let Some(reste) = &reste
+        {
+            constat.manuel(&trf!("À faire à la main : {reste}", "To do by hand: {reste}"), &[])
         } else if retrait.is_empty() {
             constat.manuel(
                 trf!(
@@ -581,17 +608,21 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
                 &[],
             )
         } else {
-            constat.corriger(
-                if cfg!(windows) {
-                    trf!(
-                        "Désinstaller {nom} (sa fenêtre de désinstallation peut s'ouvrir)",
-                        "Uninstall {nom} (its uninstall window may open)"
-                    )
-                } else {
-                    trf!("Désinstaller {nom}", "Uninstall {nom}")
-                },
-                &retrait,
-            )
+            let mut action = if cfg!(windows) {
+                trf!(
+                    "Désinstaller {nom} (sa fenêtre de désinstallation peut s'ouvrir)",
+                    "Uninstall {nom} (its uninstall window may open)"
+                )
+            } else {
+                trf!("Désinstaller {nom}", "Uninstall {nom}")
+            };
+            if let Some(reste) = &reste {
+                action.push_str(&trf!(
+                    " ; il restera à faire à la main : {reste}",
+                    "; left to do by hand: {reste}"
+                ));
+            }
+            constat.corriger(action, &retrait)
         });
     }
     if constats.is_empty() {
@@ -659,15 +690,20 @@ fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) -> bool {
             if meta.is_dir() && !application {
                 continue;
             }
-            let chemin = e.path();
+            let effacement = Effacement {
+                dossier: application,
+                admin: false,
+            };
+            let (ou, retrait, a_la_main) = ou_et_effacement(effacement, &e.path());
             t.push(Trouvaille {
                 logiciel: i,
                 trace: Trace::Fichier,
-                ou: ou_avec_retrait(&chemin),
+                ou,
                 depuis: date_de(meta.modified()),
-                retrait: retrait_du_fichier(if application { "rm -rf" } else { "rm -f" }, &chemin),
+                retrait,
                 arret: Vec::new(),
                 refuse: false,
+                a_la_main,
             });
         }
     }
@@ -705,7 +741,7 @@ fn relever_tout() -> Option<Releve> {
     dossiers_opt(&mut t);
     // Les deux, toujours : l'un ne se lit pas sans que l'autre soit sauté.
     let en_cours = processus(&mut t) & services_en_marche(&mut t, en_marche.as_deref());
-    let demarrage = demarrage_linux(&mut t, &maison);
+    let demarrage_non_lu = demarrage_linux(&mut t, &maison);
     let declares = crate::protection::pieges::dossiers_declares(&maison.join(".config"));
     let declare = |cle: &str, defaut: &str| {
         crate::protection::pieges::dossier_declare(&declares, cle, &maison).unwrap_or_else(|| maison.join(defaut))
@@ -722,10 +758,11 @@ fn relever_tout() -> Option<Releve> {
         trouvailles: sans_doublons(t),
         lu: Lu {
             installes,
-            demarrage,
+            demarrage: demarrage_non_lu.is_empty(),
             en_cours,
             fichiers,
         },
+        demarrage_non_lu,
     })
 }
 
@@ -862,6 +899,7 @@ fn services_en_marche(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) -> 
             retrait: Vec::new(),
             arret,
             refuse: false,
+            a_la_main: false,
         });
     }
     true
@@ -940,6 +978,7 @@ fn paquets(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) -> bool {
             ou,
             depuis,
             refuse: retrait.is_empty(),
+            a_la_main: false,
             retrait,
             arret: Vec::new(),
         });
@@ -972,6 +1011,7 @@ fn flatpaks(t: &mut Vec<Trouvaille>, maison: &std::path::Path) {
             retrait: vec![format!("flatpak uninstall -y --noninteractive {}", sh_chaine(id))],
             arret: Vec::new(),
             refuse: false,
+            a_la_main: false,
         });
     }
 }
@@ -999,6 +1039,7 @@ fn snaps(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) {
             ou,
             depuis: None,
             refuse: retrait.is_empty(),
+            a_la_main: false,
             retrait,
             arret: Vec::new(),
         });
@@ -1040,15 +1081,20 @@ fn dossiers_opt(t: &mut Vec<Trouvaille>) {
         if t.iter().any(|x| x.logiciel == i && x.trace == Trace::Installe) {
             continue;
         }
-        let chemin = e.path();
+        let effacement = Effacement {
+            dossier: true,
+            admin: true,
+        };
+        let (ou, retrait, a_la_main) = ou_et_effacement(effacement, &e.path());
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Installe,
-            ou: ou_avec_retrait(&chemin),
+            ou,
             depuis: date_de(e.metadata().and_then(|m| m.modified())),
-            retrait: retrait_du_fichier("sudo rm -rf", &chemin),
+            retrait,
             arret: Vec::new(),
             refuse: false,
+            a_la_main,
         });
     }
 }
@@ -1077,15 +1123,24 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
         let Some(i) = reconnu(&comm).or_else(|| reconnu(&nom_exe)) else {
             continue;
         };
+        let mut ou = exe.as_deref().map_or_else(|| affichable(&comm), chemin_affichable);
+        let arret = arret_par_le_nom(&comm);
+        if arret.is_none() {
+            ou = trf!(
+                "{ou} (processus {pid}, son nom ne se donne pas à pkill : à fermer à la main)",
+                "{ou} (process {pid}, its name cannot be given to pkill: to close by hand)"
+            );
+        }
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::EnCours {
                 connecte: connectes.contains(&pid),
             },
-            ou: exe.as_deref().map_or_else(|| affichable(&comm), chemin_affichable),
+            ou,
             depuis: None,
             retrait: Vec::new(),
-            arret: vec![format!("pkill -x {} || true", sh_chaine(&comm))],
+            a_la_main: arret.is_none(),
+            arret: arret.into_iter().collect(),
             refuse: false,
         });
     }
@@ -1136,11 +1191,13 @@ fn lanceur_vide(chemin: &std::path::Path) -> bool {
     })
 }
 
-/// Les lanceurs .desktop d'un dossier d'autostart. `false` : le dossier ou un lanceur existe sans se lire.
+/// Les lanceurs .desktop d'un dossier d'autostart ; rend ce qui existe sans se lire (le dossier, des lanceurs).
 #[cfg(target_os = "linux")]
-fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> bool {
-    let mut lus = true;
-    lus &= lisible_ou_absent(dossier);
+fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, admin: bool) -> Vec<String> {
+    let mut non_lus = Vec::new();
+    if !lisible_ou_absent(dossier) {
+        non_lus.push(chemin_affichable(dossier));
+    }
     for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
         let chemin = e.path();
         if chemin.extension().is_none_or(|x| x != "desktop") {
@@ -1152,7 +1209,9 @@ fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> 
         let contenu = match crate::socle::lire_ordinaire_au_bout(&chemin, LANCEUR_MAX) {
             Ok(octets) => crate::socle::texte_des_octets(octets),
             Err(e) => {
-                lus &= e.kind() == std::io::ErrorKind::NotFound || lanceur_vide(&chemin);
+                if e.kind() != std::io::ErrorKind::NotFound && !lanceur_vide(&chemin) {
+                    non_lus.push(chemin_affichable(&chemin));
+                }
                 String::new()
             }
         };
@@ -1163,32 +1222,29 @@ fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> 
         let Some(i) = reconnu(&nom).or_else(|| reconnu(exec)) else {
             continue;
         };
+        let (ou, retrait, a_la_main) = ou_et_effacement(Effacement { dossier: false, admin }, &chemin);
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Demarrage,
-            ou: ou_avec_retrait(&chemin),
+            ou,
             depuis: None,
-            retrait: retrait_du_fichier(&format!("{sudo}rm -f"), &chemin),
+            retrait,
             arret: Vec::new(),
             refuse: false,
+            a_la_main,
         });
     }
-    lus
+    non_lus
 }
 
 /// Lancements automatiques : fichiers .desktop d'autostart (nom ou ligne Exec), services systemd activés (système et
 /// session).
-/// `false` : un dossier d'autostart ou un lanceur existe sans se lire, ou les services activés (système ou session) ne se lisent
-/// ni dans leurs dossiers ni par systemctl.
+/// Rend ce qui existe sans se lire : un dossier d'autostart, un lanceur, ou les services activés (système ou session)
+/// que ni leurs dossiers ni systemctl ne donnent.
 #[cfg(target_os = "linux")]
-fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
-    let mut lus = true;
-    for (dossier, sudo) in [
-        (maison.join(".config/autostart"), ""),
-        (PathBuf::from("/etc/xdg/autostart"), "sudo "),
-    ] {
-        lus &= autostart(t, &dossier, sudo);
-    }
+fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> Vec<String> {
+    let mut non_lus = autostart(t, &maison.join(".config/autostart"), false);
+    non_lus.extend(autostart(t, std::path::Path::new("/etc/xdg/autostart"), true));
     for (args, prefixe, utilisateur) in [
         (
             &["list-unit-files", "--state=enabled", "--no-legend", "--plain"][..],
@@ -1206,7 +1262,14 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
             l
         } else {
             let Some(sortie) = sortie_de("systemctl", args, 30) else {
-                lus = false;
+                non_lus.push(
+                    if utilisateur {
+                        tr!("services de la session", "session services")
+                    } else {
+                        tr!("services du système", "system services")
+                    }
+                    .to_string(),
+                );
                 continue;
             };
             sortie
@@ -1241,10 +1304,11 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
                 retrait,
                 arret,
                 refuse: false,
+                a_la_main: false,
             });
         }
     }
-    lus
+    non_lus
 }
 
 /// Les unités activées, comme `systemctl [--user] list-unit-files --state=enabled`, lues dans les liens que
@@ -1432,6 +1496,7 @@ fn relever_tout_selon(lignes_run: fn() -> RunLues) -> Option<Releve> {
             en_cours,
             fichiers,
         },
+        demarrage_non_lu: Vec::new(),
     })
 }
 
@@ -1767,6 +1832,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             retrait: retrait_windows(desinstallation, silencieuse),
             arret: Vec::new(),
             refuse: false,
+            a_la_main: false,
         });
     }
     let installes: Vec<usize> = t.iter().map(|x| x.logiciel).collect();
@@ -1803,6 +1869,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 ps_chaine(nom)
             )],
             refuse: false,
+            a_la_main: false,
         });
     }
     let connectes: std::collections::BTreeSet<u32> = section(Some(sortie), "CNX")
@@ -1846,6 +1913,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 ps_chaine(nom)
             )],
             refuse: false,
+            a_la_main: false,
         });
     }
     // Compté connecté sans rien à fermer : le logiciel n'est alors ni fermé ni retiré (jamais couper une session).
@@ -1869,6 +1937,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 retrait: Vec::new(),
                 arret: Vec::new(),
                 refuse: false,
+                a_la_main: false,
             });
         }
     }
@@ -1892,6 +1961,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             },
             arret: Vec::new(),
             refuse: false,
+            a_la_main: false,
         });
     }
     for l in section(Some(sortie), "FIC").unwrap_or_default() {
@@ -1910,6 +1980,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             retrait: vec![format!("Remove-Item -LiteralPath {} -Force", ps_chaine(chemin))],
             arret: Vec::new(),
             refuse: false,
+            a_la_main: false,
         });
     }
     Some(t)
@@ -2059,7 +2130,7 @@ pub fn menu() {
         return;
     }
     let mut correctifs: Vec<Vec<String>> = Vec::new();
-    let mut noms: Vec<&str> = Vec::new();
+    let mut noms: Vec<(usize, &str)> = Vec::new();
     // Les outils en cours dont la fermeture est acceptée, et la place de leur correctif.
     let mut fermes: Vec<(usize, &str, usize)> = Vec::new();
     for &(i, logiciel) in &presents {
@@ -2103,6 +2174,15 @@ pub fn menu() {
             );
             continue;
         }
+        if commandes.is_empty()
+            && let Some(reste) = reste_a_la_main(&siens)
+        {
+            trp!(
+                "  ℹ {nom} : à faire à la main : {reste}.",
+                "  ℹ {nom}: to do by hand: {reste}."
+            );
+            continue;
+        }
         if commandes.is_empty() {
             trp!(
                 "  ℹ {nom} : à désinstaller depuis les réglages du système (applications installées).",
@@ -2114,7 +2194,7 @@ pub fn menu() {
             fermes.push((i, nom, correctifs.len()));
         }
         correctifs.push(commandes);
-        noms.push(nom);
+        noms.push((i, nom));
     }
     if correctifs.is_empty() {
         return;
@@ -2152,23 +2232,83 @@ pub fn menu() {
     }
     println!();
     let reussites = retirer_les_programmes(&correctifs);
-    for (nom, issue) in noms.iter().zip(reussites) {
-        match issue {
-            Ok(()) => trp!("  {VERT}✔{RESET} {nom} retiré.", "  {VERT}✔{RESET} {nom} removed."),
-            Err(None) => trp!(
-                "  ✖ {nom} : le retrait a échoué (voir au-dessus).",
-                "  ✖ {nom}: removal failed (see above)."
-            ),
-            Err(Some(deja)) => trp!(
-                "  ✖ {nom} : {deja}, mais la suite du retrait a échoué (voir au-dessus) : le programme n'est pas entièrement retiré.",
-                "  ✖ {nom}: {deja}, but the rest of the removal failed (see above): the program is not fully removed."
-            ),
-        }
+    // Une commande d'arrêt « réussit » aussi quand elle n'a rien trouvé à arrêter : relu, jamais cru.
+    let a_fermer: Vec<usize> = fermes.iter().map(|f| f.0).collect();
+    let en_marche = if a_fermer.is_empty() {
+        Some(std::collections::BTreeSet::new())
+    } else {
+        encore_en_marche(&a_fermer)
+    };
+    for (&(i, nom), issue) in noms.iter().zip(reussites) {
+        let siens: Vec<&Trouvaille> = visibles.iter().copied().filter(|t| t.logiciel == i).collect();
+        let tourne = if a_fermer.contains(&i) {
+            en_marche.as_ref().map(|e| e.contains(&i))
+        } else {
+            Some(false)
+        };
+        println!(
+            "{}",
+            suite_du_retrait(nom, issue, tourne, reste_a_la_main(&siens).as_deref())
+        );
     }
     dire(tr!(
         "Ensuite : changez vos mots de passe importants depuis un autre appareil, et refaites un bilan complet (menu principal, 1).",
         "Next: change your important passwords from another device, and run a full check again (main menu, 1)."
     ));
+}
+
+/// Ceux de `logiciels` qui tournent encore, relus quelques instants (un programme arrêté met un moment à finir) ;
+/// `None` : les processus ne se relisent pas.
+fn encore_en_marche(logiciels: &[usize]) -> Option<std::collections::BTreeSet<usize>> {
+    let mut restent = std::collections::BTreeSet::new();
+    for essai in 0..4 {
+        if essai > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(700));
+        }
+        let r = relever_tout().filter(|r| r.lu.en_cours)?;
+        restent = r
+            .trouvailles
+            .iter()
+            .filter(|t| matches!(t.trace, Trace::EnCours { .. }) && logiciels.contains(&t.logiciel))
+            .map(|t| t.logiciel)
+            .collect();
+        if restent.is_empty() {
+            break;
+        }
+    }
+    Some(restent)
+}
+
+/// Ce qui se dit d'un retrait : la coche seulement quand tout est fait, qu'il ne tourne plus (`tourne`, `None` s'il ne
+/// se relit pas) et que rien ne reste à la main.
+fn suite_du_retrait(nom: &str, issue: Result<(), Option<String>>, tourne: Option<bool>, reste: Option<&str>) -> String {
+    let mut dit = match issue {
+        Ok(()) if tourne == Some(true) => trf!(
+            "  ✖ {nom} : les étapes du retrait sont faites, mais il tourne encore : redémarrez l'ordinateur, puis refaites cette vérification.",
+            "  ✖ {nom}: the removal steps are done, but it is still running: restart the computer, then run this check again."
+        ),
+        Ok(()) if tourne.is_none() => trf!(
+            "  ✖ {nom} : les étapes du retrait sont faites, mais son arrêt ne se vérifie pas : redémarrez l'ordinateur, puis refaites cette vérification.",
+            "  ✖ {nom}: the removal steps are done, but whether it stopped cannot be checked: restart the computer, then run this check again."
+        ),
+        Ok(()) if reste.is_some() => trf!("  ⚠ {nom} : retiré en partie.", "  ⚠ {nom}: partly removed."),
+        Ok(()) => trf!("  {VERT}✔{RESET} {nom} retiré.", "  {VERT}✔{RESET} {nom} removed."),
+        Err(None) => trf!(
+            "  ✖ {nom} : le retrait a échoué (voir au-dessus).",
+            "  ✖ {nom}: removal failed (see above)."
+        ),
+        Err(Some(deja)) => trf!(
+            "  ✖ {nom} : {deja}, mais la suite du retrait a échoué (voir au-dessus) : le programme n'est pas entièrement retiré.",
+            "  ✖ {nom}: {deja}, but the rest of the removal failed (see above): the program is not fully removed."
+        ),
+    };
+    if let Some(reste) = reste {
+        dit.push_str(&trf!(
+            " Reste à faire à la main : {reste}.",
+            " Left to do by hand: {reste}."
+        ));
+    }
+    dit
 }
 
 /// `vanguard acces-a-distance --json` : le même relevé que le parcours (installés, au démarrage, en cours,
@@ -2420,7 +2560,8 @@ mod tests {
     fn autostart_lu_en_octets() {
         use std::os::unix::ffi::OsStrExt;
         let d = jetable("autostart");
-        assert!(autostart(&mut Vec::new(), &d.join("absent"), ""));
+        let lu = |t: &mut Vec<Trouvaille>, d: &std::path::Path| autostart(t, d, false).is_empty();
+        assert!(lu(&mut Vec::new(), &d.join("absent")));
         std::fs::write(
             d.join("a.desktop"),
             b"[Desktop Entry]\nName=T\xe9l\xe9\nExec=/opt/anydesk\n",
@@ -2428,24 +2569,33 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink("/nulle/part", d.join("mort.desktop")).unwrap();
         let mut t = Vec::new();
-        assert!(autostart(&mut t, &d, ""));
+        assert!(lu(&mut t, &d));
         assert_eq!(t.len(), 1);
         assert!(t[0].retrait[0].starts_with("rm -f "));
         std::fs::create_dir(d.join("dossier.desktop")).unwrap();
         std::os::unix::fs::symlink("/dev/null", d.join("masque.desktop")).unwrap();
-        assert!(autostart(&mut Vec::new(), &d, ""));
+        assert!(lu(&mut Vec::new(), &d));
         let latin = d.join(std::ffi::OsStr::from_bytes(b"anydesk\xff.desktop"));
         std::fs::write(&latin, b"").unwrap();
         let mut t = Vec::new();
-        assert!(autostart(&mut t, &d, ""));
+        assert!(lu(&mut t, &d));
         let du_latin: Vec<_> = t.iter().filter(|x| x.ou.contains("hors UTF-8")).collect();
         assert_eq!((t.len(), du_latin.len()), (2, 1), "{t:?}");
         assert_eq!(du_latin[0].retrait, Vec::<String>::new());
+        // Le reste du logiciel retiré, celui-là reste : jamais de coche.
+        let siens: Vec<&Trouvaille> = t.iter().collect();
+        assert!(du_latin[0].a_la_main && !t.iter().all(|x| x.a_la_main));
+        let reste = reste_a_la_main(&siens).unwrap();
+        assert!(reste.contains("hors UTF-8") && !reste.contains("a.desktop"));
+        let c = juger(&t, jour("2026-10-24"));
+        let dit = serde_json::to_string(&c[0]).unwrap();
+        assert!(dit.contains("à la main"), "{dit}");
         // Le nom vient du disque : toujours entre apostrophes.
-        assert_eq!(
-            retrait_du_fichier("rm -f", std::path::Path::new("/a;b'c")),
-            [r"rm -f '/a;b'\''c'"]
-        );
+        let effacer = |dossier, admin| ou_et_effacement(Effacement { dossier, admin }, std::path::Path::new("/a;b'c"));
+        assert_eq!(effacer(false, false).1, [r"rm -f '/a;b'\''c'"]);
+        assert_eq!(effacer(true, false).1, [r"rm -rf '/a;b'\''c'"]);
+        assert_eq!(effacer(false, true).1, [r"sudo rm -f '/a;b'\''c'"]);
+        assert_eq!(effacer(true, true).1, [r"sudo rm -rf '/a;b'\''c'"]);
         std::fs::remove_file(&latin).unwrap();
         for pose in [0, 1] {
             let p = d.join("illisible.desktop");
@@ -2455,11 +2605,57 @@ mod tests {
                 std::fs::File::create(&p).unwrap().set_len(LANCEUR_MAX + 1).unwrap();
             }
             let mut t = Vec::new();
-            assert!(!autostart(&mut t, &d, ""), "{pose}");
+            let non_lus = autostart(&mut t, &d, false);
+            assert!(
+                non_lus.len() == 1 && non_lus[0].ends_with("illisible.desktop"),
+                "{non_lus:?}"
+            );
             assert_eq!(t.len(), 1);
             std::fs::remove_file(&p).unwrap();
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// pkill lit une expression régulière : un nom qui en est une n'a pas de commande d'arrêt (elle n'arrêterait rien,
+    /// ou autre chose), ni un nom vide, ni un nom qui passerait pour une option.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_nom_qui_est_une_expression_n_est_pas_donne_a_pkill() {
+        assert_eq!(
+            arret_par_le_nom("anydesk").as_deref(),
+            Some("pkill -x 'anydesk' || true")
+        );
+        assert!(arret_par_le_nom("TeamViewer_Desk").is_some() && arret_par_le_nom("Web Content").is_some());
+        for nom in [
+            "",
+            "anydesk+",
+            "any[desk",
+            "anydesk|x",
+            ".*",
+            "-anydesk",
+            "anydesk\u{fffd}",
+            "$(anydesk)",
+        ] {
+            assert_eq!(arret_par_le_nom(nom), None, "{nom}");
+        }
+    }
+
+    /// La coche seulement quand tout est fait, vérifié, et que rien ne reste : une commande d'arrêt « réussit » aussi
+    /// sans rien arrêter.
+    #[test]
+    fn retire_seulement_quand_il_ne_tourne_plus() {
+        assert!(suite_du_retrait("AnyDesk", Ok(()), Some(false), None).contains('✔'));
+        for (issue, tourne, reste) in [
+            (Ok(()), Some(true), None),
+            (Ok(()), None, None),
+            (Ok(()), Some(false), Some("/opt/x")),
+            (Err(None), Some(false), None),
+            (Err(Some("arrêté".to_string())), Some(false), Some("/opt/x")),
+        ] {
+            let dit = suite_du_retrait("AnyDesk", issue, tourne, reste);
+            assert!(!dit.contains('✔'), "{dit}");
+            assert_eq!(dit.contains("/opt/x"), reste.is_some(), "{dit}");
+        }
     }
 
     /// L'ordre du retrait : le retrait du démarrage d'abord (fait même si l'arrêt est refusé), puis l'arrêt accepté,
@@ -2519,6 +2715,7 @@ mod tests {
             retrait: retrait.iter().map(ToString::to_string).collect(),
             arret: vec!["stop".to_string()],
             refuse: false,
+            a_la_main: false,
         }
     }
 

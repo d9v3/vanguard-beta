@@ -502,8 +502,8 @@ pub(crate) struct Marques {
 }
 
 impl Marques {
-    /// Suit les montages d'après ce qui vient d'être lu : rend ceux marqués cette fois. Une lecture ratée ou coupée est
-    /// dite ; elle ne fait oublier aucune marque.
+    /// Suit les montages d'après ce qui vient d'être lu : rend ceux marqués pour la première fois. Une lecture ratée ou
+    /// coupée est dite ; elle ne fait oublier aucune marque ni aucun échec.
     pub(crate) fn suivre(&mut self, groupe: &Groupe, lu: io::Result<Mountinfo>) -> Vec<lecture::Montage> {
         self.suivre_par(lu, |point| groupe.marquer(point))
     }
@@ -520,6 +520,8 @@ impl Marques {
         if info.entier {
             self.incomplet = None;
             self.oublier_demontes(&info.texte);
+            // Les échecs de ce qui est encore monté reviennent dans `completer`.
+            self.echecs.clear();
         } else {
             self.incomplet = Some(crate::tr!(
                 "liste trop longue, lue en partie : un disque peut ne pas être surveillé",
@@ -529,17 +531,17 @@ impl Marques {
         self.completer(&info.texte, marquer)
     }
 
-    /// Marque ce que `mountinfo` a de systèmes de fichiers locaux pas encore marqués : rend ceux marqués cette fois.
+    /// Marque chaque système de fichiers local de `mountinfo`, une fois par lecture : rend ceux qui n'étaient pas connus.
+    /// Un numéro connu est marqué de nouveau, ce qui ne change rien s'il l'est déjà : démonté puis remonté pendant une
+    /// lecture coupée, il aurait le même numéro et plus de marque.
     fn completer(
         &mut self,
         mountinfo: &str,
         mut marquer: impl FnMut(&Path) -> io::Result<()>,
     ) -> Vec<lecture::Montage> {
+        let connus = self.systemes.clone();
         let mut nouveaux = Vec::new();
         for m in lecture::locaux(mountinfo) {
-            if self.systemes.contains(&m.dev) {
-                continue;
-            }
             // Lu avec des « � », le nom n'est pas celui du disque : un dossier posé sous ce nom-là, sur un autre
             // système de fichiers, serait marqué à la place, et celui-ci passerait pour surveillé.
             if m.point.contains(char::REPLACEMENT_CHARACTER) {
@@ -551,11 +553,17 @@ impl Marques {
             }
             match marquer(Path::new(&m.point)) {
                 Ok(()) => {
-                    self.systemes.push(m.dev);
                     self.echecs.retain(|(p, _)| *p != m.point);
-                    nouveaux.push(m);
+                    if !self.systemes.contains(&m.dev) {
+                        self.systemes.push(m.dev);
+                    }
+                    if !connus.contains(&m.dev) {
+                        nouveaux.push(m);
+                    }
                 }
                 Err(e) => {
+                    // La marque d'avant ne compte plus : rien ne prouve que ce soit le même système de fichiers.
+                    self.systemes.retain(|d| *d != m.dev);
                     if !self.echecs.iter().any(|(p, _)| *p == m.point) {
                         self.echecs.push((m.point.clone(), e.to_string()));
                     }
@@ -634,10 +642,46 @@ mod tests {
                 },
             );
         }
-        assert_eq!(vus, [Path::new("/home")]);
+        assert_eq!(vus, [Path::new("/home"); 2]);
         assert_eq!(m.systemes, [(8, 2)]);
         assert_eq!(m.echecs.len(), 1);
         assert!(m.echecs[0].0.contains(char::REPLACEMENT_CHARACTER));
+        // Démonté : plus dit, dès la lecture entière d'après.
+        m.suivre_par(Ok(lu(b"42 1 8:2 / /home rw - ext4 /dev/sda2 rw\n")), |_| Ok(()));
+        assert_eq!(m.echecs, []);
+    }
+
+    /// Démonté puis remonté sous le même numéro (une boucle le reprend) pendant une lecture coupée : sa marque est
+    /// partie avec l'ancien ; elle est reposée, sans être annoncée comme un nouveau montage. Si elle ne se repose pas,
+    /// il n'est plus compté marqué.
+    #[test]
+    fn un_numero_deja_vu_est_marque_de_nouveau() {
+        let mut m = Marques::default();
+        let boucle: &[u8] = b"40 1 8:1 / / rw - ext4 /dev/sda1 rw\n50 1 7:0 / /mnt/b rw - ext4 /dev/loop0 rw\n\
+            51 1 7:0 / /mnt/c rw - ext4 /dev/loop0 rw\n";
+        assert_eq!(m.suivre_par(Ok(lu(boucle)), |_| Ok(())).len(), 2);
+        let mut coupe = lu(b"40 1 8:1 / / rw - ext4 /dev/sda1 rw\n");
+        coupe.entier = false;
+        m.suivre_par(Ok(coupe), |_| Ok(()));
+        let mut vus = Vec::new();
+        let nouveaux = m.suivre_par(Ok(lu(boucle)), |p| {
+            vus.push(p.to_path_buf());
+            Ok(())
+        });
+        assert_eq!(vus, [Path::new("/"), Path::new("/mnt/b")], "une fois par système");
+        assert!(nouveaux.is_empty() && m.echecs.is_empty());
+        m.suivre_par(Ok(lu(boucle)), |p| {
+            if p.starts_with("/mnt") {
+                Err(io::Error::other("x"))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(m.systemes, [(8, 1)]);
+        assert_eq!(m.echecs, [("/mnt/b".to_string(), "x".to_string())]);
+        // Remarqué ensuite : l'échec n'est plus dit, et c'est un nouveau montage.
+        assert_eq!(m.suivre_par(Ok(lu(boucle)), |_| Ok(())).len(), 1);
+        assert_eq!(m.echecs, []);
     }
 
     /// Une lecture ratée ou coupée est dite et n'oublie aucune marque ; la lecture entière d'après l'efface et oublie.

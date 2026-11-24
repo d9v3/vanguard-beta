@@ -234,7 +234,7 @@ fn finir_navigation(pourquoi: String, commandes: Vec<String>, hosts: bool, hosts
 }
 
 /// Ce que dit « Navigation détournée » quand rien n'est à corriger : seulement ce qui a été lu.
-fn rien_de_detourne(hosts_lu: bool, proxy_lu: bool) -> &'static str {
+pub(crate) fn rien_de_detourne(hosts_lu: bool, proxy_lu: bool) -> &'static str {
     match (hosts_lu, proxy_lu) {
         (true, true) => tr!(
             "ni redirection dans le fichier hosts, ni proxy imposé",

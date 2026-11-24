@@ -137,6 +137,11 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   neither removed nor put back over (a note from an old removal does not overwrite it), and the list says so; an
   entry that, once hidden, would exceed 64 KiB is said “to keep” and refused before anything is written. Known limit,
   for 0.95: the account's systemd unit file is still read without a bound to get its command.
+- **A name that is not text (Linux).** The name of a program, a file or a mount point can contain bytes that are not
+  UTF-8; Vanguard shows them as “�”. Two different names can therefore look the same. A program whose path contains some
+  is not stopped blindly, and a remote-control launcher named that way is reported as “to delete by hand”. A mount point
+  named that way cannot be marked by the guard: the checkup says so, and launches from that file system may go unseen.
+  The list of mounts is read up to a limit; if it is cut short, that is said too.
 - **Data loss.** Malware running in the account can turn off the anti-ransomware watcher: the backup remains the
   real protection.
 - **A stolen computer that is on and unlocked.** Disk encryption (BitLocker, FileVault, LUKS) protects a computer

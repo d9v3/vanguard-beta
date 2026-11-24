@@ -145,6 +145,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   liste le dit ; une entrée qui, une fois masquée, dépasserait 64 Kio est dite « à garder » et refusée avant toute
   écriture. Limite connue, pour la 0.95 : le fichier d'unité systemd du compte est encore lu sans borne pour en tirer
   sa commande.
+- **Un nom qui n'est pas du texte (Linux).** Un nom de programme, de fichier ou de point de montage peut contenir des
+  octets hors UTF-8 ; Vanguard les montre comme « � ». Deux noms différents peuvent donc s'afficher pareil. Un
+  programme dont le chemin en contient n'est pas arrêté à l'aveugle, et un lanceur de contrôle à distance ainsi nommé
+  est dit « à effacer à la main ». Un point de montage ainsi nommé ne peut pas être marqué par le garde : c'est dit au
+  bilan, et les lancements de ce système de fichiers peuvent ne pas être vus. La liste des montages est lue jusqu'à une
+  limite ; coupée, c'est dit aussi.
 - **La perte des données.** Un programme malveillant du compte peut éteindre le veilleur anti-rançongiciel : la
   sauvegarde reste la vraie protection.
 - **Un ordinateur volé allumé et déverrouillé.** Le chiffrement du disque (BitLocker, FileVault, LUKS) protège un

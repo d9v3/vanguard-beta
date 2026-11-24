@@ -1249,7 +1249,7 @@ pub(crate) fn arreter_les_programmes(
     )
 }
 
-/// Un programme en marche d'après /proc (`programmes_en_marche`) ; `None` : parti, ou un fil du noyau.
+/// Un programme en marche d'après /proc (`programmes_en_marche`) ; `None` : parti, fini, ou un fil du noyau.
 #[cfg(target_os = "linux")]
 pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
     let racine = std::path::PathBuf::from(format!("/proc/{pid}"));
@@ -1270,8 +1270,17 @@ pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
     let lien = std::fs::read_link(racine.join("exe"))
         .ok()
         .map(|l| l.to_string_lossy().into_owned());
+    // Ni ligne ni programme : un fil du noyau, ou un processus fini. Mais aussi un programme d'un autre compte
+    // (programme illisible d'ici) qui a effacé sa ligne de commande : celui-là se garde, à moitié lu. L'état et les
+    // drapeaux viennent du noyau : le programme ne les choisit pas.
     if ligne.is_none() && lien.is_none() {
-        return None;
+        let stat = crate::socle::lire_texte(racine.join("stat")).ok();
+        let naissance = stat
+            .as_deref()
+            .and_then(crate::machine::defense_eleve::naissance_du_stat);
+        if !est_un_programme(naissance.map(|(etat, drapeaux, _)| (etat, drapeaux))) {
+            return None;
+        }
     }
     let sans_fichier = lien.as_deref().is_some_and(|l| l.ends_with(" (deleted)"));
     let chemin = lien.map(|l| l.strip_suffix(" (deleted)").map_or_else(|| l.clone(), str::to_string));
@@ -1286,9 +1295,17 @@ pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
     })
 }
 
+/// D'après l'état et les drapeaux de `/proc/<pid>/stat` : ni fini, ni fil du noyau. Illisible, il n'est pas écarté.
+#[cfg(target_os = "linux")]
+fn est_un_programme(etat_et_drapeaux: Option<(char, u64)>) -> bool {
+    /// Du noyau (include/linux/sched.h) : un fil du noyau.
+    const PF_KTHREAD: u64 = 0x0020_0000;
+    etat_et_drapeaux.is_none_or(|(etat, drapeaux)| !matches!(etat, 'Z' | 'X') && drapeaux & PF_KTHREAD == 0)
+}
+
 /// Les programmes en marche d'après /proc, sans droits : le nom et le parent (status), la ligne de commande
-/// (cmdline, lisible pour tous), le programme (exe, lisible pour ceux du compte seulement). Les fils du noyau, sans
-/// programme ni ligne de commande, ne sont pas des programmes.
+/// (cmdline, lisible pour tous), le programme (exe, lisible pour ceux du compte seulement). Les fils du noyau ne sont
+/// pas des programmes.
 #[cfg(target_os = "linux")]
 fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     use super::linux::dissimulation::{pids_listes, proc_masque};
@@ -1375,6 +1392,70 @@ fn date_cim(texte: &str) -> Option<NaiveDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Une ligne de commande vide et un programme illisible ne cachent pas le programme d'un autre compte ; un zombie
+    /// et un fil du noyau n'en sont pas.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn une_ligne_vide_ne_cache_pas_un_programme() {
+        assert!(est_un_programme(Some(('S', 0x0040_0100))));
+        assert!(est_un_programme(Some(('T', 0))) && est_un_programme(None));
+        assert!(!est_un_programme(Some(('Z', 0))) && !est_un_programme(Some(('X', 0))));
+        assert!(!est_un_programme(Some(('I', 0x0420_8060 | 0x0020_0000))));
+        // Le fils fini, pas encore attendu : ni programme ni ligne, jamais montré.
+        let mut fils = std::process::Command::new("true").spawn().unwrap();
+        let stat = format!("/proc/{}/stat", fils.id());
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !crate::socle::lire_texte(&stat).unwrap().contains(") Z ") && std::time::Instant::now() < limite {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(en_marche_de(fils.id()).is_none(), "un zombie");
+        fils.wait().unwrap();
+    }
+
+    /// Un vrai : son fichier, exécutable sans se lire, cache /proc/<pid>/exe comme celui d'un autre compte, et son seul
+    /// argument est vide.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_programme_illisible_sans_ligne_est_vu() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        if crate::socle::euid() == 0 {
+            return crate::essais::saute("en root : le programme se lirait");
+        }
+        let d = crate::essais::Jetable::nouveau("illisible");
+        let copie = d.join("muet");
+        std::fs::copy("/usr/bin/cat", &copie).unwrap();
+        std::fs::set_permissions(&copie, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let mut commande = std::process::Command::new(&copie);
+        commande
+            .arg0("")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // ETXTBSY : un autre essai lançait un programme pendant la copie.
+        let mut fils = (0..50)
+            .find_map(|_| match commande.spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    None
+                }
+                r => Some(r.unwrap()),
+            })
+            .expect("copie toujours occupée");
+        // Déjà fini : ce « cat » choisit ce qu'il fait d'après son nom (uutils), et n'a pas attendu.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let fini = fils.try_wait().unwrap().is_some();
+        let vu = en_marche_de(fils.id());
+        let _ = fils.kill();
+        let _ = fils.wait();
+        if fini {
+            return crate::essais::saute("ce cat ne tourne pas sans son nom");
+        }
+        let vu = vu.expect("invisible");
+        assert_eq!((vu.chemin, vu.ligne), (None, None));
+        assert_eq!(vu.nom, "muet");
+    }
 
     /// La chasse voit un programme au nom hors UTF-8.
     #[cfg(target_os = "linux")]

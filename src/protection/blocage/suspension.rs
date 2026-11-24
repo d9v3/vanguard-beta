@@ -818,6 +818,9 @@ pub(crate) enum Constat {
     Repris,
     /// Il ne se relit pas d'ici (droits) : peut-être toujours suspendu ; gardé.
     Illisible,
+    /// Le même processus, toujours gelé, mais son programme n'est plus celui de la liste : gardé.
+    #[cfg(target_os = "linux")]
+    Change,
     /// Ce numéro est un autre processus, ou un autre programme : dit une fois, puis oublié.
     Autre,
 }
@@ -845,6 +848,38 @@ pub(crate) fn constat(lu: Lu, resuspendu: impl FnOnce() -> bool) -> Option<Const
     }
 }
 
+/// Le même processus (son départ connu, et le même), sous un autre programme : son fichier a été renommé pendant qu'il
+/// est gelé (une mise à jour), ou il a été repris et a lancé autre chose (`exec` garde le départ). Toujours gelé ou en
+/// marche, il reste dans la liste : oublié, plus rien ne le dirait. `None` : un autre processus sur ce numéro.
+#[cfg(target_os = "linux")]
+fn change_de_programme(s: &Suspendu) -> Option<Constat> {
+    use crate::socle::processus;
+    let attendu = s.depart?;
+    let stat = crate::socle::lire_texte(format!("/proc/{}/stat", s.pid)).ok()?;
+    if processus::debut_du_stat(&stat) != Some(attendu) {
+        return None;
+    }
+    match processus::etat_du_stat(&stat)? {
+        'Z' | 'X' => None,
+        'T' | 't' => Some(Constat::Change),
+        _ => Some(Constat::Repris),
+    }
+}
+
+/// Ce qu'est devenu un suspendu : relu, resuspendu s'il a été repris. `None` : rien à en dire, et oublié.
+fn relire(s: &Suspendu) -> Option<Constat> {
+    let lu = lire(s.pid, &s.chemin, s.depart);
+    #[cfg(target_os = "linux")]
+    if lu == Lu::Autre
+        && let Some(c) = change_de_programme(s)
+    {
+        return Some(c);
+    }
+    constat(lu, || {
+        s.depart.is_some() && sans_droits_de_plus(s.pid) && suspendre_ici(s.pid, &s.chemin, s.depart, false).is_ok()
+    })
+}
+
 /// Au bilan : chaque suspendu relu, resuspendu s'il a été repris (par ce compte, et seulement le même processus :
 /// son départ connu), oublié s'il est fini ; ce qui est constaté. `Err` : la liste ne compte pas (pourquoi, et les
 /// numéros qu'elle nommait).
@@ -853,10 +888,7 @@ fn verifier() -> Result<Vec<(Suspendu, Constat)>, (&'static str, String)> {
     let mut restent = Vec::new();
     let mut constats = Vec::new();
     for s in l.suspendus.drain(..) {
-        let c = constat(lire(s.pid, &s.chemin, s.depart), || {
-            s.depart.is_some() && sans_droits_de_plus(s.pid) && suspendre_ici(s.pid, &s.chemin, s.depart, false).is_ok()
-        });
-        if let Some(c) = c {
+        if let Some(c) = relire(&s) {
             if c.garde() {
                 restent.push(s.clone());
             }
@@ -925,6 +957,14 @@ pub(crate) fn rappeler() {
                     "cannot be read from here (rights): perhaps still suspended; “vanguard blocking resume <PID>” resumes it through the elevated helper"
                 ),
             ),
+            #[cfg(target_os = "linux")]
+            Constat::Change => (
+                format!("{eleve}‖{RESET}"),
+                tr!(
+                    "toujours gelé, mais son fichier a été renommé ou il a changé de programme : Vanguard ne le reprend pas sous ce nom ; arrêtez-le s'il n'est pas à vous",
+                    "still frozen, but its file was renamed or it changed programs: Vanguard does not resume it under this name; stop it if it is not yours"
+                ),
+            ),
             Constat::Autre => (
                 format!("{GRIS}·{RESET}"),
                 tr!(
@@ -980,12 +1020,34 @@ mod tests {
         assert!(depart.is_some());
         assert!(matches!(lire(p.pid(), chemin, depart), Lu::Tourne));
         assert!(matches!(lire(p.pid(), chemin, depart.map(|d| d + 1)), Lu::Autre));
+        // Renommé pendant qu'il est suspendu, ou devenu un autre programme : le même processus reste dans la liste.
+        let s = |depart| Suspendu {
+            pid: p.pid(),
+            chemin: "/nulle/part".into(),
+            quoi: "essai".into(),
+            le: "2026-11-24".into(),
+            depart,
+        };
+        assert!(matches!(lire(p.pid(), "/nulle/part", depart), Lu::Autre));
+        assert_eq!(change_de_programme(&s(depart)), Some(Constat::Repris));
+        assert_eq!(
+            change_de_programme(&s(depart.map(|d| d + 1))),
+            None,
+            "un autre processus"
+        );
+        assert_eq!(change_de_programme(&s(None)), None);
+        // Relu au bilan, il est dit et gardé ; un autre processus sous ce numéro est oublié.
+        assert_eq!(relire(&s(depart)), Some(Constat::Repris));
+        assert_eq!(relire(&s(depart.map(|d| d + 1))), Some(Constat::Autre));
         assert!(crate::socle::processus::geler(p.pid()));
         let limite = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while crate::socle::processus::est_gele(p.pid()) != Some(true) && std::time::Instant::now() < limite {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(matches!(lire(p.pid(), chemin, depart), Lu::Gele));
+        assert_eq!(change_de_programme(&s(depart)), Some(Constat::Change));
+        assert_eq!(relire(&s(depart)), Some(Constat::Change));
+        assert!(Constat::Change.garde() && Constat::Repris.garde());
     }
 
     /// Fini : oublié ; autre programme : dit, puis oublié ; suspendu : rappelé ; illisible d'ici : gardé et dit, jamais

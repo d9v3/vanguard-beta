@@ -444,6 +444,15 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             affichable(&e.alertes.join(" ; "))
         ));
         c.probleme = c.probleme.max(Some(Niveau::Info));
+        // Un disque peut ne pas être surveillé, et un programme sans droits peut y arriver (des montages FUSE aux
+        // longs noms remplissent la liste).
+        if e.alertes.iter().any(|a| a.starts_with("montages: ")) {
+            c.message.push_str(tr!(
+                " La liste des montages n'est pas lue en entier : « findmnt -t fuse » montre ceux que des programmes posent sans droits ; si vous n'en reconnaissez pas, l'un d'eux a pu la remplir exprès.",
+                " The list of mounts is not read in full: “findmnt -t fuse” shows those that programs mount without rights; if you do not recognise some, one of them may have filled it on purpose."
+            ));
+            c.probleme = c.probleme.max(Some(Niveau::Moyen));
+        }
     }
     c
 }
@@ -973,6 +982,18 @@ mod tests {
         let c = juger(true, Some(&alertes), maintenant);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(!c.message.contains('\u{1b}'), "{}", c.message);
+        // Des montages pas lus en entier : des lancements peuvent passer sans être vus. Un point refusé : une note.
+        let dites = |alerte: &str| {
+            let e = Etat {
+                alertes: vec![alerte.to_string()],
+                ..etat(maintenant)
+            };
+            juger(true, Some(&e), maintenant)
+        };
+        let c = dites("montages: liste coupée");
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(serde_json::to_string(&c).unwrap().contains("findmnt -t fuse"));
+        assert_eq!(dites("marque: /mnt").probleme, Some(Niveau::Info));
     }
 
     /// M-N1 et M-N2 : des listes du compte amputées, une union pleine, un certain passé faute de verdict : alerte

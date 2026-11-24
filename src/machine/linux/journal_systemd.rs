@@ -67,7 +67,9 @@ pub(crate) fn erreurs_du_demarrage() -> Option<Vec<Entree>> {
 }
 
 fn erreurs_avec(champs: &[&str]) -> Option<Vec<Entree>> {
-    let demarrage = id_hexa(crate::socle::lire_texte("/proc/sys/kernel/random/boot_id").ok()?.trim())?;
+    // Lu sans `socle` : le banc de fuzzing compile ce fichier seul.
+    let demarrage = std::fs::read("/proc/sys/kernel/random/boot_id").ok()?;
+    let demarrage = id_hexa(String::from_utf8_lossy(&demarrage).trim())?;
     // Pas de borne d'heure : au début du démarrage, l'horloge peut être fausse de plusieurs heures (une horloge
     // matérielle à l'heure locale, sous Windows en double démarrage), et journalctl -b garde ces entrées. Les
     // champs se trouvent par la table de hachage : lire aussi les fichiers d'avant ne coûte presque rien.

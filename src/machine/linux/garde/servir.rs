@@ -1010,6 +1010,9 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques, tris: usize) {
             .take(16)
             .map(|(point, e)| format!("marque: {}: {e}", sortie::borner(point))),
     );
+    if let Some(reste) = marques.echecs.len().checked_sub(16).filter(|n| *n > 0) {
+        alertes.push(format!("marque: et {reste} autres points non marqués"));
+    }
     alertes.extend(marques.incomplet.map(|r| format!("montages: {r}")));
     let perdus = p.compteurs.evenements_perdus.load(Ordering::Relaxed);
     if perdus > 0 {

@@ -515,8 +515,8 @@ pub(super) fn juger_sans_fichier(
                 .to_string()
             } else {
                 trf!(
-                    "Les {lus} programmes de votre compte ont leur fichier sur le disque ; les {illisibles} des autres comptes (root, services) ne se lisent qu'avec les droits root : pas vérifiés.",
-                    "The {lus} programs of your account have their file on disk; the {illisibles} of other accounts (root, services) can only be read with root rights: not checked."
+                    "Les {lus} programmes qui se lisent ont leur fichier sur le disque ; {illisibles} autres (d'autres comptes, ou qui se protègent) ne se lisent qu'avec les droits root : pas vérifiés.",
+                    "The {lus} programs that can be read have their file on disk; {illisibles} others (of other accounts, or protecting themselves) can only be read with root rights: not checked."
                 )
             },
         ));

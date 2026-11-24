@@ -733,13 +733,13 @@ mod tests {
         ];
         let mut trouves = Vec::new();
         for (i, _) in code.match_indices("read_to_string(") {
-            // L'instruction : du dernier « ; », « { » ou « } » en fin de ligne jusqu'au « ; » ou à la fin de la ligne.
+            // L'instruction : du dernier « ; », « { » ou « } » en fin de ligne jusqu'à la parenthèse qui ferme l'appel.
             let avant = [";\n", "{\n", "}\n"]
                 .iter()
                 .filter_map(|f| code[..i].rfind(f))
                 .max()
                 .unwrap_or(0);
-            let apres = code[i..].find(['\n', ';']).map_or(code.len(), |n| i + n);
+            let apres = fin_de_l_appel(code, i);
             let instruction: String = code[avant..apres]
                 .lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
@@ -750,6 +750,40 @@ mod tests {
             }
         }
         trouves
+    }
+
+    /// La fin de l'appel commencé à `i` : sa parenthèse fermante, hors des textes.
+    fn fin_de_l_appel(code: &str, i: usize) -> usize {
+        let (mut ouvertes, mut texte, mut echappe) = (0_i32, false, false);
+        for (n, c) in code[i..].char_indices() {
+            match c {
+                _ if echappe => echappe = false,
+                '\\' if texte => echappe = true,
+                '"' => texte = !texte,
+                '(' if !texte => ouvertes += 1,
+                ')' if !texte => {
+                    ouvertes -= 1;
+                    if ouvertes == 0 {
+                        return i + n;
+                    }
+                }
+                _ => {}
+            }
+        }
+        code.len()
+    }
+
+    /// Le code sans son module d'essais écrit sur place : un « #[cfg(test)] mod x; » ne coupe rien, ce qui le suit
+    /// compte.
+    fn sans_les_essais(source: &str) -> &str {
+        const DEBUT: &str = "#[cfg(test)]\n";
+        source
+            .match_indices(DEBUT)
+            .find(|(i, _)| {
+                let ligne = source[i + DEBUT.len()..].lines().next().unwrap_or("");
+                ligne.contains("mod ") && ligne.trim_end().ends_with('{')
+            })
+            .map_or(source, |(i, _)| &source[..i])
     }
 
     /// Un nom de processus, un point de montage ou une ligne ajoutée à la main peuvent ne pas être de l'UTF-8 :
@@ -764,10 +798,7 @@ mod tests {
                 } else if p.extension().is_some_and(|x| x == "rs") {
                     *vus += 1;
                     let source = std::fs::read_to_string(&p).unwrap();
-                    let code = source
-                        .find("#[cfg(test)]\nmod ")
-                        .map_or(source.as_str(), |t| &source[..t]);
-                    for (ligne, instruction) in lectures_strictes(code) {
+                    for (ligne, instruction) in lectures_strictes(sans_les_essais(&source)) {
                         trouves.push(format!("{}:{ligne} : {instruction}", p.display()));
                     }
                 }
@@ -795,9 +826,13 @@ mod tests {
             "x;\nstd::fs::File::open(\"/proc/self/mounts\")?\n    .read_to_string(&mut t)?;",
             "std::fs::read_to_string(\"/etc/passwd\")",
             "std::fs::read_to_string(racine.join(\"1/cgroup\"))",
+            "x;\nstd::fs::read_to_string(\n    dossier\n        .join(\"a)\")\n        .join(\"maps\"),\n)",
+            "#[cfg(test)]\nmod essais;\nstd::fs::read_to_string(\"/proc/1/stat\")",
         ] {
-            assert_eq!(lectures_strictes(mauvais).len(), 1, "{mauvais}");
+            assert_eq!(lectures_strictes(sans_les_essais(mauvais)).len(), 1, "{mauvais}");
         }
+        let essais = "f();\n#[cfg(test)]\npub(crate) mod essais {\n    read_to_string(\"/proc/1/stat\")\n}";
+        assert_eq!(sans_les_essais(essais), "f();\n");
         assert_eq!(lectures_strictes("std::fs::read_to_string(\"/etc/os-release\")"), []);
         assert_eq!(
             lectures_strictes("f(\"/proc/self/mounts\");\nstd::fs::read_to_string(x)"),

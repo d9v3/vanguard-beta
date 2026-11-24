@@ -178,7 +178,7 @@ fn bureau() -> Option<PathBuf> {
     {
         let maison = crate::socle::maison();
         let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-        let declares = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+        let declares = crate::protection::pieges::dossiers_declares(&config);
         crate::protection::pieges::dossier_declare(&declares, "XDG_DESKTOP_DIR", &maison)
             .or_else(|| {
                 ["Bureau", "Desktop"]

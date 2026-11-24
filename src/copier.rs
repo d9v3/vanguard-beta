@@ -84,7 +84,7 @@ fn chemin_de(sorte: Sorte) -> Option<PathBuf> {
     let &(_, cle, noms, _) = DOSSIERS.iter().find(|d| d.0 == sorte)?;
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-    let declares = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+    let declares = crate::protection::pieges::dossiers_declares(&config);
     crate::protection::pieges::dossier_declare(&declares, cle, &maison)
         .or_else(|| noms.iter().map(|n| maison.join(n)).find(|d| d.is_dir()))
 }

@@ -92,6 +92,23 @@ mod tests {
         assert_eq!(non_lu("ni redirection dans le fichier hosts, ni proxy imposé"), None);
     }
 
+    /// Les phrases que la réparation écrit vraiment, dans les deux langues : une reformulée sans son pendant ici serait
+    /// lue « rien de détourné ».
+    #[test]
+    fn detournement_reconnait_les_phrases_de_la_reparation() {
+        let juste = || {
+            for (hosts_lu, proxy_lu) in [(true, true), (true, false), (false, true), (false, false)] {
+                let phrase = crate::reparer::rien_de_detourne(hosts_lu, proxy_lu);
+                let dit = non_lu(phrase);
+                assert_eq!(dit.is_some(), !(hosts_lu && proxy_lu), "{phrase}");
+                assert_eq!(dit.is_some_and(|d| d.contains("hosts")), !hosts_lu, "{phrase}");
+                assert_eq!(dit.is_some_and(|d| d.contains("proxy")), !proxy_lu, "{phrase}");
+            }
+        };
+        juste();
+        crate::langue::en_anglais(juste);
+    }
+
     #[test]
     fn detournement_dit_ce_qui_a_ete_trouve() {
         assert!(juger(true, "").probleme.is_none());
