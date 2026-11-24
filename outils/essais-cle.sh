@@ -1309,7 +1309,8 @@ voir "clé pleine : l'ancien menu de Ventoy reste entier, et c'est dit" \
 VANGUARD_PROGRAMME=$BANC/faux-vanguard bash outils/images-cle.sh --menu "$BANC/cle5" >"$BANC/sortie" 2>&1
 code=$?
 voir "clé pleine, --menu : code 1, l'ancien menu reste entier" \
-  eval '((code == 1)) && cmp -s "$BANC/cle5/ventoy/ventoy.json" "$BANC/menu-avant"' || montrer "$BANC/sortie"
+  eval '((code == 1)) && cmp -s "$BANC/cle5/ventoy/ventoy.json" "$BANC/menu-avant" &&
+    dit "$BANC/sortie" "menu de Ventoy pas écrit" && pas_dit "$BANC/sortie" "mv: "' || montrer "$BANC/sortie"
 rm -f "$BANC/cle5/autre" "$KALI_AVANT"
 seule
 code=$?
