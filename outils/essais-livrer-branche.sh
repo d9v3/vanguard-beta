@@ -34,6 +34,7 @@
 #      borne a refusé l'envoi) : la raison est montrée, pas de « ✔ livré », worktree et branche gardés, code 3 ; un
 #      code 8 sans raison dans le journal : échec (code 1). Le texte dit comment régler : relancer deployer.sh
 #      seulement si rien n'est à committer ; un commit passe par une branche livrée (W-2).
+#  18-23. Page absente (code 9), verrou (attente, rendu, flock tué seul), page de la version, envoi sans réponse.
 # Lancé par outils/verifier.sh.
 #   outils/essais-livrer-branche.sh
 set -uo pipefail
@@ -664,6 +665,28 @@ else
   ko "verrou gardé après la livraison (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi
 kill "$(cat "$CAS/enfant" 2>/dev/null)" 2>/dev/null
+# flock tué seul rend le verrou : la livraison s'arrête avec lui, jamais de fusion sans verrou.
+monter verrou-tue
+DEPART=$(tete master)
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$PPID" >"$ESSAI_CAS/vu-livreur"' 'sleep 4' 'echo "Tout est vert (faux)"' \
+  >"$LOT/outils/verifier.sh"
+git -C "$LOT" commit -qam "vérification lente (v0.0.1)"
+(livrer lot "$LOT"; printf '%s\n' "$CODE" "$SORTIE" >"$CAS/fin") &
+LIVREUR=$!
+for _ in {1..100}; do [[ ! -s $CAS/vu-livreur ]] || break; sleep 0.1; done
+# Le flock se cherche par son nom en remontant (tuer la livraison elle-même ferait passer l'essai à tort).
+tenant=$(cat "$CAS/vu-livreur" 2>/dev/null)
+while [[ ${tenant:-0} -gt 1 && $(cat "/proc/$tenant/comm" 2>/dev/null) != flock ]]; do
+  tenant=$(awk '/^PPid:/ { print $2 }' "/proc/$tenant/status" 2>/dev/null)
+done
+[[ ${tenant:-0} -gt 1 ]] && kill -KILL "$tenant" 2>/dev/null || ko "flock de la livraison pas trouvé"
+wait "$LIVREUR"
+sleep 1
+if rien_livre "$DEPART" && ! grep -q "^✔ livré" "$CAS/fin"; then
+  ok "flock tué seul : la livraison s'arrête, ni fusion ni déploiement"
+else
+  ko "flock tué seul, la livraison continue sans verrou : $(tail -n 3 "$CAS/fin")"
+fi
 
 # 20. deployer.sh lancé à la main (son bloc du verrou, lu tel quel) : il attend la livraison qui tient le verrou, le
 # dit, et ce qu'il détache ne le garde pas ; lancé par elle (VANGUARD_COMMIT_VERIFIE), il ne l'attend jamais, ni pour un
@@ -676,7 +699,8 @@ monter verrou-deployer
   printf '%s\n' 'echo "passé $*, repère ${VANGUARD_DEPLOIEMENT_VERROU:-aucun}"' \
     'setsid sleep 20 >/dev/null 2>&1 & echo $! >"$ESSAI_CAS/enfant"'
 } >"$DEPOT/outils/deployer.sh"
-grep -q 'exec flock -o' "$DEPOT/outils/deployer.sh" || ko "bloc du verrou introuvable dans outils/deployer.sh"
+grep -q 'exec flock -o "$VERROU" setpriv --pdeathsig TERM' "$DEPOT/outils/deployer.sh" ||
+  ko "bloc du verrou introuvable dans outils/deployer.sh"
 VERROU_D=$DEPOT/.git/vanguard-livraison.lock
 deployer_main() { (cd "$DEPOT" && ESSAI_CAS=$CAS timeout 3 bash outils/deployer.sh "$@" 2>&1); }
 finir_enfant() { kill "$(cat "$CAS/enfant" 2>/dev/null)" 2>/dev/null; rm -f "$CAS/enfant"; }
@@ -709,6 +733,116 @@ if ((${#refus[@]} == 0)); then
   ok "deployer.sh à la main : attend la livraison en cours et le dit, rend le verrou ; lancé par elle, n'attend pas"
 else
   ko "verrou de deployer.sh : ${refus[*]}"
+fi
+
+# 21. deployer.sh, la page de la version (ses deux blocs, lus tels quels) : sans réponse de GitHub, redemandé une fois ;
+# toujours rien, elle sera tentée, mais ni captures ni page des fonctions ne sont refaites ou committées, et c'est dit ;
+# « sans page » n'est dit que si GitHub le dit ; en ligne, son code est comparé ; ni page ni question en local.
+PAGE_BLOC=$(awk '/^A_PUBLIER=""$/ { p = 1 } /^install -Dm755 / { p = 0 } p' "$RACINE/outils/deployer.sh")
+SANS_PAGE=$(awk '/^    if \[\[ -n \$A_PUBLIER \]\]; then$/ { p = 1 } p { print } p && /^    fi$/ { exit }' \
+  "$RACINE/outils/deployer.sh")
+grep -q 'captures-readme.sh' <<<"$PAGE_BLOC" && grep -q 'page-fonctions.py' <<<"$PAGE_BLOC" &&
+  grep -q 'page_en_ligne' <<<"$SANS_PAGE" && grep -q 'sans page' <<<"$SANS_PAGE" &&
+  grep -q 'PUBLIER=1' <<<"$SANS_PAGE" ||
+  ko "les blocs de la page de la version sont introuvables dans outils/deployer.sh"
+monter page-version
+printf 'version = "9.9.9"\n' >"$DEPOT/Cargo.toml"
+# Rend « à publier ? / page lancée ? / ce qui a été refait / dit avant / dit après ». $1 : les réponses de
+# page_en_ligne, une par appel (la dernière reste) ; $2 : une variable posée.
+page_version() {
+  # shellcheck disable=SC2034 # lues par les blocs
+  (cd "$DEPOT" && VUS=$1 LINUX=l MODE="" LOCAL="" PUBLIER="" VANGUARD_INTERMEDIAIRE="" &&
+    rm -f "$CAS/refait" "$CAS/avant" &&
+    { [[ -z ${2:-} ]] || declare "${2%%=*}=${2#*=}"; } &&
+    page_en_ligne() { local v=${VUS%%,*}; VUS=${VUS#*,}; return "$v"; } &&
+    version_deja_publiee() { echo comparée; } && duree() { :; } && git() { :; } &&
+    timeout() { echo captures >>"$CAS/refait"; } && python3() { echo fonctions >>"$CAS/refait"; } &&
+    set -e && eval "$PAGE_BLOC" >"$CAS/avant" && eval "$SANS_PAGE" >"$CAS/apres" &&
+    echo "$A_PUBLIER/$PUBLIER/$(paste -sd, "$CAS/refait" 2>/dev/null)/$(grep '^⚠' "$CAS/avant")/$(cat "$CAS/apres")")
+}
+refus=()
+MUET="⚠ Captures et page des fonctions pas refaites pour v9.9.9 (GitHub muet)."
+SANS="Version v9.9.9 sans page *"
+for cas in "0 =////comparée" "1 =1/1/captures,fonctions//" "2 =1/1//$MUET/" "2,1 =1/1/captures,fonctions//" \
+  "2,0 =////comparée" "3 =1/1/captures,fonctions//" "1 VANGUARD_INTERMEDIAIRE:1=////$SANS" \
+  "2 VANGUARD_INTERMEDIAIRE:1=////" "0 VANGUARD_INTERMEDIAIRE:1=////comparée" "2 LOCAL:1=////" "1 LOCAL:1=////$SANS"; do
+  reponses=${cas%% *}
+  pose=${cas#* }
+  pose=${pose%%=*}
+  r=$(page_version "$reponses" "${pose/:/=}")
+  # shellcheck disable=SC2053 # motif voulu
+  [[ $r == ${cas#*=} ]] || refus+=("$reponses $pose : « $r »")
+done
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh : GitHub muet, redemandé puis dit, page tentée, rien refait ; « sans page » si GitHub le dit"
+else
+  ko "page de la version dans deployer.sh : ${refus[*]}"
+fi
+
+# 22. deployer.sh : la page déjà en ligne avec un autre code est dite ; le même code (ou seulement hors-code.txt) ne dit
+# rien ; une étiquette illisible ou sans réponse est dite, jamais comptée comme le même code.
+DEJA=$(awk '/^code_change_depuis\(\)/,/^\}/' "$RACINE/outils/deployer.sh"
+  awk '/^version_deja_publiee\(\)/,/^\}/' "$RACINE/outils/deployer.sh")
+grep -q 'ls-remote' <<<"$DEJA" && grep -q 'merge-base' <<<"$DEJA" ||
+  ko "version_deja_publiee introuvable dans deployer.sh"
+V=$TRAVAIL/deja-publiee
+git init -q --bare "$V/github.git" && git init -q -b master "$V/depot"
+mkdir -p "$V/depot/.github" "$V/depot/src" "$V/depot/docs"
+cp "$RACINE/.github/hors-code.txt" "$V/depot/.github/"
+git -C "$V/depot" remote add origin "$V/github.git"
+avancer_v() { echo "$RANDOM$1" >>"$V/depot/$1" && git -C "$V/depot" add -A && git -C "$V/depot" commit -qm "$1"; }
+avancer_v src/main.rs
+git -C "$V/depot" tag v1.0.0 && git -C "$V/depot" tag -a -m note v1.1.0 && git -C "$V/depot" push -q origin --tags
+# shellcheck disable=SC2034 # lues par le bloc
+deja() { (cd "$V/depot" && VERSION=$1 LINUX=src/main.rs && set -e && eval "$DEJA" && version_deja_publiee 2>&1); }
+refus=()
+[[ -z $(deja 1.0.0) ]] || refus+=("même commit : $(deja 1.0.0)")
+avancer_v docs/index.html
+[[ -z $(deja 1.0.0) && -z $(deja 1.1.0) ]] || refus+=("hors code : $(deja 1.0.0) $(deja 1.1.0)")
+avancer_v src/main.rs
+for v in 1.0.0 1.1.0; do
+  [[ $(deja $v) == "⚠ v$v déjà publiée avec un autre code"* ]] || refus+=("autre code ($v) : $(deja $v)")
+done
+[[ $(deja 2.0.0) == "⚠ v2.0.0 déjà publiée : son étiquette ne se lit pas"* ]] ||
+  refus+=("sans étiquette : $(deja 2.0.0)")
+inconnu=$(git -C "$V/github.git" commit-tree -m ailleurs "$(git -C "$V/github.git" rev-parse 'v1.0.0^{tree}')")
+git -C "$V/github.git" tag v3.0.0 "$inconnu"
+[[ $(deja 3.0.0) == *"son étiquette ne se lit pas"* ]] || refus+=("commit inconnu d'ici : $(deja 3.0.0)")
+git -C "$V/depot" remote set-url origin "$V/nulle-part.git"
+[[ $(deja 1.0.0) == *"son étiquette ne se lit pas"* ]] || refus+=("GitHub muet : $(deja 1.0.0)")
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh : version déjà publiée avec un autre code dite ; hors code, rien ; étiquette illisible dite"
+else
+  ko "version déjà publiée : ${refus[*]}"
+fi
+
+# 23. deployer.sh : un envoi sans réponse (push en échec) mais arrivé est compté comme envoyé ; pas arrivé, il ne l'est
+# pas ; GitHub toujours muet : dit peut-être parti ; refusé (« rejected ») : jamais envoyé, même à la même tête.
+ENVOYER=$(awk '/^ENVOI="" ENVOI_INCONNU=""$/ { p = 1 } p { print } p && /^\}/ { exit }' "$RACINE/outils/deployer.sh")
+grep -q 'ls-remote' <<<"$ENVOYER" || ko "envoyer_master introuvable dans outils/deployer.sh"
+# $1 : code du push, $2 : sa sortie, $3 : code de ls-remote, $4 : sa réponse ; rend « code/inconnu ».
+envoi() {
+  # shellcheck disable=SC2034,SC2030 # lues par le bloc
+  (TETE=abc && set -uo pipefail &&
+    timeout() { shift; "$@"; } &&
+    git() {
+      [[ $1 != push ]] || { echo "$PUSH_DIT"; return "$PUSH_CODE"; }
+      echo "$VU_DIT"
+      return "$VU_CODE"
+    } &&
+    PUSH_CODE=$1 PUSH_DIT=$2 VU_CODE=$3 VU_DIT=$4 && eval "$ENVOYER" && code=0 &&
+    { envoyer_master || code=$?; } && echo "$code/$ENVOI_INCONNU")
+}
+refus=()
+[[ $(envoi 0 "" 9 "") == 0/ ]] || refus+=("réussi : $(envoi 0 "" 9 "")")
+[[ $(envoi 124 "" 0 $'abc\trefs/heads/master') == 0/ ]] || refus+=("arrivé sans réponse")
+[[ $(envoi 124 "" 0 $'def\trefs/heads/master') == 1/ ]] || refus+=("pas arrivé")
+[[ $(envoi 128 "" 128 "") == 1/1 ]] || refus+=("GitHub muet")
+[[ $(envoi 1 " ! [remote rejected]" 0 $'abc\trefs/heads/master') == 1/ ]] || refus+=("refusé pris pour envoyé")
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh : envoi sans réponse mais arrivé compté envoyé ; pas arrivé ou refusé, non ; muet, dit"
+else
+  ko "envoi sans réponse : ${refus[*]}"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }

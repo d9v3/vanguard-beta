@@ -334,21 +334,26 @@ fn reference(racine: &Path) -> Option<PathBuf> {
     reference_lue(&crate::socle::dossier_local(), identifiant_volume(racine).as_deref())
 }
 
-/// Un chemin de la clé qui ne compte pas : dossier exclu, corbeille d'un gestionnaire de fichiers (« .Trash-1000 »,
-/// créée dès qu'on supprime quelque chose sur la clé), fichiers que macOS pose sur une clé (« ._x », .DS_Store), copie
-/// d'image en cours d'images-cle.sh (« ISO/.nom.iso.part », que Ventoy ne montre jamais).
+/// Un chemin de la clé qui ne compte pas, quoi qu'il contienne : dossier exclu, corbeille d'un gestionnaire de fichiers
+/// (« .Trash-1000 », créée dès qu'on supprime quelque chose sur la clé).
 fn exclu(relatif: &str) -> bool {
     let premier = relatif.split('/').next().unwrap_or_default();
+    EXCLUS.contains(&premier) || premier.starts_with(".Trash-")
+}
+
+/// Un simple fichier qui ne compte pas, à son nom : ceux que macOS pose sur une clé (« ._x », .DS_Store), la copie en
+/// cours d'images-cle.sh (« ISO/.nom.iso.part », que Ventoy ne montre jamais). Jamais un dossier : un « ._x/ » ou un
+/// « ISO/.x.part/ » cachait tout ce qu'on y posait, et Ventoy cherche ses images dans les sous-dossiers.
+fn fichier_exclu(relatif: &str) -> bool {
     let nom = relatif.rsplit('/').next().unwrap_or_default();
-    EXCLUS.contains(&premier)
-        || premier.starts_with(".Trash-")
-        || nom.starts_with("._")
-        || nom == ".DS_Store"
-        || (premier == "ISO"
-            && nom.starts_with('.')
-            && Path::new(nom)
+    let copie_en_cours = relatif.strip_prefix("ISO/").is_some_and(|image| {
+        image.starts_with('.')
+            && !image.contains('/')
+            && Path::new(image)
                 .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("part")))
+                .is_some_and(|e| e.eq_ignore_ascii_case("part"))
+    });
+    nom.starts_with("._") || nom == ".DS_Store" || copie_en_cours
 }
 
 /// Un chemin des images de secours ou du menu de Ventoy (`IMAGES`).
@@ -416,7 +421,7 @@ fn parcourir_tout(racine: &Path) -> Releve {
             }
             if meta.is_dir() {
                 a_voir.push_back((e.path(), relatif));
-            } else if meta.is_file() {
+            } else if meta.is_file() && !fichier_exclu(&relatif) {
                 liste.push((relatif, meta.len()));
             }
         }
@@ -784,11 +789,11 @@ fn rafraichir_images_dans(
     }
     let mut images = 0usize;
     for (chemin, taille) in releve.fichiers.into_iter().filter(|(c, _)| d_images(c)) {
-        let nom = chemin.rsplit('/').next().unwrap_or_default();
-        let posee = nouvelles
-            .iter()
-            .find(|(n, _)| n == nom)
-            .filter(|_| chemin.starts_with("ISO/"));
+        // Le chemin exact, jamais le seul nom : un « ISO/x/nom.iso » posé par un autre entrait dans la référence avec
+        // l'empreinte de la vraie image.
+        let posee = chemin
+            .strip_prefix("ISO/")
+            .and_then(|nom| nouvelles.iter().find(|(n, _)| n == nom));
         let e = if let Some((_, sha256)) = posee {
             // Posée et relue par images-cle.sh : son empreinte vérifiée, et la relecture de l'instant.
             Entree {
@@ -1061,7 +1066,8 @@ fn relire_image_dans(
     let mut m = lire(reference).map_err(|e| Echec::echoue("manifeste/relire", e))?;
     let attendue = |e: &Entree| {
         e.sha256.clone().or_else(|| {
-            let nom = e.chemin.rsplit('/').next().unwrap_or_default();
+            // Le chemin exact : une image d'un sous-dossier n'est pas celle du cache qui porte son nom.
+            let nom = e.chemin.strip_prefix("ISO/")?;
             empreintes.iter().find(|(n, _)| n == nom).and_then(|(_, h)| h.clone())
         })
     };
@@ -1839,9 +1845,15 @@ mod tests {
         // Les images et le menu de Ventoy comptent (relevés à part) ; une copie d'image en cours, non.
         assert!(!exclu("ISO/omarchy.iso"));
         assert!(!exclu("ventoy/ventoy.json"));
-        assert!(exclu("ISO/.omarchy.iso.part"));
-        assert!(exclu("Linux/._vanguard"));
-        assert!(exclu(".DS_Store"));
+        assert!(fichier_exclu("ISO/.omarchy.iso.part"));
+        assert!(fichier_exclu("Linux/._vanguard"));
+        assert!(fichier_exclu(".DS_Store"));
+        assert!(!fichier_exclu("ISO/omarchy.iso"));
+        assert!(!fichier_exclu("ISO/sous/.omarchy.iso.part"));
+        assert!(!fichier_exclu("Linux/.vanguard.part"));
+        // Leur nom ne suffit pas : un dossier ainsi nommé est parcouru.
+        assert!(!exclu("ISO/.omarchy.iso.part"));
+        assert!(!exclu("Linux/._vanguard"));
         assert!(exclu(".Trash-1000/files/vieux.txt"));
         assert!(exclu(".TemporaryItems/x"));
         assert!(!exclu("Linux/vanguard"));

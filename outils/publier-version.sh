@@ -345,6 +345,24 @@ controle_des_sources() {
   echo "  ou VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1 outils/publier-version.sh pour publier quand même, et le dire.)"
   return 1
 }
+# L'étiquette de cette version, déjà sur GitHub et posée sur un autre commit : « gh release create » la reprendrait
+# telle quelle (--target ignoré), et la page publierait les programmes d'un commit sous l'étiquette d'un autre. Demandée
+# à GitHub (l'étiquette d'ici peut être vieille), avant toute signature ; sans réponse, rien de publié. Lue telle quelle
+# par outils/essais-signature.sh.
+etiquette_du_bon_commit() {
+  local refs vise
+  refs=$(timeout 60 git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" 2>/dev/null) || {
+    echo "Étiquette $TAG : GitHub n'a pas répondu, rien de publié ; relancer."
+    return 1
+  }
+  # Une étiquette annotée a deux lignes : la sienne, puis le commit qu'elle vise (^{}).
+  vise=$(awk -v r="refs/tags/$TAG" '$2 == r { d = $1 } $2 == r "^{}" { p = $1 } END { print p ? p : d }' <<<"$refs")
+  [[ -n $vise && $vise != "$COMPILE" ]] || return 0
+  echo "✖ L'étiquette $TAG est déjà sur GitHub, sur un autre commit (${vise:0:12}, et non ${COMPILE:0:12}, celui des \
+programmes) : rien de publié."
+  echo "  Avancer la version, ou retirer cette étiquette si elle est là par erreur, puis relancer outils/deployer.sh."
+  return 1
+}
 # Une valeur fausse d'un passe-droit arrête tout, avant le moindre contrôle (passe_droit_demande).
 for passe in VANGUARD_PUBLIER_SANS_EMPREINTES_CI VANGUARD_PUBLIER_SANS_VM VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES; do
   passe_droit_demande "$passe" || true
@@ -355,6 +373,7 @@ if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
   echo "Ce commit n'est pas la tête de master sur GitHub : lancer d'abord outils/deployer.sh."
   exit 1
 fi
+etiquette_du_bon_commit || exit 1
 PAGE=0
 page_en_ligne "$TAG" || PAGE=$?
 if ((PAGE == 2)); then
@@ -608,8 +627,8 @@ attestee_et_essayee() {
 }
 
 # Les nomenclatures (SBOM) attestées de ce code : celles du travail « nomenclatures » de ci.yml pour ce commit, ou pour
-# un commit d'avant dont le programme est le même (seuls des captures, la documentation ou les outils ont changé
-# depuis : .github/hors-code.txt, la liste que lit aussi ci.yml). Seulement une exécution de master (headBranch relu),
+# un commit d'avant dont le programme est le même (seules les captures et la page des fonctions ont changé depuis :
+# HORS_COMPILATION, descendant_hors_compilation). Seulement une exécution de master (headBranch relu),
 # lancée par un envoi, la nuit ou à la main : celle d'une autre branche, ou d'une demande de fusion, tourne avec le
 # ci.yml qu'elle apporte, et un compte GitHub pris ferait ainsi publier des nomenclatures faites ailleurs. Sur master,
 # le travail tourne sans cache (ci.yml). Son code d'ensemble ne compte pas (la nuit, un fuzzing en échec n'y change
@@ -619,13 +638,9 @@ avec_nomenclatures() {
   while read -r id sha; do
     [[ -n $id ]] || continue
     if [[ $sha != "$COMMIT" ]]; then
-      git merge-base --is-ancestor "$sha" "$COMMIT" 2>/dev/null || continue
-      # Un fichier du programme a changé depuis : ces nomenclatures-là ne valent pas pour ce commit.
-      [[ -n $HORS_CODE ]] || continue
-      # grep lit toute la liste (pas de -q) : avec -q, git diff recevrait SIGPIPE et pipefail dirait « hors code ».
-      git diff --name-only "$sha" "$COMMIT" | grep -vE "$HORS_CODE" >/dev/null && continue
-      # Ce qui fait les nomenclatures est « hors code » : changé depuis, celles d'ici ne seraient plus les siennes.
-      git diff --quiet "$sha" "$COMMIT" -- outils/sbom.sh outils/date-du-code.sh .github/hors-code.txt || continue
+      # La même liste fermée que pour les empreintes : un outil changé depuis (la recette de la compilation, celle des
+      # nomenclatures, un workflow) est « hors code », mais ces essais-là n'ont pas tourné avec lui.
+      descendant_hors_compilation "$sha" "$COMMIT" || continue
     fi
     # Seulement un passage dont le travail « attester » a réussi (celui d'une attestation en échec ne se publierait
     # pas, plus bas) et dont les essais n'ont pas échoué : on en relance plutôt un neuf.
@@ -770,19 +785,27 @@ python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64
   "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
 # La page du code à créer à la main, la mise à jour signée étant déjà en ligne : la commande entière, prête à coller, et
 # DOSSIER gardé (ses fichiers). Avant, les programmes d'ici comparés à ceux de la page signée (SHA256SUMS.txt, vu par
-# GitHub) : différents, rien n'est proposé, deux pages d'une même version n'auraient pas les mêmes programmes.
+# GitHub) : différents, rien n'est proposé, deux pages d'une même version n'auraient pas les mêmes programmes. Rend 0
+# (commande donnée : l'appelant finit en code 4), 1 (empreinte pas lue : relancer suffit) ou 2 (autres programmes : il
+# faut une autre version) ; pour 1 et 2, l'appelant finit en code 1, jamais en « il ne reste que la commande ».
 page_du_code_a_la_main() {
   local signee ici f
   signee=$(gh release view "$TAG" -R "$DEPOT_VERSIONS" --json assets \
     -q '.assets[] | select(.name == "SHA256SUMS.txt") | .digest' 2>/dev/null) || signee=
   ici=sha256:$(sha256sum "$DOSSIER/SHA256SUMS.txt" | cut -d' ' -f1)
+  if [[ -z $signee ]]; then
+    echo "  L'empreinte de la page signée (SHA256SUMS.txt) n'a pas été lue : rien n'est proposé ; relancer \
+outils/deployer.sh une fois GitHub joignable (rien ne sera signé une deuxième fois)."
+    return 1
+  fi
   trap - EXIT
   if [[ $signee != "$ici" ]]; then
-    echo "  Les programmes d'ici ne sont pas (ou pas à coup sûr) ceux de la page signée (SHA256SUMS.txt : \
-${signee:-illisible}) : ne pas créer la page du code ; DOSSIER gardé : $DOSSIER."
-    return 0
+    echo "  Les programmes d'ici ne sont pas ceux de la page signée (SHA256SUMS.txt : $signee) : ne pas créer la page \
+du code ; avancer la version et livrer de nouveau ; DOSSIER gardé : $DOSSIER."
+    return 2
   fi
-  printf '%s\n' "$NOTES" >"$DOSSIER/notes.md"
+  # Appelée avec « || » : set -e n'y vaut pas.
+  printf '%s\n' "$NOTES" >"$DOSSIER/notes.md" || return 1
   echo "  Mêmes programmes ici (SHA256SUMS.txt comparé) ; DOSSIER gardé. Ce qui reste à faire, depuis $PWD :"
   printf '    gh release create %s --target %s --title %q --notes-file %q' "$TAG" "$COMPILE" "$NOM $VERSION" "$DOSSIER/notes.md"
   for f in "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
@@ -791,6 +814,27 @@ ${signee:-illisible}) : ne pas créer la page du code ; DOSSIER gardé : $DOSSIE
     printf ' %q' "$f"
   done
   printf '\n    python3 -I outils/github.py\n    python3 -I outils/tickets-version.py --appliquer\n'
+}
+# Le point sûr (outils/signer-versions.sh) : le dernier historique publié et signé d'ici, gardé hors du dépôt des
+# versions ; la signature suivante s'y comparera. L'historique signé est d'abord gardé « en attente », avant la création
+# de la page signée, et ne devient le point sûr qu'une fois celle-ci en ligne : une création dont la réponse se perd ne
+# laisse plus le point sûr en retard, ce que la signature suivante prendrait pour une version signée ailleurs.
+# La page signée déjà en ligne : celui en attente devient le point sûr s'il est, octet pour octet, celui d'en ligne.
+# Jamais l'inverse : rien n'est appris de ce qui est en ligne, une clé volée y mettrait ses versions.
+point_sur_de_l_attente() {
+  local point=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  local d=$DOSSIER/en-ligne
+  if mkdir -p "$d" && timeout 120 gh release download "$TAG" -R "$DEPOT_VERSIONS" -D "$d" -p historique.txt \
+    -p historique.txt.sig >/dev/null 2>&1; then
+    cmp -s "$d/historique.txt" "$point" && cmp -s "$d/historique.txt.sig" "$point.sig" && return 0
+    if cmp -s "$d/historique.txt" "$point.en-attente" && cmp -s "$d/historique.txt.sig" "$point.en-attente.sig" &&
+      mv -fT "$point.en-attente.sig" "$point.sig" && mv -fT "$point.en-attente" "$point"; then
+      echo "  Point sûr repris : l'historique signé d'ici est bien celui d'en ligne ($point)."
+      return 0
+    fi
+  fi
+  echo "⚠ Point sûr peut-être en retard ($point) : l'historique en ligne n'a pas pu être reconnu comme celui signé \
+d'ici. Avant de signer la prochaine version, la comparer à la main (outils/signer-versions.sh --point-sur)."
 }
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
@@ -814,6 +858,15 @@ if ((DEPOT_VU != 0)); then
 l'historique signé : rien de publié."
     exit 1
   fi
+  # Une version a déjà été signée et publiée d'ici : le dépôt n'est pas « pas encore créé », il a disparu ou n'est plus
+  # visible de ce compte. Publier la page du code seule laisserait les Vanguard sans clé sans mise à jour, en silence.
+  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  if [[ -e $POINT_SUR || -L $POINT_SUR ]]; then
+    echo "✖ Le dépôt public des versions ($DEPOT_VERSIONS) n'est plus visible, alors qu'une version y a été publiée \
+d'ici ($POINT_SUR) : rien de publié."
+    echo "  Vérifier le dépôt et le compte (gh auth status, gh repo view $DEPOT_VERSIONS), puis relancer."
+    exit 1
+  fi
   echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
 else
   # La page signée déjà en ligne sans la page du code (celle-ci ratée la fois d'avant) : vu avant de signer, car rien
@@ -823,7 +876,8 @@ else
   case $PAGE in
     0)
       echo "✖ $TAG est déjà signée dans $DEPOT_VERSIONS, sans page du code : rien n'est signé ni publié cette fois."
-      page_du_code_a_la_main
+      point_sur_de_l_attente
+      page_du_code_a_la_main || exit 1
       exit 4
       ;;
     1) ;;
@@ -974,6 +1028,12 @@ if [[ -n $SIGNEE ]]; then
     trap - EXIT
     exit 1
   fi
+  # L'historique signé, en attente (voir point_sur_de_l_attente). Impossible à écrire : averti, sans arrêter.
+  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  mkdir -p "$(dirname "$POINT_SUR")" 2>/dev/null &&
+    cp -T "$DOSSIER/historique.txt" "$POINT_SUR.en-attente" 2>/dev/null &&
+    cp -T "$DOSSIER/historique.txt.sig" "$POINT_SUR.en-attente.sig" 2>/dev/null ||
+    echo "⚠ Historique signé pas gardé en attente ($POINT_SUR.en-attente)."
   if ! gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
     "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
     "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
@@ -981,17 +1041,28 @@ if [[ -n $SIGNEE ]]; then
     cat "$DOSSIER/creation.txt" >&2
     # Une page à moitié créée (fichiers manquants) est retirée, avec son étiquette : la relance repart de rien.
     # Seulement celle née de cet appel : absente juste avant, et gh ne dit pas qu'elle existait déjà.
+    RESTE=""
     if grep -qi "already exists" "$DOSSIER/creation.txt"; then
-      echo "⚠ $TAG existait déjà dans $DEPOT_VERSIONS (posée ailleurs entre-temps) : rien n'y est effacé, à regarder."
+      RESTE="existait déjà dans $DEPOT_VERSIONS (posée ailleurs entre-temps) : rien n'y est effacé, à regarder"
     else
       PAGE=0
       page_en_ligne "$TAG" -R "$DEPOT_VERSIONS" || PAGE=$?
       # 0 ou 3 : publiée ou brouillon (gh crée un brouillon, y dépose les fichiers, puis le publie).
       if ((PAGE == 2)) || { ((PAGE != 1)) &&
         ! gh release delete "$TAG" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null 2>&1; }; then
-        echo "⚠ La page de $TAG à moitié créée est peut-être encore dans $DEPOT_VERSIONS : à retirer à la main."
+        RESTE="est peut-être encore dans $DEPOT_VERSIONS, en entier ou à moitié créée : à retirer à la main"
       fi
     fi
+    if [[ -n $RESTE ]]; then
+      # Jamais « rien de publié » : la page est peut-être en ligne. L'historique en attente reste, pour la relance.
+      echo "⚠ La page de $TAG $RESTE (DOSSIER gardé : $DOSSIER)."
+      GARDER_DOSSIER=1
+      echo "✖ Version peut-être en ligne dans $DEPOT_VERSIONS, sans page du code : la regarder, puis relancer \
+outils/publier-version.sh."
+      exit 1
+    fi
+    # Prouvée absente, ou retirée : cet historique n'est en ligne nulle part.
+    rm -f "$POINT_SUR.en-attente" "$POINT_SUR.en-attente.sig" 2>/dev/null || true
     echo "✖ Version non publiée dans $DEPOT_VERSIONS : rien de publié, ni page du code ; relancer outils/publier-version.sh."
     exit 1
   fi
@@ -999,12 +1070,11 @@ if [[ -n $SIGNEE ]]; then
   PUBLIEE_SIGNEE=1
   # Gardé tout de suite, avant la page du code : elle ratée, l'historique en ligne a déjà cette version, et le point sûr
   # d'avant ferait dire à la signature suivante que la clé principale est peut-être entre d'autres mains.
-  # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
-  # versions ; la signature suivante s'y comparera.
-  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
-  mkdir -p "$(dirname "$POINT_SUR")" && cp "$DOSSIER/historique.txt" "$POINT_SUR.nouveau" &&
-    cp "$DOSSIER/historique.txt.sig" "$POINT_SUR.sig.nouveau" && mv -f "$POINT_SUR.sig.nouveau" "$POINT_SUR.sig" &&
-    mv -f "$POINT_SUR.nouveau" "$POINT_SUR" || {
+  # Seulement l'historique de cette version : un « en attente » d'une version d'avant, pas remplacé, n'y entre pas.
+  cmp -s "$DOSSIER/historique.txt" "$POINT_SUR.en-attente" &&
+    cmp -s "$DOSSIER/historique.txt.sig" "$POINT_SUR.en-attente.sig" &&
+    mv -fT "$POINT_SUR.en-attente.sig" "$POINT_SUR.sig" 2>/dev/null &&
+    mv -fT "$POINT_SUR.en-attente" "$POINT_SUR" 2>/dev/null || {
     echo "⚠ Point sûr de l'historique pas gardé ($POINT_SUR) : la signature suivante dira à tort une version \
 signée ailleurs. Y copier $DOSSIER/historique.txt et sa signature (DOSSIER gardé)."
     GARDER_DOSSIER=1
@@ -1023,7 +1093,7 @@ if ! gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --note
   PAGE=0
   page_en_ligne "$TAG" || PAGE=$?
   ((PAGE == 1)) || echo "  D'abord, la page ou le brouillon de $TAG resté (ou pas relu) : gh release delete $TAG --yes"
-  page_du_code_a_la_main
+  page_du_code_a_la_main || exit 1
   exit 4
 fi
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"

@@ -56,9 +56,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   que si un vrai Windows a essayé le programme compilé par la CI pour ce même code. Une page restée en brouillon, ou
   une mise à jour signée dont la page manque, est dite avec la commande à lancer.
 - **Contrôles et audit : un vert qui n'a rien essayé est un échec.** Un filtre qui ne trouve aucun essai, un essai
-  sauté ou un fuzzing sans une seule exécution font échouer le contrôle. Les exceptions d'audit d'une dépendance
-  d'essai ne couvrent plus les programmes publiés ; celle qui reste porte une date de relecture. Une
-  source dont l'adresse disparaît compte comme un format changé.
+  sauté dans les contrôles de nuit (canaris) ou un fuzzing sans une seule exécution font échouer le contrôle. Les
+  exceptions d'audit d'une dépendance d'essai ne couvrent plus les programmes publiés ; celle qui reste porte une date
+  de relecture. Une source dont l'adresse disparaît compte comme un format changé.
 
 ## 24 novembre 2026 : version 0.98.0
 

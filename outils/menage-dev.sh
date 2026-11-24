@@ -33,11 +33,11 @@ retirer() { # chemin raison
   retires=$((retires + 1))
 }
 
-# Jours depuis la dernière activité d'un dossier : le fichier le plus récent sur deux niveaux (cargo touche ses
-# sous-dossiers à chaque compilation, pas forcément le dossier lui-même).
+# Jours depuis la dernière activité d'un dossier : le plus récent sur trois niveaux (cargo n'écrit qu'au fond ; avec
+# --target, seul <triplet>/<profil>/deps, au troisième, change de date à chaque compilation).
 inactif_depuis() {
   local plus
-  plus=$(find "$1" -maxdepth 2 -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+  plus=$(find "$1" -maxdepth 3 -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
   echo $((($(date +%s) - ${plus%.*}) / 86400))
 }
 

@@ -171,6 +171,10 @@ fn cle_a_remplacer_apres_deux_recopies_ratees() {
         cle.relire(Some(AUTRE)),
         Relecture::Differente("ISO/a.iso".into(), false)
     );
+    assert!(!cle.voir().1);
+    // Une image relue différente n'est pas comptée parmi les images relues et retrouvées.
+    let e = etat(&cle.m(), chrono::Local::now().date_naive());
+    assert_eq!((e.total, e.jamais, e.plus_ancienne), (1, 1, None));
 }
 
 /// Retirée pour être recopiée, puis clé débranchée : la clé n'est pas « changée » et le déploiement la reprend ; la même
@@ -223,6 +227,18 @@ fn recopie_notee_n_admet_jamais_d_autres_octets() {
     cle.image("a.iso");
     assert!(matches!(cle.relire(Some(AUTRE)), Relecture::Differente(..)));
     assert_eq!(comparer_avec(&cle.racine, &cle.m(), GROS).modifies.len(), 1);
+}
+
+/// Notée puis gardée (la copie n'a pas eu lieu), la référence redite l'oublie : partie ensuite, la clé a changé.
+#[test]
+fn recopie_abandonnee_n_admet_plus_l_absence() {
+    let cle = Cle::neuve("abandon", &["a-1.iso"]);
+    cle.debut("a-2.iso", &["a-1.iso"]);
+    cle.rafraichir(&[]);
+    cle.retirer("a-1.iso");
+    let ecart = comparer_avec(&cle.racine, &cle.m(), GROS);
+    assert_eq!(ecart.disparus, ["ISO/a-1.iso"]);
+    assert!(comparer_avant_deploiement(&cle.racine, &cle.m(), true, GROS).is_err());
 }
 
 /// La note ne vise que des images de ISO/ : un chemin est refusé, et le programme de la clé ne peut jamais manquer.
@@ -329,4 +345,52 @@ fn reprise_avec_recopie_en_attente() {
     let (reste, retires) = retirer_le_suspens(&cle.racine, comparer_avec(&cle.racine, &cle.m(), GROS)).unwrap();
     assert!(reste.vide() && retires.is_empty());
     assert_eq!(reste.etat.recopies, ["ISO/a.iso"]);
+}
+
+/// Un nom exclu (celui d'une copie en cours, d'un fichier de macOS) ne vaut que pour un fichier : un dossier de ce nom
+/// est parcouru, et ce qu'on y pose fait dire la clé changée. Les simples fichiers restent de côté.
+#[test]
+fn dossier_au_nom_exclu_parcouru() {
+    let cle = Cle::neuve("cache", &["a.iso"]);
+    for fichier in ["ISO/.a.iso.part", "ISO/._a.iso", ".DS_Store"] {
+        std::fs::write(cle.racine.join(fichier), b"reste").unwrap();
+    }
+    assert!(comparer_avec(&cle.racine, &cle.m(), GROS).vide());
+    for dossier in ["ISO/.x.part", "ISO/._x", ".DS_Store.d/.DS_Store", "ISO/sous/.y.part"] {
+        std::fs::create_dir_all(cle.racine.join(dossier)).unwrap();
+        std::fs::write(cle.racine.join(dossier).join("plantee.iso"), b"piege").unwrap();
+        let ecart = comparer_avec(&cle.racine, &cle.m(), GROS);
+        assert_eq!(ecart.nouveaux, [format!("{dossier}/plantee.iso")], "{ecart:?}");
+        std::fs::remove_dir_all(cle.racine.join(dossier)).unwrap();
+    }
+    // Une copie en cours n'existe qu'au premier niveau de ISO/ : ailleurs, ce nom ne cache rien.
+    std::fs::create_dir_all(cle.racine.join("ISO/sous")).unwrap();
+    std::fs::write(cle.racine.join("ISO/sous/.z.iso.part"), b"piege").unwrap();
+    assert_eq!(
+        comparer_avec(&cle.racine, &cle.m(), GROS).nouveaux,
+        ["ISO/sous/.z.iso.part"]
+    );
+}
+
+/// Une image est celle de son chemin exact : le même nom dans un sous-dossier de ISO/ n'entre pas dans la référence
+/// avec l'empreinte de la vraie, et celle du cache ne sert pas à le relire.
+#[test]
+fn image_reconnue_a_son_chemin_exact() {
+    let cle = Cle::neuve("chemin", &["a.iso"]);
+    std::fs::create_dir_all(cle.racine.join("ISO/sous")).unwrap();
+    cle.image("sous/a.iso");
+    cle.rafraichir(&["a.iso"]);
+    assert_eq!(comparer_avec(&cle.racine, &cle.m(), GROS).nouveaux, ["ISO/sous/a.iso"]);
+    // Déjà dans la référence (clé acceptée telle quelle) : ni empreinte ni relecture.
+    ecrire_dans(&cle.racine, &cle.reference, GROS, true).unwrap();
+    cle.rafraichir(&["a.iso"]);
+    let m = cle.m();
+    let sous = m.fichiers.iter().find(|e| e.chemin == "ISO/sous/a.iso").unwrap();
+    assert_eq!((&sous.sha256, &sous.relue), (&None, &None));
+    cle.vieillir();
+    let cache = [("a.iso".to_string(), Some(SHA.to_string()))];
+    for _ in 0..2 {
+        let lue = relire_image_dans(&cle.racine, &cle.reference, &cache, |_| Some(SHA.to_string()));
+        assert_eq!(lue.unwrap(), Relecture::Pareille("ISO/a.iso".into()));
+    }
 }

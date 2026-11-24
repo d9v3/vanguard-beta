@@ -60,14 +60,16 @@ if [[ $MODE == --accepter-cle ]]; then
 fi
 # Lancé à la main, il attend la livraison qui tourne (outils/livrer-branche.sh) : il compilerait dans le même dossier,
 # et pousserait un master qu'elle s'apprête à fusionner. Son verrou, pris AVANT celui des déploiements (plus bas), dans
-# le même ordre qu'elle ; -o : rien de ce qu'il lance ne l'hérite. Appelé par elle (VANGUARD_COMMIT_VERIFIE), elle le
-# tient déjà. Hors d'un dépôt git : pas de livraison, pas de verrou.
+# le même ordre qu'elle ; -o : rien de ce qu'il lance ne l'hérite ; setpriv : flock tué seul, il s'arrête aussi, jamais
+# sans le verrou. Appelé par elle (VANGUARD_COMMIT_VERIFIE), elle le tient déjà. Hors d'un dépôt git : pas de livraison,
+# pas de verrou.
 if [[ -z $MODE || $MODE == --local ]] && [[ -z ${VANGUARD_COMMIT_VERIFIE:-} ]] &&
   COMMUN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
   [[ ${VANGUARD_DEPLOIEMENT_VERROU:-} != "$COMMUN" ]]; then
   VERROU=$COMMUN/vanguard-livraison.lock
   flock -n "$VERROU" true || echo "· une livraison tourne dans ce dépôt : attente de sa fin"
-  VANGUARD_DEPLOIEMENT_VERROU=$COMMUN exec flock -o "$VERROU" bash outils/deployer.sh "$@"
+  VANGUARD_DEPLOIEMENT_VERROU=$COMMUN exec flock -o "$VERROU" setpriv --pdeathsig TERM \
+    bash outils/deployer.sh "$@"
 fi
 unset VANGUARD_DEPLOIEMENT_VERROU
 # shellcheck source=outils/cle-commun.sh
@@ -429,12 +431,18 @@ outils/failles-programmes.sh --fenetre "${FENETRES[@]}" || refuser
 A_PUBLIER=""
 if [[ -z $MODE ]]; then
   VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-  # Sans réponse de GitHub (page_en_ligne : 2), la page sera tentée quand même (publier-version.sh redemande et
-  # refuse), mais rien n'est refait ni committé pour elle : elle existe peut-être déjà.
+  # Sans réponse de GitHub (page_en_ligne : 2), redemandé une fois ; toujours rien : la page sera tentée quand même
+  # (publier-version.sh redemande et refuse), mais rien n'est refait ni committé pour elle (elle existe peut-être déjà),
+  # et c'est dit : GitHub revenu entre-temps, elle sortirait avec les captures d'avant.
   PAGE_VUE=0
   if [[ -z $LOCAL && -z ${VANGUARD_INTERMEDIAIRE:-} ]]; then
     page_en_ligne "v$VERSION" || PAGE_VUE=$?
+    if ((PAGE_VUE == 2)); then
+      PAGE_VUE=0
+      page_en_ligne "v$VERSION" || PAGE_VUE=$?
+    fi
     ((PAGE_VUE == 0)) || A_PUBLIER=1
+    ((PAGE_VUE != 2)) || echo "⚠ Captures et page des fonctions pas refaites pour v$VERSION (GitHub muet)."
   fi
   T_CAPTURES=$SECONDS
   if [[ -n $A_PUBLIER && $PAGE_VUE != 2 && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
@@ -483,6 +491,32 @@ fin_envoi_refuse() {
   echo "✖ Rien n'est parti sur GitHub : envoi refusé par la borne (raison plus haut), déployé ici seulement."
   ((code != 0)) || exit "$CODE_ENVOI_REFUSE"
 }
+# Un envoi sans réponse (délai, coupure au retour) est peut-être parti : GitHub le dit (son master est la tête notée),
+# sinon « partira au prochain déploiement » ferait croire la version absente. Sortie du push dans ENVOI ; GitHub
+# toujours muet : ENVOI_INCONNU.
+ENVOI="" ENVOI_INCONNU=""
+envoyer_master() {
+  local vu
+  ENVOI=$(timeout 30 git push -q origin "$TETE:refs/heads/master" 2>&1) && return 0
+  ! grep -q "rejected" <<<"$ENVOI" || return 1
+  vu=$(timeout 30 git ls-remote origin refs/heads/master 2>/dev/null | cut -f1) || {
+    ENVOI_INCONNU=1
+    return 1
+  }
+  [[ $vu == "$TETE" ]]
+}
+# La page de ce numéro est déjà en ligne : si le code du programme a changé depuis son étiquette, la page et la mise à
+# jour restent celles de l'ancien code, et rien ne le disait. Un avertissement : un lot sans nouveau numéro est permis.
+version_deja_publiee() {
+  local refs vise
+  refs=$(timeout 30 git ls-remote origin "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}" 2>/dev/null) || refs=""
+  vise=$(awk '$2 ~ /\^\{\}$/ { p = $1; next } { d = $1 } END { print p ? p : d }' <<<"$refs")
+  if [[ -z $vise ]] || ! git cat-file -e "$vise^{commit}" 2>/dev/null; then
+    echo "⚠ v$VERSION déjà publiée : son étiquette ne se lit pas, code pas comparé à celui de la page."
+  elif code_change_depuis "$vise"; then
+    echo "⚠ v$VERSION déjà publiée avec un autre code : avancer la version pour publier celui-ci."
+  fi
+}
 TETE=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || TETE=""
 if [[ -n $LOCAL ]]; then
   echo "Rien n'est envoyé sur GitHub (déploiement local)."
@@ -517,7 +551,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
     echo "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)."
   # La sortie est gardée : un refus de GitHub (règles de master, historique qui a divergé) n'est pas une panne
   # d'Internet, et le redire au prochain déploiement n'y changerait rien.
-  elif ENVOI=$(timeout 30 git push -q origin "$TETE:refs/heads/master" 2>&1); then
+  elif envoyer_master; then
     echo "Code envoyé sur GitHub."
     # La page du dépôt suit le dépôt : description et version, lien, sujets (outils/github.py, .github/depot.json).
     python3 -I outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
@@ -528,6 +562,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
       # « sans page » seulement si GitHub le dit (1) ; une panne est dite par page_en_ligne elle-même.
       PAGE_VUE=0
       page_en_ligne "v$VERSION" || PAGE_VUE=$?
+      ((PAGE_VUE != 0)) || version_deja_publiee
       ((PAGE_VUE != 1)) ||
         echo "Version v$VERSION sans page sur GitHub (version intermédiaire) : la prochaine page la reprendra."
     fi
@@ -536,6 +571,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
     grep -E "rejected|^remote: - " <<<"$ENVOI" | sed 's/^/  /'
   else
     echo "GitHub injoignable : le code partira au prochain déploiement."
+    [[ -z $ENVOI_INCONNU ]] || echo "  (envoi sans réponse : peut-être parti quand même)"
   fi
 fi
 [[ -n $LOCAL ]] || duree "envoi GitHub" "$T_ENVOI"
@@ -741,6 +777,10 @@ partie_cle() {
     echo "$REPRIS"
     avertir_cle "Clé VANGUARD : déploiement arrêté repris" "$(head -c 300 <<<"$REPRIS")"
   fi
+  # Ce que la comparaison dit des images sans en faire un refus (illisible, usée, recopie en attente) : dit ici, et
+  # redit à la fin, où « à jour » ne parle que des programmes.
+  AVIS=$(grep '^ *· ' <<<"$ECART" || true)
+  [[ -z $AVIS ]] || printf '%s\n' "$AVIS"
 
   # Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
   # 32 caractères hexadécimaux tirés une fois et gardés ensuite (seulement pour une clé acceptée : une clé connue a
@@ -852,13 +892,20 @@ regarder ; si c'est voulu : outils/deployer.sh --accepter-cle"
     rm -f "$REPRISE"
   fi
   sync
-  echo "Clé VANGUARD à jour : $CLE ($(./"$LINUX" --version))"
+  if [[ -z $AVIS ]]; then
+    echo "Clé VANGUARD à jour : $CLE ($(./"$LINUX" --version))"
+  else
+    echo "Clé VANGUARD à jour (programmes) : $CLE ($(./"$LINUX" --version)) ; ses images, elles :"
+    printf '%s\n' "$AVIS"
+  fi
   # Une seule notification par version copiée : le lancement manuel et le service qui le suit copient les mêmes
   # binaires. (Remplacer la notification ne suffit pas : la barre l'oublie dès que la bulle a disparu.)
   EMPREINTE_FICHIER="${XDG_RUNTIME_DIR:-/tmp}/vanguard-notification.empreinte"
   EMPREINTE=$({ cat "$LINUX" "$WINDOWS" 2>/dev/null || true; } | sha256sum)
   if command -v notify-send >/dev/null && [[ $(cat "$EMPREINTE_FICHIER" 2>/dev/null) != "$EMPREINTE" ]]; then
-    notify-send -a Vanguard -i vanguard "Clé VANGUARD à jour${VENU_DE_GITHUB:+ (depuis GitHub)}" "$(./"$LINUX" --version)" || true
+    notify-send -a Vanguard -i vanguard "Clé VANGUARD à jour${AVIS:+ (programmes)}${VENU_DE_GITHUB:+ (depuis GitHub)}" \
+      "$(./"$LINUX" --version)${AVIS:+
+$(head -c 300 <<<"$AVIS")}" || true
     echo "$EMPREINTE" >"$EMPREINTE_FICHIER"
   fi
 }

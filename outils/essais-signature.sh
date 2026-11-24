@@ -886,6 +886,24 @@ apres "$H_COMPILE" "$COTE" "$H_PAGE" && ko "publier : CI acceptée sur un commit
   ok "publier : CI refusée sur un commit qui n'est pas dans la ligne de la tête de master"
 apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un commit d'après la tête de master" ||
   ok "publier : CI refusée sur un commit d'après la tête de master"
+# Les nomenclatures d'un commit d'avant : la même règle. Un outil changé depuis (« hors code ») ne l'a jamais passée.
+if command -v jq >/dev/null; then
+  nomenclatures_de() { # commit aux nomenclatures, commit publié : l'exécution retenue
+    printf '[{"databaseId": 7, "headSha": "%s", "headBranch": "master", "event": "push"}]' "$1" >"$T/faux-gh/runs.json"
+    printf '{"jobs": [{"name": "attester", "conclusion": "success"}, {"name": "linux", "conclusion": "success"},
+      {"name": "windows", "conclusion": "success"}, {"name": "windows-livre", "conclusion": "success"}]}' \
+      >"$T/faux-gh/jobs.json"
+    (cd "$H" && PATH="$T/faux-gh:$PATH" COMMIT=$2 HORS_CODE=$(grep -v '^#' "$DEPOT/.github/hors-code.txt" | head -n 1) \
+      bash -c "source '$T/descendant.sh'; source '$T/avec_nomenclatures.sh'; avec_nomenclatures")
+  }
+  OUTILS=$(git -C "$H" rev-parse outils) && DOCS=$(git -C "$H" rev-parse md)
+  [[ $(nomenclatures_de "$H_COMPILE" "$H_PAGE") == 7 && -z $(nomenclatures_de "$H_PAGE" "$OUTILS") &&
+    -z $(nomenclatures_de "$H_PAGE" "$DOCS") ]] &&
+    ok "publier : nomenclatures d'un commit d'avant : après des captures oui, un outil ou un texte changé jamais" ||
+    ko "publier : nomenclatures d'un commit d'avant mal choisies ($(nomenclatures_de "$H_PAGE" "$OUTILS"))"
+else
+  echo "  (sauté : jq absent, pas de faux gh pour les nomenclatures d'un commit d'avant)"
+fi
 ! apres "$H_PAGE" "$H_COMPILE" && ! apres "$H_COMPILE" "$H_COMPILE" && ! apres "$H_COMPILE" "${H_PAGE:0:12}" &&
   ! apres "$H_COMPILE" HEAD && ! apres "$H_COMPILE" "$(printf 'f%.0s' {1..40})" &&
   ok "publier : CI refusée sur un commit d'avant, le même, un nom abrégé ou symbolique, un commit inconnu" ||
@@ -1638,7 +1656,7 @@ r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
 { cat "$DEPOT/outils/github-commun.sh"
   echo 'SIGNEE=1 PASSE_DROITS=() GARDER_DOSSIER=""'
   awk '/^PUBLIEE_SIGNEE=""$/,/^fi$/' "$DEPOT/outils/publier-version.sh"
-  echo 'echo "suite gardé=$GARDER_DOSSIER"'; } >"$T/page-signee.sh"
+  echo 'echo "suite gardé=$GARDER_DOSSIER signée=$PUBLIEE_SIGNEE"'; } >"$T/page-signee.sh"
 cat >"$T/gh-page.sh" <<'GH'
 #!/usr/bin/env bash
 # $G : un fichier « vue-1 », « vue-2 »… par réponse attendue de « release view » (absente, la, brouillon, panne) ;
@@ -1677,7 +1695,8 @@ page_signee() { # nom, réponses de « release view »… ; $CREATION et $RETRAI
   tr '\n' ' ' <"$g/appels"
 }
 r=$(page_signee bien absente)
-[[ $r == *"suite gardé="$'\n'"create " && $(cat "$T/page-bien/point/sur.txt" "$T/page-bien/point/sur.txt.sig") == $'historique\nsig' ]] &&
+[[ $r == *"suite gardé= signée=1"$'\n'"create " ]] && [[ ! -e $T/page-bien/point/sur.txt.en-attente ]] &&
+  [[ $(cat "$T/page-bien/point/sur.txt" "$T/page-bien/point/sur.txt.sig") == $'historique\nsig' ]] &&
   ok "publier : page signée créée, point sûr gardé aussitôt (avant la page du code)" ||
   ko "publier : point sûr pas gardé après la page signée ($r)"
 r=$(page_signee panne panne)
@@ -1703,15 +1722,101 @@ r=$(CREATION="HTTP 502" page_signee moitie absente la)
   ok "publier : page à moitié créée par cet appel : retirée, rien de publié" ||
   ko "publier : page à moitié créée pas retirée ($r)"
 r=$(CREATION="HTTP 502" page_signee partie absente absente)
-[[ $r == *"rien de publié"*"create " && $r != *delete* && $r != *"à la main"* ]] &&
-  ok "publier : création ratée sans page laissée : rien à retirer" || ko "publier : retrait d'une page absente ($r)"
+[[ $r == *"rien de publié"*"create " && $r != *delete* && $r != *"à la main"* &&
+  -z $(ls -A "$T/page-partie/point") ]] &&
+  ok "publier : création ratée sans page laissée : rien à retirer, l'historique en attente est effacé" ||
+  ko "publier : création ratée sans page laissée mal traitée ($r, $(ls -A "$T/page-partie/point"))"
 r=$(CREATION="HTTP 502" RETRAIT="HTTP 502" page_signee reste absente la)
 r2=$(CREATION="HTTP 502" page_signee muette absente panne)
 [[ $r == *"à retirer à la main"* && $r2 == *"à retirer à la main"* && $r2 != *delete* ]] &&
   ok "publier : page à moitié créée restée (retrait refusé, GitHub muet) : dite" ||
   ko "publier : page à moitié créée restée sans être dite ($r / $r2)"
+r3=$(CREATION="already exists" page_signee existait2 absente la)
+[[ $r$r2$r3 != *"rien de publié"* && $r == *"DOSSIER gardé : $T/page-reste/dossier"* && $r2 == *"DOSSIER gardé : "* &&
+  $r3 == *"DOSSIER gardé : "* && $(cat "$T/page-muette/point/sur.txt.en-attente" \
+  "$T/page-muette/point/sur.txt.en-attente.sig") == $'historique\nsig' && ! -e $T/page-muette/point/sur.txt &&
+  -e $T/page-reste/point/sur.txt.en-attente && -e $T/page-existait2/point/sur.txt.en-attente ]] &&
+  ok "publier : page peut-être en ligne : jamais « rien de publié », DOSSIER et historique signé gardés en attente" ||
+  ko "publier : page peut-être en ligne mal gardée ($r / $r2 / $r3)"
+# Un « en attente » d'une version d'avant, que celui d'ici n'a pas pu remplacer : jamais pris pour le point sûr.
+mkdir -p "$T/vieux-point/sur.txt.en-attente.sig/plein" && echo vieux >"$T/vieux-point/sur.txt.en-attente"
+r=$(POINT=$T/vieux-point/sur.txt page_signee vieux absente)
+[[ $r == *"pas gardé en attente"*"Point sûr de l'historique pas gardé"* && ! -e $T/vieux-point/sur.txt ]] &&
+  ok "publier : un historique en attente qui n'est pas celui d'ici ne devient jamais le point sûr" ||
+  ko "publier : vieil historique en attente pris pour le point sûr ($r)"
+# La page signée revue en ligne par une relance : l'historique en attente devient le point sûr s'il est celui d'en
+# ligne, octet pour octet ; sinon, rien n'est appris de ce qui est en ligne.
+awk '/^point_sur_de_l_attente\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/attente.sh"
+mkdir -p "$T/gh-attente"
+cat >"$T/gh-attente/gh" <<'GH'
+#!/usr/bin/env bash
+[[ $1 == release && $2 == download && -d $EN_LIGNE ]] || exit 1
+while [[ $# -gt 1 && $1 != -D ]]; do shift; done
+cp "$EN_LIGNE"/* "$2/"
+GH
+chmod +x "$T/gh-attente/gh"
+attente() { # nom, historique en ligne (vide : GitHub muet), sa signature, en attente, sa signature, point sûr
+  local a=$T/attente-$1
+  mkdir -p "$a/dossier" "$a/point"
+  [[ -z $2 ]] || { mkdir "$a/en-ligne" && echo "$2" >"$a/en-ligne/historique.txt" &&
+    echo "$3" >"$a/en-ligne/historique.txt.sig"; }
+  [[ -z $4 ]] || { echo "$4" >"$a/point/sur.txt.en-attente" && echo "$5" >"$a/point/sur.txt.en-attente.sig"; }
+  [[ -z $6 ]] || { echo "$6" >"$a/point/sur.txt" && echo "s-$6" >"$a/point/sur.txt.sig"; }
+  PATH="$T/gh-attente:$PATH" EN_LIGNE=$a/en-ligne DOSSIER=$a/dossier TAG=v0.0.0 DEPOT_VERSIONS=x/y \
+    VANGUARD_HISTORIQUE_PUBLIE=$a/point/sur.txt bash -c "set -euo pipefail; source '$T/attente.sh'
+      point_sur_de_l_attente" 2>&1
+  echo "code $? point $(cat "$a/point/sur.txt" "$a/point/sur.txt.sig" 2>/dev/null | tr '\n' ' ')"
+}
+r=$(attente meme h2 s2 h2 s2 h1)
+[[ $r == *"Point sûr repris"*"code 0 point h2 s2 " && ! -e $T/attente-meme/point/sur.txt.en-attente ]] &&
+  ok "publier : page signée revue en ligne : l'historique gardé en attente, le même, devient le point sûr" ||
+  ko "publier : point sûr pas repris ($r)"
+r=$(attente autre h3 s2 h2 s2 h1)
+r2=$(attente autre-sig h2 s3 h2 s2 h1)
+r3=$(attente muet "" "" h2 s2 h1)
+r4=$(attente sans h2 s2 "" "" h1)
+[[ $r == *"peut-être en retard"*"code 0 point h1 s-h1 " && $r2 == *"peut-être en retard"*"code 0 point h1 s-h1 " &&
+  $r3 == *"peut-être en retard"*"code 0 point h1 s-h1 " && $r4 == *"peut-être en retard"*"code 0 point h1 s-h1 " ]] &&
+  ok "publier : historique en ligne autre, muet ou jamais signé d'ici : point sûr inchangé, dit" ||
+  ko "publier : point sûr appris d'en ligne ($r / $r2 / $r3 / $r4)"
+[[ $(attente deja h1 s-h1 "" "" h1) == "code 0 point h1 s-h1 " ]] &&
+  ok "publier : point sûr déjà celui d'en ligne : rien à dire" || ko "publier : point sûr à jour dit en retard"
+# L'étiquette de la version, demandée à GitHub (ici un dépôt témoin) : absente ou sur le commit des programmes, on
+# continue ; sur un autre commit (légère ou annotée) ou sans réponse, rien de publié.
+awk '/^etiquette_du_bon_commit\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/etiquette.sh"
+git init -q "$T/etq"
+etq_commit() { git -C "$T/etq" -c user.name=essai -c user.email=essai@exemple.invalid commit -q --allow-empty -m "$1" &&
+  git -C "$T/etq" rev-parse HEAD; }
+ETQ1=$(etq_commit un)
+ETQ2=$(etq_commit deux)
+etq_etiquette() { git -C "$T/etq" -c user.name=essai -c user.email=essai@exemple.invalid tag "$@"; }
+etq_etiquette v1.0.0 "$ETQ1"
+etq_etiquette -a -m annotee v1.0.1 "$ETQ1"
+git -C "$T/etq" remote add origin "$T/etq"
+etq() { # étiquette, commit compilé, dépôt (le témoin par défaut)
+  (cd "${3:-$T/etq}" && TAG=$1 COMPILE=$2 bash -c "set -euo pipefail; source '$T/etiquette.sh'
+    etiquette_du_bon_commit && echo suite" 2>&1) || true
+}
+[[ $(etq v9.9.9 "$ETQ2") == suite && $(etq v1.0.0 "$ETQ1") == suite && $(etq v1.0.1 "$ETQ1") == suite ]] &&
+  ok "publier : étiquette absente, ou déjà sur le commit des programmes : on continue" ||
+  ko "publier : bonne étiquette refusée ($(etq v1.0.1 "$ETQ1"))"
+r=$(etq v1.0.0 "$ETQ2")
+r2=$(etq v1.0.1 "$ETQ2")
+[[ $r == *"sur un autre commit (${ETQ1:0:12}"*"rien de publié"* && $r2 == *"sur un autre commit (${ETQ1:0:12}"* &&
+  $r$r2 != *suite* ]] && ok "publier : étiquette déjà sur un autre commit : rien de publié" ||
+  ko "publier : étiquette d'un autre commit reprise ($r / $r2)"
+git init -q "$T/etq-muet" && git -C "$T/etq-muet" remote add origin "$T/absent"
+r=$(etq v1.0.0 "$ETQ1" "$T/etq-muet")
+[[ $r == *"n'a pas répondu, rien de publié"* && $r != *suite* ]] &&
+  ok "publier : étiquette pas lue (GitHub muet) : rien de publié" || ko "publier : étiquette pas lue, publiée ($r)"
+awk '/^etiquette_du_bon_commit \|\| exit 1$/ { e = NR } /^PAGE=0$/ && !p { p = NR }
+  /outils\/signer-versions\.sh .*"\$DOSSIER"/ { s = NR }
+  /^git fetch -q --tags origin$/ { f = NR } END { exit !(f && e && p && s && f < e && e < p && p < s) }' \
+  "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : l'étiquette est jugée avant la page et la signature" ||
+  ko "publier-version.sh : étiquette jugée trop tard ou jamais"
 r=$(POINT=/dev/null/sur.txt page_signee point absente)
-[[ $r == *"Point sûr de l'historique pas gardé"*"suite gardé=1"* ]] &&
+[[ $r == *"pas gardé en attente"*"Point sûr de l'historique pas gardé"*"suite gardé=1 signée=1"* ]] &&
   ok "publier : point sûr pas gardé : dit, et l'historique signé reste dans DOSSIER" ||
   ko "publier : point sûr pas gardé sans être dit ($r)"
 # Une version déjà publiée : rien de publié ni signé, et le passe-droit pris est dit sans objet (relecture C5, n°22).
@@ -1754,7 +1859,7 @@ r=$(deja gh-brouillon) || code=$?
 # La page signée déjà en ligne sans la page du code : vu avant toute signature, code 4, la commande entière est donnée si
 # les programmes sont les mêmes ; sinon rien n'est proposé. Brouillon ou GitHub muet : code 1, rien de signé.
 { cat "$DEPOT/outils/github-commun.sh"
-  awk '/^page_du_code_a_la_main\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"
+  awk '/^(page_du_code_a_la_main|point_sur_de_l_attente)\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"
   awk '/^  PAGE=0$/ { p = 1 } p { print } p && /^  esac$/ { exit }' "$DEPOT/outils/publier-version.sh"
   echo 'echo suite'; } >"$T/signee-deja.sh"
 cat >"$T/gh-fin.sh" <<'GH'
@@ -1789,7 +1894,8 @@ fin() { # script, puis VAR=valeur… : la sortie et le code, DOSSIER neuf et jet
   local d script=$1
   shift
   d=$(mktemp -d "$T/fin.XXXXXX") && echo sommes >"$d/SHA256SUMS.txt" && : >"$d/vanguard.cdx.json"
-  env PATH="$T/gh-fin:$PATH" DOSSIER="$d" TAG=v0.0.0 DEPOT_VERSIONS=x/y NOM=V VERSION=0.0.0 NOTES=notes COMPILE=c0ffee \
+  env PATH="$T/gh-fin:$PATH" DOSSIER="$d" VANGUARD_HISTORIQUE_PUBLIE="$d.point" \
+    TAG=v0.0.0 DEPOT_VERSIONS=x/y NOM=V VERSION=0.0.0 NOTES=notes COMPILE=c0ffee \
     "$@" bash -c "set -euo pipefail; trap 'rm -rf \"\$DOSSIER\"' EXIT; source '$script'" 2>&1
   echo "code $? dossier $([[ -f $d/SHA256SUMS.txt ]] && echo gardé) $(cat "$d/notes.md" 2>/dev/null)"
 }
@@ -1800,9 +1906,9 @@ r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE="$EMP")
   ko "publier : déjà signée sans page du code mal traitée ($r)"
 r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=sha256:autre)
 r2=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=)
-[[ $r == *"ne pas créer la page du code"*"code 4 dossier gardé "* && $r2 == *"illisible) : ne pas créer"*"code 4"* &&
-  $r$r2 != *"gh release create"* && $r$r2 != *suite* ]] &&
-  ok "publier : déjà signée avec d'autres programmes (ou pas comparables) : aucune page du code proposée" ||
+[[ $r == *"ne pas créer la page"*"avancer la version et livrer de nouveau"*"code 1 dossier gardé "* &&
+  $r2 == *"n'a pas été lue"*"relancer"*"code 1 dossier  " && $r$r2 != *"gh release create"* && $r$r2 != *suite* ]] &&
+  ok "publier : déjà signée avec d'autres programmes (ou pas comparables) : aucune page du code proposée, code 1" ||
   ko "publier : page du code proposée pour d'autres programmes ($r / $r2)"
 r=$(fin "$T/signee-deja.sh" VUE=true)
 r2=$(fin "$T/signee-deja.sh" VUE=panne)
@@ -1828,6 +1934,12 @@ r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 CREATION=HTTP VUE=true
   $r != *"publiée :"* && $r != *"delete v"[1-9]* ]] &&
   ok "publier : page du code ratée, mise à jour signée en ligne : code 4, brouillon resté dit, commande donnée" ||
   ko "publier : page du code ratée mal traitée ($r)"
+r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 CREATION=HTTP VUE=absente EMPREINTE= LISTE=)
+r2=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 CREATION=HTTP VUE=absente EMPREINTE=sha256:autre LISTE=)
+[[ $r == *"n'a pas été lue"*"code 1 "* && $r2 == *"avancer la version"*"code 1 "* &&
+  $r$r2 != *"gh release create"* ]] &&
+  ok "publier : page du code ratée, aucune commande à donner : code 1 (jamais « il ne reste que la commande »)" ||
+  ko "publier : page du code ratée sans commande dite code 4 ($r / $r2)"
 r=$(fin "$T/fin-publication.sh" SIGNEE= PUBLIEE_SIGNEE= CREATION=HTTP VUE=absente LISTE=)
 [[ $r == *"rien n'est en ligne ; relancer outils/deployer.sh"*"code 1 dossier "* && $r != *"gh release create"* ]] &&
   ok "publier : page du code ratée, rien d'en ligne : code 1, relancer" ||
@@ -1843,7 +1955,8 @@ r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 VUE=false "LISTE=v0.0.
 { cat "$DEPOT/outils/github-commun.sh"
   awk '/^DEPOT_VU=0$/,/^else$/' "$DEPOT/outils/publier-version.sh" | sed '$d'; echo "fi"; } >"$T/depot-versions.sh"
 depot_versions() { # passe-droits… : la dernière ligne, « suite » si on continue
-  PATH="$T/${GH_ESSAI:-gh-sans-depot}:$PATH" DEPOT_VERSIONS=x/y CI_APRES_COMPLET=${CI_ESSAI-} bash -c "set -euo pipefail; \
+  PATH="$T/${GH_ESSAI:-gh-sans-depot}:$PATH" DEPOT_VERSIONS=x/y VANGUARD_HISTORIQUE_PUBLIE=${POINT-$T/aucun-point} \
+    CI_APRES_COMPLET=${CI_ESSAI-} bash -c "set -euo pipefail; \
     PASSE_DROITS=(\"\$@\"); source '$T/depot-versions.sh'; echo suite" _ "$@" 2>&1 | tail -n 1
 }
 faux_gh_dit gh-sans-depot 1 "GraphQL: Could not resolve to a Repository with the name 'x/y'. (repository)"
@@ -1857,6 +1970,12 @@ done
   $(depot_versions) == suite ]] &&
   ok "publier : dépôt des versions absent avec passe-droit ou CI d'après : rien de publié (sans : on continue)" ||
   ko "publier : passe-droit publié sans historique signé ($(depot_versions sans-vm))"
+# Absent alors qu'une version a déjà été signée d'ici (point sûr, même un lien mort) : il a disparu, rien de publié.
+echo h >"$T/point-la" && ln -s "$T/nulle-part" "$T/point-lien"
+[[ $(POINT=$T/point-la depot_versions) == *"puis relancer." &&
+  $(POINT=$T/point-lien depot_versions) == *"puis relancer." ]] &&
+  ok "publier : dépôt des versions disparu après une version signée d'ici : rien de publié" ||
+  ko "publier : dépôt des versions disparu pris pour pas encore créé ($(POINT=$T/point-la depot_versions))"
 
 # Le contrôle tourne avant toute requête à GitHub (git fetch, gh), après l'arrêt de --notes (qui n'en fait aucune).
 awk '/^if \[\[ \$\{1:-\} == --notes \]\]; then/ { n = NR } /^controle_des_sources \|\| exit 1$/ { c = NR }

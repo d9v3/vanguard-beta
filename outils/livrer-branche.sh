@@ -38,11 +38,13 @@ DEPOT=$(realpath "$(dirname "$COMMUN")")
   { echo "✖ $ARBRE n'est pas la racine d'un worktree" >&2; exit 2; }
 [[ $(git -C "$ARBRE" branch --show-current) == "$BRANCHE" ]] || { echo "✖ $ARBRE n'est pas sur $BRANCHE" >&2; exit 2; }
 # Une livraison à la fois : deux ensemble se voleraient le dossier de compilation et le master que l'autre vérifie. Le
-# verrou est tenu par flock lui-même (-o : ce qu'il lance ne l'hérite pas, un git gc détaché ne le garderait pas).
+# verrou est tenu par flock lui-même (-o : ce qu'il lance ne l'hérite pas, un git gc détaché ne le garderait pas). flock
+# tué seul rendrait le verrou pendant que la livraison continue : elle s'arrête avec lui (setpriv --pdeathsig). Une
+# vérification ou un déploiement déjà lancé finit, lui.
 if [[ ${VANGUARD_LIVRAISON_VERROU:-} != "$COMMUN" ]]; then
   VERROU=$COMMUN/vanguard-livraison.lock
   flock -n "$VERROU" true || echo "· une autre livraison tourne dans ce dépôt : attente de sa fin"
-  VANGUARD_LIVRAISON_VERROU=$COMMUN exec flock -o "$VERROU" bash "$0" "$@"
+  VANGUARD_LIVRAISON_VERROU=$COMMUN exec flock -o "$VERROU" setpriv --pdeathsig TERM bash "$0" "$@"
 fi
 unset VANGUARD_LIVRAISON_VERROU
 # L'arbre `$1` est propre (rien de non commité, aucun fichier non suivi). Propre se prouve : un git status qui échoue
@@ -158,7 +160,7 @@ if ((DEPLOI != 0)) && ! [[ $DEPLOI == 8 && -n $PAS_ENVOYE ]] && ! [[ $DEPLOI == 
   echo "✖ déploiement en échec (code $DEPLOI) : master contient ${SHA:0:12}, worktree et branche gardés"
   exit 1
 fi
-grep -E "Clé VANGUARD|publiée|sans page|Durées" "$JOURNAUX/deploiement-$NOM.log" | tail -4 || true
+grep -E "Clé VANGUARD|publiée|sans page|Durées|pas refaites" "$JOURNAUX/deploiement-$NOM.log" | tail -6 || true
 if [[ -n $PAS_ENVOYE ]]; then
   head -n 15 <<<"$PAS_ENVOYE"
   echo "⚠ fusionné et déployé ici (${SHA:0:12}), mais rien n'est parti sur GitHub : worktree et branche gardés"

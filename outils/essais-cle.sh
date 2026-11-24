@@ -1220,6 +1220,144 @@ voir "image changée, recopie pas notée : elle part tout de même (la bonne à 
   eval '((code == 1)) && cmp -s "$NEUVE" "$IMAGE5" &&
     dit "$BANC/notifications.log" "image changée retirée"' || montrer "$BANC/notifications.log"
 cp "$IMAGE5" "$NEUVE"
+# Image d'un sous-dossier de ISO/, du même nom, dite différente : la bonne, à la racine, n'est ni retirée ni recopiée.
+rm -f "$BANC/notifications.log" "$BANC/faux-vanguard.log"
+ESSAI_RELUE=sous/${IMAGE5##*/} seule
+code=$?
+voir "image changée d'un sous-dossier : celle de la racine laissée, dite à vérifier, code 5" \
+  eval '((code == 5)) && cmp -s "$NEUVE" "$IMAGE5" && dit "$BANC/notifications.log" "ISO/sous/${IMAGE5##*/}" &&
+    pas_dit "$BANC/notifications.log" "copie de" && pas_dit "$BANC/faux-vanguard.log" "--debut"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; montrer "$BANC/faux-vanguard.log"; }
+# Un dossier au nom d'une copie en cours, plein : il n'arrête plus les images, et rien n'est effacé dedans.
+rm -f "$NEUVE"
+mkdir -p "$BANC/cle5/ISO/.x.iso.part"
+: >"$BANC/cle5/ISO/.x.iso.part/mal.iso"
+printf x >"$KALI_AVANT"
+seule
+code=$?
+voir "dossier au nom d'une copie en cours : les images passent tout de même" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && [[ -f $BANC/cle5/ISO/.x.iso.part/mal.iso ]]' ||
+  montrer "$BANC/sortie"
+rm -rf "${BANC:?}/cle5/ISO/.x.iso.part"
+# Une copie en cours qui serait un lien : retirée, sa cible laissée.
+rm -f "$NEUVE"
+echo cible >"$BANC/cible-lien"
+ln -s "$BANC/cible-lien" "$PART"
+seule
+code=$?
+voir "copie en cours en lien symbolique : le lien part, sa cible reste" \
+  eval '((code == 0)) && [[ ! -L $PART && $(cat "$BANC/cible-lien") == cible ]] && cmp -s "$NEUVE" "$IMAGE5"' ||
+  montrer "$BANC/sortie"
+# Un dossier au nom d'une image n'est pas une ancienne version : sa sorte n'est pas copiée sur une clé qui ne l'a pas.
+rm -f "$NEUVE"
+mkdir "$KALI_AVANT"
+seule
+code=$?
+voir "dossier au nom d'une ancienne version : pas compté, rien de copié" \
+  eval '((code == 0)) && [[ ! -e $NEUVE && -d $KALI_AVANT ]]' || montrer "$BANC/sortie"
+rmdir "$KALI_AVANT"
+# Un dossier à la place de l'image, ou de sa copie : dit, rien de rangé dedans, jamais compté contre la clé.
+for dossier in "$NEUVE" "$PART"; do
+  printf x >"$KALI_AVANT"
+  mkdir "$dossier"
+  rm -f "$BANC/notifications.log" "$BANC/faux-vanguard.log"
+  seule
+  code=$?
+  voir "dossier à la place de ${dossier##*/ISO/} : dit, rien dedans, l'ancienne laissée, pas d'incident" \
+    eval '((code == 1)) && dit "$BANC/notifications.log" "dossier inattendu dans ISO/" && rmdir "$dossier" &&
+      [[ -f $KALI_AVANT ]] && pas_dit "$BANC/faux-vanguard.log" "--ratee"' ||
+    { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+  rm -rf "${dossier:?}" "$KALI_AVANT"
+done
+# Le même, créé pendant la copie : elle n'est pas rangée dedans.
+mkdir -p "$BANC/pendant"
+cat >"$BANC/pendant/cp" <<FIN
+#!/usr/bin/env bash
+mkdir "$NEUVE"
+exec $(command -v cp) "\$@"
+FIN
+chmod +x "$BANC/pendant/cp"
+printf x >"$KALI_AVANT"
+rm -f "$BANC/notifications.log" "$BANC/faux-vanguard.log"
+PATH=$BANC/pendant:$PATH seule
+code=$?
+voir "dossier créé pendant la copie : rien n'y est rangé, dit, l'ancienne laissée" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "pas posée" && rmdir "$NEUVE" && [[ -f $KALI_AVANT ]] &&
+    pas_dit "$BANC/faux-vanguard.log" "--ratee"' || montrer "$BANC/sortie"
+rm -rf "${NEUVE:?}" "$KALI_AVANT" "$PART"
+# La clé remplie par autre chose pendant la copie : pas de l'usure ; la trace reste, et la copie se refait.
+mkdir -p "$BANC/pleine"
+cat >"$BANC/pleine/cp" <<FIN
+#!/usr/bin/env bash
+fallocate -l "\$(df --output=avail -B1 "$BANC/cle5" | tail -1 | tr -d ' ')" "$BANC/cle5/autre"
+exec $(command -v cp) "\$@"
+FIN
+chmod +x "$BANC/pleine/cp"
+rm -f "$BANC/notifications.log" "$BANC/faux-vanguard.log"
+printf x >"$KALI_AVANT"
+echo '{"menu":"ancien"}' >"$BANC/cle5/ventoy/ventoy.json"
+cp "$BANC/cle5/ventoy/ventoy.json" "$BANC/menu-avant"
+PATH=$BANC/pleine:$PATH seule
+code=$?
+voir "clé remplie pendant la copie : dit, jamais compté contre la clé" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "plus de place pendant la copie" &&
+    [[ -f $PART && ! -s $PART ]] && pas_dit "$BANC/faux-vanguard.log" "--ratee"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+voir "clé pleine : l'ancien menu de Ventoy reste entier, et c'est dit" \
+  eval 'cmp -s "$BANC/cle5/ventoy/ventoy.json" "$BANC/menu-avant" && [[ ! -e $BANC/cle5/ventoy/ventoy.json.part ]] &&
+    dit "$BANC/notifications.log" "menu de Ventoy pas réécrit"' || montrer "$BANC/notifications.log"
+VANGUARD_PROGRAMME=$BANC/faux-vanguard bash outils/images-cle.sh --menu "$BANC/cle5" >"$BANC/sortie" 2>&1
+code=$?
+voir "clé pleine, --menu : code 1, l'ancien menu reste entier" \
+  eval '((code == 1)) && cmp -s "$BANC/cle5/ventoy/ventoy.json" "$BANC/menu-avant"' || montrer "$BANC/sortie"
+rm -f "$BANC/cle5/autre" "$KALI_AVANT"
+seule
+code=$?
+voir "et la copie se refait, la place revenue" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5"' || montrer "$BANC/sortie"
+voir "et le menu avec elle" dit "$BANC/cle5/ventoy/ventoy.json" "/ISO/kali-linux-2026.3" || montrer "$BANC/sortie"
+# Une image de 4 Gio sur un volume FAT32 : dite avant toute copie.
+mkdir -p "$BANC/fat" "$BANC/cache-fat"
+cat >"$BANC/fat/df" <<FIN
+#!/usr/bin/env bash
+if [[ \$1 == --output=fstype ]]; then printf 'Type\nvfat\n'; exit 0; fi
+exec $(command -v df) "\$@"
+FIN
+chmod +x "$BANC/fat/df"
+truncate -s 4G "$BANC/cache-fat/${IMAGE5##*/}"
+echo 0 >"$BANC/cache-fat/${IMAGE5##*/}.sha256"
+rm -f "$NEUVE" "$BANC/notifications.log"
+printf x >"$KALI_AVANT"
+PATH=$BANC/fat:$PATH CACHE_SEULE=$BANC/cache-fat seule
+voir "image de 4 Gio sur du FAT32 : dite impossible, l'ancienne laissée" \
+  eval 'dit "$BANC/notifications.log" "impossible en FAT32" && [[ -f $KALI_AVANT ]]' || montrer "$BANC/sortie"
+rm -rf "${BANC:?}/cache-fat"
+PATH=$BANC/fat:$PATH seule
+code=$?
+voir "petite image sur du FAT32 : copiée" eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5"' || montrer "$BANC/sortie"
+# ISO/ ou ventoy/ en lien symbolique : rien n'est écrit au bout ; le menu à mi-chemin en lien n'est pas suivi.
+mkdir -p "$BANC/au-bout" "$BANC/cle-lien"
+: >"$BANC/cle-lien/vanguard.cle"
+for dossier in ISO ventoy; do
+  ln -s "$BANC/au-bout" "$BANC/cle-lien/$dossier"
+  for mode in --cle --toutes --menu; do
+    VANGUARD_IMAGES=$BANC/cache5 VANGUARD_PROGRAMME=$BANC/faux-vanguard \
+      bash outils/images-cle.sh "$mode" "$BANC/cle-lien" >"$BANC/sortie" 2>&1
+    code=$?
+    voir "$dossier/ en lien symbolique ($mode) : refusé, rien d'écrit au bout" \
+      eval '((code == 1)) && dit "$BANC/sortie" "lien symbolique" && [[ -z $(ls -A "$BANC/au-bout") ]]' ||
+      montrer "$BANC/sortie"
+  done
+  rm -f "$BANC/cle-lien/$dossier"
+done
+mkdir -p "$BANC/cle-lien/ISO" "$BANC/cle-lien/ventoy"
+ln -s "$BANC/cible-lien" "$BANC/cle-lien/ventoy/ventoy.json.part"
+VANGUARD_PROGRAMME=$BANC/faux-vanguard bash outils/images-cle.sh --menu "$BANC/cle-lien" >"$BANC/sortie" 2>&1
+code=$?
+voir "menu à mi-chemin en lien symbolique : sa cible reste, le menu est écrit" \
+  eval '((code == 0)) && [[ $(cat "$BANC/cible-lien") == cible && -f $BANC/cle-lien/ventoy/ventoy.json &&
+    ! -L $BANC/cle-lien/ventoy/ventoy.json ]]' || montrer "$BANC/sortie"
+cp "$IMAGE5" "$NEUVE"
 # Clé à remplacer, trouvée seule : l'image changée est retirée (notée), rien n'est recopié ; à la main, oui.
 head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
 rm -f "$BANC/notifications.log"
@@ -1515,7 +1653,9 @@ case "$1 ${2:-}" in
     [[ ${4:-} == --reprise ]] && filtre=' \./(Linux|source)/'
     # Le vrai dit chaque fichier retiré à la reprise.
     [[ ${4:-} == --reprise ]] && echo "Reprise : Linux/vanguard différait de la référence, retiré de la clé (le déploiement le repose)" >&2
-    diff <(releve "$3" | grep -vE "$filtre") <(grep -vE "$filtre" "$BANC/reference") >&2 || exit 2 ;;
+    diff <(releve "$3" | grep -vE "$filtre") <(grep -vE "$filtre" "$BANC/reference") >&2 || exit 2
+    # Le vrai dit ici, sans en faire un refus, une image illisible ou usée, une recopie en attente.
+    [[ ! -f $BANC/avis-images ]] || cat "$BANC/avis-images" ;;
   "deploiement temoins")
     [[ -s $3/vanguard.jeton ]] || echo fedcba9876543210fedcba9876543210 >"$3/vanguard.jeton"
     echo temoin >"$3/vanguard.cle" ;;
@@ -1683,6 +1823,16 @@ publie 0
 code=$?
 voir "clé à jour et page publiée : code 0" \
   eval '((code == 0)) && dit "$BANC/page.log" page && dit "$BANC/sortie" "Clé VANGUARD à jour"' || montrer "$BANC/sortie"
+voir "clé à jour, rien à dire de ses images : rien n'en est dit" \
+  eval 'pas_dit "$BANC/sortie" "(programmes)"' || montrer "$BANC/sortie"
+echo "· Image illisible sur la clé : ISO/essai.iso" >"$BANC/avis-images"
+publie 0
+code=$?
+rm -f "$BANC/avis-images"
+voir "images de la clé pas toutes vues : dites deux fois, « à jour » ne vaut que pour les programmes" \
+  eval '((code == 0 && $(grep -cxF "· Image illisible sur la clé : ISO/essai.iso" "$BANC/sortie") == 2)) &&
+    dit "$BANC/sortie" "Clé VANGUARD à jour (programmes) :" && pas_dit "$BANC/sortie" "Clé VANGUARD à jour :"' ||
+  montrer "$BANC/sortie"
 publie 1
 code=$?
 voir "page de la version pas publiée : dite, code 9 (la clé, elle, est à jour)" \
@@ -1921,8 +2071,9 @@ voir "torrent de Kali en cours (7 jours) gardé pour reprendre ; un curl interro
     dit "$BANC/sortie" ".nouveau-kali-2026.1" && [[ -d $I/.nouveau-arch ]]' || montrer "$BANC/sortie"
 # Les dossiers de compilation : le CACHEDIR.TAG de cargo, vieux de quinze jours, et lui seul.
 C=$BANC/xdg7/vanguard-dev
-mkdir -p "$C"/{lot/cible-vieille/debug,lot/cible-neuve,lot/{outil,kani-install},cible-seule/x86_64/debug,verifier-echecs/{vieux,neuf}}
-for d in lot/cible-vieille lot/cible-neuve lot/kani-install cible-seule cible-seule/x86_64; do
+mkdir -p "$C"/{lot/{cible-vieille/debug,cible-neuve,outil,kani-install},cible-seule/x86_64/debug} \
+  "$C"/{lot/cible-triplet/x86_64/debug/deps,verifier-echecs/{vieux,neuf}}
+for d in lot/cible-vieille lot/cible-neuve lot/cible-triplet lot/kani-install cible-seule cible-seule/x86_64; do
   printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' \
     '# This file is a cache directory tag created by cargo.' >"$C/$d/CACHEDIR.TAG"
 done
@@ -1936,10 +2087,13 @@ ln -s "$BANC/ailleurs/cible" "$C/lot/lien"
 ln -s "$BANC/ailleurs/autre" "$C/lien-parent"
 find "$C" "$BANC/ailleurs" -exec touch -d '40 days ago' {} +
 touch "$C/lot/cible-neuve/CACHEDIR.TAG" "$C/verifier-echecs/neuf"
+# Une compilation --target n'y date que <triplet>/<profil>/deps.
+touch "$C/lot/cible-triplet/x86_64/debug/deps"
 XDG_CACHE_HOME=$BANC/xdg7 bash outils/menage-dev.sh >"$BANC/sortie" 2>&1
 voir "compilations inutilisées retirées par la marque de cargo ; une récente, un outil et des notes gardés" \
-  eval '[[ ! -e $C/lot/cible-vieille && ! -e $C/cible-seule && -d $C/lot/cible-neuve && -d $C/lot/outil && -d $C/lot/kani-install &&
-    -f $C/lot/notes.md && ! -e $C/verifier-echecs/vieux && -d $C/verifier-echecs/neuf ]]' || montrer "$BANC/sortie"
+  eval '[[ ! -e $C/lot/cible-vieille && ! -e $C/cible-seule && -d $C/lot/cible-neuve && -d $C/lot/outil &&
+    -d $C/lot/kani-install && -d $C/lot/cible-triplet && -f $C/lot/notes.md && ! -e $C/verifier-echecs/vieux &&
+    -d $C/verifier-echecs/neuf ]]' || montrer "$BANC/sortie"
 voir "un lien vers un dossier de compilation hors du cache : le dossier visé reste entier" \
   eval '[[ -f $BANC/ailleurs/cible/CACHEDIR.TAG && -f $BANC/ailleurs/autre/cible/CACHEDIR.TAG ]]' || montrer "$BANC/sortie"
 

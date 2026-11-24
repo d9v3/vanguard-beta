@@ -758,6 +758,7 @@ case "$*" in
   *canaris_telecharger*)
     fois=$(($(cat "$ESSAI/fois" 2>/dev/null || echo 0) + 1))
     echo "$fois" >"$ESSAI/fois"
+    [[ ! -e $(dirname "$0")/telecharger-saute ]] || echo "pas d'Internet" >>"$VANGUARD_TESTS_SAUTES"
     source=$ESSAI/passage-$fois.json
     [[ -f $source ]] || source=$ESSAI/passage-1.json
     cp "$source" "$VANGUARD_CANARIS/canaris.json"
@@ -775,6 +776,7 @@ case "$*" in
     [[ ! -e $(dirname "$0")/copie-sautee ]] || echo "pas de copie" >>"$VANGUARD_TESTS_SAUTES"
     noms=0
     for mot in "$@"; do [[ $mot != vrai* ]] || noms=$((noms + 1)); done
+    [[ ! -e $(dirname "$0")/un-de-moins ]] || noms=$((noms - 1))
     echo "test result: ok. $noms passed; 0 failed"
     exit 0
     ;;
@@ -808,11 +810,17 @@ touch "$faux/kev-absent"
 canaris "ok ok ok ok" -; essai_absent=$CODE
 mv "$faux/kev-absent" "$faux/copie-sautee"
 canaris "ok ok ok ok" -; saute=$CODE
+# Un canari qui se dit sauté, un essai de moins que la liste de ceux demandés.
+mv "$faux/copie-sautee" "$faux/telecharger-saute"
+canaris "ok ok ok ok" -; canari_saute=$CODE
+mv "$faux/telecharger-saute" "$faux/un-de-moins"
+canaris "ok ok ok ok" -; un_de_moins=$CODE
 [[ $deux_fois == 1 && $nomme == *"deux fois de suite : edge (format)"* && $aucune == 1 && $essai_absent == 1 &&
-  $saute == 1 ]] &&
-  ok "canaris : format refusé deux fois, aucune source lue, essai absent ou sauté : un échec" ||
-  ko "canaris en échec : deux fois $deux_fois, aucune lue $aucune, essai absent $essai_absent, sauté $saute"
-rm -f "$faux/copie-sautee"
+  $saute == 1 && $canari_saute == 1 && $un_de_moins == 1 ]] &&
+  ok "canaris : format refusé deux fois, aucune source lue, essai absent, sauté ou de moins : un échec" ||
+  ko "canaris en échec : deux fois $deux_fois, aucune lue $aucune, essai absent $essai_absent, sauté $saute, \
+canari sauté $canari_saute, un de moins $un_de_moins"
+rm -f "$faux/un-de-moins"
 # Une adresse retirée (404, 410) compte comme un format changé ; un refus du premier essai n'est pas effacé par un 429 ;
 # 403, 408 et 429 ne sont qu'injoignables. L'essai des éditeurs ne dépend que des copies qu'il lit.
 codes=""
@@ -830,6 +838,21 @@ canaris "ok ok ok format" "ok format ok ok"; autre=$CODE; dit=$SORTIE
   ok "canaris : adresse retirée et refus suivi d'un silence échouent ; l'essai des éditeurs suit ses seules copies" ||
   ko "canaris : états$codes, source sans rapport $sans_rapport (essai des éditeurs lancé $copies fois)"
 rm -rf "${faux:?}"
+
+# La date de relecture passée d'une exception : dite dans le résumé (remarques_dependances, sur des deny.toml inventés).
+banc=$(mktemp -d)
+mkdir -p "$banc"/{t,outils,fenetre,fuzz,extensions}
+cp outils/exceptions-rustsec.py "$banc/outils/" # une copie : il ne lit que les deny.toml du dépôt où il est
+: >"$banc/t/dependances.log"
+exception() { printf '[advisories]\nignore = [\n  { id = "RUSTSEC-2026-0001", reason = "essai, %s" },\n]\n' "$1"; }
+exception "vaut pour les programmes publiés ; à relire au plus tard le 2026-01-01" >"$banc/deny.toml"
+exception "jamais compilée dans un programme publié" | tee "$banc"/{fenetre,fuzz,extensions}/deny.toml >/dev/null
+remarques=$(awk '/^remarques_dependances\(\) \{/, /^}/' outils/verifier.sh)
+dit=$(cd "$banc" && TRAVAIL=$banc/t bash -c "$remarques
+remarques_dependances" 2>&1)
+[[ $(grep -c '⚠' <<<"$dit") == 1 && $dit == *"⚠ deny.toml : RUSTSEC-2026-0001"*"à relire depuis le 2026-01-01"* ]] &&
+  ok "exception à la date de relecture passée : dite au résumé" || ko "exception à relire pas dite : $dit"
+rm -rf "${banc:?}"
 
 # 18. Le résumé et les journaux d'échec (la fin de verifier.sh et ces lignes-là, lues dans le fichier).
 banc=$(mktemp -d)

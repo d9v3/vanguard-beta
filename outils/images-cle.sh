@@ -765,6 +765,22 @@ empreinte_sur_cle() { # fichier
 libre_mio() { df --output=avail -B1M "$1" | tail -1 | tr -d ' '; }
 taille_mio() { echo $((($(stat -c %s "$1") + MIO - 1) / MIO)); }
 
+# ISO/ ou ventoy/ en lien symbolique (volume qui n'est pas en exFAT, désigné à la main) : ce qu'on y écrirait partirait
+# hors de la clé.
+cle_sans_lien() { # point
+  local dossier
+  for dossier in ISO ventoy; do
+    [[ -L $1/$dossier ]] || continue
+    echo "✖ $1/$dossier est un lien symbolique : rien n'est écrit sur cette clé."
+    return 1
+  done
+}
+
+# Un fichier que le volume ne peut pas tenir, quelle que soit la place : 4 Gio et plus en FAT32.
+trop_gros() { # point image
+  [[ $(df --output=fstype "$1" | tail -1) == @(vfat|msdos) ]] && (($(stat -c %s "$2") >= 4096 * MIO))
+}
+
 # Copie les images neuves sur la clé : sous un nom temporaire (que Ventoy ne montre pas), relue, puis renommée ;
 # l'ancienne version n'est retirée qu'après. Si la place manque, l'ancienne est retirée d'abord (la clé reste
 # démarrable avec les autres images) ; si ça ne suffit pas, une image en option de cet ordinateur (Kali) part pour
@@ -794,6 +810,10 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     [[ -z $toutes ]] || return 1
     [[ -z $auto ]] || return "$PAS_VUES"
     return 0
+  fi
+  if ! cle_sans_lien "$point"; then
+    [[ -z $auto ]] || return "$PAS_VUES"
+    return 1
   fi
   exec 9>"${XDG_RUNTIME_DIR:-/tmp}/vanguard-deployer.lock"
   flock 9
@@ -844,7 +864,9 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
       if [[ ${p%.part} == ${MOTIFS[$sorte]} ]]; then interrompues+="$sorte "; fi
     done
   done
-  find "$iso" -maxdepth 1 -name '.*.part' -delete
+  # Un fichier ou un lien seulement : un dossier ainsi nommé n'est pas d'ici, et le retirer raterait à chaque passage.
+  find "$iso" -maxdepth 1 -name '.*.part' \( -type f -o -type l \) -delete ||
+    echo "· une copie interrompue de ISO/ ne se retire pas"
   for sorte in "${SORTES[@]}"; do
     image=$(image_prete "$sorte") || continue
     nom=${image##*/}
@@ -863,9 +885,19 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     while IFS= read -r -d '' a; do
       anciennes+=("$a")
       anciennes_mio=$((anciennes_mio + $(taille_mio "$a")))
-    done < <(find "$iso" -maxdepth 1 -iname "${MOTIFS[$sorte]}" ! -name "$nom" -print0)
+    done < <(find "$iso" -maxdepth 1 -type f -iname "${MOTIFS[$sorte]}" ! -name "$nom" -print0)
     # Au branchement, seulement ce que la clé a déjà : on ne remplit pas une clé qu'on n'a pas préparée pour ça.
     if [[ -z $toutes && ! -f $iso/$nom && $interrompues != *" $sorte "* ]] && ((${#anciennes[@]} == 0)); then
+      continue
+    fi
+    # Un dossier à la place de l'image ou de sa copie : elle y serait rangée dedans, et recopiée à chaque passage.
+    local part=$iso/.$nom.part
+    if [[ -d $iso/$nom || -d $part ]]; then
+      echecs+=("${NOMS[$sorte]} : pas copiée, dossier inattendu dans ISO/ ($nom ou .$nom.part)")
+      continue
+    fi
+    if trop_gros "$point" "$image"; then
+      manque+=("${NOMS[$sorte]} (4 Gio ou plus : impossible en FAT32, quelle que soit la place)")
       continue
     fi
     # Clé à remplacer, trouvée toute seule : plus rien n'y est copié, chaque écriture l'achèverait.
@@ -886,7 +918,7 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
           while IFS= read -r -d '' o; do
             options+=("$o")
             options_mio=$((options_mio + $(taille_mio "$o")))
-          done < <(find "$iso" -maxdepth 1 -iname "${MOTIFS[$s]}" -print0)
+          done < <(find "$iso" -maxdepth 1 -type f -iname "${MOTIFS[$s]}" -print0)
         done
       fi
       if (($(libre_mio "$point") + anciennes_mio + options_mio < besoin)); then
@@ -916,16 +948,28 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     # y prend près d'une demi-heure).
     avertir "Clé VANGUARD : copie de ${NOMS[$sorte]}" \
       "Ne retire pas la clé avant la fin (jusqu'à $((($(taille_mio "$image") + 599) / 600)) min sur une clé lente)."
-    local part=$iso/.$nom.part
-    if ! cp "$image" "$part" || ! sync "$part" || [[ $(empreinte_sur_cle "$part") != "$(cat "$image.sha256")" ]]; then
+    local ecrite="" libre=""
+    if cp -T "$image" "$part" && sync "$part"; then ecrite=1; fi
+    # La place se lit avant de vider la copie, qui la rendrait.
+    [[ -n $ecrite ]] || libre=$(libre_mio "$point" 2>/dev/null) || libre=""
+    if [[ -z $ecrite || $(empreinte_sur_cle "$part") != "$(cat "$image.sha256")" ]]; then
       # Vidée, pas retirée : son nom reste la trace de la copie à refaire au prochain passage (l'ancienne version a pu
       # partir faute de place). Clé retirée en route : la copie y est restée, avec le même effet.
       : >"$part" 2>/dev/null || true
+      # Clé remplie par autre chose pendant la copie : elle n'a rien raté, ce n'est pas de l'usure.
+      if [[ $libre == 0 ]]; then
+        echecs+=("${NOMS[$sorte]} : plus de place pendant la copie, refaite au prochain passage")
+        continue
+      fi
       noter_ratee "$point" "$image"
       echecs+=("${NOMS[$sorte]} : copie différente de l'image vérifiée, refaite au prochain passage")
       continue
     fi
-    mv -f "$part" "$iso/$nom"
+    # -T : un dossier de ce nom créé pendant la copie ne la range pas dedans.
+    if ! mv -fT "$part" "$iso/$nom"; then
+      echecs+=("${NOMS[$sorte]} : copiée, mais pas posée (dossier inattendu dans ISO/ ?), refaite au prochain passage")
+      continue
+    fi
     copiees+=("$nom")
     # Son empreinte, celle de l'image vérifiée que la relecture sur la clé vient de retrouver, entre dans la référence :
     # tout de suite (la clé peut être débranchée pendant la copie de la suivante), après le menu réécrit, que la
@@ -944,6 +988,7 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     fi
   done
   menu_et_manifeste "$point" "${posees[@]}"
+  [[ -z $MENU_RATE ]] || echecs+=("menu de Ventoy pas réécrit, l'ancien reste ; refait au prochain passage")
   if [[ -n $auto && -n $PAS_REDITES ]]; then
     echecs+=("référence de la clé pas réécrite sur cet ordinateur : le bilan dira la clé changée")
   fi
@@ -971,9 +1016,12 @@ Les images en option passent après les autres. La remettre s'il reste la place 
 }
 
 # Le menu de Ventoy d'après ISO/, posé sur la clé, puis les deux redits à la référence.
+# Un menu qui ne s'écrit pas (clé pleine) laisse l'ancien en place et n'arrête rien (MENU_RATE) : la suite, dont les
+# avertissements, ne se perd pas avec lui.
+MENU_RATE=""
 menu_et_manifeste() { # point, images copiées (« nom=sha256 »)…
-  menu "$1"
-  sync -f "$1/ventoy/ventoy.json"
+  MENU_RATE=""
+  { menu "$1" && sync -f "$1/ventoy/ventoy.json"; } || MENU_RATE=1
   redire_au_manifeste "$@"
 }
 
@@ -1060,12 +1108,21 @@ relire_une_image() { # point ; pas dans $(…) : elle rend quatre variables
     args+=(--empreinte "${image##*/}=$(cat "$image.sha256")")
   done
   lue=$("$programme" deploiement relire-image "$point" "${args[@]}") || code=$?
-  lue=${lue##*/}
+  lue=${lue#ISO/}
   case $code in
     0) ;;
     2 | 4)
       # Code 2 sans nom : la commande n'est pas celle de ce programme, rien n'a été relu.
       if [[ -z $lue ]]; then RELECTURE_PAS_FAITE=1; return 0; fi
+      # Dans un sous-dossier : pas une image posée d'ici. Réduite à son nom, c'est la bonne, à la racine d'ISO/, qui
+      # partait à sa place.
+      if [[ $lue == */* ]]; then
+        IMAGE_A_VERIFIER=1
+        avertir "Clé VANGUARD : image à vérifier" "ISO/$lue n'est plus celle que la référence connaît : elle n'est pas \
+de Vanguard, rien n'est retiré. Ne démarrez rien depuis la clé avant de l'avoir retirée."
+        if ((code == 4)); then dire_usee; fi
+        return 0
+      fi
       IMAGE_A_RECOPIER=$lue
       avertir "Clé VANGUARD : image remplacée" "$lue n'est plus l'image vérifiée (autres octets, même taille) : elle \
 est retirée si la bonne est prête à la remplacer. Ne démarrez rien depuis la clé avant."
@@ -1088,9 +1145,13 @@ changée : à recopier (la retirer de ISO/, puis outils/images-cle.sh --toutes P
 menu() { # point
   local point=$1
   secours_demandee "le menu de Ventoy n'est pas écrit." || return 1
+  cle_sans_lien "$point" || return 1
   mkdir -p "$point/ventoy"
+  # Un lien laissé à ce nom serait suivi par l'écriture.
+  rm -f "$point/ventoy/ventoy.json.part"
   # shellcheck disable=SC1112 # les guillemets français ’ « » sont dans le programme Python, voulus
-  find "$point/ISO" -maxdepth 1 -type f -iname '*.iso' -printf '%f\n' 2>/dev/null | sort | python3 -I -c '
+  { [[ ! -d $point/ISO ]] || find "$point/ISO" -maxdepth 1 -type f -iname '*.iso' -printf '%f\n'; } | sort |
+    python3 -I -c '
 import fnmatch, json, re, sys
 # (motifs, nom au menu, version tirée du nom du fichier, conseil d’une ligne montré en bas de l’écran par Ventoy).
 noms = [
@@ -1124,11 +1185,17 @@ print(json.dumps({"control": [{"VTOY_DEFAULT_SEARCH_ROOT": "/ISO"}, {"VTOY_MENU_
                   "menu_alias": alias,
                   "menu_tip": {"left": "5%", "top": "85%", "color": "#eee3db", "tips": conseils}},
                  ensure_ascii=False, indent=2))
-' >"$point/ventoy/ventoy.json.part"
+' >"$point/ventoy/ventoy.json.part" || {
+    # Dit ici, jamais laissé à set -e : il ne vaut pas sous « && » ou « || », et un menu tronqué (clé pleine) serait
+    # posé.
+    rm -f "$point/ventoy/ventoy.json.part" || true
+    echo "✖ $point : menu de Ventoy pas écrit (clé pleine ?), l'ancien reste."
+    return 1
+  }
   if cmp -s "$point/ventoy/ventoy.json.part" "$point/ventoy/ventoy.json"; then
     rm -f "$point/ventoy/ventoy.json.part"
   else
-    mv -f "$point/ventoy/ventoy.json.part" "$point/ventoy/ventoy.json"
+    mv -fT "$point/ventoy/ventoy.json.part" "$point/ventoy/ventoy.json"
   fi
 }
 
