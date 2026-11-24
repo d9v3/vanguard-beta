@@ -808,7 +808,7 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     fi
   fi
   local iso=$point/ISO sorte image nom copiees=() posees=() manque=() echecs=() cedees=() p interrompues=" "
-  local code=0 attente="" nom_parti par pas_copiees=()
+  local code=0 attente="" nom_parti par pas_copiees=() changee_partie="" a_noter
   # Une image de la clé relue en entier à chaque passage, comparée à son empreinte vérifiée : remplacée par une autre
   # de même taille, elle est recopiée tout de suite (la taille seule ne la voyait pas).
   relire_une_image "$point"
@@ -825,9 +825,13 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     image=$(image_prete "$sorte") || continue
     # shellcheck disable=SC2053 # motif voulu
     [[ $IMAGE_A_RECOPIER == ${MOTIFS[$sorte]} ]] || continue
-    noter_recopie "$point" "${image##*/}" "$IMAGE_A_RECOPIER"
+    # Pas notée : elle part tout de même (c'est la seule qui le fait), et l'échec est dit.
+    if ! noter_recopie "$point" "${image##*/}" "$IMAGE_A_RECOPIER" && [[ -n $auto ]]; then
+      echecs+=("${NOMS[$sorte]} : image changée retirée sans que la référence de la clé ait pu le noter")
+    fi
     rm -f "$iso/$IMAGE_A_RECOPIER"
     interrompues+="$sorte "
+    changee_partie=1
   done
   # Copies interrompues (clé retirée en route, ordinateur éteint, relecture différente) : jamais montrées par Ventoy,
   # retirées ici. Leur sorte compte comme déjà sur la clé : faute de place, son ancienne version a pu partir avant la
@@ -855,7 +859,7 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
       parties+=("$nom_parti")
       [[ $interrompues == *" $sorte "* ]] || interrompues+="$sorte "
     done <<<"$attente"
-    local anciennes=() a anciennes_mio=0 besoin
+    local anciennes=() options=() a anciennes_mio=0 besoin
     while IFS= read -r -d '' a; do
       anciennes+=("$a")
       anciennes_mio=$((anciennes_mio + $(taille_mio "$a")))
@@ -870,10 +874,12 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
       continue
     fi
     besoin=$(($(taille_mio "$image") + MARGE_MIO))
+    # Tout ce qui peut partir pour cette image, avec ce qu'un passage interrompu a déjà retiré.
+    a_noter=("${anciennes[@]##*/}" "${parties[@]}")
     if (($(libre_mio "$point") < besoin)); then
       # Les images en option vont en dernier : une image tenue par défaut qui ne tient pas, même sans son ancienne
       # version, prend leur place. Seulement celles que cet ordinateur tient : une Kali posée par un autre reste.
-      local options=() options_mio=0 o s
+      local options_mio=0 o s
       if [[ $FACULTATIVES != *" $sorte "* ]] && (($(libre_mio "$point") + anciennes_mio < besoin)); then
         for s in "${SORTES[@]}"; do
           [[ $FACULTATIVES == *" $s "* ]] || continue
@@ -887,8 +893,15 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
         manque+=("${NOMS[$sorte]} (il manque $((besoin - $(libre_mio "$point") - anciennes_mio - options_mio)) Mio)")
         continue
       fi
-      # Tout ce qui peut partir avant la copie est noté ensemble, avec ce qu'un passage interrompu a déjà retiré.
-      noter_recopie "$point" "$nom" "${options[@]##*/}" "${anciennes[@]##*/}" "${parties[@]}"
+      a_noter+=("${options[@]##*/}")
+    fi
+    # Noté avant tout retrait, et avant la copie (des minutes) : une référence qui ne s'écrit pas (disque plein) arrête
+    # ici, clé laissée comme elle est, quand elle a été trouvée toute seule.
+    if ((${#a_noter[@]})) && ! noter_recopie "$point" "$nom" "${a_noter[@]}" && [[ -n $auto ]]; then
+      echecs+=("${NOMS[$sorte]} : pas copiée, la référence de la clé ne s'écrit pas sur cet ordinateur ; rien de retiré")
+      continue
+    fi
+    if (($(libre_mio "$point") < besoin)); then
       if ((${#options[@]})); then
         rm -f "${options[@]}"
         for o in "${options[@]}"; do cedees+=("${o##*/}, pour ${NOMS[$sorte]}"); done
@@ -897,8 +910,6 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
         rm -f "${anciennes[@]}"
         anciennes=()
       fi
-    elif ((${#parties[@]})); then
-      noter_recopie "$point" "$nom" "${parties[@]}"
     fi
     echo "→ ${NOMS[$sorte]} : $nom sur la clé…"
     # Écriture puis relecture : une dizaine de Mio par seconde en tout sur une clé USB lente (l'image de Kali, 16 Gio,
@@ -922,11 +933,20 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     posees+=("$nom=$(cat "$image.sha256")")
     menu_et_manifeste "$point" "$nom=$(cat "$image.sha256")"
     if ((${#anciennes[@]})); then
-      noter_recopie "$point" "$nom" "${anciennes[@]##*/}"
+      # Renotées : la référence vient d'être redite avec elles, encore présentes.
+      if ! noter_recopie "$point" "$nom" "${anciennes[@]##*/}" || [[ -n $PAS_REDITES ]]; then
+        if [[ -n $auto ]]; then
+          echecs+=("${NOMS[$sorte]} : ancienne version laissée, la référence de la clé ne s'écrit pas sur cet ordinateur")
+          continue
+        fi
+      fi
       rm -f "${anciennes[@]}"
     fi
   done
   menu_et_manifeste "$point" "${posees[@]}"
+  if [[ -n $auto && -n $PAS_REDITES ]]; then
+    echecs+=("référence de la clé pas réécrite sur cet ordinateur : le bilan dira la clé changée")
+  fi
   if ((${#copiees[@]})); then
     avertir "Clé VANGUARD : images à jour" "$(printf '%s\n' "${copiees[@]}")"
   fi
@@ -945,7 +965,9 @@ Les images en option passent après les autres. La remettre s'il reste la place 
     echo "Clé VANGUARD à remplacer : ${pas_copiees[*]} pas copiée(s) (à la main, tout de même : outils/images-cle.sh --cle POINT)."
     return "$PAS_VUES"
   fi
-  if [[ -n $auto && -n $RELECTURE_PAS_FAITE ]]; then return "$PAS_VUES"; fi
+  # L'image illisible, ou changée sans rien pour la remplacer, est restée sur la clé : « à jour » serait faux.
+  if [[ -n $auto && (-n $RELECTURE_PAS_FAITE || -n $IMAGE_A_VERIFIER) ]]; then return "$PAS_VUES"; fi
+  if [[ -n $auto && -n $IMAGE_A_RECOPIER && -z $changee_partie ]]; then return "$PAS_VUES"; fi
 }
 
 # Le menu de Ventoy d'après ISO/, posé sur la clé, puis les deux redits à la référence.
@@ -956,28 +978,31 @@ menu_et_manifeste() { # point, images copiées (« nom=sha256 »)…
 }
 
 # Note dans la référence que ces fichiers de ISO/ vont partir pour être remplacés par `par`, avant de les retirer. Pas
-# notée (programme d'avant les recopies, pas de référence pour cette clé) : dit, et le retrait se fait quand même, comme
-# avant elles.
+# notée, elle le dit et rend 1 : clé trouvée toute seule, rien n'est alors retiré ; désignée à la main (clé neuve sans
+# référence), le retrait se fait quand même. Un programme d'avant les recopies (code 2) : dit, 0, comme avant elles.
 noter_recopie() { # point par noms…
   local point=$1 par=$2 programme code=0
   shift 2
   programme=$(programme_cle)
   [[ -n $programme && -x $programme ]] || return 0
   "$programme" deploiement recopie-image "$point" --debut="$par" -- "$@" >/dev/null 2>&1 || code=$?
-  ((code == 0 || code == 4)) || echo "· recopie de $par pas notée : clé débranchée avant la fin, elle serait dite changée"
+  ((code != 0 && code != 4)) || return 0
+  echo "· recopie de $par pas notée : clé débranchée avant la fin, elle serait dite changée"
+  ((code == 2))
 }
 
 # Une copie que la relecture n'a pas retrouvée : notée dans la référence quand c'est la clé qui a raté (toujours là, et
 # l'image du cache encore celle qui a été vérifiée). À la deuxième, la clé est dite à remplacer.
 noter_ratee() { # point image
   local point=$1 image=$2 programme code=0
-  [[ -f $point/vanguard.cle && -w $point ]] || return 0
   if [[ $(sha256sum "$image" 2>/dev/null | cut -d' ' -f1) != "$(cat "$image.sha256")" ]]; then
     echo "✖ ${image##*/} : l'image du cache n'est plus celle qui a été vérifiée (outils/images-cle.sh --verifier)"
     return 0
   fi
   programme=$(programme_cle)
   [[ -n $programme && -x $programme ]] || return 0
+  # Regardée après l'empreinte du cache (des minutes), pas avant : une clé retirée pendant n'a rien raté.
+  [[ -f $point/vanguard.cle && -w $point ]] || return 0
   "$programme" deploiement recopie-image "$point" --ratee="${image##*/}" >/dev/null 2>&1 || code=$?
   if ((code == 4)); then dire_usee; fi
 }
@@ -992,10 +1017,13 @@ soi-même. Refaire la clé de secours sur une autre clé USB ; si celle-ci a voy
 # Le manifeste de la clé (src/protection/manifeste.rs) relève ISO/ (taille) et ventoy/ (empreinte) : ce qui est posé
 # ici lui est redit, seulement les images copiées et vérifiées à l'instant, et le menu qui vient d'être réécrit. Une
 # image que ce script n'a pas posée reste hors de la référence : le bilan la dit nouvelle. Sans vanguard, ou sans
-# référence pour cette clé (pas encore déployée, ou d'avant les images) : dit, le bilan les dira changées.
+# référence pour cette clé (pas encore déployée, ou d'avant les images) : dit, le bilan les dira changées ; pas
+# réécrite, PAS_REDITES le garde.
+PAS_REDITES=""
 redire_au_manifeste() { # point, images copiées (« nom=sha256 »)…
   local point=$1 programme n args=()
   shift
+  PAS_REDITES=""
   # Celui que le dépôt a compilé, sinon la copie de cargo install, que le PATH des services n'a pas (cle-commun.sh).
   programme=$(programme_cle)
   if [[ -z $programme || ! -x $programme ]]; then
@@ -1003,8 +1031,10 @@ redire_au_manifeste() { # point, images copiées (« nom=sha256 »)…
     return 0
   fi
   for n in "$@"; do args+=(--image "$n"); done
-  "$programme" manifeste --images "$point" "${args[@]}" ||
+  if ! "$programme" manifeste --images "$point" "${args[@]}"; then
     echo "· manifeste de la clé : images non redites (le bilan les dira changées)"
+    PAS_REDITES=1
+  fi
 }
 
 # Relit en entier une image de la clé, la moins récemment relue (vanguard deploiement relire-image), et compare son
@@ -1012,12 +1042,13 @@ redire_au_manifeste() { # point, images copiées (« nom=sha256 »)…
 # de l'image vérifiée du cache. Une par passage d'images-cle.sh (au branchement et chaque jour) : une image de 1 à 7 Go
 # se relit en une demi-minute à quatre minutes, Kali (16 Gio) jusqu'à dix sur une clé lente ; toutes le sont en une à
 # semaines. Une image aux autres octets : notée dans la référence (le bilan la dit modifiée), une notification le
-# dit, et IMAGE_A_RECOPIER prend son nom. Illisible : notée et dite « à vérifier » (code 3), les autres passent ensuite.
+# dit, et IMAGE_A_RECOPIER prend son nom. Illisible : notée et dite « à vérifier » (code 3, IMAGE_A_VERIFIER), les
+# autres passent ensuite.
 # Sans programme ni référence, ou clé retirée en route : rien de conclu, dit, et RELECTURE_PAS_FAITE.
-IMAGE_A_RECOPIER="" RELECTURE_PAS_FAITE="" CLE_USEE=""
-relire_une_image() { # point ; pas dans $(…) : elle rend trois variables
+IMAGE_A_RECOPIER="" IMAGE_A_VERIFIER="" RELECTURE_PAS_FAITE="" CLE_USEE=""
+relire_une_image() { # point ; pas dans $(…) : elle rend quatre variables
   local point=$1 programme sorte image args=() lue code=0
-  IMAGE_A_RECOPIER="" RELECTURE_PAS_FAITE="" CLE_USEE=""
+  IMAGE_A_RECOPIER="" IMAGE_A_VERIFIER="" RELECTURE_PAS_FAITE="" CLE_USEE=""
   programme=$(programme_cle)
   if [[ -z $programme || ! -x $programme ]]; then
     echo "· relecture des images : vanguard introuvable, aucune relue (leur taille seule est comparée)" >&2
@@ -1041,6 +1072,7 @@ est retirée si la bonne est prête à la remplacer. Ne démarrez rien depuis la
       if ((code == 4)); then dire_usee; fi
       ;;
     3)
+      IMAGE_A_VERIFIER=1
       avertir "Clé VANGUARD : image à vérifier" "${lue:-Une image} ne se lit pas sur la clé. Elle n'est ni saine ni \
 changée : à recopier (la retirer de ISO/, puis outils/images-cle.sh --toutes POINT), ou la clé est à remplacer."
       ;;

@@ -150,6 +150,11 @@ if ((DEPLOI != 0)) && ! [[ $DEPLOI == 8 && -n $PAS_ENVOYE ]] && ! [[ $DEPLOI == 
   # Ce qui n'est pas parti se lit ici, pas seulement dans les lignes de la fin.
   [[ -z $PAS_ENVOYE ]] || { echo "  rien n'est parti sur GitHub :"; head -n 15 <<<"$PAS_ENVOYE"; }
   [[ -z $PAGE_ABSENTE ]] || echo "  $PAGE_ABSENTE"
+  # Envoyé et publié, une partie d'ici en panne (clé, VM, icône) : dit, pour ne pas croire la version absente.
+  if grep -qx "Code envoyé sur GitHub\." "$JOURNAUX/deploiement-$NOM.log" &&
+    grep -qE "^Version v[0-9.]+ publiée : " "$JOURNAUX/deploiement-$NOM.log"; then
+    echo "  envoyé et publié sur GitHub : seule une partie de cet ordinateur est en panne (clé, VM, icône… ci-dessus)"
+  fi
   echo "✖ déploiement en échec (code $DEPLOI) : master contient ${SHA:0:12}, worktree et branche gardés"
   exit 1
 fi
@@ -166,11 +171,12 @@ if [[ -n $PAS_ENVOYE ]]; then
   exit 3
 fi
 if ((DEPLOI == 9)); then
-  # Les raisons de publier-version.sh sont juste avant sa ligne.
-  grep -B 12 -m 1 "^Page de la version pas publiée" "$JOURNAUX/deploiement-$NOM.log"
+  # Les raisons de publier-version.sh sont juste avant sa ligne ; la suite, en retrait, juste après.
+  grep -B 14 -A 1 -m 1 "^Page de la version pas publiée" "$JOURNAUX/deploiement-$NOM.log"
   echo "⚠ fusionné, déployé et envoyé (${SHA:0:12}), mais page de la version pas publiée : worktree et branche gardés"
   echo "  journal : $JOURNAUX/deploiement-$NOM.log"
-  echo "  cause réglée : relancer outils/deployer.sh, qui reprend la page, celle du dépôt et les tickets"
+  echo "  si une commande à lancer est donnée ci-dessus, elle seule ; sinon, cause réglée : relancer"
+  echo "  outils/deployer.sh, qui reprend la page, celle du dépôt et les tickets"
   exit 4
 fi
 # Le ménage, une fois la livraison faite : son échec se dit, il ne défait rien.

@@ -58,8 +58,22 @@ ACCEPTER="" ACCEPTER_CLE=""
 if [[ $MODE == --accepter-cle ]]; then
   ACCEPTER=1 ACCEPTER_CLE=${2:-} MODE=--sans-compiler
 fi
+# Lancé à la main, il attend la livraison qui tourne (outils/livrer-branche.sh) : il compilerait dans le même dossier,
+# et pousserait un master qu'elle s'apprête à fusionner. Son verrou, pris AVANT celui des déploiements (plus bas), dans
+# le même ordre qu'elle ; -o : rien de ce qu'il lance ne l'hérite. Appelé par elle (VANGUARD_COMMIT_VERIFIE), elle le
+# tient déjà. Hors d'un dépôt git : pas de livraison, pas de verrou.
+if [[ -z $MODE || $MODE == --local ]] && [[ -z ${VANGUARD_COMMIT_VERIFIE:-} ]] &&
+  COMMUN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+  [[ ${VANGUARD_DEPLOIEMENT_VERROU:-} != "$COMMUN" ]]; then
+  VERROU=$COMMUN/vanguard-livraison.lock
+  flock -n "$VERROU" true || echo "· une livraison tourne dans ce dépôt : attente de sa fin"
+  VANGUARD_DEPLOIEMENT_VERROU=$COMMUN exec flock -o "$VERROU" bash outils/deployer.sh "$@"
+fi
+unset VANGUARD_DEPLOIEMENT_VERROU
 # shellcheck source=outils/cle-commun.sh
 source outils/cle-commun.sh
+# shellcheck source=outils/github-commun.sh
+source outils/github-commun.sh
 # « Seulement sur cet ordinateur » : rien n'est envoyé sur GitHub. Le repère dure 2 h, assez pour le service de copie
 # que la compilation déclenche (--sans-compiler, qui sinon pousserait) ; un déploiement normal l'efface.
 REPERE_LOCAL="${XDG_RUNTIME_DIR:-/tmp}/vanguard-deployer-local"
@@ -226,15 +240,16 @@ fi
 # GitHub pris pourrait pousser sur master malgré la protection ; la CI ne prouve pas que le code est sain, mais un
 # commit poussé de travers, sans passage ou en échec, n'est pas exécuté ici (campagne d'attaque n° 6, F4). Un passage de
 # nuit (schedule) ne compte pas : « linux » et « confidentialite » y sont sautés, et un commit dont l'envoi avait échoué
-# y repassait vert (8341d03b, 22 nov. 2026). gh absent,
-# hors ligne ou sans réponse : pas vert. Lue telle quelle par outils/essais-signature.sh.
+# y repassait vert (8341d03b, 22 nov. 2026). Un passage à la main (workflow_dispatch) saute « confidentialite », qui ne
+# juge que ce qui part, pas ce qui s'exécute ici. gh absent, hors ligne ou sans réponse : pas vert. Lue telle quelle
+# par outils/essais-signature.sh.
 # Rend 0 (verte), 1 (pas verte, ou pas encore : réessayé au branchement suivant), 2 (gh sans compte connecté) ou 3
 # (gh introuvable). Sous vanguard-cle.service, 2 et 3 dureraient pour toujours sous le même « réessayé » que la CI en
 # cours : l'appelant les dit à part. gh rend 4 quand aucun compte n'est connecté, sans rien demander à GitHub.
 ci_verte() {
   local n code=0
   [[ $1 =~ ^[0-9a-f]{40}$ ]] || return 1
-  n=$(timeout 60 gh run list --workflow ci.yml --branch master --commit "$1" --limit 20 \
+  n=$(timeout 60 gh run list --workflow ci.yml --branch master --commit "$1" --limit 100 \
     --json headSha,headBranch,event,status,conclusion \
     -q "[.[] | select(.headSha == \"$1\" and .headBranch == \"master\" and .status == \"completed\"
       and .conclusion == \"success\" and (.event == \"push\" or .event == \"workflow_dispatch\"))] | length" \
@@ -414,12 +429,15 @@ outils/failles-programmes.sh --fenetre "${FENETRES[@]}" || refuser
 A_PUBLIER=""
 if [[ -z $MODE ]]; then
   VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-  if [[ -z $LOCAL && -z ${VANGUARD_INTERMEDIAIRE:-} ]] &&
-    ! timeout 30 gh release view "v$VERSION" >/dev/null 2>&1; then
-    A_PUBLIER=1
+  # Sans réponse de GitHub (page_en_ligne : 2), la page sera tentée quand même (publier-version.sh redemande et
+  # refuse), mais rien n'est refait ni committé pour elle : elle existe peut-être déjà.
+  PAGE_VUE=0
+  if [[ -z $LOCAL && -z ${VANGUARD_INTERMEDIAIRE:-} ]]; then
+    page_en_ligne "v$VERSION" || PAGE_VUE=$?
+    ((PAGE_VUE == 0)) || A_PUBLIER=1
   fi
   T_CAPTURES=$SECONDS
-  if [[ -n $A_PUBLIER && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
+  if [[ -n $A_PUBLIER && $PAGE_VUE != 2 && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
     if timeout 1800 outils/captures-readme.sh; then
       git add assets/captures assets/partage.png
       # Les captures ne sont pas dans le programme (.github/hors-code.txt) : celui qui vient d'être compilé reste
@@ -434,7 +452,7 @@ if [[ -z $MODE ]]; then
   # La page des fonctions (docs/index.html, servie par GitHub Pages) : refaite pour chaque version publiée à partir
   # du code, du programme compilé et de la dernière vérification, puis committée à part. En cas d'échec, GitHub
   # Pages garde celle d'avant.
-  if [[ -n $A_PUBLIER ]]; then
+  if [[ -n $A_PUBLIER && $PAGE_VUE != 2 ]]; then
     if python3 -I outils/page-fonctions.py --complet --programme "$LINUX" --sortie docs/index.html >/dev/null; then
       git add docs/index.html
       if git diff --quiet --cached -- docs/index.html; then
@@ -506,8 +524,12 @@ elif git remote get-url origin >/dev/null 2>&1; then
     # La page de la version, s'il en faut une (A_PUBLIER, plus haut), vient à la fin du déploiement.
     if [[ -n $A_PUBLIER ]]; then
       PUBLIER=1
-    elif [[ -z $MODE ]] && ! timeout 30 gh release view "v$VERSION" >/dev/null 2>&1; then
-      echo "Version v$VERSION sans page sur GitHub (version intermédiaire) : la prochaine page la reprendra."
+    elif [[ -z $MODE ]]; then
+      # « sans page » seulement si GitHub le dit (1) ; une panne est dite par page_en_ligne elle-même.
+      PAGE_VUE=0
+      page_en_ligne "v$VERSION" || PAGE_VUE=$?
+      ((PAGE_VUE != 1)) ||
+        echo "Version v$VERSION sans page sur GitHub (version intermédiaire) : la prochaine page la reprendra."
     fi
   elif grep -q "rejected" <<<"$ENVOI"; then
     echo "GitHub refuse l'envoi de master :"
@@ -613,7 +635,8 @@ publier_la_version() {
   [[ -n ${PUBLIER:-} ]] || return 0
   echo "Nouvelle version v$VERSION : sa page sur GitHub…"
   local debut=$SECONDS code=0 rendu=0
-  if outils/publier-version.sh; then
+  outils/publier-version.sh || code=$?
+  if ((code == 0)); then
     # La description du dépôt montre la dernière version publiée : elle change maintenant.
     python3 -I outils/github.py || echo "Page du dépôt sur GitHub pas mise à jour (voir ci-dessus)."
     # Les tickets suivent la version publiée : ses points cochés dans le ticket des pistes (#1), les tickets
@@ -624,8 +647,13 @@ publier_la_version() {
       3) echo "Tickets pas mis à jour (hors ligne) : relancer python3 -I outils/tickets-version.py --appliquer." ;;
       *) echo "Tickets pas mis à jour (voir ci-dessus) : corriger, puis relancer outils/tickets-version.py --appliquer." ;;
     esac
+  elif ((code == 4)); then
+    # La mise à jour signée est en ligne : relancer referait tout pour s'arrêter au même endroit (publier-version.sh).
+    echo "Page de la version pas publiée : la mise à jour signée est en ligne, seule la page du code manque ; la"
+    echo "  commande à lancer est ci-dessus (relancer outils/deployer.sh n'y ferait rien)."
+    rendu=$CODE_PAGE_ABSENTE
   else
-    echo "Page de la version pas publiée (voir ci-dessus) : relancer outils/deployer.sh, qui la reprend."
+    echo "Page de la version pas publiée (voir ci-dessus) : cause réglée, relancer outils/deployer.sh, qui la reprend."
     rendu=$CODE_PAGE_ABSENTE
   fi
   duree "page de la version" "$debut"

@@ -96,7 +96,7 @@ pub(crate) enum Etape {
         #[arg(long)]
         ratee: Option<String>,
         /// Avec `--debut` : les fichiers de ISO/ que la recopie peut retirer.
-        #[arg(requires = "debut")]
+        #[arg(requires = "debut", conflicts_with = "ratee")]
         noms: Vec<String>,
     },
 }
@@ -540,6 +540,50 @@ mod tests {
         assert!(matches!(&e.etape, Etape::VerifierPe { fichiers } if fichiers == &deux));
         for nom in ["verifier-binaire", "verifier-pe"] {
             assert!(Essai::try_parse_from(["vanguard", nom]).is_err(), "{nom} sans fichier");
+        }
+    }
+
+    /// Les formes exactes que outils/images-cle.sh envoie : un refus de clap (code 2) y passerait pour un programme
+    /// d'avant les recopies, et l'essai du script parle à un faux programme qui accepte tout.
+    #[test]
+    fn recopie_et_relecture_d_image_comme_le_script_les_demande() {
+        #[derive(clap::Parser)]
+        struct Essai {
+            #[command(subcommand)]
+            etape: Etape,
+        }
+        use clap::Parser as _;
+        let lire = |arguments: &[&str]| {
+            Essai::try_parse_from(std::iter::once("deploiement").chain(arguments.iter().copied())).map(|e| e.etape)
+        };
+        let point = std::path::Path::new("/run/media/alice/VANGUARD");
+        let p = "/run/media/alice/VANGUARD";
+        assert!(
+            matches!(lire(&["recopie-image", p]), Ok(Etape::RecopieImage { racine, debut: None, ratee: None, noms }) if racine == point && noms.is_empty())
+        );
+        assert!(
+            matches!(lire(&["recopie-image", p, "--debut=neuve.iso", "--", "vieille.iso", "-x.iso"]), Ok(Etape::RecopieImage { debut: Some(d), ratee: None, noms, .. }) if d == "neuve.iso" && noms == ["vieille.iso", "-x.iso"])
+        );
+        assert!(
+            matches!(lire(&["recopie-image", p, "--debut=-x.iso", "--"]), Ok(Etape::RecopieImage { debut: Some(d), noms, .. }) if d == "-x.iso" && noms.is_empty())
+        );
+        assert!(
+            matches!(lire(&["recopie-image", p, "--ratee=neuve.iso"]), Ok(Etape::RecopieImage { debut: None, ratee: Some(r), noms, .. }) if r == "neuve.iso" && noms.is_empty())
+        );
+        assert!(
+            matches!(lire(&["relire-image", p]), Ok(Etape::RelireImage { racine, empreinte }) if racine == point && empreinte.is_empty())
+        );
+        assert!(
+            matches!(lire(&["relire-image", p, "--empreinte", "a.iso=00", "--empreinte", "b.iso=11"]), Ok(Etape::RelireImage { empreinte, .. }) if empreinte == ["a.iso=00", "b.iso=11"])
+        );
+        for refuse in [
+            &["recopie-image"][..],
+            &["recopie-image", p, "vieille.iso"],
+            &["recopie-image", p, "--ratee=a.iso", "--", "vieille.iso"],
+            &["recopie-image", p, "--debut=a.iso", "--ratee=b.iso"],
+            &["relire-image"],
+        ] {
+            assert!(lire(refuse).is_err(), "{refuse:?}");
         }
     }
 

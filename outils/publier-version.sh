@@ -361,6 +361,11 @@ if ((PAGE == 2)); then
   echo "Page de $TAG : rien conclu (voir ci-dessus), rien de publié ; relancer une fois GitHub joignable."
   exit 1
 fi
+if ((PAGE == 3)); then
+  echo "✖ La page de $TAG n'est qu'un brouillon, que personne ne voit : rien de publié."
+  echo "  La regarder, la retirer (gh release delete $TAG --yes), puis relancer outils/deployer.sh."
+  exit 1
+fi
 if ((PAGE == 0)); then
   echo "La version $TAG est déjà publiée."
   # Rien n'est publié ni signé : un passe-droit pris plus haut n'a servi à rien, et rien n'en est noté nulle part.
@@ -592,14 +597,14 @@ else
 fi
 
 # Une exécution dont les nomenclatures valent d'être publiées : « attester » réussi, et ses essais avec, « linux »
-# réussi, « windows » et « windows-livre » (le .exe livré, sur un vrai Windows) tous deux réussis, ou tous deux sautés
-# (ci.yml les saute quand le code Windows n'a pas changé) ; « windows-livre » est aussi sauté quand « reproductible »
-# échoue, et ça ne compte pas. Sans ça, un commit dont
-# les essais Linux échouaient aurait ses nomenclatures attestées quand même : « attester » ne dépend que d'elles.
+# réussi, « windows » et « windows-livre » (le .exe livré, sur un vrai Windows) réussis. Sautés, ils n'ont rien essayé :
+# la nuit quand le code n'a pas changé, mais aussi quand « utile » ou « reproductible » échoue. Un passage d'avant, du
+# même code, les a ; sinon la CI est relancée, et les fait toujours. Sans ça, un commit dont les essais Linux échouaient
+# aurait ses nomenclatures attestées quand même : « attester » ne dépend que d'elles.
 attestee_et_essayee() {
   [[ $(gh run view "$1" --json jobs -q '[.jobs[] | {(.name): .conclusion}] | add
-    | .attester == "success" and .linux == "success" and .windows == .["windows-livre"]
-      and (.windows == "success" or .windows == "skipped")') == true ]]
+    | .attester == "success" and .linux == "success" and .windows == "success"
+      and .["windows-livre"] == "success"') == true ]]
 }
 
 # Les nomenclatures (SBOM) attestées de ce code : celles du travail « nomenclatures » de ci.yml pour ce commit, ou pour
@@ -763,6 +768,30 @@ printf '%s\n' "$NOTES" | python3 -I outils/confidentialite.py --texte || { echo 
 printf '%s\n' "$NOTES" | python3 -I outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
 python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
   "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
+# La page du code à créer à la main, la mise à jour signée étant déjà en ligne : la commande entière, prête à coller, et
+# DOSSIER gardé (ses fichiers). Avant, les programmes d'ici comparés à ceux de la page signée (SHA256SUMS.txt, vu par
+# GitHub) : différents, rien n'est proposé, deux pages d'une même version n'auraient pas les mêmes programmes.
+page_du_code_a_la_main() {
+  local signee ici f
+  signee=$(gh release view "$TAG" -R "$DEPOT_VERSIONS" --json assets \
+    -q '.assets[] | select(.name == "SHA256SUMS.txt") | .digest' 2>/dev/null) || signee=
+  ici=sha256:$(sha256sum "$DOSSIER/SHA256SUMS.txt" | cut -d' ' -f1)
+  trap - EXIT
+  if [[ $signee != "$ici" ]]; then
+    echo "  Les programmes d'ici ne sont pas (ou pas à coup sûr) ceux de la page signée (SHA256SUMS.txt : \
+${signee:-illisible}) : ne pas créer la page du code ; DOSSIER gardé : $DOSSIER."
+    return 0
+  fi
+  printf '%s\n' "$NOTES" >"$DOSSIER/notes.md"
+  echo "  Mêmes programmes ici (SHA256SUMS.txt comparé) ; DOSSIER gardé. Ce qui reste à faire, depuis $PWD :"
+  printf '    gh release create %s --target %s --title %q --notes-file %q' "$TAG" "$COMPILE" "$NOM $VERSION" "$DOSSIER/notes.md"
+  for f in "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
+    "$DOSSIER/vanguard-fenetre-linux-x86_64" "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" \
+    "$DOSSIER/"*.cdx.json; do
+    printf ' %q' "$f"
+  done
+  printf '\n    python3 -I outils/github.py\n    python3 -I outils/tickets-version.py --appliquer\n'
+}
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
 # Signés AVANT la création de toute page : un contrôle de signer-versions.sh qui refuse (forme d'un programme,
@@ -787,6 +816,27 @@ l'historique signé : rien de publié."
   fi
   echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
 else
+  # La page signée déjà en ligne sans la page du code (celle-ci ratée la fois d'avant) : vu avant de signer, car rien
+  # n'est à signer une deuxième fois ; code 4, et la seule chose qui reste à faire est dite, prête à coller.
+  PAGE=0
+  page_en_ligne "$TAG" -R "$DEPOT_VERSIONS" || PAGE=$?
+  case $PAGE in
+    0)
+      echo "✖ $TAG est déjà signée dans $DEPOT_VERSIONS, sans page du code : rien n'est signé ni publié cette fois."
+      page_du_code_a_la_main
+      exit 4
+      ;;
+    1) ;;
+    3)
+      echo "✖ $TAG n'est qu'un brouillon dans $DEPOT_VERSIONS : rien n'est signé ni publié. Le regarder, le retirer \
+(gh release delete $TAG -R $DEPOT_VERSIONS --yes), puis relancer outils/deployer.sh."
+      exit 1
+      ;;
+    *)
+      echo "✖ $DEPOT_VERSIONS : rien conclu pour $TAG (voir ci-dessus), rien n'est signé ni publié."
+      exit 1
+      ;;
+  esac
   mkdir -p "$DOSSIER/avant"
   # L'historique signé de la version d'avant (ou, la première fois, son manifeste signé) : signer-versions.sh le
   # revérifie (et le compare au point sûr, le dernier historique publié d'ici), y ajoute cette version et le signe ;
@@ -917,8 +967,10 @@ if [[ -n $SIGNEE ]]; then
     echo "✖ $DEPOT_VERSIONS : rien conclu (voir ci-dessus), rien de publié ; relancer outils/publier-version.sh."
     exit 1
   fi
-  if ((PAGE == 0)); then
-    echo "✖ $TAG est déjà dans $DEPOT_VERSIONS sans page du code : à régler à la main (DOSSIER gardé : $DOSSIER)."
+  if ((PAGE != 1)); then
+    # Absente avant la signature (plus haut), là maintenant : posée ailleurs entre-temps.
+    echo "✖ $TAG est apparue dans $DEPOT_VERSIONS pendant la signature (page ou brouillon) : à regarder \
+(DOSSIER gardé : $DOSSIER)."
     trap - EXIT
     exit 1
   fi
@@ -934,7 +986,8 @@ if [[ -n $SIGNEE ]]; then
     else
       PAGE=0
       page_en_ligne "$TAG" -R "$DEPOT_VERSIONS" || PAGE=$?
-      if ((PAGE == 2)) || { ((PAGE == 0)) &&
+      # 0 ou 3 : publiée ou brouillon (gh crée un brouillon, y dépose les fichiers, puis le publie).
+      if ((PAGE == 2)) || { ((PAGE != 1)) &&
         ! gh release delete "$TAG" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null 2>&1; }; then
         echo "⚠ La page de $TAG à moitié créée est peut-être encore dans $DEPOT_VERSIONS : à retirer à la main."
       fi
@@ -960,14 +1013,26 @@ fi
 if ! gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
   "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
   "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json; then
-  echo "✖ Page du code non créée${PUBLIEE_SIGNEE:+ (la mise à jour signée, elle, est en ligne)} : relancer gh release create \
-$TAG à la main (DOSSIER gardé : $DOSSIER) ; les pages d'avant restent."
-  trap - EXIT
-  exit 1
+  if [[ -z $PUBLIEE_SIGNEE ]]; then
+    echo "✖ Page du code non créée : rien n'est en ligne ; relancer outils/deployer.sh."
+    exit 1
+  fi
+  # Code 4 : relancer ne servirait à rien, la mise à jour signée est en ligne. Un brouillon resté de la création ratée
+  # ferait refuser la commande : il est dit.
+  echo "✖ Page du code non créée (la mise à jour signée, elle, est en ligne) ; les pages d'avant restent."
+  PAGE=0
+  page_en_ligne "$TAG" || PAGE=$?
+  ((PAGE == 1)) || echo "  D'abord, la page ou le brouillon de $TAG resté (ou pas relu) : gh release delete $TAG --yes"
+  page_du_code_a_la_main
+  exit 4
 fi
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 if [[ -n $PUBLIEE_SIGNEE ]]; then
-  for ancienne in $(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
+  anciennes=$(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName') || {
+    echo "⚠ Pages d'avant pas relues dans $DEPOT_VERSIONS : aucune n'y est retirée (la version $TAG, elle, est publiée)."
+    anciennes=
+  }
+  for ancienne in $(grep -vxF -- "$TAG" <<<"$anciennes" || true); do
     gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null ||
       echo "⚠ Page de $ancienne pas retirée de $DEPOT_VERSIONS (la version $TAG, elle, est publiée)."
   done
@@ -977,7 +1042,11 @@ fi
 # (retirer_etiquette_precedente) ; une plus vieille, ou une autre, reste. Rien de cela tant que la mise à jour signée
 # n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
 if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
-  for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
+  anciennes=$(gh release list --limit 500 --json tagName -q '.[].tagName') || {
+    echo "⚠ Pages d'avant pas relues : aucune n'est retirée (la version $TAG, elle, est publiée)."
+    anciennes=
+  }
+  for ancienne in $(grep -vxF -- "$TAG" <<<"$anciennes" || true); do
     gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée." ||
       echo "⚠ Page de $ancienne pas retirée (la version $TAG, elle, est publiée)."
   done

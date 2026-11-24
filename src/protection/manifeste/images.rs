@@ -99,11 +99,19 @@ impl Etat {
             ));
         }
         if !self.recopies.is_empty() {
-            lignes.push(trf!(
-                "Recopie pas finie, l'image manque sur la clé : {} (elle reprend seule, clé branchée chez vous).",
-                "Copy not finished, the image is missing from the key: {} (it resumes by itself, key plugged in at home).",
-                noms(&self.recopies)
-            ));
+            let quoi = noms(&self.recopies);
+            // Sur une clé à remplacer, plus rien n'est recopié de soi-même : ne pas le promettre.
+            lignes.push(if self.usee() {
+                trf!(
+                    "Recopie pas finie, l'image manque sur la clé : {quoi} (à recopier à la main : outils/images-cle.sh --cle POINT).",
+                    "Copy not finished, the image is missing from the key: {quoi} (to copy by hand: outils/images-cle.sh --cle POINT)."
+                )
+            } else {
+                trf!(
+                    "Recopie pas finie, l'image manque sur la clé : {quoi} (elle reprend seule, clé branchée chez vous, si l'image vérifiée est prête).",
+                    "Copy not finished, the image is missing from the key: {quoi} (it resumes by itself, key plugged in at home, if the verified image is ready)."
+                )
+            });
         }
         if self.usee() {
             lignes.push(trf!(

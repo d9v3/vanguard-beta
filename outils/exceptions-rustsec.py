@@ -12,7 +12,8 @@ reçoivent que les exceptions de celui-là, jamais celles de Vanguard (rsa et bi
     python3 -I outils/exceptions-rustsec.py --programmes deny.toml
                                                                celles qui valent pour les programmes publiés : leur
                                                                raison dit « vaut pour les programmes publiés » (sans
-                                                               ces mots : non ; rsa et bincode, de développement)
+                                                               ces mots : non ; rsa et bincode, de développement) ;
+                                                               sans date de relecture lisible, refusée
     python3 -I outils/exceptions-rustsec.py --relire deny.toml celles dont la date de relecture est passée, en clair
     python3 -I outils/exceptions-rustsec.py --audit-toml       .cargo/audit.toml comparé à deny.toml
 """
@@ -72,6 +73,15 @@ def a_relire(exceptions: list[tuple[str, str]], jour: datetime.date) -> list[str
     return dites
 
 
+def sans_date(raison: str) -> bool:
+    """Aucune date de relecture lisible : une faute de frappe la rendrait éternelle, et rien ne le dirait."""
+    dates = A_RELIRE.findall(raison)
+    try:
+        return not [datetime.date.fromisoformat(date) for date in dates]
+    except ValueError:
+        return True
+
+
 def main() -> None:
     if sys.argv[1:] == ["--audit-toml"]:
         deny = [ident for ident, _ in exceptions_deny(fichier_deny("deny.toml"))]
@@ -98,7 +108,14 @@ def main() -> None:
     if mode == "--relire":
         lignes = a_relire(exceptions, datetime.date.today())
     else:
-        lignes = [ident for ident, raison in exceptions if not mode or POUR_LES_PROGRAMMES in raison]
+        retenues = [(ident, raison) for ident, raison in exceptions if not mode or POUR_LES_PROGRAMMES in raison]
+        fautives = [ident for ident, raison in retenues if mode and sans_date(raison)]
+        if fautives:
+            sys.exit(
+                f"✖ {', '.join(fautives)} : admise pour les programmes publiés sans date lisible"
+                " (« à relire au plus tard le AAAA-MM-JJ »)"
+            )
+        lignes = [ident for ident, _ in retenues]
     if lignes:
         print("\n".join(lignes))
 

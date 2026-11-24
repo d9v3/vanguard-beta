@@ -193,6 +193,25 @@ else
   ko "déploiement en échec (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
 fi
 
+# 6 bis. Envoyé et publié, puis une panne d'ici : dit (la version n'est pas absente) ; envoyé sans page : pas dit.
+monter panne-d-ici
+echo 1 >"$CAS/consigne-deploi"
+printf '%s\n' "Code envoyé sur GitHub." "Version v0.0.1 publiée : https://example.com/v0.0.1" \
+  >"$CAS/consigne-deploi-sortie"
+livrer lot "$LOT"
+sortie_publiee=$SORTIE CODE_PUBLIE=$CODE
+monter panne-sans-page
+echo 1 >"$CAS/consigne-deploi"
+echo "Code envoyé sur GitHub." >"$CAS/consigne-deploi-sortie"
+livrer lot "$LOT"
+if ((CODE_PUBLIE == 1 && CODE == 1)) &&
+  grep -q "envoyé et publié sur GitHub : seule une partie" <<<"$sortie_publiee" &&
+  grep -q "déploiement en échec" <<<"$sortie_publiee" && ! grep -q "envoyé et publié" <<<"$SORTIE"; then
+  ok "envoyé et publié, une partie d'ici en panne : dit ; envoyé sans page : pas dit ; les deux en échec"
+else
+  ko "panne d'ici après publication (codes $CODE_PUBLIE et $CODE) : $(tail -n 3 <<<"$sortie_publiee")"
+fi
+
 # 7. Les arguments : refusés avant toute vérification, code 2.
 monter arguments
 DEPART=$(tete master)
@@ -575,7 +594,7 @@ fi
 
 # 18. Page de la version pas publiée (deployer.sh, code 9) : code 4, dit avec ses raisons, worktree et branche gardés,
 # jamais « livré » ; sans sa ligne au journal, un échec comme un autre. Une clé en panne avec elle (code 1) : les deux dits.
-LIGNE_PAGE="Page de la version pas publiée (voir ci-dessus) : relancer outils/deployer.sh, qui la reprend."
+LIGNE_PAGE="Page de la version pas publiée (voir ci-dessus) : cause réglée, relancer outils/deployer.sh, qui la reprend."
 grep -qF "$LIGNE_PAGE" "$RACINE/outils/deployer.sh" || ko "« Page de la version pas publiée » n'est plus dit par outils/deployer.sh"
 monter page-absente
 printf '%s\n' "✖ raison de publier-version.sh" "$LIGNE_PAGE" "Durées : 1 s" >"$CAS/consigne-deploi-sortie"
@@ -645,6 +664,52 @@ else
   ko "verrou gardé après la livraison (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi
 kill "$(cat "$CAS/enfant" 2>/dev/null)" 2>/dev/null
+
+# 20. deployer.sh lancé à la main (son bloc du verrou, lu tel quel) : il attend la livraison qui tient le verrou, le
+# dit, et ce qu'il détache ne le garde pas ; lancé par elle (VANGUARD_COMMIT_VERIFIE), il ne l'attend jamais, ni pour un
+# mode qui ne compile ni n'envoie.
+monter verrou-deployer
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'cd "$(dirname "$0")/.."' 'MODE=${1:-}'
+  awk '/^if \[\[ -z \$MODE \|\| \$MODE == --local \]\]/,/^unset VANGUARD_DEPLOIEMENT_VERROU$/' \
+    "$RACINE/outils/deployer.sh"
+  printf '%s\n' 'echo "passé $*, repère ${VANGUARD_DEPLOIEMENT_VERROU:-aucun}"' \
+    'setsid sleep 20 >/dev/null 2>&1 & echo $! >"$ESSAI_CAS/enfant"'
+} >"$DEPOT/outils/deployer.sh"
+grep -q 'exec flock -o' "$DEPOT/outils/deployer.sh" || ko "bloc du verrou introuvable dans outils/deployer.sh"
+VERROU_D=$DEPOT/.git/vanguard-livraison.lock
+deployer_main() { (cd "$DEPOT" && ESSAI_CAS=$CAS timeout 3 bash outils/deployer.sh "$@" 2>&1); }
+finir_enfant() { kill "$(cat "$CAS/enfant" 2>/dev/null)" 2>/dev/null; rm -f "$CAS/enfant"; }
+refus=()
+exec {tenu}>"$VERROU_D"
+flock -n "$tenu" || refus+=("verrou d'essai pas pris")
+for mode in "" --local; do
+  SORTIE=$(deployer_main ${mode:+"$mode"})
+  CODE=$?
+  ((CODE == 124)) && ! grep -q passé <<<"$SORTIE" &&
+    grep -q "une livraison tourne dans ce dépôt : attente" <<<"$SORTIE" ||
+    refus+=("« $mode » n'attend pas (code $CODE)")
+done
+SORTIE=$(VANGUARD_COMMIT_VERIFIE=x deployer_main)
+grep -qx "passé , repère aucun" <<<"$SORTIE" || refus+=("lancé par la livraison : $SORTIE")
+finir_enfant
+SORTIE=$(deployer_main --sans-compiler)
+grep -qx "passé --sans-compiler, repère aucun" <<<"$SORTIE" || refus+=("--sans-compiler : $SORTIE")
+finir_enfant
+# Un repère laissé par un autre dépôt ne dispense pas d'attendre.
+SORTIE=$(VANGUARD_DEPLOIEMENT_VERROU=/ailleurs/.git deployer_main)
+! grep -q passé <<<"$SORTIE" || refus+=("repère d'un autre dépôt : $SORTIE")
+exec {tenu}>&-
+SORTIE=$(deployer_main --local)
+grep -qx "passé --local, repère aucun" <<<"$SORTIE" && ! grep -q attente <<<"$SORTIE" ||
+  refus+=("verrou libre : $SORTIE")
+flock -n "$VERROU_D" true || refus+=("verrou gardé par un processus détaché")
+finir_enfant
+if ((${#refus[@]} == 0)); then
+  ok "deployer.sh à la main : attend la livraison en cours et le dit, rend le verrou ; lancé par elle, n'attend pas"
+else
+  ko "verrou de deployer.sh : ${refus[*]}"
+fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."

@@ -451,9 +451,10 @@ GH
   choisi=$(choix success success success)
   [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures de master, pas celles d'une autre branche" ||
     ko "publier-version.sh a pris les nomenclatures de « ${choisi:-aucune} » (attendu : 1, celles de master)"
+  # Sautés, les essais Windows n'ont rien essayé (la nuit, mais aussi « utile » ou « reproductible » échoués).
   choisi=$(choix success skipped skipped)
-  [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures d'un passage au travail Windows sauté" ||
-    ko "nomenclatures d'un passage au travail Windows sauté refusées (« ${choisi:-aucune} »)"
+  [[ -z $choisi ]] && ok "publier-version.sh refuse les nomenclatures d'un passage aux essais Windows sautés" ||
+    ko "nomenclatures d'un passage aux essais Windows sautés prises (« $choisi »)"
   choisi=$(choix failure success success)$(choix success failure success)$(choix success cancelled success)
   choisi+=$(choix skipped skipped skipped)$(choix success success success failure)
   [[ -z $choisi ]] && ok "publier-version.sh refuse les nomenclatures d'un passage aux essais Linux ou Windows ratés" ||
@@ -783,7 +784,7 @@ GH
   # Le passage lui-même : la page d'avant relevée avant la création de la nouvelle, et le retrait de son étiquette
   # après celui des pages, sous la même condition (mise à jour signée en ligne).
   awk '/^PRECEDENTE=\$\(gh release view -R "\$DEPOT_CODE"/ { p = NR } /^if ! gh release create "\$TAG" --target/ { c = NR }
-    /^  if ! gh release create "\$TAG" -R "\$DEPOT_VERSIONS"/ { v = NR } c && !x && /^  exit 1$/ { x = NR }
+    /^  if ! gh release create "\$TAG" -R "\$DEPOT_VERSIONS"/ { v = NR } c && !x && /^  exit 4$/ { x = NR }
     v && !y && /^    exit 1$/ { y = NR }
     /^  page_en_ligne "\$TAG" -R "\$DEPOT_VERSIONS"/ { g = NR } g && !z && /^    exit 1$/ { z = NR }
     /^if \[\[ -z \$SIGNEE \|\| -n \$PUBLIEE_SIGNEE \]\]; then$/ { s = NR } s && /gh release delete "\$ancienne" --yes/ { d = NR }
@@ -1640,8 +1641,8 @@ r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
   echo 'echo "suite gardé=$GARDER_DOSSIER"'; } >"$T/page-signee.sh"
 cat >"$T/gh-page.sh" <<'GH'
 #!/usr/bin/env bash
-# $G : un fichier « vue-1 », « vue-2 »… par réponse attendue de « release view » (absente, la, panne) ; « creation » et
-# « retrait » : code et message.
+# $G : un fichier « vue-1 », « vue-2 »… par réponse attendue de « release view » (absente, la, brouillon, panne) ;
+# « create » et « delete » : code et message.
 G=$GH_PAGE
 case $2 in
   view)
@@ -1649,7 +1650,8 @@ case $2 in
     echo "$n" >"$G/n"
     case $(cat "$G/vue-$n" 2>/dev/null) in
       absente) echo "release not found" >&2; exit 1 ;;
-      la) exit 0 ;;
+      la) echo false ;;
+      brouillon) echo true ;;
       *) echo "error connecting to api.github.com" >&2; exit 1 ;;
     esac
     ;;
@@ -1683,8 +1685,15 @@ r=$(page_signee panne panne)
   ok "publier : page signée dont l'absence n'est pas prouvée : rien créé, rien effacé" ||
   ko "publier : page signée créée ou effacée sur une panne de GitHub ($r)"
 r=$(page_signee la la)
-[[ $r == *"déjà dans x/y"* && $r != *suite* && $r != *create* && $r != *delete* ]] &&
-  ok "publier : page signée déjà là : rien créé, rien effacé" || ko "publier : page signée déjà là mal traitée ($r)"
+r2=$(page_signee la-brouillon brouillon)
+[[ $r == *"apparue dans x/y pendant la signature"* && $r2 == *"apparue dans x/y pendant la signature"* &&
+  $r$r2 != *suite* && $r$r2 != *create* && $r$r2 != *delete* ]] &&
+  ok "publier : page signée (ou brouillon) apparue pendant la signature : rien créé, rien effacé" ||
+  ko "publier : page signée apparue pendant la signature mal traitée ($r / $r2)"
+r=$(CREATION="HTTP 502" page_signee brouillon absente brouillon)
+[[ $r == *"rien de publié"*"create delete " && $r != *suite* && $r != *"à la main"* ]] &&
+  ok "publier : brouillon laissé par une création ratée : retiré, rien de publié" ||
+  ko "publier : brouillon d'une création ratée pas retiré ($r)"
 r=$(CREATION="a release with the same tag name already exists: v0.0.0" page_signee existait absente la)
 [[ $r == *"rien n'y est effacé"*"create " && $r != *suite* && $r != *delete* ]] &&
   ok "publier : page posée ailleurs entre-temps (« already exists ») : jamais effacée" ||
@@ -1706,9 +1715,9 @@ r=$(POINT=/dev/null/sur.txt page_signee point absente)
   ok "publier : point sûr pas gardé : dit, et l'historique signé reste dans DOSSIER" ||
   ko "publier : point sûr pas gardé sans être dit ($r)"
 # Une version déjà publiée : rien de publié ni signé, et le passe-droit pris est dit sans objet (relecture C5, n°22).
-mkdir -p "$T/faux-gh-oui" && printf '#!/bin/sh\nexit 0\n' >"$T/faux-gh-oui/gh" && chmod +x "$T/faux-gh-oui/gh"
+mkdir -p "$T/faux-gh-oui" && printf '#!/bin/sh\necho false\n' >"$T/faux-gh-oui/gh" && chmod +x "$T/faux-gh-oui/gh"
 { cat "$DEPOT/outils/github-commun.sh"
-  awk '/^PAGE=0$/ { p = 1 } p { print } p && /^fi$/ && ++n == 2 { exit }' "$DEPOT/outils/publier-version.sh"; } >"$T/deja.sh"
+  awk '/^PAGE=0$/ { p = 1 } p { print } p && /^fi$/ && ++n == 3 { exit }' "$DEPOT/outils/publier-version.sh"; } >"$T/deja.sh"
 r=$(PATH="$T/faux-gh-oui:$PATH" TAG=v0.0.0 bash -c "set -euo pipefail; \
   PASSE_DROITS=(sans-controle-sources-code2-degradations0-non-verifiees1); source '$T/deja.sh'; echo suite" 2>&1)
 [[ $r == *"déjà publiée"* && $r == *"sans-controle-sources-code2-degradations0-non-verifiees1 : sans objet"* &&
@@ -1735,6 +1744,101 @@ for panne in gh-reseau gh-compte gh-autre; do
     ok "publier : panne de GitHub ($panne) jamais prise pour une page absente : rien de publié" ||
     ko "publier : panne de GitHub ($panne) mal lue ($r)"
 done
+# Un brouillon (une création interrompue en laisse un), que personne ne voit : jamais « déjà publiée ».
+mkdir -p "$T/gh-brouillon" && printf '#!/bin/sh\necho true\n' >"$T/gh-brouillon/gh" && chmod +x "$T/gh-brouillon/gh"
+code=0
+r=$(deja gh-brouillon) || code=$?
+((code == 1)) && [[ $r == *"brouillon"* && $r != *suite* && $r != *"déjà publiée"* ]] &&
+  ok "publier : un brouillon n'est jamais une version publiée : dit, rien de publié" ||
+  ko "publier : brouillon pris pour une page (code $code : $r)"
+# La page signée déjà en ligne sans la page du code : vu avant toute signature, code 4, la commande entière est donnée si
+# les programmes sont les mêmes ; sinon rien n'est proposé. Brouillon ou GitHub muet : code 1, rien de signé.
+{ cat "$DEPOT/outils/github-commun.sh"
+  awk '/^page_du_code_a_la_main\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"
+  awk '/^  PAGE=0$/ { p = 1 } p { print } p && /^  esac$/ { exit }' "$DEPOT/outils/publier-version.sh"
+  echo 'echo suite'; } >"$T/signee-deja.sh"
+cat >"$T/gh-fin.sh" <<'GH'
+#!/usr/bin/env bash
+# $VUE : la page (false, true : brouillon, absente, panne) ; $EMPREINTE : celle de SHA256SUMS.txt en ligne ; $CREATION :
+# message d'un échec ; $LISTE : panne, ou les étiquettes.
+[[ $1 == release ]] || exit 9
+case $2 in
+  view)
+    case $* in
+      *isDraft*)
+        case $VUE in
+          absente) echo "release not found" >&2; exit 1 ;;
+          panne) echo "error connecting to api.github.com" >&2; exit 1 ;;
+          *) echo "$VUE" ;;
+        esac
+        ;;
+      *assets*) [[ -n ${EMPREINTE-} ]] && echo "$EMPREINTE" ;;
+      *) echo https://example.org/page ;;
+    esac
+    ;;
+  list)
+    [[ ${LISTE-} != panne ]] || { echo "error connecting to api.github.com" >&2; exit 1; }
+    tr ' ' '\n' <<<"${LISTE-}"
+    ;;
+  create) [[ -z ${CREATION-} ]] || { echo "$CREATION" >&2; exit 1; } ;;
+  delete) echo "delete $3" ;;
+esac
+GH
+mkdir -p "$T/gh-fin" && cp "$T/gh-fin.sh" "$T/gh-fin/gh" && chmod +x "$T/gh-fin/gh"
+fin() { # script, puis VAR=valeur… : la sortie et le code, DOSSIER neuf et jetable
+  local d script=$1
+  shift
+  d=$(mktemp -d "$T/fin.XXXXXX") && echo sommes >"$d/SHA256SUMS.txt" && : >"$d/vanguard.cdx.json"
+  env PATH="$T/gh-fin:$PATH" DOSSIER="$d" TAG=v0.0.0 DEPOT_VERSIONS=x/y NOM=V VERSION=0.0.0 NOTES=notes COMPILE=c0ffee \
+    "$@" bash -c "set -euo pipefail; trap 'rm -rf \"\$DOSSIER\"' EXIT; source '$script'" 2>&1
+  echo "code $? dossier $([[ -f $d/SHA256SUMS.txt ]] && echo gardé) $(cat "$d/notes.md" 2>/dev/null)"
+}
+EMP=sha256:$(echo sommes | sha256sum | cut -d' ' -f1)
+r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE="$EMP")
+[[ $r == *"déjà signée dans x/y"*"gh release create v0.0.0 --target c0ffee "*"/SHA256SUMS.txt "*"/vanguard.cdx.json"*"tickets-version.py --appliquer"*"code 4 dossier gardé notes" &&
+  $r != *suite* ]] && ok "publier : déjà signée sans page du code : vu avant de signer, code 4, commande entière donnée" ||
+  ko "publier : déjà signée sans page du code mal traitée ($r)"
+r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=sha256:autre)
+r2=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=)
+[[ $r == *"ne pas créer la page du code"*"code 4 dossier gardé "* && $r2 == *"illisible) : ne pas créer"*"code 4"* &&
+  $r$r2 != *"gh release create"* && $r$r2 != *suite* ]] &&
+  ok "publier : déjà signée avec d'autres programmes (ou pas comparables) : aucune page du code proposée" ||
+  ko "publier : page du code proposée pour d'autres programmes ($r / $r2)"
+r=$(fin "$T/signee-deja.sh" VUE=true)
+r2=$(fin "$T/signee-deja.sh" VUE=panne)
+[[ $r == *"brouillon dans x/y"*"code 1 "* && $r2 == *"rien conclu"*"code 1 "* && $r$r2 != *suite* ]] &&
+  ok "publier : brouillon ou panne dans le dépôt des versions : rien de signé" ||
+  ko "publier : signature malgré un brouillon ou une panne ($r / $r2)"
+[[ $(fin "$T/signee-deja.sh" VUE=absente) == suite* ]] && ok "publier : pas encore signée : on signe" ||
+  ko "publier : page signée absente mal lue"
+awk '/^  page_en_ligne "\$TAG" -R "\$DEPOT_VERSIONS" \|\| PAGE=\$\?$/ && !v { v = NR }
+  /outils\/signer-versions\.sh .*"\$DOSSIER"/ && !s { s = NR } END { exit !(v && s && v < s) }' \
+  "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : la page signée est regardée avant la signature" ||
+  ko "publier-version.sh : la page signée n'est regardée qu'après la signature"
+# La fin : la page du code ratée après la mise à jour signée (code 4, commande), sans elle (code 1, relancer) ; les
+# pages d'avant pas relues : dites, la publication tient.
+{ cat "$DEPOT/outils/github-commun.sh"
+  echo 'retirer_etiquette_precedente() { echo etiquette; }'
+  awk '/^page_du_code_a_la_main\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"
+  awk '/^if ! gh release create "\$TAG" --target/ { p = 1 } /^command -v notify-send/ { p = 0 } p' \
+    "$DEPOT/outils/publier-version.sh"; } >"$T/fin-publication.sh"
+r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 CREATION=HTTP VUE=true EMPREINTE="$EMP" LISTE=v0.0.0)
+[[ $r == *"elle, est en ligne"*"gh release delete v0.0.0 --yes"*"gh release create v0.0.0 "*"code 4 dossier gardé notes" &&
+  $r != *"publiée :"* && $r != *"delete v"[1-9]* ]] &&
+  ok "publier : page du code ratée, mise à jour signée en ligne : code 4, brouillon resté dit, commande donnée" ||
+  ko "publier : page du code ratée mal traitée ($r)"
+r=$(fin "$T/fin-publication.sh" SIGNEE= PUBLIEE_SIGNEE= CREATION=HTTP VUE=absente LISTE=)
+[[ $r == *"rien n'est en ligne ; relancer outils/deployer.sh"*"code 1 dossier "* && $r != *"gh release create"* ]] &&
+  ok "publier : page du code ratée, rien d'en ligne : code 1, relancer" ||
+  ko "publier : page du code ratée sans rien d'en ligne mal traitée ($r)"
+r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 VUE=false LISTE=panne)
+[[ $r == *"Version v0.0.0 publiée"*"Pages d'avant pas relues dans x/y"*"Pages d'avant pas relues : aucune"*"code 0 "* &&
+  $r != *delete* ]] && ok "publier : pages d'avant pas relues : dites, la version est publiée" ||
+  ko "publier : pages d'avant pas relues mal dites ($r)"
+r=$(fin "$T/fin-publication.sh" SIGNEE=1 PUBLIEE_SIGNEE=1 VUE=false "LISTE=v0.0.0 v0.0.9")
+[[ $r == *"Page de v0.0.9 retirée"*"code 0 "* && $r != *"delete v0.0.0"* ]] &&
+  ok "publier : pages d'avant retirées, jamais celle de cette version" || ko "publier : ménage des pages raté ($r)"
 # Le dépôt public des versions absent (gh repo view le dit) avec un passe-droit : rien de publié (n°21).
 { cat "$DEPOT/outils/github-commun.sh"
   awk '/^DEPOT_VU=0$/,/^else$/' "$DEPOT/outils/publier-version.sh" | sed '$d'; echo "fi"; } >"$T/depot-versions.sh"

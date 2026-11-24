@@ -1050,7 +1050,10 @@ case "$1 $2" in
     if [[ $* == *--ratee* ]]; then exit "${ESSAI_RATEE_CODE:-0}"; fi
     exit "${ESSAI_RECOPIE_CODE:-0}"
     ;;
-  "manifeste --images") ls "$3/ISO" | sed 's/^/au manifeste : /' >>"$BANC/faux-vanguard.log" ;;
+  "manifeste --images")
+    ls "$3/ISO" | sed 's/^/au manifeste : /' >>"$BANC/faux-vanguard.log"
+    exit "${ESSAI_MANIFESTE_CODE:-0}"
+    ;;
 esac
 exit 0
 FIN
@@ -1108,6 +1111,23 @@ ESSAI_RATEE_CODE=4 ESSAI_SYNC=echec ESSAI_RELUE=${IMAGE5##*/} VANGUARD_PROGRAMME
 voir "copies ratées à répétition : clé à remplacer, dit une seule fois" \
   eval '[[ $(grep -c "à remplacer" "$BANC/notifications.log") == 1 ]]' || montrer "$BANC/notifications.log"
 rm -f "$PART"
+# Clé retirée pendant la vérification de l'image du cache : elle n'a rien raté.
+mkdir -p "$BANC/retiree"
+cat >"$BANC/retiree/sha256sum" <<FIN
+#!/usr/bin/env bash
+for f; do [[ \$f != "$IMAGE5" ]] || rm -f "$BANC/cle5/vanguard.cle"; done
+exec $(command -v sha256sum) "\$@"
+FIN
+chmod +x "$BANC/retiree/sha256sum"
+rm -f "$NEUVE" "$BANC/faux-vanguard.log"
+PATH=$BANC/retiree:$PATH ESSAI_SYNC=echec ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' \
+  VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "copie ratée, clé retirée pendant la vérification du cache : jamais comptée contre la clé" \
+  eval '((code == 1)) && [[ ! -e $BANC/cle5/vanguard.cle ]] && pas_dit "$BANC/faux-vanguard.log" "--ratee"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+: >"$BANC/cle5/vanguard.cle"
+rm -f "$PART"
 # L'image du cache abîmée : la copie rate, et ce n'est pas la clé.
 cp "$IMAGE5" "$BANC/image5-saine"
 printf x | dd of="$IMAGE5" conv=notrunc status=none
@@ -1136,6 +1156,15 @@ voir "clé trouvée seule, image relue, rien à copier : code 0" eval '((code ==
 ESSAI_RELUE_CODE=1 seule
 code=$?
 voir "relecture pas faite (clé retirée, pas de référence) : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+ESSAI_RELUE=${IMAGE5##*/} ESSAI_RELUE_CODE=3 seule
+code=$?
+voir "clé trouvée seule, image illisible : code 5, laissée en place" eval '((code == 5)) && [[ -f $NEUVE ]]' ||
+  montrer "$BANC/sortie"
+mkdir -p "$BANC/cache-vide"
+CACHE_SEULE=$BANC/cache-vide ESSAI_RELUE=${IMAGE5##*/} seule
+code=$?
+voir "clé trouvée seule, image changée sans rien pour la remplacer : code 5, jamais « à jour »" \
+  eval '((code == 5)) && [[ -f $NEUVE ]]' || montrer "$BANC/sortie"
 ESSAI_RELUE_CODE=5 seule
 code=$?
 voir "images sans empreinte à relire : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
@@ -1151,6 +1180,46 @@ ln -s "$BANC/disque-debranche" "$BANC/cache-mort"
 CACHE_SEULE=$BANC/cache-mort seule
 code=$?
 voir "cache sur un disque débranché : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+# La référence ne s'écrit pas (disque plein de cet ordinateur), clé trouvée seule : une note qui échoue ne retire rien,
+# place ou pas ; seule l'image aux octets changés part tout de même, et c'est un échec dit.
+KALI_AVANT=$BANC/cle5/ISO/kali-linux-2026.2-live-everything-amd64.iso
+for cas in "8 faute de place" "0 la place ne manque pas"; do
+  rm -f "$NEUVE" "$BANC/notifications.log"
+  head -c $((${cas%% *} * 1024 * 1024 + 1)) /dev/urandom >"$KALI_AVANT"
+  ESSAI_RECOPIE_CODE=1 seule
+  code=$?
+  voir "recopie pas notée (${cas#* }) : rien de retiré ni copié, échec dit" \
+    eval '((code == 1)) && [[ -f $KALI_AVANT && ! -e $NEUVE ]] && dit "$BANC/notifications.log" "copie ratée" &&
+      pas_dit "$BANC/notifications.log" "copie de"' || { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+done
+ESSAI_RECOPIE_CODE=2 seule
+code=$?
+voir "recopie pas notée, programme d'avant elles (code 2) : copiée comme avant, dit" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && [[ ! -e $KALI_AVANT ]] && dit "$BANC/sortie" "pas notée"' ||
+  montrer "$BANC/sortie"
+rm -f "$NEUVE"
+printf x >"$KALI_AVANT"
+ESSAI_MANIFESTE_CODE=1 seule
+code=$?
+voir "référence pas redite après la copie : ancienne version laissée, échec dit" \
+  eval '((code == 1)) && [[ -f $KALI_AVANT ]] && cmp -s "$NEUVE" "$IMAGE5" &&
+    dit "$BANC/notifications.log" "ancienne version laissée" &&
+    dit "$BANC/notifications.log" "référence de la clé pas réécrite"' || montrer "$BANC/notifications.log"
+rm -f "$KALI_AVANT" "$NEUVE" "$BANC/notifications.log"
+printf x >"$KALI_AVANT"
+ESSAI_RECOPIE_CODE=1 ESSAI_MANIFESTE_CODE=1 VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "référence qui ne s'écrit pas, clé désignée à la main (clé neuve) : copiée tout de même, dit" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && [[ ! -e $KALI_AVANT ]] && dit "$BANC/sortie" "pas notée"' ||
+  montrer "$BANC/sortie"
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+rm -f "$BANC/notifications.log"
+ESSAI_RECOPIE_CODE=1 ESSAI_RELUE=${IMAGE5##*/} seule
+code=$?
+voir "image changée, recopie pas notée : elle part tout de même (la bonne à sa place), échec dit" \
+  eval '((code == 1)) && cmp -s "$NEUVE" "$IMAGE5" &&
+    dit "$BANC/notifications.log" "image changée retirée"' || montrer "$BANC/notifications.log"
+cp "$IMAGE5" "$NEUVE"
 # Clé à remplacer, trouvée seule : l'image changée est retirée (notée), rien n'est recopié ; à la main, oui.
 head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
 rm -f "$BANC/notifications.log"
@@ -1404,7 +1473,7 @@ voir "seul un volume VANGUARDLOG d'un autre disque : rien" \
 # référence par l'empreinte de chaque fichier), sans compilation ni GitHub (--sans-compiler, repère « local »).
 DD=$BANC/depot-dep
 mkdir -p "$DD/outils" "$DD/assets/icones" "$DD/target/x86_64-unknown-linux-musl/release" "$BANC/faux-dep"
-cp outils/deployer.sh outils/cle-commun.sh outils/LISEZMOI.txt outils/README.txt "$DD/outils/"
+cp outils/deployer.sh outils/cle-commun.sh outils/github-commun.sh outils/LISEZMOI.txt outils/README.txt "$DD/outils/"
 cp -r outils/cle "$DD/outils/"
 printf '#!/bin/sh\nexit 0\n' | tee "$DD/outils/verifier-masque.sh" "$DD/outils/failles-programmes.sh" \
   >"$BANC/faux-dep/pgrep"
@@ -1619,6 +1688,11 @@ code=$?
 voir "page de la version pas publiée : dite, code 9 (la clé, elle, est à jour)" \
   eval '((code == 9)) && dit "$BANC/sortie" "Page de la version pas publiée" && dit "$BANC/sortie" "Clé VANGUARD à jour"' ||
   montrer "$BANC/sortie"
+publie 4
+code=$?
+voir "mise à jour signée en ligne, page du code seule absente (publier : 4) : dit, code 9, jamais « relancer »" \
+  eval '((code == 9)) && dit "$BANC/sortie" "seule la page du code manque" &&
+    pas_dit "$BANC/sortie" "cause réglée, relancer"' || montrer "$BANC/sortie"
 # La clé en panne en pleine copie (un fichier là où Linux/ doit être) : la page est quand même tentée, code 1, dit et notifié, sans
 # « à jour », et le repère reste pour la reprise.
 for suite in 0 1; do
@@ -1854,12 +1928,20 @@ for d in lot/cible-vieille lot/cible-neuve lot/kani-install cible-seule cible-se
 done
 printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' '# created by kani' >"$C/lot/outil/CACHEDIR.TAG"
 echo notes >"$C/lot/notes.md"
-find "$C" -exec touch -d '40 days ago' {} +
+# Des dossiers de compilation hors du cache, qu'un lien du cache désigne : le lien ne les fait jamais effacer.
+mkdir -p "$BANC"/ailleurs/{cible,autre/cible}
+for d in cible autre/cible; do cp "$C/lot/cible-vieille/CACHEDIR.TAG" "$BANC/ailleurs/$d/"; done
+ln -s "$BANC/ailleurs/cible" "$C/lien"
+ln -s "$BANC/ailleurs/cible" "$C/lot/lien"
+ln -s "$BANC/ailleurs/autre" "$C/lien-parent"
+find "$C" "$BANC/ailleurs" -exec touch -d '40 days ago' {} +
 touch "$C/lot/cible-neuve/CACHEDIR.TAG" "$C/verifier-echecs/neuf"
 XDG_CACHE_HOME=$BANC/xdg7 bash outils/menage-dev.sh >"$BANC/sortie" 2>&1
 voir "compilations inutilisées retirées par la marque de cargo ; une récente, un outil et des notes gardés" \
   eval '[[ ! -e $C/lot/cible-vieille && ! -e $C/cible-seule && -d $C/lot/cible-neuve && -d $C/lot/outil && -d $C/lot/kani-install &&
     -f $C/lot/notes.md && ! -e $C/verifier-echecs/vieux && -d $C/verifier-echecs/neuf ]]' || montrer "$BANC/sortie"
+voir "un lien vers un dossier de compilation hors du cache : le dossier visé reste entier" \
+  eval '[[ -f $BANC/ailleurs/cible/CACHEDIR.TAG && -f $BANC/ailleurs/autre/cible/CACHEDIR.TAG ]]' || montrer "$BANC/sortie"
 
 echo "$ESSAIS essais, $ECHECS en échec."
 ((ECHECS == 0))

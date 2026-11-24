@@ -693,9 +693,20 @@ FAUX
 programmes=$(python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --programmes deny.toml)
 relire=$(python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --relire deny.toml | cut -d' ' -f1 | paste -sd' ')
 python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --programmes absent/deny.toml >/dev/null 2>&1; absent=$?
-[[ $programmes == RUSTSEC-2001-0003 && $relire == "RUSTSEC-2001-0003 RUSTSEC-2001-0005" && $absent != 0 ]] &&
-  ok "exceptions : sans les mots exacts, pas pour les programmes ; une date passée ou impossible est dite" ||
-  ko "exceptions : programmes « $programmes », à relire « $relire », deny.toml absent : code $absent"
+# Admise pour les programmes publiés sans date lisible (absente, mal écrite, impossible) : refusée, jamais éternelle.
+sans_date=""
+for raison in "vaut pour les programmes publiés" "vaut pour les programmes publiés ; à relire avant le 2999-01-01" \
+  "vaut pour les programmes publiés ; à relire au plus tard le 2999-02-31"; do
+  mkdir -p "$faux/arbre/date"
+  printf '[advisories]\nignore = [{ id = "RUSTSEC-2001-0006", reason = "eee, %s" }]\n' "$raison" >"$faux/arbre/date/deny.toml"
+  dit=$(python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --programmes date/deny.toml 2>&1)
+  sans_date+=" $?"
+  [[ $dit == *"RUSTSEC-2001-0006"*"date"* ]] || sans_date+=" muet"
+done
+[[ $programmes == RUSTSEC-2001-0003 && $relire == "RUSTSEC-2001-0003 RUSTSEC-2001-0005" && $absent != 0 &&
+  $sans_date == " 1 1 1" ]] &&
+  ok "exceptions : sans les mots exacts, pas pour les programmes ; date passée dite, absente ou impossible refusée" ||
+  ko "exceptions : programmes « $programmes », à relire « $relire », absent : code $absent, sans date :$sans_date"
 rm -rf "${faux:?}"
 
 # Les essais qui doivent avoir essayé (essais-reels.sh) : un faux cargo qui écrit ce qu'on lui dit.
@@ -754,6 +765,10 @@ case "$*" in
       jq -e --arg id "${copie%.*}" 'any(.[]; .id == $id and .etat == "ok")' "$source" >/dev/null &&
         touch "$VANGUARD_CANARIS/$copie"
     done
+    # Les copies des éditeurs : celle d'Edge suit son état, les autres sont toujours là.
+    (cd "$VANGUARD_CANARIS" && touch firefox_versions.json OfficeReleases chrome-win-stable.json \
+      foundation-security-advisories.tar.gz)
+    jq -e 'any(.[]; .id == "edge" and .etat == "ok")' "$source" >/dev/null && touch "$VANGUARD_CANARIS/products"
     ;;
   *canaris_kev*) [[ ! -e $(dirname "$0")/kev-absent ]] || { echo "test result: ok. 0 passed; 0 failed"; exit 0; } ;;
   *)
@@ -784,7 +799,7 @@ canaris "ok ok ok sans-reponse" -; injoignable=$CODE; dit=$SORTIE
 partiels=$(grep -c 'vraies_copies_si_presentes' "$ESSAI/appels")
 canaris "http-503 ok ok ok" -; kev_injoignable=$CODE; kev_appel=$(grep -c canaris_kev "$ESSAI/appels")
 [[ $sains == 0 && $copies == 1 && $une_fois == 0 && $passages == 2 && $injoignable == 0 && $partiels == 0 &&
-  $kev_injoignable == 0 && $kev_appel == 0 && $dit == *"::warning::sources injoignables"*"edge (sans-reponse)"* ]] &&
+  $kev_injoignable == 0 && $kev_appel == 0 && $dit == *"::warning::sources pas lues"*"edge (sans-reponse)"* ]] &&
   ok "canaris : sains, format refusé une seule fois ou source injoignable : pas un échec, et c'est dit" ||
   ko "canaris verts : sains $sains ($copies), une fois $une_fois ($passages), injoignable $injoignable ($partiels), KEV $kev_injoignable ($kev_appel) : $(tail -n 2 <<<"$SORTIE")"
 canaris "ok ok ok format" "ok ok ok format"; deux_fois=$CODE; nomme=$SORTIE
@@ -793,10 +808,27 @@ touch "$faux/kev-absent"
 canaris "ok ok ok ok" -; essai_absent=$CODE
 mv "$faux/kev-absent" "$faux/copie-sautee"
 canaris "ok ok ok ok" -; saute=$CODE
-[[ $deux_fois == 1 && $nomme == *"format changé, deux fois de suite : edge"* && $aucune == 1 && $essai_absent == 1 &&
+[[ $deux_fois == 1 && $nomme == *"deux fois de suite : edge (format)"* && $aucune == 1 && $essai_absent == 1 &&
   $saute == 1 ]] &&
   ok "canaris : format refusé deux fois, aucune source lue, essai absent ou sauté : un échec" ||
   ko "canaris en échec : deux fois $deux_fois, aucune lue $aucune, essai absent $essai_absent, sauté $saute"
+rm -f "$faux/copie-sautee"
+# Une adresse retirée (404, 410) compte comme un format changé ; un refus du premier essai n'est pas effacé par un 429 ;
+# 403, 408 et 429 ne sont qu'injoignables. L'essai des éditeurs ne dépend que des copies qu'il lit.
+codes=""
+for etats in "http-404 -" "http-410 -" "format http-429" "http-404 http-503" "http-404 ok" "format ok" "http-403 -" \
+  "http-408 -" "http-429 -" "http-429 format"; do
+  deux=${etats#* }
+  [[ $deux == - ]] || deux="ok ok ok $deux"
+  canaris "ok ok ok ${etats% *}" "$deux"; codes+=" $CODE"
+done
+canaris "ok sans-reponse http-503 ok" -; sans_rapport=$CODE
+copies=$(grep -c 'vraies_copies_si_presentes' "$ESSAI/appels")
+# Refusée au seul deuxième essai : pas un échec (une fois), mais dite.
+canaris "ok ok ok format" "ok format ok ok"; autre=$CODE; dit=$SORTIE
+[[ $codes == " 1 1 1 1 0 0 0 0 0 0" && $autre == 0 && $dit == *"pas lues"*"ioc (format)"* && $sans_rapport == 0 && $copies == 1 ]] &&
+  ok "canaris : adresse retirée et refus suivi d'un silence échouent ; l'essai des éditeurs suit ses seules copies" ||
+  ko "canaris : états$codes, source sans rapport $sans_rapport (essai des éditeurs lancé $copies fois)"
 rm -rf "${faux:?}"
 
 # 18. Le résumé et les journaux d'échec (la fin de verifier.sh et ces lignes-là, lues dans le fichier).
@@ -822,8 +854,10 @@ un=$(echecs_de a/depot) && deux=$(echecs_de b/depot) && encore=$(echecs_de a/dep
 [[ $un == /h/.cache/vanguard-dev/verifier-echecs/depot-* && $un != "$deux" && $un == "$encore" ]] &&
   ok "journaux d'échec : un dossier par arbre, le même d'un passage à l'autre" ||
   ko "journaux d'échec : $un, $deux, $encore"
-# Rien d'autre n'écrit le résumé gardé : il ne vient que de garder_resume.
-[[ $(grep -c 'verifier-dernier\.txt' outils/verifier.sh) == 1 && $(grep -c '^garder_resume ||' outils/verifier.sh) == 1 ]] &&
+# Rien d'autre n'écrit le résumé gardé : il ne vient que de garder_resume. Celui de la passe, vidé à son départ, est
+# dans son dossier de travail : à la place du gardé, une passe rouge ou interrompue l'effacerait.
+[[ $(grep -c 'verifier-dernier\.txt' outils/verifier.sh) == 1 && $(grep -c '^garder_resume ||' outils/verifier.sh) == 1 &&
+  $(grep '^RESUME=' outils/verifier.sh) == 'RESUME=$TRAVAIL/resume' ]] &&
   ok "résumé gardé : un seul endroit l'écrit" || ko "résumé gardé : écrit ailleurs que dans garder_resume"
 
 # 19. fuzz.sh : un faux cargo qui « fuzze » et dit le nombre d'exécutions demandé par l'essai.

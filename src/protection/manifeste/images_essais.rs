@@ -295,6 +295,31 @@ fn phrase_des_images() {
     assert_eq!(etat(&m, le_11).lignes(), Vec::<String>::new());
 }
 
+/// Une recopie en attente : elle reprend seule, sauf sur une clé à remplacer, où rien n'est recopié de soi-même.
+#[test]
+fn recopie_en_attente_jamais_promise_sur_une_cle_a_remplacer() {
+    let cle = Cle::neuve("promesse", &["a.iso"]);
+    cle.debut("b.iso", &["a.iso"]);
+    cle.retirer("a.iso");
+    let mut e = comparer_avec(&cle.racine, &cle.m(), GROS).etat;
+    assert_eq!(e.recopies, ["ISO/a.iso"]);
+    let (seule, main) = (tr!("reprend seule", "by itself"), tr!("à la main", "by hand"));
+    let dite = |e: &Etat| {
+        e.lignes()
+            .into_iter()
+            .find(|l| l.contains("a.iso") && !l.contains("octet"))
+            .unwrap()
+    };
+    assert!(dite(&e).contains(seule) && !dite(&e).contains(main), "{}", dite(&e));
+    e.ratees = USEE;
+    assert!(dite(&e).contains(main) && !dite(&e).contains(seule), "{}", dite(&e));
+    assert!(
+        e.lignes()
+            .iter()
+            .any(|l| l.contains(tr!("Clé à remplacer", "Key to replace")))
+    );
+}
+
 /// La reprise du programme par le déploiement garde les images en attente dans l'écart qu'elle rend.
 #[test]
 fn reprise_avec_recopie_en_attente() {
