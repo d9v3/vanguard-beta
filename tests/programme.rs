@@ -2451,10 +2451,14 @@ fn un_lien_n_offre_pas_de_correction() {
 /// (21 nov. 2026). Un blocage, qui ne calcule plus, est pris au plafond d'horloge.
 #[cfg(unix)]
 fn constats_du_bilan(programme: &Path, maison: &Path, categories: &[&str]) -> Vec<serde_json::Value> {
-    let delai = Delai::Calcul {
-        secondes: 100,
-        plafond: 600,
-    };
+    constats_du_bilan_en(programme, maison, categories, 100)
+}
+
+/// `constats_du_bilan`, avec `secondes` de calcul au plus : l'essai d'un bilan qui ne doit pas s'emballer. Jamais une
+/// borne d'horloge posée autour de l'appel : elle suivrait la charge de la machine.
+#[cfg(unix)]
+fn constats_du_bilan_en(programme: &Path, maison: &Path, categories: &[&str], secondes: u64) -> Vec<serde_json::Value> {
+    let delai = Delai::Calcul { secondes, plafond: 600 };
     let bilan = vanguard_au_plus(programme, maison, "fr", &["audit", "--json"], "", delai, &[]);
     assert!(
         matches!(bilan.code, Some(0 | 1)),
@@ -3302,12 +3306,9 @@ fn une_liste_kex_piegee_ne_plante_ni_ne_fige_le_bilan() {
                 std::fs::create_dir_all(&dossier).unwrap();
                 mode(&dossier, 0o700);
                 std::fs::write(dossier.join("config"), config).unwrap();
-                let debut = std::time::Instant::now();
-                let constats = constats_du_bilan(programme, &maison, &["Post-quantique"]);
-                assert!(
-                    debut.elapsed() < std::time::Duration::from_secs(60),
-                    "{court} : bilan trop long"
-                );
+                // Compté en calcul : à l'horloge, trois bilans en parallèle sous la charge de verifier.sh dépassaient
+                // 60 s sans s'emballer (24 nov. 2026, 11 s seul).
+                let constats = constats_du_bilan_en(programme, &maison, &["Post-quantique"], 60);
                 let client: Vec<String> = constats
                     .iter()
                     .map(message)
