@@ -224,7 +224,9 @@ fi
 # Un commit venu de GitHub n'est compilé ici (build.rs, macros, scripts de deployer.sh, sans un clic, au branchement
 # de la clé) qu'avec une CI verte sur ce commit exact : un passage complet de ci.yml, sur master, réussi. Un compte
 # GitHub pris pourrait pousser sur master malgré la protection ; la CI ne prouve pas que le code est sain, mais un
-# commit poussé de travers, sans passage ou en échec, n'est pas exécuté ici (campagne d'attaque n° 6, F4). gh absent,
+# commit poussé de travers, sans passage ou en échec, n'est pas exécuté ici (campagne d'attaque n° 6, F4). Un passage de
+# nuit (schedule) ne compte pas : « linux » et « confidentialite » y sont sautés, et un commit dont l'envoi avait échoué
+# y repassait vert (8341d03b, 22 nov. 2026). gh absent,
 # hors ligne ou sans réponse : pas vert. Lue telle quelle par outils/essais-signature.sh.
 # Rend 0 (verte), 1 (pas verte, ou pas encore : réessayé au branchement suivant), 2 (gh sans compte connecté) ou 3
 # (gh introuvable). Sous vanguard-cle.service, 2 et 3 dureraient pour toujours sous le même « réessayé » que la CI en
@@ -235,8 +237,8 @@ ci_verte() {
   n=$(timeout 60 gh run list --workflow ci.yml --branch master --commit "$1" --limit 20 \
     --json headSha,headBranch,event,status,conclusion \
     -q "[.[] | select(.headSha == \"$1\" and .headBranch == \"master\" and .status == \"completed\"
-      and .conclusion == \"success\" and (.event == \"push\" or .event == \"workflow_dispatch\"
-      or .event == \"schedule\"))] | length" 2>/dev/null) || code=$?
+      and .conclusion == \"success\" and (.event == \"push\" or .event == \"workflow_dispatch\"))] | length" \
+    2>/dev/null) || code=$?
   ((code == 4)) && return 2
   ((code == 127)) && return 3
   ((code == 0)) || return 1

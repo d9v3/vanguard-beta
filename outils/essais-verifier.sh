@@ -43,6 +43,13 @@
 #      avertissement fait échouer ; shellcheck absent, l'étape se dit sautée, jamais verte.
 #  14. Les workflows (zizmor) : un fichier au YAML cassé fait échouer l'étape, jamais sauté en silence ; le même,
 #      réparé, passe ; zizmor absent, sautée ici, en échec en CI.
+#  15. Les exceptions des programmes publiés (failles-programmes.sh <programme>) : celles dont la raison dit « vaut pour
+#      les programmes publiés », jamais rsa ni bincode (dépendances de développement) ; une date de relecture passée,
+#      ou impossible, est dite.
+#  16. Les essais qui doivent avoir essayé (essais-reels.sh) : un filtre qui ne trouve rien, trop peu d'essais, un essai
+#      sauté ou en échec font échouer ; une option mal écrite est refusée, code 2.
+#  17. Les canaris de la CI (canaris-ci.sh, faux cargo) : un format refusé deux fois, aucune source lue, un essai absent
+#      ou sauté font échouer ; refusé une seule fois, ou une source injoignable, non, et c'est dit.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -642,6 +649,151 @@ else
     ko "workflows (absent $sans_code, CI $sans_ci, propre $propre, cassé $casse) : $(tail -n 2 <<<"$propre_dit$SORTIE")"
 fi
 rm -rf "$faux"
+
+# Les exceptions d'un programme publié (failles-programmes.sh <programme>, et --fenetre plus haut) : seulement celles qui
+# disent valoir pour lui. Attendues lues par grep, et non par exceptions-rustsec.py, que cet essai juge ; rsa et bincode
+# nommées : venues de YARA-X, dépendance d'essai, elles ne doivent jamais être écartées dans un programme.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-exceptions.XXXX")
+cat >"$faux/cargo-audit" <<FAUX
+#!/usr/bin/env bash
+[[ \$1 == --version ]] && { echo "cargo-audit $version"; exit 0; }
+echo "\$*" >>"$faux/appels"
+for p in "\$@"; do [[ -f \$p ]] && echo "Found 'cargo auditable' data in \$p (7 dependencies)"; done
+exit 0
+FAUX
+printf '#!/bin/sh\nexit 0\n' >"$faux/curl"
+chmod +x "$faux/cargo-audit" "$faux/curl"
+echo programme >"$faux/vanguard"
+lancer env -u VANGUARD_HORS_LIGNE PATH="$faux:$PATH" bash outils/failles-programmes.sh "$faux/vanguard"
+ecartes=$(grep -oE -- '--ignore [^ ]+' "$faux/appels" | cut -d' ' -f2 | sort -u | paste -sd' ')
+voulus=$(grep 'id = "RUSTSEC' deny.toml | grep -F 'vaut pour les programmes publiés' |
+  grep -oE 'RUSTSEC-[0-9]{4}-[0-9]{4}' | sort -u | paste -sd' ')
+[[ $CODE == 0 && -n $ecartes && $ecartes == "$voulus" && $ecartes != *RUSTSEC-2023-0071* &&
+  $ecartes != *RUSTSEC-2025-0141* ]] &&
+  ok "programme publié : seulement les exceptions qui valent pour lui, jamais celles d'une dépendance d'essai" ||
+  ko "programme publié (code $CODE) : écartés « $ecartes », attendus « $voulus »"
+
+# Un deny.toml d'essai, dans une copie de l'arbre : les deux bords de la raison et de la date.
+mkdir -p "$faux/arbre/outils"
+cp outils/exceptions-rustsec.py "$faux/arbre/outils/"
+cat >"$faux/arbre/deny.toml" <<'FAUX'
+[advisories]
+ignore = [
+    "RUSTSEC-2001-0001",
+    { id = "RUSTSEC-2001-0002", reason = "aaa, ne vaut que pour les essais" },
+    { id = "RUSTSEC-2001-0003", reason = "bbb, vaut pour les programmes publiés ; à relire au plus tard le 2001-01-01" },
+    { id = "RUSTSEC-2001-0004", reason = "ccc, à relire au plus tard le 2999-01-01" },
+    { id = "RUSTSEC-2001-0005", reason = "ddd, à relire au plus tard le 2999-02-31" },
+]
+FAUX
+programmes=$(python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --programmes deny.toml)
+relire=$(python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --relire deny.toml | cut -d' ' -f1 | paste -sd' ')
+python3 -I "$faux/arbre/outils/exceptions-rustsec.py" --programmes absent/deny.toml >/dev/null 2>&1; absent=$?
+[[ $programmes == RUSTSEC-2001-0003 && $relire == "RUSTSEC-2001-0003 RUSTSEC-2001-0005" && $absent != 0 ]] &&
+  ok "exceptions : sans les mots exacts, pas pour les programmes ; une date passée ou impossible est dite" ||
+  ko "exceptions : programmes « $programmes », à relire « $relire », deny.toml absent : code $absent"
+rm -rf "${faux:?}"
+
+# Les essais qui doivent avoir essayé (essais-reels.sh) : un faux cargo qui écrit ce qu'on lui dit.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-reels.XXXX")
+cat >"$faux/cargo" <<'FAUX'
+#!/usr/bin/env bash
+# cargo <nombre réussis> [saute|echec]
+[[ ${2-} == saute ]] && echo "essai : raison" >>"$VANGUARD_TESTS_SAUTES"
+[[ ${2-} == echec ]] && { echo "test result: FAILED. $1 passed; 1 failed"; exit 101; }
+echo "test result: ok. $1 passed; 0 failed; 0 ignored"
+echo "test result: ok. 0 passed; 0 failed; 0 ignored"
+FAUX
+chmod +x "$faux/cargo"
+reels() { # les arguments d'essais-reels.sh
+  SORTIE=$(VANGUARD_TESTS_SAUTES="$faux/a-l-appelant" bash outils/essais-reels.sh "$@" 2>&1)
+  CODE=$?
+}
+codes=""
+reels -- "$faux/cargo" 1; codes+=" $CODE"
+reels --au-moins 3 -- "$faux/cargo" 3; codes+=" $CODE"
+reels --sans-saut -- "$faux/cargo" 1; codes+=" $CODE"
+reels -- "$faux/cargo" 1 saute; codes+=" $CODE"
+appelant=$(cat "$faux/a-l-appelant" 2>/dev/null)
+verts=$codes codes=""
+reels -- "$faux/cargo" 0; codes+=" $CODE"
+reels --au-moins 3 -- "$faux/cargo" 2; codes+=" $CODE"
+reels --sans-saut -- "$faux/cargo" 1 saute; codes+=" $CODE"
+saut_dit=$SORTIE
+reels -- "$faux/cargo" 5 echec; codes+=" $CODE"
+reels -- "$faux/inexistant"; codes+=" $CODE"
+for mauvais in --au-moins "--au-moins 0" "--au-moins x" "--sans-sauts" ""; do
+  # shellcheck disable=SC2086 # plusieurs arguments, exprès
+  reels $mauvais; codes+=" $CODE"
+done
+reels --au-moins 2 --; codes+=" $CODE"
+[[ $verts == " 0 0 0 0" && $appelant == "essai : raison" && $codes == " 1 1 1 101 127 2 2 2 2 2 2" &&
+  $saut_dit == *"essai : raison"* ]] &&
+  ok "essais réels : aucun trouvé, trop peu, sauté ou en échec font échouer ; une option mal écrite est refusée" ||
+  ko "essais réels : verts$verts, refus$codes, liste de l'appelant « $appelant »"
+rm -rf "${faux:?}"
+
+# Les canaris de la CI (canaris-ci.sh) : le faux cargo écrit le canaris.json du passage, et note ses appels. Un dossier
+# neuf par essai (« ESSAI »).
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-canaris.XXXX")
+cat >"$faux/cargo" <<'FAUX'
+#!/usr/bin/env bash
+echo "$*" >>"$ESSAI/appels"
+case "$*" in
+  *canaris_telecharger*)
+    fois=$(($(cat "$ESSAI/fois" 2>/dev/null || echo 0) + 1))
+    echo "$fois" >"$ESSAI/fois"
+    source=$ESSAI/passage-$fois.json
+    [[ -f $source ]] || source=$ESSAI/passage-1.json
+    cp "$source" "$VANGUARD_CANARIS/canaris.json"
+    for copie in kev.json ioc.yaml formula.json; do
+      jq -e --arg id "${copie%.*}" 'any(.[]; .id == $id and .etat == "ok")' "$source" >/dev/null &&
+        touch "$VANGUARD_CANARIS/$copie"
+    done
+    ;;
+  *canaris_kev*) [[ ! -e $(dirname "$0")/kev-absent ]] || { echo "test result: ok. 0 passed; 0 failed"; exit 0; } ;;
+  *)
+    [[ ! -e $(dirname "$0")/copie-sautee ]] || echo "pas de copie" >>"$VANGUARD_TESTS_SAUTES"
+    noms=0
+    for mot in "$@"; do [[ $mot != vrai* ]] || noms=$((noms + 1)); done
+    echo "test result: ok. $noms passed; 0 failed"
+    exit 0
+    ;;
+esac
+echo "test result: ok. 1 passed; 0 failed"
+FAUX
+chmod +x "$faux/cargo"
+etats() { # les états de kev, ioc, formula et edge
+  jq -cn '$ARGS.positional | [{id: "kev", etat: .[0]}, {id: "ioc", etat: .[1]}, {id: "formula", etat: .[2]},
+    {id: "edge", etat: .[3]}, {id: "abuse-ch", etat: "sautee"}]' --args "$@"
+}
+canaris() { # le 1er passage, le 2e (« - » : le même) ; chacun « kev ioc formula edge »
+  ESSAI=$(mktemp -d "$faux/essai.XXXX")
+  # shellcheck disable=SC2086 # quatre états, exprès
+  { etats $1 >"$ESSAI/passage-1.json"; [[ $2 == - ]] || etats $2 >"$ESSAI/passage-2.json"; }
+  SORTIE=$(env ESSAI="$ESSAI" PATH="$faux:$PATH" VANGUARD_CANARIS_ATTENTE=0 bash outils/canaris-ci.sh "$ESSAI/d" 2>&1)
+  CODE=$?
+}
+canaris "ok ok ok ok" -; sains=$CODE; copies=$(grep -c 'vraies_copies_si_presentes' "$ESSAI/appels")
+canaris "ok ok ok format" "ok ok ok ok"; une_fois=$CODE; passages=$(cat "$ESSAI/fois")
+canaris "ok ok ok sans-reponse" -; injoignable=$CODE; dit=$SORTIE
+partiels=$(grep -c 'vraies_copies_si_presentes' "$ESSAI/appels")
+canaris "http-503 ok ok ok" -; kev_injoignable=$CODE; kev_appel=$(grep -c canaris_kev "$ESSAI/appels")
+[[ $sains == 0 && $copies == 1 && $une_fois == 0 && $passages == 2 && $injoignable == 0 && $partiels == 0 &&
+  $kev_injoignable == 0 && $kev_appel == 0 && $dit == *"::warning::sources injoignables"*"edge (sans-reponse)"* ]] &&
+  ok "canaris : sains, format refusé une seule fois ou source injoignable : pas un échec, et c'est dit" ||
+  ko "canaris verts : sains $sains ($copies), une fois $une_fois ($passages), injoignable $injoignable ($partiels), KEV $kev_injoignable ($kev_appel) : $(tail -n 2 <<<"$SORTIE")"
+canaris "ok ok ok format" "ok ok ok format"; deux_fois=$CODE; nomme=$SORTIE
+canaris "http-500 http-500 http-500 sans-reponse" -; aucune=$CODE
+touch "$faux/kev-absent"
+canaris "ok ok ok ok" -; essai_absent=$CODE
+mv "$faux/kev-absent" "$faux/copie-sautee"
+canaris "ok ok ok ok" -; saute=$CODE
+[[ $deux_fois == 1 && $nomme == *"format changé, deux fois de suite : edge"* && $aucune == 1 && $essai_absent == 1 &&
+  $saute == 1 ]] &&
+  ok "canaris : format refusé deux fois, aucune source lue, essai absent ou sauté : un échec" ||
+  ko "canaris en échec : deux fois $deux_fois, aucune lue $aucune, essai absent $essai_absent, sauté $saute"
+rm -rf "${faux:?}"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "verifier.sh : tout est juste."

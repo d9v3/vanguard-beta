@@ -130,7 +130,7 @@ fn juger(id: &str, demande: Demande, lecteur: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
 #[ignore = "réseau : seulement par la veille de nuit (VANGUARD_CANARIS)"]
 fn canaris_telecharger() {
     let Some(dossier) = dossier() else {
-        return;
+        return crate::essais::saute("VANGUARD_CANARIS non donné");
     };
     std::fs::create_dir_all(dossier.join("brut")).unwrap();
     let mut lignes: Vec<serde_json::Value> = std::thread::scope(|portee| {
@@ -193,10 +193,10 @@ fn cellule(texte: &str) -> String {
 #[ignore = "copies réelles : seulement par la veille de nuit (VANGUARD_CANARIS)"]
 fn canaris_kev() {
     let Some(dossier) = dossier() else {
-        return;
+        return crate::essais::saute("VANGUARD_CANARIS non donné");
     };
     let Ok(aujourd_hui) = std::fs::read(dossier.join("kev.json")) else {
-        return;
+        return crate::essais::saute("pas de kev.json dans VANGUARD_CANARIS");
     };
     let aujourd_hui = crate::protection::kev::analyser(&aujourd_hui).unwrap();
     let hier: std::collections::HashSet<String> = std::env::var_os("VANGUARD_CANARIS_AVANT")

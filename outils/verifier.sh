@@ -905,6 +905,7 @@ remarques_dependances() {
     admises=$(grep -oE '\{ id = "RUSTSEC-[0-9]{4}-[0-9]{4}", reason = "[^,]+' "$deny" |
       sed -E 's/.*"(RUSTSEC-[0-9-]+)", reason = "(.*)/\1 (\2)/' | paste -sd, | sed 's/,/, /g')
     [[ -z $admises ]] || echo "      failles admises ($deny) : $admises"
+    python3 -I outils/exceptions-rustsec.py --relire "$deny" 2>&1 | sed "s|^|      ⚠ $deny : |"
   done
   doublons=$(grep -c '^warning\[duplicate\]' "$journal")
   ((doublons == 0)) || echo "      $doublons bibliothèques en plusieurs versions (doublons)"

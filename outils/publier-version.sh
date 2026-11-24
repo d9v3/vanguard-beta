@@ -592,13 +592,14 @@ else
 fi
 
 # Une exécution dont les nomenclatures valent d'être publiées : « attester » réussi, et ses essais avec, « linux »
-# réussi et « windows » réussi ou sauté (ci.yml le saute quand le code Windows n'a pas changé). Sans ça, un commit dont
+# réussi, « windows » et « windows-livre » (le .exe livré, sur un vrai Windows) tous deux réussis, ou tous deux sautés
+# (ci.yml les saute quand le code Windows n'a pas changé) ; « windows-livre » est aussi sauté quand « reproductible »
+# échoue, et ça ne compte pas. Sans ça, un commit dont
 # les essais Linux échouaient aurait ses nomenclatures attestées quand même : « attester » ne dépend que d'elles.
 attestee_et_essayee() {
-  [[ $(gh run view "$1" --json jobs -q '[.jobs[] | select(
-      (.name == "attester" and .conclusion == "success") or (.name == "linux" and .conclusion == "success")
-      or (.name == "windows" and (.conclusion == "success" or .conclusion == "skipped")))
-    | .name] | unique | length') == 3 ]]
+  [[ $(gh run view "$1" --json jobs -q '[.jobs[] | {(.name): .conclusion}] | add
+    | .attester == "success" and .linux == "success" and .windows == .["windows-livre"]
+      and (.windows == "success" or .windows == "skipped")') == true ]]
 }
 
 # Les nomenclatures (SBOM) attestées de ce code : celles du travail « nomenclatures » de ci.yml pour ce commit, ou pour

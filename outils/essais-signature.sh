@@ -440,22 +440,30 @@ GH
   chmod +x "$T/faux-gh/gh"
   awk '/^(attestee_et_essayee|avec_nomenclatures)\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" \
     >"$T/avec_nomenclatures.sh"
-  # $1 : conclusion du travail « linux », $2 : celle de « windows » ; « attester » a réussi.
+  # $1 : conclusion du travail « linux », $2 : celle de « windows », $3 : celle de « windows-livre » (absente : pas de
+  # ce travail) ; $4 : celle d'« attester » (réussi sans lui).
   choix() {
-    printf '{"jobs": [{"name": "attester", "conclusion": "success"}, {"name": "linux", "conclusion": "%s"},
-      {"name": "windows", "conclusion": "%s"}, {"name": "fuzzing", "conclusion": "failure"}]}' "$1" "$2" \
-      >"$T/faux-gh/jobs.json"
+    printf '{"jobs": [{"name": "attester", "conclusion": "%s"}, {"name": "linux", "conclusion": "%s"},
+      {"name": "windows", "conclusion": "%s"}, %s {"name": "fuzzing", "conclusion": "failure"}]}' "${4:-success}" \
+      "$1" "$2" "${3:+{\"name\": \"windows-livre\", \"conclusion\": \"$3\"\},}" >"$T/faux-gh/jobs.json"
     PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE='' bash -c "source '$T/avec_nomenclatures.sh'; avec_nomenclatures"
   }
-  choisi=$(choix success success)
+  choisi=$(choix success success success)
   [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures de master, pas celles d'une autre branche" ||
     ko "publier-version.sh a pris les nomenclatures de « ${choisi:-aucune} » (attendu : 1, celles de master)"
-  choisi=$(choix success skipped)
+  choisi=$(choix success skipped skipped)
   [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures d'un passage au travail Windows sauté" ||
     ko "nomenclatures d'un passage au travail Windows sauté refusées (« ${choisi:-aucune} »)"
-  choisi=$(choix failure success)$(choix success failure)$(choix success cancelled)$(choix skipped skipped)
+  choisi=$(choix failure success success)$(choix success failure success)$(choix success cancelled success)
+  choisi+=$(choix skipped skipped skipped)$(choix success success success failure)
   [[ -z $choisi ]] && ok "publier-version.sh refuse les nomenclatures d'un passage aux essais Linux ou Windows ratés" ||
     ko "nomenclatures prises malgré des essais Linux ou Windows ratés (« $choisi »)"
+  # Le .exe livré, essayé sur un vrai Windows : raté, pas fini, absent, ou sauté parce que sa compilation a échoué
+  # alors que « windows » tournait, il n'est pas vérifié.
+  choisi=$(choix success success failure)$(choix success success skipped)$(choix success success "")
+  choisi+=$(choix success skipped success)$(choix success skipped failure)
+  [[ -z $choisi ]] && ok "publier-version.sh refuse un passage où le .exe livré n'a pas réussi sur un vrai Windows" ||
+    ko "nomenclatures prises sans essai réussi du .exe livré (« $choisi »)"
   # La relance relit les mêmes travaux.
   grep -q '^  attestee_et_essayee "\$RUN" ||$' "$DEPOT/outils/publier-version.sh" &&
     ok "publier-version.sh relit les essais de la CI qu'il relance" ||
@@ -1897,6 +1905,15 @@ GH
   echo "[$(passage "$A" master push in_progress "")]" >"$F/runs.json"
   verte "$A" && ko "branchement : un commit à la CI en cours est récupéré" ||
     ok "branchement : un commit à la CI pas finie attend le branchement suivant"
+  # Un passage de nuit saute « linux » et « confidentialite » : vert, il ne dit rien d'un envoi en échec (22 nov. 2026).
+  echo "[$(passage "$A" master push completed failure), $(passage "$A" master schedule completed success)]" \
+    >"$F/runs.json"
+  verte "$A" && ko "branchement : une nuit verte fait oublier un envoi en échec" ||
+    ok "branchement : une nuit verte ne fait pas oublier un envoi en échec"
+  echo "[$(passage "$A" master push completed failure), $(passage "$A" master workflow_dispatch completed success)]" \
+    >"$F/runs.json"
+  verte "$A" && ok "branchement : la CI relancée à la main, verte, compte" ||
+    ko "branchement : la CI relancée à la main, verte, est refusée"
   echo "[$(passage "$A" piege push completed success), $(passage "$A" master pull_request completed success)]" \
     >"$F/runs.json"
   verte "$A" && ko "branchement : une CI verte d'une autre branche ou d'une demande de fusion suffit" ||

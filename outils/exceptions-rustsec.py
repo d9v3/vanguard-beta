@@ -9,14 +9,24 @@ Chaque crate à part (fenêtre, banc de fuzzing, extensions) a son deny.toml : s
 reçoivent que les exceptions de celui-là, jamais celles de Vanguard (rsa et bincode, venues de YARA-X).
     python3 -I outils/exceptions-rustsec.py                    un identifiant RustSec par ligne, ceux de deny.toml
     python3 -I outils/exceptions-rustsec.py fenetre/deny.toml  ceux du deny.toml d'une crate (chemin depuis la racine)
+    python3 -I outils/exceptions-rustsec.py --programmes deny.toml
+                                                               celles qui valent pour les programmes publiés : leur
+                                                               raison dit « vaut pour les programmes publiés » (sans
+                                                               ces mots : non ; rsa et bincode, de développement)
+    python3 -I outils/exceptions-rustsec.py --relire deny.toml celles dont la date de relecture est passée, en clair
     python3 -I outils/exceptions-rustsec.py --audit-toml       .cargo/audit.toml comparé à deny.toml
 """
 
+import datetime
+import re
 import sys
 import tomllib
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parent.parent
+# Les mots exacts qui font valoir une exception pour les programmes publiés, et la date où la relire.
+POUR_LES_PROGRAMMES = "vaut pour les programmes publiés"
+A_RELIRE = re.compile(r"à relire au plus tard le (\d{4}-\d{2}-\d{2})")
 
 
 def fichier_deny(nom: str) -> Path:
@@ -30,12 +40,12 @@ def fichier_deny(nom: str) -> Path:
     return chemin
 
 
-def exceptions_deny(chemin: Path) -> list[str]:
-    """Les identifiants de [advisories] ignore. Une exception d'une autre forme (toute une bibliothèque) n'a pas
-    d'équivalent pour cargo audit : refusée plutôt que perdue en route."""
+def exceptions_deny(chemin: Path) -> list[tuple[str, str]]:
+    """Les identifiants et les raisons de [advisories] ignore. Une exception d'une autre forme (toute une bibliothèque)
+    n'a pas d'équivalent pour cargo audit : refusée plutôt que perdue en route."""
     with open(chemin, "rb") as f:
         exceptions = tomllib.load(f).get("advisories", {}).get("ignore", [])
-    identifiants = []
+    lues = []
     for e in exceptions:
         ident = e if isinstance(e, str) else e.get("id")
         if not ident:
@@ -43,13 +53,28 @@ def exceptions_deny(chemin: Path) -> list[str]:
                 f"exception de {chemin.relative_to(RACINE)} sans identifiant RustSec, sans équivalent pour cargo"
                 f" audit : {e}"
             )
-        identifiants.append(ident)
-    return identifiants
+        lues.append((ident, "" if isinstance(e, str) else e.get("reason", "")))
+    return lues
+
+
+def a_relire(exceptions: list[tuple[str, str]], jour: datetime.date) -> list[str]:
+    """Les exceptions dont la date de relecture est passée. Une date impossible (31 février) compte comme passée :
+    jamais lue comme « pas de date »."""
+    dites = []
+    for ident, raison in exceptions:
+        for date in A_RELIRE.findall(raison):
+            try:
+                passee = datetime.date.fromisoformat(date) < jour
+            except ValueError:
+                passee = True
+            if passee:
+                dites.append(f"{ident} ({raison.split(',')[0]}) : à relire depuis le {date}")
+    return dites
 
 
 def main() -> None:
     if sys.argv[1:] == ["--audit-toml"]:
-        deny = exceptions_deny(fichier_deny("deny.toml"))
+        deny = [ident for ident, _ in exceptions_deny(fichier_deny("deny.toml"))]
         chemin = RACINE / ".cargo" / "audit.toml"
         with open(chemin, "rb") as f:
             audit = tomllib.load(f).get("advisories", {}).get("ignore", [])
@@ -60,11 +85,22 @@ def main() -> None:
             )
         return
     arguments = sys.argv[1:]
+    mode = arguments[0] if arguments and arguments[0] in ("--programmes", "--relire") else ""
+    if mode:
+        arguments = arguments[1:]
+        if not arguments:
+            sys.exit(f"python3 -I outils/exceptions-rustsec.py {mode} <deny.toml d'une crate>")
     if len(arguments) > 1 or any(a.startswith("-") for a in arguments):
-        sys.exit("python3 -I outils/exceptions-rustsec.py [--audit-toml | <deny.toml d'une crate>]")
-    deny = exceptions_deny(fichier_deny(arguments[0] if arguments else "deny.toml"))
-    if deny:
-        print("\n".join(deny))
+        sys.exit(
+            "python3 -I outils/exceptions-rustsec.py [--audit-toml | [--programmes | --relire] <deny.toml d'une crate>]"
+        )
+    exceptions = exceptions_deny(fichier_deny(arguments[0] if arguments else "deny.toml"))
+    if mode == "--relire":
+        lignes = a_relire(exceptions, datetime.date.today())
+    else:
+        lignes = [ident for ident, raison in exceptions if not mode or POUR_LES_PROGRAMMES in raison]
+    if lignes:
+        print("\n".join(lignes))
 
 
 if __name__ == "__main__":

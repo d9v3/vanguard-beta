@@ -192,13 +192,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
       - name: Canaris (sources téléchargées, relues par les lecteurs du programme)
-        run: |
-          d="$RUNNER_TEMP/canaris"
-          mkdir -p "$d"
-          VANGUARD_CANARIS="$d" cargo test -q --locked --bin vanguard canaris::canaris_telecharger -- --ignored --exact
-          VANGUARD_CANARIS="$d" cargo test -q --locked --bin vanguard canaris::canaris_kev -- --ignored --exact
-          VANGUARD_ESSAI_PERIMES="$d" VANGUARD_ESSAI_ECHAP="$d/ioc.yaml" cargo test -q --locked --bin vanguard -- \
-            vraies_copies_si_presentes vraie_copie_si_presente vrai_fichier_d_echap
+        run: bash outils/canaris-ci.sh "$RUNNER_TEMP/canaris"
 
   # Le banc de fuzzing (fuzz/), cinq minutes par cible chaque nuit, et à la demande : verifier.sh n'y passe que
   # quelques secondes. Le corpus appris d'une nuit est repris la suivante (cache de GitHub) ; une donnée qui fait
@@ -400,7 +394,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vanguard-windows-livre
-          path: target/x86_64-pc-windows-gnu/release/vanguard.exe
+          path: |
+            target/x86_64-pc-windows-gnu/release/vanguard.exe
+            target/fenetre/x86_64-pc-windows-gnu/release/vanguard-fenetre.exe
           retention-days: 7
 
   windows:
@@ -434,23 +430,33 @@ jobs:
         if: always()
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
-        run: 'cargo test --locked --manifest-path fenetre/Cargo.toml --target x86_64-pc-windows-msvc une_fenetre::'
+        shell: bash
+        run: |
+          bash outils/essais-reels.sh -- \
+            cargo test --locked --manifest-path fenetre/Cargo.toml --target x86_64-pc-windows-msvc une_fenetre::
       - name: Tests sautés sur le vrai Windows
         if: always()
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
         run: |
-          if (Test-Path $env:VANGUARD_TESTS_SAUTES) {
-            $l = @(Get-Content $env:VANGUARD_TESTS_SAUTES)
-            "::warning::$($l.Count) tests sautés (non vérifiés)"
-            "### Tests sautés sur Windows : $($l.Count)" >> $env:GITHUB_STEP_SUMMARY
-            $l | ForEach-Object { "- $_" } >> $env:GITHUB_STEP_SUMMARY
+          # Plafond versionné : 29 le 24 nov. 2026. Au-dessus, un réglage de la machine ou du code a rendu muets des
+          # essais ; à relever ici, en le disant, seulement si les nouveaux sauts sont voulus.
+          $plafond = 40
+          if (-not (Test-Path $env:VANGUARD_TESTS_SAUTES)) {
+            throw "aucune liste des tests sautés : les tests n'ont pas tourné, ou ne la remplissent plus"
           }
+          $l = @(Get-Content $env:VANGUARD_TESTS_SAUTES -Encoding UTF8)
+          "::warning::$($l.Count) tests sautés (non vérifiés)"
+          "### Tests sautés sur Windows : $($l.Count)" >> $env:GITHUB_STEP_SUMMARY
+          $l | ForEach-Object { "- $_" } >> $env:GITHUB_STEP_SUMMARY
+          if ($l.Count -gt $plafond) { throw "$($l.Count) tests sautés, $plafond au plus" }
       - name: Essai du programme (lecture seule)
         run: |
           $s = ".\target\x86_64-pc-windows-msvc\debug\vanguard.exe"
           & $s --version
+          if ($LASTEXITCODE -ne 0) { throw "--version : code $LASTEXITCODE" }
           & $s audit --json > audit.json
+          if ($LASTEXITCODE -ne 0) { throw "audit --json : code $LASTEXITCODE" }
           Get-Content audit.json -TotalCount 40
           # Un Windows élevé avec l'UAC refuse les outils d'Optimiser (code 2, voulu) : dit, pas un échec.
           foreach ($outil in 'logiciels', 'nettoyer') {
@@ -482,15 +488,19 @@ jobs:
         run: |
           # La sortie du programme lue en UTF-8 par PowerShell : un accent perdu doit venir du .exe, pas d'ici.
           [Console]::OutputEncoding = [Text.Encoding]::UTF8
-          $s = ".\vanguard.exe"
+          # L'archive garde les dossiers sous leur ancêtre commun (target) : deux fichiers, chacun à sa place.
+          $s = ".\x86_64-pc-windows-gnu\release\vanguard.exe"
+          $f = ".\fenetre\x86_64-pc-windows-gnu\release\vanguard-fenetre.exe"
           "EMPREINTE-VANGUARD-WINDOWS-ESSAYE $((Get-FileHash $s -Algorithm SHA256).Hash.ToLower())"
           & $s --version
           if ($LASTEXITCODE -ne 0) { throw "--version : code $LASTEXITCODE" }
           $env:VANGUARD_LANG = 'fr'
           & $s audit --json > audit.json
+          if ($LASTEXITCODE -ne 0) { throw "audit --json : code $LASTEXITCODE" }
           $bilan = Get-Content audit.json -Raw -Encoding UTF8 | ConvertFrom-Json
           if (-not $bilan.constats) { throw "bilan sans constats" }
           $aide = (& $s --help | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "--help : code $LASTEXITCODE" }
           if ($aide -notmatch 'Cyberdéfense') { throw "accents perdus dans l'aide (manifeste UTF-8 ?) : $aide" }
           # Un Windows élevé avec l'UAC refuse les outils d'Optimiser (code 2, voulu) : dit, pas un échec.
           foreach ($outil in 'logiciels', 'nettoyer') {
@@ -499,6 +509,20 @@ jobs:
               "::notice::$outil --liste refusé en administrateur (UAC) : voulu"
             } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
           }
+          # La fenêtre livrée : elle démarre (toutes ses DLL se chargent depuis System32) et dit la version du
+          # programme, qui porte l'empreinte de ces octets-là : une autre, et la fenêtre ne s'ouvrirait chez personne.
+          # Programme de fenêtre (windows_subsystem) : `&` n'attend pas sa fin, Start-Process si.
+          $p = Start-Process $f -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput version-fenetre.txt
+          if ($p.ExitCode -ne 0) { throw "vanguard-fenetre --version : code $($p.ExitCode)" }
+          $attendue = "vanguard-fenetre " + ((& $s --version | Out-String).Trim() -split ' ')[-1]
+          $dite = (Get-Content version-fenetre.txt -Raw).Trim()
+          if ($dite -ne $attendue) { throw "vanguard-fenetre --version : « $dite », attendu « $attendue »" }
+          $empreinte = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+          $octets = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Resolve-Path $s)))
+          if (-not $octets.Contains("VANGUARD-FENETRE:$empreinte;")) {
+            throw "vanguard.exe ne porte pas l'empreinte de vanguard-fenetre.exe ($empreinte)"
+          }
+          "EMPREINTE-FENETRE-WINDOWS-ESSAYEE $empreinte"
           $global:LASTEXITCODE = 0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

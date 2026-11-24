@@ -5,7 +5,9 @@
 # abandonnée ou au code défaillant (unsound), un avis « notice » arrête tout ; une version retirée de crates.io
 # (yanked), elle, est seulement signalée. Les seules exceptions sont celles du deny.toml de chaque crate, où est leur
 # raison (outils/exceptions-rustsec.py) : celles de deny.toml pour Vanguard, de fenetre/deny.toml pour la fenêtre, et
-# ainsi de suite ; jamais celles d'une autre crate. cargo audit lit aussi le .cargo/audit.toml du dossier courant (à
+# ainsi de suite ; jamais celles d'une autre crate, et pour un programme, seulement celles qui disent valoir pour les
+# programmes publiés (celles d'une dépendance de développement, non : passée par erreur dans le programme, elle y ferait
+# échouer). cargo audit lit aussi le .cargo/audit.toml du dossier courant (à
 # défaut, celui de ~/.cargo) et ajoute ses exceptions sans le dire ; il tourne donc dans un dossier à lui, dont
 # l'audit.toml vide masque les autres. Un programme sans sa liste est refusé : cargo audit n'en retrouverait qu'une
 # partie (messages de panique) et pourrait dire vert à tort. La liste vient de cargo metadata : elle compte parfois une
@@ -98,6 +100,7 @@ ajouter_exceptions() { # deny.toml (depuis la racine), puis le nom du tableau d'
 # deny, cible par cible, les refuse sinon) et, avec --fenetre, qu'aucune caisse retirée de la fenêtre ne se lit dans les
 # octets du programme audité (hors_cibles_absentes_des_octets).
 OPTIONS_FENETRE=("${OPTIONS[@]}")
+# Les programmes, eux, ont leurs options plus bas (--programmes) : celles-ci sont pour fenetre/Cargo.lock (--depot).
 # --exceptions-depot lit chaque deny.toml lui-même (plus bas) et dit « illisible » au lieu de s'arrêter ici.
 [[ $1 == --exceptions-depot ]] || ajouter_exceptions fenetre/deny.toml OPTIONS_FENETRE
 # Les crates à part, chacune avec son Cargo.lock et les exceptions de son deny.toml, rien de plus : le banc de
@@ -124,7 +127,10 @@ HORS_CIBLES=(RUSTSEC-2026-0370:zvariant RUSTSEC-2026-0371:zbus_names RUSTSEC-202
 if [[ $1 != --exceptions-depot ]]; then
   DENY=deny.toml
   [[ -z $FENETRE ]] || DENY=fenetre/deny.toml
-  EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "$DENY") ||
+  # Pour des programmes, seulement les exceptions qui disent valoir pour eux ; pour --depot, toutes.
+  PROGRAMMES=(--programmes)
+  [[ $1 != --depot ]] || PROGRAMMES=()
+  EXCEPTIONS=$(python3 -I "$RACINE/outils/exceptions-rustsec.py" "${PROGRAMMES[@]}" "$DENY") ||
     { echo "✖ exceptions de $DENY illisibles : rien n'est audité. Ces programmes ne partent nulle part."; exit 1; }
   for id in $EXCEPTIONS; do
     OPTIONS+=(--ignore "$id")

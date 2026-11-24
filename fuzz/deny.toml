@@ -19,7 +19,7 @@ unmaintained = "all"
 unsound = "all"
 unused-ignored-advisory = "deny"
 ignore = [
-    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve ; à relire au plus tard le 2027-01-17" },
 ]
 
 # Les licences de deny.toml que l'arbre du banc rencontre, permissives. Une de plus demande d'abord une décision

@@ -25,6 +25,10 @@ targets = [
 #   aucune faille connue ni version corrigée. Ce n'est pas un défaut écarté par une preuve, mais un abandon admis
 #   pour un temps, par choix de l'auteur (17 nov. 2026), en attendant son remplacement par jiff. La même exception
 #   est dans fenetre/deny.toml et fuzz/deny.toml, qui ont chrono en dépendance directe eux aussi.
+# Une exception ne vaut pour les programmes publiés (outils/failles-programmes.sh <programme>) que si sa raison le dit
+# mot pour mot (« vaut pour les programmes publiés ») : rsa et bincode ne le disent pas, et YARA-X devenue par erreur
+# une dépendance normale y ferait échouer l'audit. Une date (« à relire au plus tard le AAAA-MM-JJ ») passée est dite à
+# chaque vérification (outils/verifier.sh).
 [advisories]
 unmaintained = "all"
 unsound = "all"
@@ -32,7 +36,7 @@ unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa, par YARA-X seulement ([bans]), sans version corrigée : l'attaque Marvin vise les opérations à clé privée (déchiffrement), YARA-X ne fait que vérifier des signatures Authenticode avec une clé publique (modules/utils/crypto.rs, RsaPublicKey)" },
     { id = "RUSTSEC-2025-0141", reason = "bincode, par YARA-X seulement ([bans]) et sans réglage qui l'ôte, abandonné mais sans faille connue : YARA-X n'y encode puis n'y relit que ses propres variables globales (compilation des règles intégrées, puis chaque Scanner::new), dans le même processus ; Vanguard n'appelle jamais Rules::deserialize : aucune donnée venue d'ailleurs ne passe par bincode" },
-    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono, dépendance directe, déclarée abandonnée (14 sept. 2026), sans faille connue ni version corrigée : admise le 17 nov. 2026 en attendant son remplacement par jiff, pas écartée par une preuve ; vaut pour les programmes publiés ; à relire au plus tard le 2027-01-17" },
 ]
 
 # Les licences déjà présentes parmi les dépendances (LICENCES-TIERCES.txt), toutes permissives : compatibles avec la
