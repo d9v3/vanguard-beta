@@ -1827,12 +1827,14 @@ voir "clé à jour et page publiée : code 0" \
 voir "clé à jour, rien à dire de ses images : rien n'en est dit" \
   eval 'pas_dit "$BANC/sortie" "(programmes)"' || montrer "$BANC/sortie"
 echo "· Image illisible sur la clé : ISO/essai.iso" >"$BANC/avis-images"
+rm -f "$BANC/run/vanguard-notification.empreinte" "$BANC/notifications.log" # dite une fois par programme
 publie 0
 code=$?
 rm -f "$BANC/avis-images"
 voir "images de la clé pas toutes vues : dites deux fois, « à jour » ne vaut que pour les programmes" \
   eval '((code == 0 && $(grep -cxF "· Image illisible sur la clé : ISO/essai.iso" "$BANC/sortie") == 2)) &&
-    dit "$BANC/sortie" "Clé VANGUARD à jour (programmes) :" && pas_dit "$BANC/sortie" "Clé VANGUARD à jour :"' ||
+    dit "$BANC/sortie" "Clé VANGUARD à jour (programmes) :" && pas_dit "$BANC/sortie" "Clé VANGUARD à jour :" &&
+    dit "$BANC/notifications.log" "|Clé VANGUARD à jour (programmes)|"' ||
   montrer "$BANC/sortie"
 publie 1
 code=$?
