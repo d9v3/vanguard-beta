@@ -422,7 +422,8 @@ impl Systeme<'_> {
     /// information). Liste illisible ou ligne sans type : `Ecart::DestinationNonVue`, jamais un silence. Une image du
     /// compte montée là : `image_du_compte` (V-7).
     fn disque_monte(&self, racine: &str) -> Result<(), Ecart> {
-        let texte = std::fs::read_to_string(self.sous("/proc/self/mountinfo")).map_err(|_| Ecart::DestinationNonVue)?;
+        let texte =
+            crate::socle::lire_texte(self.sous("/proc/self/mountinfo")).map_err(|_| Ecart::DestinationNonVue)?;
         let Some(ligne) = texte
             .lines()
             .rev()
@@ -508,7 +509,7 @@ impl Systeme<'_> {
         if racine == absent || racine.strip_prefix(absent).is_some_and(|r| r.starts_with('/')) {
             return true;
         }
-        std::fs::read_to_string(self.sous("/proc/self/mountinfo"))
+        crate::socle::lire_texte(self.sous("/proc/self/mountinfo"))
             .is_ok_and(|t| !t.lines().any(|l| point_de_montage(l).is_some_and(|m| m == racine)))
     }
 

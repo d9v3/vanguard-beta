@@ -315,7 +315,7 @@ fn attributs_par_dbus() -> Result<Vec<Attribut>, crate::modele::Echec> {
 /// secours. Pas dans un espace de noms d'utilisateur (la suite de tests sans réseau) : le service de fwupd y voit
 /// un autre compte.
 pub(super) fn securite_plateforme() -> Constat {
-    if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
+    if crate::socle::lire_texte("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
         return impossible("Plateforme", tr!("espace de noms isolé", "isolated namespace"));
     }
     let outil = Path::new("/usr/bin/fwupdmgr").exists() || Path::new("/bin/fwupdmgr").exists();
@@ -420,7 +420,7 @@ pub(super) fn juger_bpf(valeur: Option<i64>) -> Option<Constat> {
 
 pub(super) fn bpf() -> Option<Constat> {
     juger_bpf(
-        std::fs::read_to_string("/proc/sys/kernel/unprivileged_bpf_disabled")
+        crate::socle::lire_texte("/proc/sys/kernel/unprivileged_bpf_disabled")
             .ok()
             .and_then(|v| v.trim().parse().ok()),
     )
@@ -709,7 +709,7 @@ mod tests {
     /// L'oracle : GetHostSecurityAttrs par le client maison contre `fwupdmgr security --json`, sur cet ordinateur.
     #[test]
     fn fwupd_par_dbus_comme_fwupdmgr() {
-        if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
+        if crate::socle::lire_texte("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
             return crate::essais::saute("espace de noms isolé");
         }
         let natif = match attributs_par_dbus() {

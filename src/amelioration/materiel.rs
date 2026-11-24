@@ -105,13 +105,13 @@ mod systeme {
 
     /// Un petit fichier de /proc ou /sys, en texte, borné.
     fn court(chemin: &Path, max: u64) -> Option<String> {
-        let mut t = String::new();
+        let mut octets = Vec::new();
         std::fs::File::open(chemin)
             .ok()?
             .take(max)
-            .read_to_string(&mut t)
+            .read_to_end(&mut octets)
             .ok()?;
-        Some(t)
+        Some(crate::socle::texte_des_octets(octets))
     }
 
     fn mot(chemin: impl AsRef<Path>) -> Option<String> {

@@ -208,8 +208,13 @@ pub(crate) fn lire(pid: u32, chemin: &str, depart_connu: Option<u64>) -> Lu {
     #[cfg(target_os = "linux")]
     {
         use crate::socle::processus;
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return Lu::Fini;
+        let stat = match crate::socle::lire_texte(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            // Parti avant l'ouverture (ENOENT) ou pendant la lecture (ESRCH). Toute autre erreur ne prouve pas sa fin.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => {
+                return Lu::Fini;
+            }
+            Err(_) => return Lu::Illisible,
         };
         if matches!(processus::etat_du_stat(&stat), Some('Z' | 'X')) {
             return Lu::Fini;
@@ -956,6 +961,26 @@ pub(crate) fn rappeler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un programme suspendu au nom hors UTF-8 reste suspendu : jamais « fini » (il sortirait de la liste, et plus
+    /// rien ne le reprendrait).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_nom_hors_utf8_n_est_pas_fini() {
+        let p = crate::essais::AuNomHorsUtf8::lancer();
+        let chemin = std::fs::read_link(format!("/proc/{}/exe", p.pid())).unwrap();
+        let chemin = chemin.to_str().unwrap();
+        let depart = depart_de(p.pid());
+        assert!(depart.is_some());
+        assert!(matches!(lire(p.pid(), chemin, depart), Lu::Tourne));
+        assert!(matches!(lire(p.pid(), chemin, depart.map(|d| d + 1)), Lu::Autre));
+        assert!(crate::socle::processus::geler(p.pid()));
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::socle::processus::est_gele(p.pid()) != Some(true) && std::time::Instant::now() < limite {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(matches!(lire(p.pid(), chemin, depart), Lu::Gele));
+    }
 
     /// Fini : oublié ; autre programme : dit, puis oublié ; suspendu : rappelé ; illisible d'ici : gardé et dit, jamais
     /// oublié en silence ; repris par un tiers : resuspendu si possible, sinon dit.

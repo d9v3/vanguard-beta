@@ -254,7 +254,7 @@ mod systeme {
 
     /// Volumes montés (un par périphérique : les sous-volumes btrfs partagent la même place), hors supports amovibles.
     pub fn volumes() -> Vec<Volume> {
-        let montages = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let montages = crate::socle::lire_texte("/proc/mounts").unwrap_or_default();
         let mut vus = Vec::new();
         let mut volumes = Vec::new();
         for l in montages.lines() {

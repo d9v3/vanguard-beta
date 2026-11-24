@@ -2616,7 +2616,7 @@ mod tests {
     /// Root efface même dans un dossier en lecture seule : le cas ne se vérifie alors pas.
     #[cfg(unix)]
     fn est_root() -> bool {
-        std::fs::read_to_string("/proc/self/status")
+        crate::socle::lire_texte("/proc/self/status")
             .ok()
             .and_then(|t| {
                 t.lines()

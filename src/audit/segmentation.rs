@@ -464,7 +464,7 @@ pub fn routeurs_ipv6_linux(table: &str) -> Vec<RouteurIpv6> {
 fn routeurs_ipv6() -> Option<Vec<RouteurIpv6>> {
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/proc/net/ipv6_route")
+        crate::socle::lire_texte("/proc/net/ipv6_route")
             .ok()
             .map(|t| routeurs_ipv6_linux(&t))
     }
@@ -501,7 +501,7 @@ pub fn interface_par_defaut_linux(table: &str) -> Option<String> {
 fn en_wifi() -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
-        let carte = interface_par_defaut_linux(&std::fs::read_to_string("/proc/net/route").ok()?)?;
+        let carte = interface_par_defaut_linux(&crate::socle::lire_texte("/proc/net/route").ok()?)?;
         if carte.contains('/') || carte.contains("..") {
             return None;
         }

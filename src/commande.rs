@@ -822,7 +822,7 @@ fn processus_et_parents() -> Vec<(u32, u32)> {
         crate::socle::processus::pids()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|pid| parent_linux(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?))
+            .filter_map(|pid| parent_linux(&crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?))
             .collect()
     }
     #[cfg(windows)]
@@ -1783,7 +1783,8 @@ pub(crate) mod tests_sh_chaine {
         let mut directs = Vec::new();
         for (nom, src) in &fichiers {
             let nom = nom.replace('\\', "/");
-            if matches!(nom.as_str(), "commande.rs" | "coulisses.rs")
+            // essais.rs : les aides des essais, jamais dans le vrai programme (`#[cfg(test)] mod essais`).
+            if matches!(nom.as_str(), "commande.rs" | "coulisses.rs" | "essais.rs")
                 || nom.ends_with("tests.rs")
                 || nom.contains("/tests/")
             {

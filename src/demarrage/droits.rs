@@ -24,7 +24,7 @@ pub(crate) fn processus_eleve() -> bool {
 /// un compte ordinaire de l'ordinateur, sans aucun droit sur lui.
 #[cfg(unix)]
 fn root_d_un_espace_de_noms() -> bool {
-    std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|t| root_hors_de_l_espace(&t) == Some(false))
+    crate::socle::lire_texte("/proc/self/uid_map").is_ok_and(|t| root_hors_de_l_espace(&t) == Some(false))
 }
 
 /// Le compte 0 de cet espace est-il le root de l'ordinateur ? D'après /proc/self/uid_map (« dedans dehors nombre »
@@ -52,7 +52,7 @@ fn droits_demandables() -> bool {
         let variables = ["SUDO_UID", "PKEXEC_UID", "DOAS_USER"]
             .iter()
             .any(|v| std::env::var_os(v).is_some());
-        let session = std::fs::read_to_string("/proc/self/loginuid")
+        let session = crate::socle::lire_texte("/proc/self/loginuid")
             .ok()
             .and_then(|t| t.trim().parse::<u32>().ok());
         venu_d_un_autre_compte(variables, session)

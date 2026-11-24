@@ -137,9 +137,14 @@ fn bloc_pose(hosts: &str) -> Option<(Option<NaiveDate>, usize)> {
     Some((date, noms))
 }
 
+/// Le hosts de cet ordinateur. Windows l'écrit souvent en ANSI : un commentaire accentué n'y cache pas le bloc.
+fn lire_hosts() -> std::io::Result<String> {
+    std::fs::read(fichier_hosts()).map(crate::socle::texte_des_octets)
+}
+
 /// Le bloc de Vanguard est-il dans le hosts de cet ordinateur ? Illisible : non (rien à dire de plus).
 pub(crate) fn bloc_present() -> bool {
-    std::fs::read_to_string(fichier_hosts()).is_ok_and(|h| bloc_pose(&h).is_some())
+    lire_hosts().is_ok_and(|h| bloc_pose(&h).is_some())
 }
 
 #[cfg(not(windows))]
@@ -572,7 +577,7 @@ fn poser(avant: &[u8], sans: &str) {
 
 /// Pour le bilan : un bloc posé il y a plus d'une semaine ne bloque pas les sites apparus depuis.
 pub(crate) fn constat(categorie: &'static str) -> Option<Constat> {
-    let hosts = std::fs::read_to_string(fichier_hosts()).ok()?;
+    let hosts = lire_hosts().ok()?;
     let jours = vieux_de(&hosts, chrono::Local::now().date_naive())?;
     let message = if jours == i64::MAX {
         tr!(
@@ -620,7 +625,7 @@ fn noms_detournes(hosts: &str) -> std::collections::HashSet<String> {
 
 /// Ceux du hosts de cet ordinateur ; illisible, aucun.
 pub(crate) fn noms_bloques_ici() -> std::collections::HashSet<String> {
-    std::fs::read_to_string(fichier_hosts()).map_or_default(|h| noms_detournes(&h))
+    lire_hosts().map_or_default(|h| noms_detournes(&h))
 }
 
 #[allow(

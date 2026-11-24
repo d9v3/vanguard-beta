@@ -36,8 +36,8 @@ pub(crate) use fichiers::lire_ordinaire_au_bout;
 pub use fichiers::proteger_dossier_local;
 pub(crate) use fichiers::{
     ATTENTE_ECRITURE, ATTENTE_LECTURE, SansVerrou, Verrou, du_systeme, ecrire_atomique, ecrire_atomique_date,
-    ecriture_sure, lire_ordinaire, lire_texte_ordinaire, nom_systeme, ouvrir_ordinaire, parcourir_ordinaire,
-    refus_du_systeme, verrou_remplace,
+    ecriture_sure, lire_ordinaire, lire_texte, lire_texte_ordinaire, nom_systeme, ouvrir_ordinaire,
+    parcourir_ordinaire, refus_du_systeme, texte_des_octets, verrou_remplace,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use identite::{

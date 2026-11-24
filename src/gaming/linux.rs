@@ -44,7 +44,7 @@ fn reussit(cmd: &str, args: &[&str]) -> bool {
 /// Le module `nom` existe-t-il pour le noyau en service (ce que vérifiait `modinfo`) ? Il est soit compilé dans le
 /// noyau (modules.builtin), soit un fichier .ko listé dans modules.dep. `None` si aucune des deux listes ne se lit.
 fn module_existe(nom: &str) -> Option<bool> {
-    let version = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+    let version = crate::socle::lire_texte("/proc/sys/kernel/osrelease").ok()?;
     let version = version.trim();
     ["/lib/modules", "/usr/lib/modules"].iter().find_map(|d| {
         let dossier = Path::new(d).join(version);
@@ -410,7 +410,7 @@ pub(super) fn convertir(nom: &str, v: Option<&str>) -> Option<(Geste, Option<Str
 fn reglages() -> Vec<Element> {
     let mut l = Vec::new();
     // vm.max_map_count : certains jeux récents (Hogwarts Legacy, Starfield, CS2…) plantent sous la valeur de SteamOS.
-    let actuel: u64 = std::fs::read_to_string("/proc/sys/vm/max_map_count")
+    let actuel: u64 = crate::socle::lire_texte("/proc/sys/vm/max_map_count")
         .ok()
         .and_then(|t| t.trim().parse().ok())
         .unwrap_or(0);

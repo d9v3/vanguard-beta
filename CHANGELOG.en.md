@@ -15,6 +15,13 @@ example, finds it, to rebuild it if needed.
   that file open for as long as it lived, even without writing to it: it could not be deleted, nor the same command
   run again. The input and outputs received from the terminal are no longer passed to the window. Any other file the
   program starting Vanguard may have left it to inherit, besides those three, is not touched.
+- **Linux: an unreadable name no longer hides a program.** A program can put bytes that are not text in its name, or in
+  the name of a file or a mount point. Vanguard then refused the whole system file showing them: the program vanished
+  from its lists, a frozen program was reported as finished, or every mount became invisible. Those bytes now read as
+  the “�” character, and the rest still counts; a test refuses any strict reading of /proc coming back into the code.
+- **What could not be read is said, never counted as healthy.** The hosts file, a browser profile's extensions, a
+  session startup launcher, the list of accounts, the keyboard reading group or the mounts that exist but cannot be read
+  now give an impossible or partial check instead of “nothing found”.
 
 ## November 24, 2026: version 0.98.0
 

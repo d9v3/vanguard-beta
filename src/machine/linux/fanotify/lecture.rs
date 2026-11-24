@@ -411,8 +411,19 @@ fn montage(ligne: &str) -> Option<Montage> {
 pub(crate) fn locaux(mountinfo: &str) -> Vec<Montage> {
     let mut v: Vec<Montage> = Vec::new();
     for m in mountinfo.lines().take(MONTAGES_MAX).filter_map(montage) {
-        if local(&m.genre) && !v.iter().any(|x| x.dev == m.dev) {
-            v.push(m);
+        if !local(&m.genre) {
+            continue;
+        }
+        match v.iter_mut().find(|x| x.dev == m.dev) {
+            None => v.push(m),
+            // Un point de montage hors UTF-8, lu avec des « � », ne désigne rien sur le disque : marqué par un autre
+            // point du même système de fichiers, s'il y en a un (sinon l'échec du marquage est compté et dit).
+            Some(x)
+                if x.point.contains(char::REPLACEMENT_CHARACTER) && !m.point.contains(char::REPLACEMENT_CHARACTER) =>
+            {
+                *x = m;
+            }
+            Some(_) => {}
         }
     }
     v
@@ -428,6 +439,18 @@ mod tests {
     use super::*;
 
     const EXEC: u64 = 0x0004_0000;
+
+    /// Un point de montage hors UTF-8 ne cache ni les autres montages, ni son système de fichiers s'il est monté
+    /// ailleurs sous un nom lisible.
+    #[test]
+    fn un_point_de_montage_hors_utf8_ne_cache_rien() {
+        let octets = b"40 1 8:1 / /mnt/caf\xe9 rw - ext4 /dev/sda1 rw\n\
+41 1 8:1 / /mnt/lisible rw - ext4 /dev/sda1 rw\n\
+42 1 8:2 / /home rw - ext4 /dev/sda2 rw\n";
+        let lus = locaux(&crate::socle::texte_des_octets(octets.to_vec()));
+        let points: Vec<&str> = lus.iter().map(|m| m.point.as_str()).collect();
+        assert_eq!(points, ["/mnt/lisible", "/home"]);
+    }
 
     fn ev(fd: i32, pid: i32) -> Evenement {
         Evenement {

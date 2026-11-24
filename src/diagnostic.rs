@@ -136,7 +136,7 @@ mod systeme {
     const ERREURS: &str = "erreurs-journal";
 
     fn lire(chemin: &str) -> Option<String> {
-        std::fs::read_to_string(chemin)
+        crate::socle::lire_texte(chemin)
             .ok()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())

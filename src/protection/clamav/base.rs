@@ -1566,7 +1566,7 @@ mod tests {
             }
             println!("  écartés : {:?} ; à part : {:?}", base.ecartes, base.a_part);
             println!("  non lues : {:?}", s.comptes.non_lues);
-            if let Ok(t) = std::fs::read_to_string("/proc/self/status") {
+            if let Ok(t) = crate::socle::lire_texte("/proc/self/status") {
                 for l in t.lines().filter(|l| l.starts_with("VmHWM") || l.starts_with("VmRSS")) {
                     println!("  {l}");
                 }

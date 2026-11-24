@@ -455,7 +455,7 @@ fn nom_du_processeur(cpuinfo: &str, midr: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn lire() -> Fiche {
-    let fichier = |chemin: &str| std::fs::read_to_string(chemin).unwrap_or_default().trim().to_string();
+    let fichier = |chemin: &str| crate::socle::lire_texte(chemin).unwrap_or_default().trim().to_string();
     let dmi = |f: &str| fichier(&format!("/sys/class/dmi/id/{f}"));
     let os = crate::socle::systeme::nom();
     let mut f = Fiche {
@@ -1145,7 +1145,7 @@ mod tests {
         else {
             return crate::essais::saute("lscpu sans « Model name »");
         };
-        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let cpuinfo = crate::socle::lire_texte("/proc/cpuinfo").unwrap_or_default();
         let midr =
             std::fs::read_to_string("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1").unwrap_or_default();
         let natif = nom_du_processeur(&cpuinfo, &midr);

@@ -339,7 +339,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
     } else {
         r.non_verifie(tr!("processus illisibles (/proc)", "processes unreadable (/proc)"));
     }
-    let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    let montages = crate::socle::lire_texte("/proc/self/mounts").unwrap_or_default();
     let (lecteurs, illisibles) = clavier::lecteurs();
     r.verifies = r.verifies.saturating_add(1);
     r.clavier_illisibles = illisibles;
@@ -370,7 +370,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
             "{illisibles} processes of other accounts not checked (sudo vanguard spyware)"
         ));
     }
-    match std::fs::read_to_string("/proc/modules") {
+    match crate::socle::lire_texte("/proc/modules") {
         Ok(modules) => {
             if let Some(m) = clavier::module_espion(&modules) {
                 r.signe(
@@ -387,16 +387,25 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
         }
         Err(_) => r.non_verifie(tr!("modules du noyau illisibles", "kernel modules unreadable")),
     }
-    let group = std::fs::read_to_string("/etc/group").unwrap_or_default();
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    if clavier::dans_le_groupe_input(&group, &status) {
-        r.notes.push(
-            tr!(
-                "votre compte est dans le groupe « input » : tout programme lancé par votre compte peut lire le clavier sans droits",
-                "your account is in the “input” group: any program started by your account can read the keyboard without rights"
-            )
-            .to_string(),
-        );
+    match (
+        crate::socle::lire_texte("/etc/group"),
+        crate::socle::lire_texte("/proc/self/status"),
+    ) {
+        (Ok(group), Ok(status)) => {
+            if clavier::dans_le_groupe_input(&group, &status) {
+                r.notes.push(
+                    tr!(
+                        "votre compte est dans le groupe « input » : tout programme lancé par votre compte peut lire le clavier sans droits",
+                        "your account is in the “input” group: any program started by your account can read the keyboard without rights"
+                    )
+                    .to_string(),
+                );
+            }
+        }
+        _ => r.non_verifie(tr!(
+            "appartenance au groupe « input » illisible",
+            "membership of the “input” group unreadable"
+        )),
     }
     let variable = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
     let x11 = std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "x11")

@@ -106,7 +106,7 @@ pub(crate) fn tunnel(nom: &str) -> bool {
 /// Les adresses temporaires (drapeau IFA_F_TEMPORARY de /proc/net/if_inet6) ; `None` : ne se lit pas ici.
 #[cfg(target_os = "linux")]
 fn temporaires() -> Option<std::collections::HashSet<Ipv6Addr>> {
-    let texte = std::fs::read_to_string("/proc/net/if_inet6").ok()?;
+    let texte = crate::socle::lire_texte("/proc/net/if_inet6").ok()?;
     Some(
         lire_if_inet6(&texte)
             .into_iter()

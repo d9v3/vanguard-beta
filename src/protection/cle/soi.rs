@@ -761,7 +761,7 @@ mod tests {
         entrees
             .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
             .filter(|&pid| {
-                std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                crate::socle::lire_texte(format!("/proc/{pid}/stat"))
                     .ok()
                     .and_then(|stat| {
                         let (_, apres) = stat.rsplit_once(')')?;

@@ -224,16 +224,48 @@ fn navigation_detournee(pourquoi: String, commandes: Vec<String>) -> Reparation 
 /// « Navigation détournée » sous Linux : un point de restauration si le fichier hosts change, « rien à
 /// faire » sans commande.
 #[cfg(unix)]
-fn finir_navigation(pourquoi: String, commandes: Vec<String>, hosts: bool) -> Reparation {
+fn finir_navigation(pourquoi: String, commandes: Vec<String>, hosts: bool, hosts_lu: bool) -> Reparation {
     let mut r = navigation_detournee(pourquoi, commandes);
     r.restauration = hosts;
     if r.commandes.is_empty() {
-        r.inutile = Some(String::from(tr!(
-            "ni redirection dans le fichier hosts, ni proxy imposé",
-            "no redirection in the hosts file, no forced proxy"
-        )));
+        r.inutile = Some(rien_de_detourne(hosts_lu, true).into());
     }
     r
+}
+
+/// Ce que dit « Navigation détournée » quand rien n'est à corriger : seulement ce qui a été lu.
+fn rien_de_detourne(hosts_lu: bool, proxy_lu: bool) -> &'static str {
+    match (hosts_lu, proxy_lu) {
+        (true, true) => tr!(
+            "ni redirection dans le fichier hosts, ni proxy imposé",
+            "no redirection in the hosts file, no forced proxy"
+        ),
+        (true, false) => tr!(
+            "aucune redirection dans le fichier hosts (réglages du proxy non lus)",
+            "no redirection in the hosts file (proxy settings not read)"
+        ),
+        (false, true) => tr!(
+            "aucun proxy imposé (fichier hosts non lu)",
+            "no forced proxy (hosts file not read)"
+        ),
+        (false, false) => tr!(
+            "fichier hosts non lu, réglages du proxy non lus",
+            "hosts file not read, proxy settings not read"
+        ),
+    }
+}
+
+/// Le contenu du fichier hosts : vide s'il n'existe pas (rien n'y est redirigé), `None` s'il existe sans se lire.
+fn hosts_ou_absent(lu: std::io::Result<Vec<u8>>) -> Option<Vec<u8>> {
+    match lu {
+        Ok(octets) => Some(octets),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(_) => None,
+    }
+}
+
+fn hosts_non_lu() -> String {
+    tr!("fichier hosts non lu", "hosts file not read").into()
 }
 
 #[cfg(target_os = "linux")]
@@ -260,7 +292,9 @@ fn variables_proxy(lire: impl Fn(&str) -> Option<String>) -> Vec<String> {
 /// Proxy imposé et redirections du fichier hosts : les deux façons classiques de détourner la navigation.
 #[cfg(target_os = "linux")]
 fn navigation() -> Reparation {
-    let detournees = redirections(&std::fs::read_to_string("/etc/hosts").unwrap_or_default());
+    let hosts = hosts_ou_absent(std::fs::read("/etc/hosts"));
+    let hosts_lu = hosts.is_some();
+    let detournees = redirections(&crate::socle::texte_des_octets(hosts.unwrap_or_default()));
     let variables = variables_proxy(|v| std::env::var(v).ok());
     // Lu dans dconf et les schémas compilés ; gsettings en secours.
     let gnome = crate::machine::linux::dconf::gsettings_get("org.gnome.system.proxy", "mode")
@@ -280,6 +314,9 @@ fn navigation() -> Reparation {
 
     let mut constats = Vec::new();
     let mut commandes = Vec::new();
+    if !hosts_lu {
+        constats.push(hosts_non_lu());
+    }
     if !detournees.is_empty() {
         constats.push(constat_hosts(&detournees));
         commandes.push("sudo cp -p /etc/hosts /etc/hosts.vanguard-$(date +%Y%m%d-%H%M%S)".to_string());
@@ -349,6 +386,7 @@ fn navigation() -> Reparation {
         ),
         commandes,
         !detournees.is_empty() || !gestes.is_empty(),
+        hosts_lu,
     )
 }
 
@@ -1038,9 +1076,14 @@ fn affichables(mut e: EtatWindows) -> EtatWindows {
 fn navigation(etat: Option<&EtatWindows>) -> Reparation {
     // Le chemin demandé à Windows (GetSystemDirectoryW), jamais la variable SystemRoot, que le compte choisit.
     let hosts = crate::commande::dossier_systeme().join(r"drivers\etc\hosts");
-    let octets = std::fs::read(hosts).unwrap_or_default();
+    let lu = hosts_ou_absent(std::fs::read(hosts));
+    let hosts_lu = lu.is_some();
+    let octets = lu.unwrap_or_default();
     let detournees = redirections(&String::from_utf8_lossy(&octets));
     let mut constats = Vec::new();
+    if !hosts_lu {
+        constats.push(hosts_non_lu());
+    }
     let mut commandes = Vec::new();
     if !detournees.is_empty() {
         constats.push(constat_hosts(&detournees));
@@ -1085,17 +1128,7 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
         commandes,
     );
     if r.commandes.is_empty() {
-        r.inutile = Some(String::from(if etat.is_some() {
-            tr!(
-                "ni redirection dans le fichier hosts, ni proxy imposé",
-                "no redirection in the hosts file, no forced proxy"
-            )
-        } else {
-            tr!(
-                "aucune redirection dans le fichier hosts (réglages du proxy non lus)",
-                "no redirection in the hosts file (proxy settings not read)"
-            )
-        }));
+        r.inutile = Some(rien_de_detourne(hosts_lu, etat.is_some()).into());
     } else {
         // Par son chemin dans System32, jamais par son seul nom (`gestes::PROGRAMMES`).
         r.commandes
@@ -1408,6 +1441,18 @@ pub fn lancer(r: &Reparation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un fichier hosts absent ne redirige rien ; un fichier qui existe sans se lire n'est jamais dit sans redirection.
+    #[test]
+    fn detournement_jamais_sain_sans_lire_hosts() {
+        let d = crate::essais::Jetable::nouveau("hosts");
+        assert_eq!(hosts_ou_absent(std::fs::read(d.join("absent"))), Some(Vec::new()));
+        assert_eq!(hosts_ou_absent(std::fs::read(&*d)), None);
+        for proxy_lu in [true, false] {
+            assert!(rien_de_detourne(false, proxy_lu).contains("fichier hosts non lu"));
+            assert!(!rien_de_detourne(true, proxy_lu).contains("hosts non lu"));
+        }
+    }
 
     /// Refuser de continuer sans point de restauration sort avec un code à part, que Vanguard explique au lieu d'un
     /// « pas changé » sans raison.

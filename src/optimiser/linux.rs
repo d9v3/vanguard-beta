@@ -282,7 +282,7 @@ pub fn reglage_protege(_id: &str) -> bool {
 
 /// La valeur d'une clé de sysctl, espaces normalisés (« 4096 87380 6291456 ») ; `None` : illisible.
 fn sysctl_lu(cle: &str) -> Option<String> {
-    let t = std::fs::read_to_string(Path::new("/proc/sys").join(cle)).ok()?;
+    let t = crate::socle::lire_texte(Path::new("/proc/sys").join(cle)).ok()?;
     Some(t.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
@@ -559,7 +559,7 @@ pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
         "NetworkManager ne gère pas cette connexion : le DNS se règle à la main (paramètres réseau, ou dans le routeur).",
         "NetworkManager does not manage this connection: set the DNS by hand (network settings, or in the router)."
     );
-    let carte = std::fs::read_to_string("/proc/net/route")
+    let carte = crate::socle::lire_texte("/proc/net/route")
         .ok()
         .and_then(|t| carte_par_defaut(&t))
         .ok_or_else(|| tr!("Pas de connexion à Internet.", "No Internet connection.").to_string())?;

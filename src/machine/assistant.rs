@@ -992,7 +992,7 @@ impl Monde for Systeme {
 /// Les groupes de contrôle de ces processus (`/proc/<pid>/cgroup`) ; un processus disparu ou illisible est sauté.
 fn groupes_des(pids: &[u32]) -> Vec<String> {
     pids.iter()
-        .filter_map(|p| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok())
+        .filter_map(|p| crate::socle::lire_texte(format!("/proc/{p}/cgroup")).ok())
         .filter_map(|t| arret_designe::groupe_du_processus(&t))
         .collect()
 }
@@ -2366,7 +2366,7 @@ mod tests {
         use std::path::PathBuf;
         // Dans un espace de noms d'utilisateurs (verifier.sh, unshare -rn), les fichiers de root y paraissent à
         // « nobody » : rien n'y est à root seul, l'essai n'a de sens qu'en dehors.
-        let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        let carte = crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default();
         if !carte.is_empty() && carte.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"] {
             return crate::essais::saute(
                 "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",

@@ -1253,7 +1253,7 @@ pub(crate) fn arreter_les_programmes(
 #[cfg(target_os = "linux")]
 pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
     let racine = std::path::PathBuf::from(format!("/proc/{pid}"));
-    let status = std::fs::read_to_string(racine.join("status")).ok()?;
+    let status = crate::socle::lire_texte(racine.join("status")).ok()?;
     let champ = |nom: &str| status.lines().find_map(|l| l.strip_prefix(nom)).map(str::trim);
     let nom = champ("Name:")?.to_string();
     let parent = champ("PPid:").and_then(|p| p.parse().ok());
@@ -1293,9 +1293,10 @@ pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
 fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     use super::linux::dissimulation::{pids_listes, proc_masque};
     let pids = pids_listes()?;
-    let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    // Montages illisibles : rien ne prouve que la liste est complète.
+    let masque = crate::socle::lire_texte("/proc/self/mounts").map_or(true, |m| proc_masque(&m));
     let liste = pids.into_iter().filter_map(en_marche_de).collect();
-    let partiel = proc_masque(&montages).then_some(tr!(
+    let partiel = masque.then_some(tr!(
         "/proc ne montre que vos programmes (hidepid) : ceux des autres comptes ne sont pas vérifiés.",
         "/proc only shows your programs (hidepid): those of other accounts are not checked."
     ));
@@ -1374,6 +1375,17 @@ fn date_cim(texte: &str) -> Option<NaiveDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La chasse voit un programme au nom hors UTF-8.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn la_chasse_voit_un_nom_hors_utf8() {
+        let p = crate::essais::AuNomHorsUtf8::lancer();
+        let vu = en_marche_de(p.pid()).expect("invisible");
+        assert_eq!(vu.nom, "caf\u{fffd}");
+        assert_eq!(vu.parent, Some(std::process::id()));
+        assert!(en_marche().is_some_and(|(l, _)| l.iter().any(|x| x.pid == p.pid())));
+    }
 
     /// Vanguard reconnu à son seul chemin (`Soi::chemin_a_moi`, sans casse sous Windows), sans lire de vrai processus.
     fn par_chemin(moi: &str) -> impl Fn(&EnMarche) -> bool {

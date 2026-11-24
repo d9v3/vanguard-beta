@@ -890,12 +890,12 @@ mod systeme {
             .into_iter()
             .filter_map(|n| {
                 let pid = n;
-                let (temps, pages) = stat_processus(&read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+                let (temps, pages) = stat_processus(&crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?)?;
                 let comm = crate::socle::processus::nom_court(pid).unwrap_or_default();
                 let exe = crate::socle::processus::programme(pid);
                 let nom = nom_de_processus(exe.as_deref().and_then(Path::to_str), comm.trim());
                 // Octets lus et écrits : illisibles pour les programmes d'un autre compte.
-                let io = read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
+                let io = crate::socle::lire_texte(format!("/proc/{pid}/io")).unwrap_or_default();
                 let lire = |cle: &str| io.lines().find_map(|l| l.strip_prefix(cle)?.trim().parse::<u64>().ok());
                 let es = lire("read_bytes:")
                     .zip(lire("write_bytes:"))
@@ -905,9 +905,14 @@ mod systeme {
             .collect();
         Echantillon {
             quand: Instant::now(),
-            processeur: read_to_string("/proc/stat").ok().and_then(|t| stat_processeur(&t)),
+            processeur: crate::socle::lire_texte("/proc/stat")
+                .ok()
+                .and_then(|t| stat_processeur(&t)),
             processus,
-            disques: occupation_disques(&read_to_string("/proc/diskstats").unwrap_or_default(), disques),
+            disques: occupation_disques(
+                &crate::socle::lire_texte("/proc/diskstats").unwrap_or_default(),
+                disques,
+            ),
         }
     }
 
@@ -1130,7 +1135,7 @@ mod systeme {
             })
             .reduce(f64::max)
             .map(|d| d.min(100.0));
-        let meminfo = read_to_string("/proc/meminfo").unwrap_or_default();
+        let meminfo = crate::socle::lire_texte("/proc/meminfo").unwrap_or_default();
         let lire = |cle: &str| {
             meminfo
                 .lines()
@@ -1151,7 +1156,7 @@ mod systeme {
             au_demarrage_dossiers_pas_lus,
             programmes,
             demarrage: demarrage(),
-            allume_depuis: read_to_string("/proc/uptime")
+            allume_depuis: crate::socle::lire_texte("/proc/uptime")
                 .ok()
                 .and_then(|t| t.split('.').next()?.parse().ok()),
             place: crate::socle::volume(Path::new("/")),

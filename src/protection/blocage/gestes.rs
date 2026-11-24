@@ -458,7 +458,7 @@ pub(super) fn arret_sans_droits(pid: u32) -> bool {
 /// Les comptes réel et sauvé d'un processus : la règle de kill(2) (le compte de l'envoyeur doit être l'un des deux).
 #[cfg(target_os = "linux")]
 fn comptes(pid: u32) -> Option<(u32, u32)> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let status = crate::socle::lire_texte(format!("/proc/{pid}/status")).ok()?;
     comptes_status(&status)
 }
 
@@ -942,7 +942,7 @@ fn attendre_la_fin(a: &Arret) -> bool {
 fn processus_present(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        crate::socle::lire_texte(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|s| crate::socle::processus::etat_du_stat(&s))
             .is_some_and(|e| !matches!(e, 'Z' | 'X'))

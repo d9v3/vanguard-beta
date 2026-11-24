@@ -447,7 +447,7 @@ pub(crate) fn sauvegarde_posee(texte: &str) -> Option<SauvegardePosee> {
 /// Le système de fichiers monté à `racine` (« vfat », « ext4 »…), d'après /proc/mounts.
 #[cfg(target_os = "linux")]
 fn systeme_de_fichiers(racine: &Path) -> Option<String> {
-    systeme_de_fichiers_selon(&std::fs::read_to_string("/proc/mounts").ok()?, racine)
+    systeme_de_fichiers_selon(&crate::socle::lire_texte("/proc/mounts").ok()?, racine)
 }
 
 #[cfg(any(target_os = "linux", test))]

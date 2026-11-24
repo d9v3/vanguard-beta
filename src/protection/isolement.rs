@@ -1051,7 +1051,7 @@ pub(crate) fn sans_nouveaux_droits(status: &str) -> bool {
 /// c'est dit, avec la commande qui le fait. `Ok` : la précision de l'élevé ; `Err` : pourquoi ce n'est pas fait.
 #[cfg(target_os = "linux")]
 pub(crate) fn isoler_sans_question(cle: Option<&str>) -> Result<String, Echec> {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let status = crate::socle::lire_texte("/proc/self/status").unwrap_or_default();
     if sans_nouveaux_droits(&status) {
         return Err(Echec::refuse(
             OU,

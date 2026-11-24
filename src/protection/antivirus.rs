@@ -370,7 +370,7 @@ pub fn choisir() {
 /// lsblk le fait lui-même ; lsblk ne sert qu'en secours, quand mountinfo ne se lit pas.
 #[cfg(target_os = "linux")]
 fn volumes_amovibles() -> Vec<(PathBuf, String)> {
-    if let Ok(montages) = std::fs::read_to_string("/proc/self/mountinfo") {
+    if let Ok(montages) = crate::socle::lire_texte("/proc/self/mountinfo") {
         return volumes_amovibles_sous(std::path::Path::new("/"), &montages);
     }
     crate::commande::lancer(
@@ -3600,7 +3600,7 @@ mod tests_cle {
         .filter(|r| r.code == Some(0)) else {
             return crate::essais::saute("lsblk absent");
         };
-        let Ok(montages) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        let Ok(montages) = crate::socle::lire_texte("/proc/self/mountinfo") else {
             return crate::essais::saute("/proc/self/mountinfo illisible");
         };
         let lus = volumes_amovibles_sous(std::path::Path::new("/"), &montages);

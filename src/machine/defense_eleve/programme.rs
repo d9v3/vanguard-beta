@@ -113,8 +113,8 @@ fn champ_de_status<'a>(status: &'a str, nom: &str) -> Option<&'a str> {
 
 pub(super) fn processus_reel(pid: u32) -> Option<VueProcessus> {
     let racine = PathBuf::from(format!("/proc/{pid}"));
-    let (etat, drapeaux, debut) = naissance_du_stat(&std::fs::read_to_string(racine.join("stat")).ok()?)?;
-    let status = std::fs::read_to_string(racine.join("status")).ok()?;
+    let (etat, drapeaux, debut) = naissance_du_stat(&crate::socle::lire_texte(racine.join("stat")).ok()?)?;
+    let status = crate::socle::lire_texte(racine.join("status")).ok()?;
     let tgid = champ_de_status(&status, "Tgid:")?.parse().ok()?;
     let uid = champ_de_status(&status, "Uid:")?
         .split_whitespace()
@@ -151,7 +151,8 @@ pub(super) fn soupcon_reel(pid: u32, v: &VueProcessus) -> Option<String> {
     let lien = v.exe.as_deref()?;
     let chemin = lien.strip_suffix(" (deleted)").unwrap_or(lien);
     let remplace = Path::new(&format!("/proc/{pid}/root{chemin}")).exists();
-    let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    // Sans les montages, une AppImage passerait pour un programme temporaire : un arrêt ne se décide pas là-dessus.
+    let montages = crate::socle::lire_texte("/proc/self/mounts").ok()?;
     crate::machine::linux::dissimulation::juger_exe(lien, remplace, &montages)
         .filter(|j| j.niveau() >= Niveau::Moyen)
         .map(|j| j.raison().to_string())

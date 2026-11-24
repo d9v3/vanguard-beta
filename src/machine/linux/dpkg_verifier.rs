@@ -122,7 +122,7 @@ pub(crate) fn empreintes(base: &Path, paquet: &str) -> Option<HashMap<PathBuf, S
                 .flatten(),
         )
         .find_map(|f| std::fs::read_to_string(info.join(f)).ok());
-    let status = std::fs::read_to_string(base.join("status")).ok()?;
+    let status = crate::socle::lire_texte(base.join("status")).ok()?;
     let conffiles = lire_conffiles(&status, nom, arch);
     if md5sums.is_none() && conffiles.is_empty() {
         return None;

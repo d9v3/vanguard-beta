@@ -1102,9 +1102,53 @@ fn commande_d_unite(prefixe: &str, action: ActionUnite, unite: &str) -> String {
     format!("{prefixe} {mot} {}", sh_chaine(unite))
 }
 
+/// Un lanceur .desktop tient en quelques Ko ; au-delà, il n'est pas lu, et c'est dit.
+#[cfg(target_os = "linux")]
+const LANCEUR_MAX: u64 = 1 << 20;
+
+/// Les lanceurs .desktop d'un dossier d'autostart. `false` : le dossier ou un lanceur existe sans se lire.
+#[cfg(target_os = "linux")]
+fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> bool {
+    let mut lus = true;
+    lus &= lisible_ou_absent(dossier);
+    for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+        let chemin = e.path();
+        if chemin.extension().is_none_or(|x| x != "desktop") {
+            continue;
+        }
+        let nom = e.file_name().to_string_lossy().into_owned();
+        // Un lanceur du compte : un nom en Latin-1 ne cache pas sa ligne Exec, un tube ou un lien vers /dev/zero ne
+        // fige rien ; ce qui ne se lit pas est dit. Un lien mort (NotFound) ne lance rien.
+        let contenu = match crate::socle::lire_ordinaire_au_bout(&chemin, LANCEUR_MAX) {
+            Ok(octets) => crate::socle::texte_des_octets(octets),
+            Err(e) => {
+                lus &= e.kind() == std::io::ErrorKind::NotFound;
+                String::new()
+            }
+        };
+        let exec = contenu
+            .lines()
+            .find_map(|l| l.strip_prefix("Exec="))
+            .unwrap_or_default();
+        let Some(i) = reconnu(&nom).or_else(|| reconnu(exec)) else {
+            continue;
+        };
+        t.push(Trouvaille {
+            logiciel: i,
+            trace: Trace::Demarrage,
+            ou: chemin_affichable(&chemin),
+            depuis: None,
+            retrait: vec![format!("{sudo}rm -f {}", sh_chaine(&chemin.to_string_lossy()))],
+            arret: Vec::new(),
+            refuse: false,
+        });
+    }
+    lus
+}
+
 /// Lancements automatiques : fichiers .desktop d'autostart (nom ou ligne Exec), services systemd activés (système et
 /// session).
-/// `false` : un dossier d'autostart existe sans se lire, ou les services activés (système ou session) ne se lisent
+/// `false` : un dossier d'autostart ou un lanceur existe sans se lire, ou les services activés (système ou session) ne se lisent
 /// ni dans leurs dossiers ni par systemctl.
 #[cfg(target_os = "linux")]
 fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
@@ -1113,31 +1157,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
         (maison.join(".config/autostart"), ""),
         (PathBuf::from("/etc/xdg/autostart"), "sudo "),
     ] {
-        lus &= lisible_ou_absent(&dossier);
-        for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
-            let chemin = e.path();
-            if chemin.extension().is_none_or(|x| x != "desktop") {
-                continue;
-            }
-            let nom = e.file_name().to_string_lossy().into_owned();
-            let contenu = std::fs::read_to_string(&chemin).unwrap_or_default();
-            let exec = contenu
-                .lines()
-                .find_map(|l| l.strip_prefix("Exec="))
-                .unwrap_or_default();
-            let Some(i) = reconnu(&nom).or_else(|| reconnu(exec)) else {
-                continue;
-            };
-            t.push(Trouvaille {
-                logiciel: i,
-                trace: Trace::Demarrage,
-                ou: chemin_affichable(&chemin),
-                depuis: None,
-                retrait: vec![format!("{sudo}rm -f {}", sh_chaine(&chemin.to_string_lossy()))],
-                arret: Vec::new(),
-                refuse: false,
-            });
-        }
+        lus &= autostart(t, &dossier, sudo);
     }
     for (args, prefixe, utilisateur) in [
         (
@@ -2352,6 +2372,29 @@ mod tests {
         let mut t = Vec::new();
         assert!(!services_en_marche(&mut t, None));
         assert_eq!(t, []);
+    }
+
+    /// Un lanceur au nom en Latin-1 est jugé quand même ; un dossier ou un tube à sa place est dit illisible, sans
+    /// attendre ; un lien mort ne lance rien.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn autostart_lu_en_octets() {
+        let d = jetable("autostart");
+        assert!(autostart(&mut Vec::new(), &d.join("absent"), ""));
+        std::fs::write(
+            d.join("a.desktop"),
+            b"[Desktop Entry]\nName=T\xe9l\xe9\nExec=/opt/anydesk\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/nulle/part", d.join("mort.desktop")).unwrap();
+        let mut t = Vec::new();
+        assert!(autostart(&mut t, &d, ""));
+        assert_eq!(t.len(), 1);
+        crate::essais::tube_nomme(&d.join("tube.desktop")).unwrap();
+        let mut t = Vec::new();
+        assert!(!autostart(&mut t, &d, ""));
+        assert_eq!(t.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// L'ordre du retrait : le retrait du démarrage d'abord (fait même si l'arrêt est refusé), puis l'arrêt accepté,

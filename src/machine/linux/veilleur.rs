@@ -277,7 +277,7 @@ fn noyau_suffisant(release: &str) -> Option<bool> {
 }
 
 fn release_du_noyau() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+    crate::socle::lire_texte("/proc/sys/kernel/osrelease")
         .ok()
         .map(|r| r.trim().to_string())
 }
@@ -1756,7 +1756,7 @@ fn copies_en_marche(inode: (u64, u64)) -> Vec<reponse::Membre> {
         .into_iter()
         .filter(|pid| std::fs::metadata(format!("/proc/{pid}/exe")).is_ok_and(|m| (m.dev(), m.ino()) == inode))
         .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/status"))
+            crate::socle::lire_texte(format!("/proc/{pid}/status"))
                 .is_ok_and(|s| crate::socle::processus::tout_au_compte(&s, uid))
         })
         .map(|pid| {
@@ -2489,7 +2489,8 @@ fn servir() -> i32 {
     };
     etat.tampon = v.tampon();
     etat.sans_prises = v.prises.as_ref().err().map(Refus::raison);
-    etat.masque = super::dissimulation::proc_masque(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default());
+    // Montages illisibles : rien ne prouve que tout est vu.
+    etat.masque = crate::socle::lire_texte("/proc/self/mounts").map_or(true, |m| super::dissimulation::proc_masque(&m));
     let (mut serveurs, absentes) = crate::protection::sortantes::serveurs_gardes();
     etat.listes = (!absentes.is_empty()).then(|| absentes.join(" ; "));
     etat.en_pause = crate::protection::temps_reel::coupure().is_some();
@@ -4968,7 +4969,7 @@ mod tests {
         let mut parti = false;
         for _ in 0..300 {
             parti = crate::socle::processus::debut(pid) != Some(tenu.debut)
-                || std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                || crate::socle::lire_texte(format!("/proc/{pid}/stat"))
                     .ok()
                     .and_then(|s| crate::socle::processus::etat_du_stat(&s))
                     == Some('Z');
@@ -5023,7 +5024,7 @@ mod tests {
     fn finit(pid: u32, debut: u64) -> bool {
         for _ in 0..300 {
             if crate::socle::processus::debut(pid) != Some(debut)
-                || std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                || crate::socle::lire_texte(format!("/proc/{pid}/stat"))
                     .ok()
                     .and_then(|s| crate::socle::processus::etat_du_stat(&s))
                     == Some('Z')
@@ -5641,7 +5642,7 @@ mod tests {
         let pid = parent.id();
         let mut pe = ParentEtEnfant { parent, enfant: 0 };
         for _ in 0..200 {
-            let fait = std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "sleep");
+            let fait = crate::socle::lire_texte(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "sleep");
             if fait && let Some(&[e]) = crate::socle::processus::enfants(pid).as_deref() {
                 pe.enfant = e;
                 return Some(pe);

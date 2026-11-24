@@ -128,7 +128,7 @@ pub fn atomique() -> Option<Atomique> {
     if Path::new("/run/ostree-booted").exists() && Path::new("/usr/bin/rpm-ostree").exists() {
         return Some(Atomique::RpmOstree);
     }
-    let racine = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let racine = crate::socle::lire_texte("/proc/mounts").unwrap_or_default();
     (Path::new("/usr/sbin/transactional-update").exists() && racine_lecture_seule(&racine))
         .then_some(Atomique::Transactionnel)
 }
@@ -2590,7 +2590,7 @@ fn demarrage_securise() -> Constat {
 }
 
 fn comptes() -> Constat {
-    let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else {
+    let Ok(passwd) = crate::socle::lire_texte("/etc/passwd") else {
         return impossible("Comptes", tr!("/etc/passwd illisible", "/etc/passwd unreadable"));
     };
     juger_comptes(&passwd)
@@ -3162,7 +3162,7 @@ fn processeur() -> Constat {
         );
     };
     // Le microcode du fabricant corrige la plupart de ces failles ; le paquet change selon la distribution.
-    let amd = std::fs::read_to_string("/proc/cpuinfo").is_ok_and(|c| c.contains("AuthenticAMD"));
+    let amd = crate::socle::lire_texte("/proc/cpuinfo").is_ok_and(|c| c.contains("AuthenticAMD"));
     let paquet = match (g, amd) {
         (Paquets::Pacman, true) => "amd-ucode",
         (Paquets::Pacman, false) => "intel-ucode",

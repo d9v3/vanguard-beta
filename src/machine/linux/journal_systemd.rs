@@ -67,7 +67,7 @@ pub(crate) fn erreurs_du_demarrage() -> Option<Vec<Entree>> {
 }
 
 fn erreurs_avec(champs: &[&str]) -> Option<Vec<Entree>> {
-    let demarrage = id_hexa(std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?.trim())?;
+    let demarrage = id_hexa(crate::socle::lire_texte("/proc/sys/kernel/random/boot_id").ok()?.trim())?;
     // Pas de borne d'heure : au début du démarrage, l'horloge peut être fausse de plusieurs heures (une horloge
     // matérielle à l'heure locale, sous Windows en double démarrage), et journalctl -b garde ces entrées. Les
     // champs se trouvent par la table de hachage : lire aussi les fichiers d'avant ne coûte presque rien.

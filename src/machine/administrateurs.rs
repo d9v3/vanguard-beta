@@ -57,7 +57,7 @@ fn lire_groupes(texte: &str) -> Vec<String> {
 fn lire() -> Option<Vec<String>> {
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/etc/group").ok().map(|t| lire_groupes(&t))
+        crate::socle::lire_texte("/etc/group").ok().map(|t| lire_groupes(&t))
     }
     #[cfg(windows)]
     {

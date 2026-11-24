@@ -388,7 +388,7 @@ fn echec_fwupd(e: String) -> crate::modele::Echec {
 /// pour chacun) au lieu de `fwupdmgr get-updates`. Une réponse d'un autre genre que « rien à faire » rend toute la
 /// lecture impossible : jamais « à jour » sur une erreur.
 fn firmwares_par_dbus() -> Result<Vec<String>, crate::modele::Echec> {
-    if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
+    if crate::socle::lire_texte("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
         return Err(echec_fwupd("espace de noms isolé".into()));
     }
     let mut bus = dbus::Bus::systeme().map_err(echec_fwupd)?;
@@ -937,7 +937,7 @@ pub(super) fn bilan_failles(gestion: Paquets, failles: &[Faille]) -> Constat {
 /// Version du noyau qui tourne (« 7.2.5-3-omarchy »). /proc/sys/kernel/osrelease est ce que uname lit : sans
 /// lui, /proc n'est pas monté et uname ne saurait rien de plus.
 pub(super) fn noyau_en_cours() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+    crate::socle::lire_texte("/proc/sys/kernel/osrelease")
         .unwrap_or_default()
         .trim()
         .to_string()

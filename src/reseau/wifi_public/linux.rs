@@ -300,7 +300,7 @@ pub(crate) mod lecture {
 
     /// Le démarrage en cours du système.
     pub(crate) fn demarrage() -> String {
-        std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_or_default(|t| t.trim().to_string())
+        crate::socle::lire_texte("/proc/sys/kernel/random/boot_id").map_or_default(|t| t.trim().to_string())
     }
 
     /// systemd-resolved répond aux noms (NetworkManager lui confie alors le DNS de chaque carte) : seul lui sait

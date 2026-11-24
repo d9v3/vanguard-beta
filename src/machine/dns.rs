@@ -753,7 +753,7 @@ mod tests {
     fn resolved_comme_resolvectl() {
         // Un espace réseau vide (la passe « sans Internet » de verifier.sh, unshare -rn) : le resolvectl de systemd 255
         // ne liste que les liens qu'il voit d'ici, aucun, quand D-Bus rend ceux de resolved (la CI : 1 contre 0).
-        let seulement_lo = std::fs::read_to_string("/proc/self/net/dev").is_ok_and(|t| {
+        let seulement_lo = crate::socle::lire_texte("/proc/self/net/dev").is_ok_and(|t| {
             t.lines()
                 .skip(2)
                 .all(|l| l.split(':').next().is_some_and(|n| n.trim() == "lo"))

@@ -1226,7 +1226,7 @@ mod tests {
     /// Le dossier de cgroup de ce processus et son niveau sous la racine, s'il est à nous (délégué par systemd à la
     /// session : on peut y créer un sous-dossier). Sinon `None`.
     fn cgroupe_delegue() -> Option<(std::path::PathBuf, u32)> {
-        let texte = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        let texte = crate::socle::lire_texte("/proc/self/cgroup").ok()?;
         let relatif = texte
             .lines()
             .find_map(|l| l.strip_prefix("0::"))?

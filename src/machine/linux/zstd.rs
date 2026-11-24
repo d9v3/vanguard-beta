@@ -1240,7 +1240,7 @@ mod tests {
             return crate::essais::saute("zstd absent");
         }
         let mut fichiers: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(version) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+        if let Ok(version) = crate::socle::lire_texte("/proc/sys/kernel/osrelease") {
             let mut pile = vec![std::path::PathBuf::from(format!(
                 "/usr/lib/modules/{}/kernel",
                 version.trim()

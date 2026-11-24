@@ -139,6 +139,55 @@ pub fn nom_unique(nom: &str) -> String {
     format!("vanguard-{nom}-{}-{n}", std::process::id())
 }
 
+/// Un vrai programme dont le nom de processus n'est pas de l'UTF-8 (« caf » puis un octet C3 seul), comme le fait un
+/// nom accentué coupé à 15 octets par le noyau, ou exprès par prctl. Arrêté quand l'essai le lâche.
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "ce fichier sert aussi à tests/programme.rs, qui ne s'en sert pas"
+)]
+pub struct AuNomHorsUtf8(std::process::Child);
+
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "ce fichier sert aussi à tests/programme.rs, qui ne s'en sert pas"
+)]
+impl AuNomHorsUtf8 {
+    pub fn lancer() -> AuNomHorsUtf8 {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        // Le processus écrit son propre nom, sans droits ; il vit ensuite tant que son entrée reste ouverte.
+        let mut p = AuNomHorsUtf8(
+            Command::new("/bin/sh")
+                .args(["-c", r"printf 'caf\303' > /proc/$$/comm; echo pret; read x"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut pret = [0u8; 4];
+        p.0.stdout.take().unwrap().read_exact(&mut pret).unwrap();
+        // Témoin : sans octet hors UTF-8 dans son nom, l'essai ne prouverait rien.
+        let nom = std::fs::read(format!("/proc/{}/comm", p.pid())).unwrap();
+        assert_eq!(nom, b"caf\xc3\n");
+        p
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0.id()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AuNomHorsUtf8 {
+    fn drop(&mut self) {
+        // SIGKILL : arrête aussi un processus gelé.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Un dossier jetable d'essai, neuf, sous `temporaire()`, retiré avec tout son contenu quand l'essai le lâche, même
 /// sur une assertion qui échoue (la panique déroule la pile), et même si l'essai a retiré ses droits à un dossier
 /// qu'il contient.

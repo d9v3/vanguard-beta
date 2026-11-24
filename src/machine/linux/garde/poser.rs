@@ -75,7 +75,7 @@ fn juger_pose_avec(
         Err(e) => return Some(format!("{}: {e}", crate::ui::affichable(dossier))),
     }
     if let Some(pid) = demandeur {
-        let reel = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        let reel = crate::socle::lire_texte(format!("/proc/{pid}/status"))
             .ok()
             .and_then(|s| uid_reel(&s));
         if reel != Some(compte) {

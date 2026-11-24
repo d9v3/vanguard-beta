@@ -535,7 +535,8 @@ pub(super) fn configuration_sshd() -> Option<String> {
     fichiers.push("/etc/ssh/sshd_config".into());
     let mut conf = String::new();
     for f in &fichiers {
-        match std::fs::read_to_string(f) {
+        // sshd lit des octets : un commentaire en Latin-1 n'y cache aucun réglage.
+        match crate::socle::lire_texte(f) {
             Ok(t) => conf += &partie_globale_sshd(&t),
             // Fedora et RHEL réservent la configuration à root : un fichier vide passerait pour les valeurs par
             // défaut (mot de passe permis), une fausse alerte.

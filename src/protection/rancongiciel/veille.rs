@@ -529,7 +529,7 @@ fn illisibles_du_compte() -> HashSet<(u32, u64)> {
 /// L'heure de départ d'un processus (22e champ de `/proc/<pid>/stat`, en tops depuis le démarrage) : avec le pid, elle
 /// distingue un processus d'un autre qui aurait repris son numéro.
 fn depart(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?;
     depart_du_stat(&stat)
 }
 
@@ -565,7 +565,7 @@ fn euid() -> u32 {
 
 /// Le compte propriétaire d'un processus (champ « Uid: » de `/proc/<pid>/status`). `None` : illisible.
 fn proprietaire(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let status = crate::socle::lire_texte(format!("/proc/{pid}/status")).ok()?;
     status
         .lines()
         .find_map(|l| l.strip_prefix("Uid:"))?
@@ -577,7 +577,7 @@ fn proprietaire(pid: u32) -> Option<u32> {
 
 /// Le parent d'un processus (PPID, 4e champ de `/proc/<pid>/stat`, après le nom entre parenthèses).
 fn lire_ppid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?;
     let (_, apres) = stat.rsplit_once(')')?;
     apres.split_whitespace().nth(1)?.parse().ok()
 }
@@ -585,7 +585,7 @@ fn lire_ppid(pid: u32) -> Option<u32> {
 /// Le nom court d'un processus (`/proc/<pid>/comm`).
 fn comm(pid: u32) -> Option<String> {
     Some(
-        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        crate::socle::lire_texte(format!("/proc/{pid}/comm"))
             .ok()?
             .trim_end()
             .to_string(),
@@ -641,6 +641,14 @@ fn changements_de(evenement: &notify::Event) -> Vec<Changement> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un chiffreur au nom hors UTF-8 garde son propriétaire et son parent : jugé comme les autres.
+    #[test]
+    fn un_nom_hors_utf8_garde_son_proprietaire() {
+        let p = crate::essais::AuNomHorsUtf8::lancer();
+        assert_eq!(proprietaire(p.pid()), Some(crate::socle::euid()));
+        assert_eq!(lire_ppid(p.pid()), Some(std::process::id()));
+    }
 
     fn vu(chemin: &str, sorte: Sorte) -> Vu {
         Vu {

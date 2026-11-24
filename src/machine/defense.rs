@@ -119,7 +119,7 @@ pub(crate) fn arreter_programme(pid: u32) -> Option<Defense> {
     if pid <= 1 {
         return None;
     }
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?;
     let (_, _, debut) = super::defense_eleve::naissance_du_stat(&stat)?;
     Some(Defense::ArreterProgramme(pid, debut))
 }

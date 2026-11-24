@@ -405,7 +405,7 @@ const PARTAGE_LECTURE: u32 = 1;
 /// Périphérique et état (lecture seule ou non) du point de montage `dossier`, d'après /proc/self/mountinfo.
 #[cfg(target_os = "linux")]
 pub(crate) fn montage(dossier: &Path) -> Option<(String, bool)> {
-    let infos = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let infos = crate::socle::lire_texte("/proc/self/mountinfo").ok()?;
     // Les espaces des chemins y sont écrits \040.
     let cible = dossier.to_string_lossy().replace(' ', "\\040");
     infos.lines().rev().find_map(|l| {

@@ -422,7 +422,7 @@ fn eleve_d_apres(status: &str) -> bool {
 /// Les droits du processus sont-ils élevés (root, setuid, setgid, capacités) ? Illisible : oui.
 #[cfg(unix)]
 fn droits_eleves() -> bool {
-    crate::socle::euid() == 0 || std::fs::read_to_string("/proc/self/status").map_or(true, |s| eleve_d_apres(&s))
+    crate::socle::euid() == 0 || crate::socle::lire_texte("/proc/self/status").map_or(true, |s| eleve_d_apres(&s))
 }
 
 #[cfg(windows)]

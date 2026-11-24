@@ -562,7 +562,7 @@ fn frequence_wifi(carte: &str) -> Option<u32> {
 #[cfg(target_os = "linux")]
 fn signal_natif() -> Option<(String, Signal)> {
     let cartes = cartes_wifi(std::path::Path::new("/sys/class/net"));
-    let (carte, dbm) = niveau_wifi(&std::fs::read_to_string("/proc/net/wireless").ok()?, &cartes)?;
+    let (carte, dbm) = niveau_wifi(&crate::socle::lire_texte("/proc/net/wireless").ok()?, &cartes)?;
     let mhz = frequence_wifi(&carte);
     let signal = Signal {
         qualite: qualite_de_dbm(dbm),

@@ -355,7 +355,7 @@ fn inclure(motif: &str) -> Result<Vec<(String, String)>, crate::modele::Raison> 
     fichiers.dedup();
     let mut segments = Vec::new();
     for f in fichiers {
-        match std::fs::read_to_string(&f) {
+        match crate::socle::lire_texte(&f) {
             Ok(t) => segments.push((f, partie_globale_sshd(&t))),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(Raison::Droits),
             Err(_) if f == SSHD_VANGUARD => segments.push((f, String::new())),
@@ -449,7 +449,7 @@ pub(crate) fn sshd_en_marche() -> Option<bool> {
 /// La configuration de sshd dans son ordre de lecture (`ordonner`), pour les règles communes.
 pub(crate) fn sshd_dans_l_ordre() -> Result<Vec<(String, String)>, crate::modele::Echec> {
     let principal =
-        std::fs::read_to_string(SSHD_PRINCIPAL).map_err(|e| crate::modele::Echec::io("bilan/sshd-config", &e))?;
+        crate::socle::lire_texte(SSHD_PRINCIPAL).map_err(|e| crate::modele::Echec::io("bilan/sshd-config", &e))?;
     ordonner(&principal, inclure).map_err(|r| crate::modele::Echec::new("bilan/sshd-config", r))
 }
 
@@ -476,7 +476,7 @@ fn algorithmes_ssh() -> Option<Constat> {
         return None;
     }
     juger_lecture(
-        ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure),
+        ordonner(&crate::socle::lire_texte(SSHD_PRINCIPAL).ok()?, inclure),
         version_sshd,
     )
 }

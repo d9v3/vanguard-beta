@@ -144,7 +144,7 @@ pub(crate) fn systeme() -> &'static str {
             let nom = crate::socle::systeme::nom();
             // Les chiffres de la version seulement (« 6.17.2 ») : la suite d'un noyau compilé chez soi
             // (« 6.17.2-zoe-portable ») peut nommer quelqu'un ou sa machine (relecture 0.97, bas).
-            let noyau = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+            let noyau = crate::socle::lire_texte("/proc/sys/kernel/osrelease").unwrap_or_default();
             let noyau: String = noyau
                 .trim()
                 .chars()
@@ -192,7 +192,7 @@ fn noms_personnels() -> &'static [(String, &'static str)] {
         let machines: Vec<String> = ["COMPUTERNAME", "HOSTNAME"]
             .iter()
             .filter_map(|v| std::env::var(v).ok())
-            .chain(std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+            .chain(crate::socle::lire_texte("/proc/sys/kernel/hostname").ok())
             .collect();
         noms.extend(machines.into_iter().map(|n| (n.trim().to_string(), "<machine>")));
         // Un nom très court (« pc », « a ») remplacerait des morceaux de mots.
@@ -1676,7 +1676,7 @@ mod tests {
         // « pc »), comme le veut noms_personnels.
         #[cfg(target_os = "linux")]
         let masquable =
-            std::fs::read_to_string("/proc/sys/kernel/hostname").is_ok_and(|n| n.trim().chars().count() >= 3);
+            crate::socle::lire_texte("/proc/sys/kernel/hostname").is_ok_and(|n| n.trim().chars().count() >= 3);
         #[cfg(unix)]
         if masquable {
             assert!(noms_personnels().iter().any(|(_, r)| *r == "<machine>"));

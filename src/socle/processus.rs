@@ -39,7 +39,7 @@ pub(crate) fn pids_dans(proc: &Path) -> Option<Vec<u32>> {
 /// inoffensif avant de l'afficher). `None` : parti entre-temps, ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn nom_court(pid: u32) -> Option<String> {
-    let nom = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let nom = crate::socle::lire_texte(format!("/proc/{pid}/comm")).ok()?;
     Some(nom.trim_end_matches('\n').to_string())
 }
 
@@ -69,7 +69,8 @@ pub(crate) fn arguments(pid: u32) -> Vec<String> {
 /// que ceux de ce compte : à dire, plutôt que de juger l'ordinateur sur une partie.
 #[cfg(target_os = "linux")]
 pub(crate) fn autres_comptes_caches() -> bool {
-    hidepid(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default())
+    // Montages illisibles : rien ne prouve que la liste est complète, et c'est dit.
+    crate::socle::lire_texte("/proc/self/mounts").map_or(true, |m| hidepid(&m))
 }
 
 /// L'option hidepid du montage de /proc, dans le texte de /proc/self/mounts : « hidepid=2 », « hidepid=invisible »
@@ -109,7 +110,7 @@ pub(crate) fn reprendre(pid: u32) -> bool {
 /// aurait repris. `None` : parti ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn est_gele(pid: u32) -> Option<bool> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?;
     etat_du_stat(&stat).map(|e| e == 'T' || e == 't')
 }
 
@@ -133,7 +134,7 @@ pub(crate) fn debut_du_stat(stat: &str) -> Option<u64> {
 /// Le départ du processus `pid` ; `None` : parti ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn debut(pid: u32) -> Option<u64> {
-    debut_du_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    debut_du_stat(&crate::socle::lire_texte(format!("/proc/{pid}/stat")).ok()?)
 }
 
 /// Les enfants vivants du processus `pid`, de tous ses fils d'exécution (`/proc/<pid>/task/*/children`). `None` :
@@ -162,7 +163,7 @@ const ENFANTS_ESSAIS: usize = 4;
 fn enfants_dans(dossier: &Path) -> Option<Vec<u32>> {
     let mut tous = Vec::new();
     for fil in std::fs::read_dir(dossier.join("task")).ok()? {
-        let texte = std::fs::read_to_string(fil.ok()?.path().join("children")).ok()?;
+        let texte = super::lire_texte(fil.ok()?.path().join("children")).ok()?;
         for mot in texte.split_whitespace() {
             tous.push(mot.parse().ok()?);
         }
@@ -228,7 +229,7 @@ pub(crate) fn tenir(pid: u32) -> Option<Tenu> {
         .custom_flags(libc::O_PATH)
         .open(format!("/proc/{pid}/exe"))
         .ok()?;
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let status = crate::socle::lire_texte(format!("/proc/{pid}/status")).ok()?;
     if debut(pid)? != avant {
         return None;
     }
@@ -309,7 +310,7 @@ fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
 /// illisible, à dire non vérifié.
 #[cfg(target_os = "linux")]
 pub(crate) fn plafond_de_fichier() -> std::io::Result<u64> {
-    let texte = std::fs::read_to_string("/proc/self/limits")?;
+    let texte = crate::socle::lire_texte("/proc/self/limits")?;
     plafond_lu(&texte).ok_or_else(|| std::io::Error::other("« Max file size » illisible / unreadable"))
 }
 
@@ -333,6 +334,17 @@ pub(crate) fn plafond_lu(texte: &str) -> Option<u64> {
 )]
 mod tests {
     use super::*;
+
+    /// Un nom de processus hors UTF-8 (prctl, ou un nom coupé à 15 octets au milieu d'un caractère) ne le cache pas.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn un_nom_hors_utf8_ne_cache_pas_le_processus() {
+        let p = crate::essais::AuNomHorsUtf8::lancer();
+        assert_eq!(nom_court(p.pid()).as_deref(), Some("caf\u{fffd}"));
+        assert!(debut(p.pid()).is_some());
+        assert_eq!(est_gele(p.pid()), Some(false));
+        assert!(pids().unwrap().contains(&p.pid()));
+    }
 
     /// Les enfants se relisent jusqu'à `ENFANTS_ESSAIS` fois : un fil parti pendant la lecture ne la fait pas
     /// manquer ; une lecture toujours ratée s'arrête au bout du compte.

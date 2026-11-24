@@ -147,7 +147,7 @@ fn connexions() -> Option<Vec<Connexion>> {
     let mut lisible = false;
     for (fichier, udp) in [("tcp", false), ("tcp6", false), ("udp", true), ("udp6", true)] {
         // tcp6 et udp6 manquent quand IPv6 est coupé : ce n'est pas une panne.
-        if let Ok(texte) = std::fs::read_to_string(format!("/proc/net/{fichier}")) {
+        if let Ok(texte) = crate::socle::lire_texte(format!("/proc/net/{fichier}")) {
             lisible = true;
             lues.extend(lire_proc_net(&texte).into_iter().map(|(d, p, i)| (d, p, i, udp)));
         }
@@ -188,7 +188,7 @@ pub(crate) fn processus_connectes() -> Option<BTreeSet<u32>> {
     let mut prises = std::collections::HashSet::new();
     let mut lisible = false;
     for fichier in ["tcp", "tcp6"] {
-        if let Ok(texte) = std::fs::read_to_string(format!("/proc/net/{fichier}")) {
+        if let Ok(texte) = crate::socle::lire_texte(format!("/proc/net/{fichier}")) {
             lisible = true;
             prises.extend(
                 lire_proc_net(&texte)
@@ -1393,7 +1393,7 @@ fn relever(annoncer_noms: impl FnOnce(usize)) -> Releve {
         noms(&adresses)
     };
     let montages = if cfg!(target_os = "linux") {
-        std::fs::read_to_string("/proc/self/mounts").unwrap_or_default()
+        crate::socle::lire_texte("/proc/self/mounts").unwrap_or_default()
     } else {
         String::new()
     };

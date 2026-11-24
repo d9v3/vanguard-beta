@@ -660,7 +660,7 @@ impl Releve {
 
 /// VmRSS du processus, en Kio.
 fn rss_kio() -> Option<u64> {
-    let t = std::fs::read_to_string("/proc/self/status").ok()?;
+    let t = crate::socle::lire_texte("/proc/self/status").ok()?;
     t.lines()
         .find_map(|l| l.strip_prefix("VmRSS:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())

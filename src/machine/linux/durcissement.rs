@@ -251,7 +251,7 @@ pub(super) fn durcissement_noyau(groupe: Groupe) -> Constat {
         if Groupe::de(cle) != groupe {
             return None;
         }
-        std::fs::read_to_string(format!("/proc/sys/{cle}"))
+        crate::socle::lire_texte(format!("/proc/sys/{cle}"))
             .ok()?
             .trim()
             .parse()

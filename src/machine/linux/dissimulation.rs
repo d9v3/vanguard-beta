@@ -216,7 +216,7 @@ fn fils_visibles(pids: &BTreeSet<u32>) -> Option<u32> {
 
 /// L'écart persistant entre le compte du noyau et la liste de /proc ; `None` s'il ne se mesure pas.
 fn compter_les_fils() -> Option<u32> {
-    let compte = || fils_du_noyau(&std::fs::read_to_string("/proc/loadavg").ok()?);
+    let compte = || fils_du_noyau(&crate::socle::lire_texte("/proc/loadavg").ok()?);
     let mut releves = Vec::new();
     for _ in 0..6 {
         let avant = compte()?;
@@ -318,13 +318,13 @@ pub(super) fn processus_caches() -> Constat {
         return impossible("Persistance", tr!("/proc illisible", "/proc unreadable"));
     };
     let initial = std::fs::read_link("/proc/self/ns/pid").is_ok_and(|l| espace_initial(&l.to_string_lossy()));
-    let masque = std::fs::read_to_string("/proc/self/mounts").is_ok_and(|m| proc_masque(&m));
+    let masque = crate::socle::lire_texte("/proc/self/mounts").is_ok_and(|m| proc_masque(&m));
     let ecart = if initial && !masque { compter_les_fils() } else { None };
     if ecart == Some(0) {
         return juger_processus_caches(&[], &Couverture::Compte, &[]);
     }
     let lire = |chemin: &str| {
-        std::fs::read_to_string(chemin)
+        crate::socle::lire_texte(chemin)
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok())
     };
@@ -336,7 +336,7 @@ pub(super) fn processus_caches() -> Constat {
         .max(plus_grand)
         .saturating_add(256))
     .min(lire("/proc/sys/kernel/pid_max").unwrap_or(u32::MAX));
-    let fiche = |pid: u32| std::fs::read_to_string(format!("/proc/{pid}/status")).ok();
+    let fiche = |pid: u32| crate::socle::lire_texte(format!("/proc/{pid}/status")).ok();
     // Pour trouver un écart constaté, plus de temps ; sinon, le bilan doit rester rapide.
     // Une horloge qui déborderait : recherche arrêtée d'emblée, et le message dit les PID non vérifiés.
     let maintenant = std::time::Instant::now();
@@ -533,7 +533,13 @@ pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
     let Some(pids) = pids_listes() else {
         return vec![impossible("Persistance", tr!("/proc illisible", "/proc unreadable"))];
     };
-    let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    // Sans les montages, une AppImage passerait pour un programme temporaire : rien n'est conclu.
+    let Ok(montages) = crate::socle::lire_texte("/proc/self/mounts") else {
+        return vec![impossible(
+            "Persistance",
+            tr!("/proc/self/mounts illisible", "/proc/self/mounts unreadable"),
+        )];
+    };
     let moi = std::process::id();
     let lien = |pid: u32| std::fs::read_link(format!("/proc/{pid}/exe"));
     let juger = |pid: u32, l: &str| {
@@ -561,7 +567,7 @@ pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
         .into_iter()
         .filter(|(pid, l, _)| lien(*pid).is_ok_and(|encore| encore.to_string_lossy() == *l))
         .map(|(pid, l, raison)| {
-            let nom = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+            let nom = crate::socle::lire_texte(format!("/proc/{pid}/comm")).unwrap_or_default();
             let nom = nom.trim();
             // En mémoire, le nom donné au fichier (memfd) dit souvent mieux qui il est : un nom de processus se change.
             let memfd = l.strip_prefix("/memfd:").map(|m| m.trim_end_matches(" (deleted)"));
@@ -784,7 +790,7 @@ fn modules_sysfs() -> Vec<(String, String)> {
 /// ou se retire pendant la lecture), et hors arbre non signés. Tout se lit sans droits.
 pub(super) fn modules_du_noyau() -> Vec<Constat> {
     let sysfs = modules_sysfs();
-    let Ok(liste) = std::fs::read_to_string("/proc/modules") else {
+    let Ok(liste) = crate::socle::lire_texte("/proc/modules") else {
         // Noyau sans modules chargeables (rien ne peut s'y cacher ainsi), ou liste illisible alors qu'il en a.
         return if sysfs.is_empty() {
             vec![ok(
@@ -804,14 +810,18 @@ pub(super) fn modules_du_noyau() -> Vec<Constat> {
     let charges = modules_charges(&liste);
     let mut caches = modules_caches(&sysfs, &charges);
     if !caches.is_empty() {
-        let encore = modules_caches(
-            &modules_sysfs(),
-            &modules_charges(&std::fs::read_to_string("/proc/modules").unwrap_or_default()),
-        );
+        // Une 2e lecture qui échoue ne prouve aucun module caché : tous le sembleraient.
+        let Ok(relue) = crate::socle::lire_texte("/proc/modules") else {
+            return vec![impossible(
+                "Persistance",
+                tr!("liste des modules illisible", "module list unreadable"),
+            )];
+        };
+        let encore = modules_caches(&modules_sysfs(), &modules_charges(&relue));
         caches.retain(|m| encore.contains(m));
     }
     let inconnus = hors_arbre_inconnus(&charges, |nom| Path::new("/var/lib/dkms").join(nom).exists());
-    let souillure = std::fs::read_to_string("/proc/sys/kernel/tainted")
+    let souillure = crate::socle::lire_texte("/proc/sys/kernel/tainted")
         .ok()
         .and_then(|t| t.trim().parse().ok());
     juger_modules(&caches, &inconnus, &charges, souillure, &deuxieme_avis())

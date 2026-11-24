@@ -117,7 +117,7 @@ pub(crate) fn oublier_du_cache(f: &std::fs::File) {
 /// diraient faux. Sans filtre (`Seccomp: 0`), rien à essayer ; sinon un enfant, qui hérite du même filtre, appelle
 /// les deux fonctions et meurt à notre place s'il le faut.
 pub(crate) fn sonder() -> Sonde {
-    if sans_filtre(&std::fs::read_to_string("/proc/self/status").unwrap_or_default()) {
+    if sans_filtre(&crate::socle::lire_texte("/proc/self/status").unwrap_or_default()) {
         return Sonde::Permis;
     }
     sonder_dans_un_enfant()
@@ -435,9 +435,10 @@ impl Montages {
     pub(crate) fn lire(&mut self) -> io::Result<String> {
         use std::io::{Read, Seek};
         self.fichier.seek(io::SeekFrom::Start(0))?;
-        let mut texte = String::new();
-        (&self.fichier).take(MOUNTINFO_MAX).read_to_string(&mut texte)?;
-        Ok(texte)
+        let mut octets = Vec::new();
+        (&self.fichier).take(MOUNTINFO_MAX).read_to_end(&mut octets)?;
+        // Un point de montage au nom non UTF-8 ne cache pas les autres.
+        Ok(crate::socle::texte_des_octets(octets))
     }
 
     /// Attend un changement des montages au plus `delai_ms` : vrai s'il y en a eu un.
@@ -669,7 +670,7 @@ mod tests {
     /// Sans filtre, l'enfant de la sonde sort normalement : le fork, l'attente et la lecture du statut marchent.
     #[test]
     fn la_sonde_sans_filtre_permet() {
-        if !sans_filtre(&std::fs::read_to_string("/proc/self/status").unwrap_or_default()) {
+        if !sans_filtre(&crate::socle::lire_texte("/proc/self/status").unwrap_or_default()) {
             return crate::essais::saute("cet essai tourne déjà sous un filtre seccomp");
         }
         assert_eq!(sonder_dans_un_enfant(), Sonde::Permis);

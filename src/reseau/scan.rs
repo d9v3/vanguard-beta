@@ -152,7 +152,7 @@ fn commande(cmd: &str, args: &[&str]) -> String {
 pub fn passerelle() -> Option<Ipv4Addr> {
     #[cfg(target_os = "linux")]
     {
-        let table = std::fs::read_to_string("/proc/net/route").ok()?;
+        let table = crate::socle::lire_texte("/proc/net/route").ok()?;
         passerelle_linux(&table)
     }
     // La table des routes de Windows (GetIpForwardTable2), métriques de route et d'interface additionnées comme
@@ -223,7 +223,7 @@ fn normaliser_mac(brut: &str) -> Option<String> {
 /// Table ARP du système : IP → adresse MAC (entrées complètes seulement).
 pub fn table_arp() -> HashMap<Ipv4Addr, String> {
     #[cfg(target_os = "linux")]
-    let entrees: Vec<(String, String)> = std::fs::read_to_string("/proc/net/arp")
+    let entrees: Vec<(String, String)> = crate::socle::lire_texte("/proc/net/arp")
         .unwrap_or_default()
         .lines()
         .skip(1)

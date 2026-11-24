@@ -52,7 +52,7 @@ pub(crate) fn debut_du_processus(stat: &str, btime: u64, tops: u64) -> Option<u6
 
 /// Le démarrage de l'ordinateur, d'après /proc/stat.
 fn btime() -> Option<u64> {
-    std::fs::read_to_string("/proc/stat")
+    crate::socle::lire_texte("/proc/stat")
         .ok()?
         .lines()
         .find_map(|l| l.strip_prefix("btime "))?
@@ -99,10 +99,20 @@ pub(super) fn processus(dossier: &Path) -> Partie {
         p.manque(Bi::meme("/proc"), Raison::Erreur("illisible / unreadable".into()));
         return p;
     };
-    let comptes = comptes_de(&std::fs::read_to_string("/etc/passwd").unwrap_or_default());
+    // Illisible : la pièce continue sans (comptes en numéros, AppImage non reconnues), et le dit.
+    let mut lire = |fichier: &str| {
+        crate::socle::lire_texte(fichier).unwrap_or_else(|e| {
+            manques.push(super::Manque {
+                quoi: Bi::meme(fichier),
+                raison: Raison::Erreur(e.to_string()),
+            });
+            String::new()
+        })
+    };
+    let comptes = comptes_de(&lire("/etc/passwd"));
     let demarrage = btime().unwrap_or(0);
     let tops = tops_par_seconde();
-    let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    let montages = lire("/proc/self/mounts");
     let mut empreintes: HashMap<(u64, u64), Empreinte> = HashMap::new();
     let mut illisibles = 0usize;
     let maintenant = std::time::Instant::now();
@@ -111,7 +121,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
     for pid in pids {
         let racine = PathBuf::from(format!("/proc/{pid}"));
         // Parti entre la liste et la lecture : rien à garder.
-        let Ok(status) = std::fs::read_to_string(racine.join("status")) else {
+        let Ok(status) = crate::socle::lire_texte(racine.join("status")) else {
             continue;
         };
         let (ppid, uid, nom) = lire_status(&status);
@@ -122,7 +132,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
                 .collect::<Vec<_>>()
                 .join(" ")
         });
-        let debut = std::fs::read_to_string(racine.join("stat"))
+        let debut = crate::socle::lire_texte(racine.join("stat"))
             .ok()
             .and_then(|s| debut_du_processus(&s, demarrage, tops))
             .map_or_default(heure_locale);
@@ -776,7 +786,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
     let mut f = Feuille::new(&p.titre);
     f.fichier(Path::new("/etc/passwd"), true);
     f.fichier(Path::new("/etc/group"), true);
-    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    let passwd = crate::socle::lire_texte("/etc/passwd").unwrap_or_default();
     sessions_ouvertes(&mut f);
     sessions_systemd(&mut f);
     let (wtmp, last) = connexions_wtmp(&mut f);
@@ -1581,7 +1591,7 @@ pub(super) fn endroits_temporaires() -> Vec<PathBuf> {
 
 /// Les points de montage de cet ordinateur, que le parcours des fichiers récents ne traverse pas.
 pub(super) fn points_de_montage() -> Vec<PathBuf> {
-    montages_selon(&std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default())
+    montages_selon(&crate::socle::lire_texte("/proc/self/mountinfo").unwrap_or_default())
 }
 
 /// Le point de montage est le cinquième champ de chaque ligne de mountinfo, ses espaces écrits en octal.
@@ -1943,7 +1953,7 @@ mod tests {
         assert_eq!(debut_du_processus(&stat, 1_000_000, 100), Some(1_002_500));
         assert_eq!(debut_du_processus("4242 (court) S 1", 1_000_000, 100), None);
         // Le vrai /proc de ce processus : un démarrage après celui de l'ordinateur, et pas dans le futur.
-        let vrai = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let vrai = crate::socle::lire_texte("/proc/self/stat").unwrap();
         let debut = debut_du_processus(&vrai, btime().unwrap(), 100).unwrap();
         assert!(debut >= btime().unwrap());
     }

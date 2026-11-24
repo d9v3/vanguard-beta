@@ -12,14 +12,23 @@ const CAT: &str = "Navigateur";
 
 pub fn constat() -> Constat {
     let r = crate::reparer::navigation_ici();
-    // Windows sans PowerShell : le fichier hosts a été lu, pas le proxy. Rien n'est conclu pour lui.
-    if r.inutile
-        .as_deref()
-        .is_some_and(|i| i.contains("non lus") || i.contains("not read"))
-    {
-        return super::impossible(CAT, tr!("réglages du proxy illisibles", "proxy settings unreadable"));
+    if let Some(raison) = r.inutile.as_deref().and_then(non_lu) {
+        return super::impossible(CAT, raison);
     }
     juger(r.inutile.is_some(), &r.pourquoi)
+}
+
+/// Ce que « rien à faire » n'a pas pu lire : le fichier hosts (droits, disque), ou les réglages du proxy (Windows sans
+/// PowerShell). Rien n'est conclu pour eux.
+fn non_lu(inutile: &str) -> Option<&'static str> {
+    let dit = |fr, en| inutile.contains(fr) || inutile.contains(en);
+    if dit("fichier hosts non lu", "hosts file not read") {
+        Some(tr!("fichier hosts illisible", "hosts file unreadable"))
+    } else if dit("non lus", "not read") {
+        Some(tr!("réglages du proxy illisibles", "proxy settings unreadable"))
+    } else {
+        None
+    }
 }
 
 fn juger(rien: bool, pourquoi: &str) -> Constat {
@@ -58,6 +67,24 @@ fn juger(rien: bool, pourquoi: &str) -> Constat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un fichier hosts ou un proxy pas lu n'est jamais dit sain ; tout lu, c'est jugé.
+    #[test]
+    fn detournement_non_lu_est_dit() {
+        assert_eq!(
+            non_lu("aucun proxy imposé (fichier hosts non lu)"),
+            Some("fichier hosts illisible")
+        );
+        assert_eq!(
+            non_lu("fichier hosts non lu, réglages du proxy non lus"),
+            Some("fichier hosts illisible")
+        );
+        assert_eq!(
+            non_lu("aucune redirection dans le fichier hosts (réglages du proxy non lus)"),
+            Some("réglages du proxy illisibles")
+        );
+        assert_eq!(non_lu("ni redirection dans le fichier hosts, ni proxy imposé"), None);
+    }
 
     #[test]
     fn detournement_dit_ce_qui_a_ete_trouve() {

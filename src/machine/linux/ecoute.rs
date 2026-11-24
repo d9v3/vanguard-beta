@@ -253,7 +253,7 @@ pub(crate) fn demander_netlink(protocole: i32, demande: &[u8]) -> Option<Vec<u8>
 /// Le point de montage de cgroup2 : /sys/fs/cgroup d'habitude, /sys/fs/cgroup/unified sur un système hybride (le
 /// numéro donné par le noyau est toujours celui de cgroup2).
 fn racine_cgroup2() -> Option<PathBuf> {
-    racine_cgroup2_selon(&std::fs::read_to_string("/proc/self/mountinfo").ok()?)
+    racine_cgroup2_selon(&crate::socle::lire_texte("/proc/self/mountinfo").ok()?)
 }
 
 fn racine_cgroup2_selon(mountinfo: &str) -> Option<PathBuf> {
@@ -302,7 +302,7 @@ fn par_proc_net() -> Option<Vec<Ecoute>> {
     let mut lisible = false;
     let mut prises = Vec::new();
     for (fichier, udp) in [("tcp", false), ("tcp6", false), ("udp", true), ("udp6", true)] {
-        if let Ok(texte) = std::fs::read_to_string(format!("/proc/net/{fichier}")) {
+        if let Ok(texte) = crate::socle::lire_texte(format!("/proc/net/{fichier}")) {
             lisible = true;
             prises.extend(lire_proc_net(&texte, udp));
         }

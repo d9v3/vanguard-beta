@@ -15,6 +15,14 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   tenait ce fichier ouvert tant qu'elle vivait, même sans y écrire : impossible de l'effacer ou de relancer la même
   commande. L'entrée et les sorties reçues du terminal ne passent plus à la fenêtre. Un autre fichier que le programme
   qui lance Vanguard lui aurait laissé en héritage, en plus de ces trois-là, n'est pas touché.
+- **Linux : un nom illisible ne cache plus un programme.** Un programme peut mettre dans son nom, dans celui d'un
+  fichier ou d'un point de montage, des octets qui ne sont pas du texte. Vanguard refusait alors tout le fichier du
+  système qui les montrait : le programme disparaissait de ses listes, un programme gelé était dit fini, ou tous les montages
+  devenaient invisibles. Ces octets se lisent maintenant comme le caractère « � », et le reste compte toujours ; un
+  essai refuse qu'une lecture stricte de /proc revienne dans le code.
+- **Ce qui n'a pas pu être lu est dit, plus jamais compté comme sain.** Le fichier hosts, les extensions d'un profil de
+  navigateur, un lanceur d'ouverture de session, la liste des comptes, le groupe de lecture du clavier ou les montages
+  qui existent sans se lire donnent une vérification impossible ou partielle, au lieu de « rien trouvé ».
 
 ## 24 novembre 2026 : version 0.98.0
 

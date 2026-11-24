@@ -268,7 +268,7 @@ fn lire_etat() -> Option<Result<Etat, String>> {
     }
     // Compte remappé dans un espace de noms d'utilisateur (`unshare -r`, conteneur sans droits) : le bus système y
     // refuse l'authentification. Rien à lire, comme du temps de bluetoothctl (qui s'y arrêtait net, SIGABRT).
-    if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !identite(&m)) {
+    if crate::socle::lire_texte("/proc/self/uid_map").is_ok_and(|m| !identite(&m)) {
         return None;
     }
     // GetManagedObjects de BlueZ : tous les adaptateurs (bluetoothctl show ne voyait que celui par défaut) et tous

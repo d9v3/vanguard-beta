@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{Constat, alerte, ok};
+use super::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::affichable;
 use crate::{tr, trf};
@@ -62,11 +62,9 @@ fn chaines(v: &Value) -> Vec<&str> {
 
 /// Extensions actives d'un `extensions.json` de la famille Firefox (installées par l'utilisateur seulement :
 /// thèmes, dictionnaires et modules du navigateur exclus). Le nom, choisi par l'auteur de l'extension, est lu prêt
-/// à montrer, comme dans la famille Chromium.
-fn lire_firefox(texte: &str) -> Vec<Extension> {
-    let Ok(json) = serde_json::from_str::<Value>(texte) else {
-        return Vec::new();
-    };
+/// à montrer, comme dans la famille Chromium. `None` : ce n'est pas du JSON, donc rien n'est lu (jamais « aucune extension »).
+fn lire_firefox(texte: &str) -> Option<Vec<Extension>> {
+    let json = serde_json::from_str::<Value>(texte).ok()?;
     let mut extensions = Vec::new();
     for a in json.get("addons").and_then(Value::as_array).into_iter().flatten() {
         if a["location"] != "app-profile" || a["type"] != "extension" || a["active"] != true {
@@ -101,7 +99,7 @@ fn lire_firefox(texte: &str) -> Vec<Extension> {
             origine_suspecte,
         });
     }
-    extensions
+    Some(extensions)
 }
 
 /// Nom affiché d'une extension Chromium : « __MSG_extName__ » se lit dans `_locales/<langue>/messages.json`. Prêt à
@@ -127,10 +125,9 @@ fn nom_chromium(manifeste: &Value, dossier: Option<&Path>) -> String {
 /// Extensions actives de `extensions.settings` (Preferences ou Secure Preferences d'un profil Chromium).
 /// Emplacements : 1 boutique, 2-3 et 6 posées par un programme, 4 décompressée (mode développeur), 5 et 10
 /// composants du navigateur, 7 et 9 politique d'entreprise, 8 ligne de commande.
-fn lire_chromium(texte: &str, profil: &Path) -> Vec<Extension> {
-    let Ok(json) = serde_json::from_str::<Value>(texte) else {
-        return Vec::new();
-    };
+/// `None` : ce n'est pas du JSON.
+fn lire_chromium(texte: &str, profil: &Path) -> Option<Vec<Extension>> {
+    let json = serde_json::from_str::<Value>(texte).ok()?;
     let mut extensions = Vec::new();
     for (id, e) in json
         .pointer("/extensions/settings")
@@ -183,7 +180,7 @@ fn lire_chromium(texte: &str, profil: &Path) -> Vec<Extension> {
         });
     }
     extensions.sort_by_key(|e| e.nom.to_lowercase());
-    extensions
+    Some(extensions)
 }
 
 /// Une seule fois chaque extension (par identifiant), triées par nom.
@@ -346,6 +343,39 @@ pub(super) fn profils(racine: &Path, firefox: bool) -> Vec<(String, PathBuf)> {
     p
 }
 
+/// Les extensions d'un profil, et ceux de ses fichiers qui existent sans se lire (droits, disque, JSON abîmé) : ce
+/// qui n'est pas lu est dit, jamais compté comme « aucune extension ».
+fn lire_profil(chemin: &Path, firefox: bool) -> (Vec<Extension>, Vec<&'static str>) {
+    // Windows range les extensions dans Secure Preferences, Linux dans Preferences. Une extension inscrite dans les
+    // deux ne compte qu'une fois.
+    let fichiers: &[&'static str] = if firefox {
+        &["extensions.json"]
+    } else {
+        &["Preferences", "Secure Preferences"]
+    };
+    let mut extensions = Vec::new();
+    let mut illisibles = Vec::new();
+    for &f in fichiers {
+        let lu = match std::fs::read(chemin.join(f)) {
+            Ok(octets) => {
+                let texte = crate::socle::texte_des_octets(octets);
+                if firefox {
+                    lire_firefox(&texte)
+                } else {
+                    lire_chromium(&texte, chemin)
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => None,
+        };
+        match lu {
+            Some(e) => extensions.extend(e),
+            None => illisibles.push(f),
+        }
+    }
+    (if firefox { extensions } else { sans_doublons(extensions) }, illisibles)
+}
+
 pub fn extensions() -> Vec<Constat> {
     let mut constats = Vec::new();
     let mut vus = Vec::new();
@@ -359,23 +389,6 @@ pub fn extensions() -> Vec<Constat> {
                 continue;
             }
             vus.push(reel);
-            let extensions = if firefox {
-                lire_firefox(&std::fs::read_to_string(chemin.join("extensions.json")).unwrap_or_default())
-            } else {
-                // Windows range les extensions dans Secure Preferences, Linux dans Preferences. Une extension
-                // inscrite dans les deux ne compte qu'une fois.
-                let mut e = Vec::new();
-                for f in ["Preferences", "Secure Preferences"] {
-                    e.extend(lire_chromium(
-                        &std::fs::read_to_string(chemin.join(f)).unwrap_or_default(),
-                        &chemin,
-                    ));
-                }
-                sans_doublons(e)
-            };
-            if extensions.is_empty() {
-                continue;
-            }
             // Profil nommé seulement s'il y en a plusieurs ; « ippds1dt.Default (release) » → « Default (release) ».
             let navigateur = if plusieurs {
                 let court = dossier
@@ -386,6 +399,20 @@ pub fn extensions() -> Vec<Constat> {
             } else {
                 nom.to_string()
             };
+            let (extensions, illisibles) = lire_profil(&chemin, firefox);
+            if !illisibles.is_empty() {
+                constats.push(impossible(
+                    CAT,
+                    &trf!(
+                        "extensions de {navigateur} : {} illisible",
+                        "{navigateur} extensions: {} unreadable",
+                        illisibles.join(", ")
+                    ),
+                ));
+            }
+            if extensions.is_empty() {
+                continue;
+            }
             constats.extend(juger(&navigateur, &extensions));
         }
     }
@@ -404,7 +431,7 @@ pub fn extensions() -> Vec<Constat> {
 /// COM-NAV-001 au corpus de détection : le fichier extensions.json d'un profil Firefox fabriqué.
 #[cfg(test)]
 pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
-    juger("Firefox", &lire_firefox(&e.texte))
+    juger("Firefox", &lire_firefox(&e.texte).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -424,7 +451,7 @@ mod tests {
             {"id":"off@x","type":"extension","location":"app-profile","active":false},
             {"id":"sys@mozilla","type":"extension","location":"app-builtin","active":true}
         ]}"#;
-        let e = lire_firefox(json);
+        let e = lire_firefox(json).unwrap();
         assert_eq!(e.len(), 2);
         assert!(e[0].partout && e[0].origine_suspecte.is_none());
         assert!(e[1].origine_suspecte.is_some() && e[1].pouvoirs.len() == 1);
@@ -434,7 +461,7 @@ mod tests {
             [Some(Niveau::Eleve), Some(Niveau::Info)]
         );
         assert!(c[1].message.contains("Espion ["));
-        assert!(lire_firefox("pas du json").is_empty());
+        assert!(lire_firefox("pas du json").is_none() && lire_firefox("{}").unwrap().is_empty());
     }
 
     #[test]
@@ -449,7 +476,7 @@ mod tests {
             "f":{"location":2,"from_webstore":false,"manifest":{"name":"Barre d'outils","content_scripts":[{"matches":["<all_urls>"]}]}},
             "g":{"location":1}
         }}}"#;
-        let e = lire_chromium(json, Path::new("/profil"));
+        let e = lire_chromium(json, Path::new("/profil")).unwrap();
         let noms: Vec<&str> = e.iter().map(|e| e.nom.as_str()).collect();
         assert_eq!(noms, ["Barre d'outils", "Bitwarden", "Outil local", "YouTube"]);
         let c = juger("Chrome", &e);
@@ -458,13 +485,38 @@ mod tests {
             [Some(Niveau::Eleve), Some(Niveau::Moyen), Some(Niveau::Info)]
         );
         // La même extension dans Preferences et dans Secure Preferences : comptée une seule fois.
-        let mut deux_fois = lire_chromium(json, Path::new("/profil"));
-        deux_fois.extend(lire_chromium(json, Path::new("/profil")));
+        let mut deux_fois = lire_chromium(json, Path::new("/profil")).unwrap();
+        deux_fois.extend(lire_chromium(json, Path::new("/profil")).unwrap());
         let uniques: Vec<String> = sans_doublons(deux_fois).into_iter().map(|e| e.nom).collect();
         assert_eq!(uniques, noms);
         // Nom à traduire sans dossier de langues : le nom brut reste, sans planter.
         let m: Value = serde_json::from_str(r#"{"name":"__MSG_extName__"}"#).unwrap();
         assert_eq!(nom_chromium(&m, None), "__MSG_extName__");
+    }
+
+    /// Un fichier d'extensions qui existe sans se lire (JSON abîmé, dossier à sa place) est dit illisible, jamais
+    /// « aucune extension » ; un octet hors UTF-8 ne cache rien ; un fichier absent n'est pas un défaut.
+    #[test]
+    fn profil_illisible_est_dit() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let lire = |firefox| {
+            let (e, i) = lire_profil(&d, firefox);
+            (e.into_iter().map(|e| e.nom).collect::<Vec<_>>(), i)
+        };
+        assert_eq!(lire(true), (vec![], vec![]));
+        std::fs::write(d.join("extensions.json"), b"{\"addons\":[").unwrap();
+        assert_eq!(lire(true), (vec![], vec!["extensions.json"]));
+        let mut octets = br#"{"addons":[{"id":"x","type":"extension","location":"app-profile","active":true,"defaultLocale":{"name":"Caf"#
+            .to_vec();
+        octets.push(0xe9);
+        octets.extend(br#""}}]}"#);
+        std::fs::write(d.join("extensions.json"), octets).unwrap();
+        assert_eq!(lire(true), (vec!["Caf\u{fffd}".to_string()], vec![]));
+        std::fs::write(d.join("Preferences"), "{}").unwrap();
+        assert_eq!(lire(false), (vec![], vec![]));
+        std::fs::create_dir(d.join("Secure Preferences")).unwrap();
+        assert_eq!(lire(false), (vec![], vec!["Secure Preferences"]));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// Le nom d'une extension est choisi par son auteur, et celui d'un profil par qui l'a créé : piégés, ils arrivent
@@ -474,13 +526,16 @@ mod tests {
         let firefox = r#"{"addons":[{"id":"x@y","type":"extension","location":"app-profile","active":true,"signedState":2,
             "defaultLocale":{"name":"Espion\u001b]52;c;eA==\u0007\u001b[2K\r\u202e"},"userPermissions":{"origins":["<all_urls>"]},
             "installTelemetryInfo":{"method":"sideload"}}]}"#;
-        let e = lire_firefox(firefox);
+        let e = lire_firefox(firefox).unwrap();
         assert_eq!(e[0].nom, "Espion�]52;c;eA==��[2K��");
         for c in juger("Firefox", &e) {
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
         }
         let chromium = r#"{"extensions":{"settings":{"a":{"location":4,"manifest":{"name":"Outil\u001b[8m\u2066"}}}}}"#;
-        assert_eq!(lire_chromium(chromium, Path::new("/profil"))[0].nom, "Outil�[8m�");
+        assert_eq!(
+            lire_chromium(chromium, Path::new("/profil")).unwrap()[0].nom,
+            "Outil�[8m�"
+        );
     }
 
     /// Le nom d'un dossier de profil, montré quand il y en a plusieurs : inoffensif, le chemin restant le vrai. Windows
@@ -509,7 +564,7 @@ mod tests {
              "defaultLocale":{"name":"uBlock Origin"},"userPermissions":{"permissions":["storage"],"origins":["<all_urls>"]},
              "installTelemetryInfo":{"source":"amo"}}
         ]}"#;
-        let cles = crate::machine::controler_regle("COM-NAV-001", || juger("Zen", &lire_firefox(json)));
+        let cles = crate::machine::controler_regle("COM-NAV-001", || juger("Zen", &lire_firefox(json).unwrap()));
         assert_eq!(
             cles,
             [

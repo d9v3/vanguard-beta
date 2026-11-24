@@ -209,7 +209,7 @@ mod tests {
         let Some((debut, fin)) = proteger().unwrap() else {
             return crate::essais::saute("le programme des essais n'a pas de PT_GNU_RELRO d'au moins une page");
         };
-        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let maps = crate::socle::lire_texte("/proc/self/maps").unwrap();
         let d = droits(&maps, debut, fin);
         assert!(!d.is_empty(), "{debut:#x}-{fin:#x} absent de /proc/self/maps");
         assert!(d.iter().all(|p| p.starts_with("r-")), "{debut:#x}-{fin:#x} : {d:?}");

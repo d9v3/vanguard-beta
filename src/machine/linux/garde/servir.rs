@@ -259,7 +259,7 @@ fn chemin_de(fd: i32) -> String {
 
 /// Le nom (comm) d'un processus, pour l'affichage seulement : le processus le choisit (`prctl`), il ne décide rien.
 fn nom_de(pid: i32) -> String {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).map_or_default(|n| n.trim_end().to_string())
+    crate::socle::lire_texte(format!("/proc/{pid}/comm")).map_or_default(|n| n.trim_end().to_string())
 }
 
 /// Un lecteur de `fichier` par position (pread), borné à sa taille : la position du descripteur n'est jamais partagée.

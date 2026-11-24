@@ -3596,7 +3596,7 @@ fn texte_joint(texte: &str) -> String {
 /// choisissait quel fichier de root uwsm lit comme un script. Le dossier de chaque lien du milieu (W-7) compte aussi.
 fn de_root_seul(f: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
-    let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+    let carte = crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default();
     if !uid_sans_traduction(&carte) {
         return false;
     }
@@ -7757,7 +7757,7 @@ fn juger_generateurs(t: &mut Lancements) {
         use std::os::unix::fs::MetadataExt as _;
         std::fs::metadata("/proc/self").map_or(u32::MAX, |m| m.uid())
     };
-    let sans_traduction = uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default());
+    let sans_traduction = uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default());
     for (dossier, du_compte) in dossiers {
         let entrees = match std::fs::read_dir(&dossier) {
             Ok(e) => e,
@@ -21370,7 +21370,7 @@ mod tests {
     /// sont à root seul ; une copie dans un dossier du compte, non.
     #[test]
     fn programmes_de_la_sauvegarde_a_root_seul_en_vrai() {
-        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+        if !uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default()) {
             return crate::essais::saute(
                 "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
             );
@@ -21428,7 +21428,7 @@ mod tests {
     /// du compte vers son dossier, non : le compte choisit où mène le lien.
     #[test]
     fn de_root_seul_juge_chaque_lien_en_vrai() {
-        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+        if !uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default()) {
             return crate::essais::saute(
                 "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
             );
@@ -21455,7 +21455,7 @@ mod tests {
     /// Le côté permis de la règle : un fichier de root seul, sur le vrai système, passe la porte du périmètre.
     #[test]
     fn unite_de_root_seul_dans_le_perimetre() {
-        let carte = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        let carte = crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default();
         let fichier = Path::new("/etc/os-release");
         if !uid_sans_traduction(&carte) || !de_root_seul(fichier) {
             return crate::essais::saute("ni root sans traduction ni /etc/os-release à root seul ici");
@@ -26629,7 +26629,7 @@ mod tests {
     /// sauté aussi si aucun ne lèverait même du compte (l'essai ne mordrait pas).
     #[test]
     fn greffons_du_systeme_ne_levent_pas_la_sauvegarde_en_vrai() {
-        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+        if !uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default()) {
             return crate::essais::saute(
                 "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
             );
@@ -28259,7 +28259,7 @@ mod tests {
         if !original.is_dir() {
             return crate::essais::saute("Omarchy absent : /usr/share/omarchy/default/hypr manque");
         }
-        if !uid_sans_traduction(&std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default()) {
+        if !uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default()) {
             return crate::essais::saute(
                 "dans un espace de noms d'utilisateurs (unshare -r), rien n'est « à root seul » : à lancer hors de lui",
             );

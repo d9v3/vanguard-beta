@@ -8,6 +8,8 @@
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
+#[cfg(target_os = "linux")]
+use super::impossible;
 use super::{Constat, alerte};
 use crate::risk::Niveau;
 use crate::ui::affichable;
@@ -158,7 +160,12 @@ fn derniere_connexion(
 #[cfg(target_os = "linux")]
 pub fn constats() -> Vec<Constat> {
     let moi = moi();
-    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    let Ok(passwd) = crate::socle::lire_texte("/etc/passwd") else {
+        return vec![impossible(
+            CAT,
+            tr!("liste des comptes illisible", "account list unreadable"),
+        )];
+    };
     let natif2 = lastlog2_natif();
     let comptes: Vec<Compte> = passwd
         .lines()
@@ -280,7 +287,7 @@ mod tests {
         if crate::commande::lancer(std::process::Command::new("lastlog2").arg("--help"), 5).is_none() {
             return crate::essais::saute("lastlog2 absent");
         }
-        let passwd = std::fs::read_to_string("/etc/passwd").unwrap();
+        let passwd = crate::socle::lire_texte("/etc/passwd").unwrap();
         let natif2 = lastlog2_natif();
         let mut ecarts = 0;
         let mut vus = 0;

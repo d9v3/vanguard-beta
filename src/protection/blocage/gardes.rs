@@ -834,7 +834,7 @@ pub(crate) fn session_entrante_ouverte() -> Option<bool> {
     let etablies = lire_etablies()?;
     let mut en_ecoute = Vec::new();
     for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        match std::fs::read_to_string(f) {
+        match crate::socle::lire_texte(f) {
             Ok(texte) => en_ecoute.extend(en_ecoute_proc(&texte)),
             // IPv6 coupé au démarrage (ipv6.disable=1) : pas de tcp6, donc rien n'y écoute.
             Err(e) if f.ends_with('6') && e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1038,7 +1038,7 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
     let mut lisible = false;
     let mut etablies = Vec::new();
     for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        if let Ok(t) = std::fs::read_to_string(f) {
+        if let Ok(t) = crate::socle::lire_texte(f) {
             lisible = true;
             etablies.extend(etablies_proc(&t, moi, &noms));
         }
@@ -1260,7 +1260,7 @@ fn lignee_lue(pid: u32, sessions: Option<&Sessions>, racine: Option<u32>) -> Opt
     {
         ascendance_selon(
             pid,
-            |p| fiche_du_stat(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?),
+            |p| fiche_du_stat(&crate::socle::lire_texte(format!("/proc/{p}/stat")).ok()?),
             aucune,
             lecture,
         )

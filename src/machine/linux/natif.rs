@@ -216,7 +216,7 @@ fn processus_nomme_sous(racine: &Path, nom: &str) -> bool {
         .unwrap_or_default()
         .into_iter()
         .any(|pid| {
-            std::fs::read_to_string(proc.join(pid.to_string()).join("comm"))
+            crate::socle::lire_texte(proc.join(pid.to_string()).join("comm"))
                 .is_ok_and(|c| c.trim_end_matches('\n') == cherche)
         })
 }
@@ -243,7 +243,7 @@ fn services_actifs_sous(racine: &Path, services: &[&str]) -> Option<Vec<bool>> {
         .collect();
     let mut actifs = vec![false; services.len()];
     for pid in crate::socle::processus::pids_dans(&proc)? {
-        let Ok(texte) = std::fs::read_to_string(proc.join(pid.to_string()).join("cgroup")) else {
+        let Ok(texte) = crate::socle::lire_texte(proc.join(pid.to_string()).join("cgroup")) else {
             continue;
         };
         // Une ligne par hiérarchie, « 0::/chemin » (cgroup v2) ou « 1:name=systemd:/chemin » (v1) ; le chemin
@@ -536,13 +536,14 @@ pub(crate) fn lire_borne(chemin: &Path, max: u64) -> Option<String> {
     if !std::fs::metadata(chemin).is_ok_and(|m| m.is_file()) {
         return None;
     }
-    let mut texte = String::new();
+    // En octets : coupé à `max` au milieu d'un caractère, ou avec un commentaire en Latin-1, le fichier reste lu.
+    let mut octets = Vec::new();
     std::fs::File::open(chemin)
         .ok()?
         .take(max)
-        .read_to_string(&mut texte)
+        .read_to_end(&mut octets)
         .ok()?;
-    Some(texte)
+    Some(crate::socle::texte_des_octets(octets))
 }
 
 /// Le fichier « metadata » d'une application (ses permissions statiques, `[Context]`), celle du compte d'abord :
@@ -789,7 +790,7 @@ fn proprietes_udev(texte: &str) -> HashMap<String, String> {
 /// « [/sous-volume] » que findmnt ajoute pour Btrfs).
 pub(crate) fn racine() -> Option<(String, String)> {
     racine_selon(
-        &std::fs::read_to_string("/proc/self/mountinfo").ok()?,
+        &crate::socle::lire_texte("/proc/self/mountinfo").ok()?,
         Path::new(RACINE),
     )
 }
@@ -1743,6 +1744,9 @@ mod tests {
             Some("[Install]\nDefaultInstance=tty1\n")
         );
         assert_eq!(lire_borne(&d.join("long"), 1024).map(|t| t.len()), Some(1024));
+        std::fs::write(d.join("latin1"), b"# caf\xe9\n[Context]\nshared=network;\n").unwrap();
+        assert!(lire_borne(&d.join("latin1"), 1024).is_some_and(|t| t.contains("shared=network")));
+        assert_eq!(lire_borne(&d.join("latin1"), 6).as_deref(), Some("# caf\u{fffd}"));
         for n in ["tube", "zero", "absent"] {
             assert_eq!(lire_borne(&d.join(n), 1024), None, "{n}");
         }

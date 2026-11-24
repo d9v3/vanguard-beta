@@ -102,7 +102,7 @@ pub(crate) fn juger_releves(releves: &[Releve], rafale: &HashSet<PathBuf>, octet
 /// parti) — l'appelant en fait un « candidat inconnu ».
 #[cfg(target_os = "linux")]
 pub(crate) fn compteurs_io(pid: u32) -> Option<ComptesIo> {
-    let texte = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    let texte = crate::socle::lire_texte(format!("/proc/{pid}/io")).ok()?;
     lire_compteurs(&texte)
 }
 
@@ -143,7 +143,7 @@ pub(crate) fn ouverts_en_ecriture(pid: u32) -> HashSet<PathBuf> {
         let Some(nom) = entree.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if let Ok(info) = std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{nom}"))
+        if let Ok(info) = crate::socle::lire_texte(format!("/proc/{pid}/fdinfo/{nom}"))
             && ouvert_en_ecriture(&info)
         {
             ouverts.insert(cible);

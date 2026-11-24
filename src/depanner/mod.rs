@@ -475,7 +475,7 @@ fn volumes() -> Vec<(String, u64, u64)> {
             "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "zfs",
         ];
         let mut vus = Vec::new();
-        std::fs::read_to_string("/proc/mounts")
+        crate::socle::lire_texte("/proc/mounts")
             .unwrap_or_default()
             .lines()
             .filter_map(|l| {

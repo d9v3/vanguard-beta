@@ -392,7 +392,7 @@ pub(crate) fn ancetres(pid: u32) -> Vec<u32> {
         .collect();
     for _ in 0..64 {
         #[cfg(target_os = "linux")]
-        let parent = std::fs::read_to_string(format!("/proc/{courant}/stat"))
+        let parent = crate::socle::lire_texte(format!("/proc/{courant}/stat"))
             .ok()
             .and_then(|s| parent_du_stat(&s));
         #[cfg(windows)]

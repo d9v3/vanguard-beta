@@ -251,6 +251,21 @@ pub(crate) fn lire_texte_ordinaire(chemin: &std::path::Path, max: u64) -> std::i
     String::from_utf8(lire_ordinaire(chemin, max)?).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// Des octets en texte : tels quels en UTF-8, sinon chaque suite invalide devient U+FFFD. Le reste se lit toujours.
+pub(crate) fn texte_des_octets(octets: Vec<u8>) -> String {
+    String::from_utf8(octets).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+/// Un fichier du système (/proc, /etc/passwd…) en texte, même si un nom qu'il montre n'est pas en UTF-8.
+///
+/// Le noyau recopie dans /proc des octets choisis par les programmes : le nom d'un processus (`PR_SET_NAME`, ou un
+/// nom UTF-8 coupé à 15 octets), d'un fichier projeté, d'un point de montage. `read_to_string` refuse le fichier
+/// entier au premier octet qui n'est pas de l'UTF-8 : le programme devenait invisible, ou tous les montages. Deux
+/// noms différents peuvent se montrer pareils : on ne reconnaît personne à son seul nom.
+pub(crate) fn lire_texte(chemin: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    std::fs::read(chemin).map(texte_des_octets)
+}
+
 fn trop_gros(max: u64) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -674,6 +689,109 @@ fn dossier_des_tests() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn des_octets_hors_utf8_restent_lus() {
+        assert_eq!(texte_des_octets("café".into()), "café");
+        assert_eq!(
+            texte_des_octets(b"caf\xe9 (x)\nUid:\t0\n".to_vec()),
+            "caf\u{fffd} (x)\nUid:\t0\n"
+        );
+        // Un caractère coupé n'avale pas ce qui suit.
+        assert_eq!(texte_des_octets(b"(caf\xc3) S 1".to_vec()), "(caf\u{fffd}) S 1");
+    }
+
+    /// Les lectures en UTF-8 strict de /proc et des fichiers du système qu'un nom d'ailleurs peut rendre illisibles :
+    /// numéro de ligne et extrait.
+    fn lectures_strictes(code: &str) -> Vec<(usize, String)> {
+        let sensibles = [
+            "/proc/",
+            "/etc/passwd",
+            "/etc/group",
+            "/etc/hosts",
+            "\"stat\"",
+            "\"status\"",
+            "\"comm\"",
+            "\"cgroup\"",
+            "\"mountinfo\"",
+            "\"mounts\"",
+            "\"maps\"",
+            "\"smaps\"",
+            "\"children\"",
+            "fichier_hosts()",
+        ];
+        let mut trouves = Vec::new();
+        for (i, _) in code.match_indices("read_to_string(") {
+            // L'instruction : du dernier « ; », « { » ou « } » en fin de ligne jusqu'au « ; » ou à la fin de la ligne.
+            let avant = [";\n", "{\n", "}\n"]
+                .iter()
+                .filter_map(|f| code[..i].rfind(f))
+                .max()
+                .unwrap_or(0);
+            let apres = code[i..].find(['\n', ';']).map_or(code.len(), |n| i + n);
+            let instruction: String = code[avant..apres]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if sensibles.iter().any(|s| instruction.contains(s)) {
+                trouves.push((code[..i].matches('\n').count() + 1, instruction.trim().to_string()));
+            }
+        }
+        trouves
+    }
+
+    /// Un nom de processus, un point de montage ou une ligne ajoutée à la main peuvent ne pas être de l'UTF-8 :
+    /// `read_to_string` refuse alors tout le fichier, et le programme devient invisible. `socle::lire_texte` lit.
+    #[test]
+    fn proc_ne_se_lit_jamais_en_utf8_strict() {
+        fn parcourir(dossier: &std::path::Path, trouves: &mut Vec<String>, vus: &mut usize) {
+            for e in std::fs::read_dir(dossier).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    parcourir(&p, trouves, vus);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    *vus += 1;
+                    let source = std::fs::read_to_string(&p).unwrap();
+                    let code = source
+                        .find("#[cfg(test)]\nmod ")
+                        .map_or(source.as_str(), |t| &source[..t]);
+                    for (ligne, instruction) in lectures_strictes(code) {
+                        trouves.push(format!("{}:{ligne} : {instruction}", p.display()));
+                    }
+                }
+            }
+        }
+        let (mut trouves, mut vus) = (Vec::new(), 0);
+        parcourir(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut trouves,
+            &mut vus,
+        );
+        assert!(vus > 100, "{vus} fichiers : le parcours ne voit pas les sources");
+        assert!(
+            trouves.is_empty(),
+            "lecture stricte : un octet hors UTF-8 y rend tout illisible ; écris crate::socle::lire_texte :\n{}",
+            trouves.join("\n")
+        );
+    }
+
+    #[test]
+    fn le_garde_voit_une_lecture_stricte() {
+        for mauvais in [
+            "let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;",
+            "x;\nlet s = std::fs::read_to_string(racine.join(\"status\"));",
+            "x;\nstd::fs::File::open(\"/proc/self/mounts\")?\n    .read_to_string(&mut t)?;",
+            "std::fs::read_to_string(\"/etc/passwd\")",
+        ] {
+            assert_eq!(lectures_strictes(mauvais).len(), 1, "{mauvais}");
+        }
+        assert_eq!(lectures_strictes("std::fs::read_to_string(\"/etc/os-release\")"), []);
+        assert_eq!(
+            lectures_strictes("f(\"/proc/self/mounts\");\nstd::fs::read_to_string(x)"),
+            []
+        );
+    }
 
     #[cfg(unix)]
     #[test]

@@ -284,8 +284,8 @@ impl Moment {
 /// Le démarrage en cours et le temps écoulé depuis (`/proc/uptime`, sommeil compris).
 #[cfg(target_os = "linux")]
 fn depuis_le_demarrage() -> Option<(String, u64)> {
-    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    let ms = ms_d_uptime(&std::fs::read_to_string("/proc/uptime").ok()?)?;
+    let id = crate::socle::lire_texte("/proc/sys/kernel/random/boot_id").ok()?;
+    let ms = ms_d_uptime(&crate::socle::lire_texte("/proc/uptime").ok()?)?;
     let id = id.trim();
     (!id.is_empty()).then(|| (id.to_string(), ms))
 }

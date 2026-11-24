@@ -909,13 +909,13 @@ mod plateforme {
     /// processus compté lu ; plus grand, il n'est pas lu (le processus compte alors parmi les non lus).
     fn lire_proc(chemin: &str) -> Option<String> {
         use std::io::Read;
-        let mut texte = String::new();
+        let mut octets = Vec::new();
         File::open(chemin)
             .ok()?
             .take(PROC_MAX + 1)
-            .read_to_string(&mut texte)
+            .read_to_end(&mut octets)
             .ok()?;
-        (u64::try_from(texte.len()).unwrap_or(u64::MAX) <= PROC_MAX).then_some(texte)
+        (u64::try_from(octets.len()).unwrap_or(u64::MAX) <= PROC_MAX).then(|| crate::socle::texte_des_octets(octets))
     }
 
     /// `/proc/<pid>/smaps` pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en

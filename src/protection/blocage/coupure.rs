@@ -251,7 +251,7 @@ mod linux {
     }
 
     fn cgroupe_de(pid: u32) -> Option<String> {
-        cgroupe_du_texte(&std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?)
+        cgroupe_du_texte(&crate::socle::lire_texte(format!("/proc/{pid}/cgroup")).ok()?)
     }
 
     fn meme_processus(pid: u32, chemin: &str, depart: u64) -> bool {

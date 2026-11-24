@@ -358,7 +358,7 @@ fn lire_processus(pr: &mut Processus) -> Option<(&'static str, &'static str)> {
         let texte = String::from_utf8_lossy(&o);
         pr.ligne = Some(borner(texte.trim_end_matches('\0').replace('\0', " ").as_str()));
     }
-    if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", pr.pid)) {
+    if let Ok(status) = crate::socle::lire_texte(format!("/proc/{}/status", pr.pid)) {
         let champ = |nom: &str| {
             status
                 .lines()
@@ -368,7 +368,7 @@ fn lire_processus(pr: &mut Processus) -> Option<(&'static str, &'static str)> {
         };
         pr.parent = champ("PPid:");
         pr.compte =
-            champ("Uid:").map(|uid| nom_du_compte(uid, &std::fs::read_to_string("/etc/passwd").unwrap_or_default()));
+            champ("Uid:").map(|uid| nom_du_compte(uid, &crate::socle::lire_texte("/etc/passwd").unwrap_or_default()));
     }
     None
 }

@@ -2338,7 +2338,7 @@ fn de_memoire(
 
 /// L'uid réel d'un processus (`/proc/<pid>/status`).
 fn uid_du_processus(pid: &str) -> Option<u32> {
-    let t = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let t = crate::socle::lire_texte(format!("/proc/{pid}/status")).ok()?;
     t.lines()
         .find_map(|l| l.strip_prefix("Uid:"))
         .and_then(|r| r.split_whitespace().next()?.parse().ok())
@@ -2346,7 +2346,7 @@ fn uid_du_processus(pid: &str) -> Option<u32> {
 
 /// Le compte de la connexion d'un processus (`/proc/<pid>/loginuid`) : il ne change ni par sudo ni par su.
 fn uid_de_connexion(pid: &str) -> Option<u32> {
-    std::fs::read_to_string(format!("/proc/{pid}/loginuid"))
+    crate::socle::lire_texte(format!("/proc/{pid}/loginuid"))
         .ok()?
         .trim()
         .parse()
@@ -2375,7 +2375,7 @@ fn terminal_de_controle(stat: &str) -> Option<(u64, PathBuf)> {
 /// lui-même, que ses gestes avertissent déjà).
 fn uid_du_terminal() -> Option<u32> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    let (tty, chemin) = terminal_de_controle(&std::fs::read_to_string("/proc/self/stat").ok()?)?;
+    let (tty, chemin) = terminal_de_controle(&crate::socle::lire_texte("/proc/self/stat").ok()?)?;
     let m = std::fs::symlink_metadata(chemin).ok()?;
     (m.file_type().is_char_device() && m.rdev() == tty && m.uid() != 0).then(|| m.uid())
 }

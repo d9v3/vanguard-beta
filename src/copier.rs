@@ -118,7 +118,7 @@ pub(crate) fn est_la_cle(racine: &Path) -> bool {
 /// Le volume de `p` porte-t-il le système ou le dossier personnel ? `None` : le volume ne peut pas être lu.
 #[cfg(target_os = "linux")]
 fn sur_le_systeme(p: &Path) -> Option<bool> {
-    let montages = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let montages = crate::socle::lire_texte("/proc/self/mountinfo").ok()?;
     sur_le_systeme_selon(&montages, &p.canonicalize().ok()?, &crate::socle::maison())
 }
 
@@ -159,7 +159,7 @@ pub(crate) fn limite_4_go(genre: &str) -> bool {
 /// Le type du système de fichiers de `p` ; `None` s'il ne se lit pas.
 #[cfg(target_os = "linux")]
 pub(crate) fn genre_du_volume(p: &Path) -> Option<String> {
-    let montages = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let montages = crate::socle::lire_texte("/proc/self/mountinfo").ok()?;
     montage(&montages, &p.canonicalize().ok()?).map(|(_, genre)| genre.to_string())
 }
 
@@ -243,7 +243,7 @@ pub(crate) fn disques() -> Vec<Disque> {
     const SYSTEMES: &[&str] = &[
         "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "hfsplus", "udf",
     ];
-    let montages = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let montages = crate::socle::lire_texte("/proc/mounts").unwrap_or_default();
     // Les autres partitions de la clé VANGUARD (VTOYEFI, WIN11, MACOS…) n'ont pas son témoin, mais sont sur le même
     // support : elles ne sont pas un disque où copier ou écrire des essais.
     let de_la_cle: Vec<String> = montages

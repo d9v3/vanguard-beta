@@ -487,7 +487,7 @@ mod linux {
     /// Le numéro du processus que tient `pidfd`, lu dans /proc/self/fdinfo (« Pid: »).
     fn pid_du_pidfd(pidfd: &std::os::fd::OwnedFd) -> Option<i32> {
         use std::os::fd::AsRawFd;
-        let texte = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd())).ok()?;
+        let texte = crate::socle::lire_texte(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd())).ok()?;
         texte
             .lines()
             .find_map(|l| l.strip_prefix("Pid:"))

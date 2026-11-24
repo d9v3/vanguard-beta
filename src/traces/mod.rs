@@ -1435,7 +1435,7 @@ fn empreintes_du_dossier(d: &Path) -> Vec<(String, String)> {
 /// Le nom de l'ordinateur et du compte, pour le LISEZMOI.
 fn machine_et_compte() -> (String, String) {
     #[cfg(target_os = "linux")]
-    let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let machine = crate::socle::lire_texte("/proc/sys/kernel/hostname").unwrap_or_default();
     #[cfg(windows)]
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
     let compte = ["USER", "LOGNAME", "USERNAME"]
@@ -1446,7 +1446,7 @@ fn machine_et_compte() -> (String, String) {
     #[cfg(unix)]
     let compte = compte.or_else(|| {
         let uid = crate::socle::euid();
-        let nom = std::fs::read_to_string("/etc/passwd").ok().and_then(|t| {
+        let nom = crate::socle::lire_texte("/etc/passwd").ok().and_then(|t| {
             t.lines().find_map(|l| {
                 let c: Vec<&str> = l.split(':').collect();
                 let [nom, _, id, ..] = c[..] else { return None };
