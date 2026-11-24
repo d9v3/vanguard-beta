@@ -1203,7 +1203,7 @@ fn explication(r: Reglage) -> &'static str {
         ),
         Reglage::Autotest => tr!(
             "Oui : une fois par semaine, avec la surveillance, Vanguard compare ses propres lectures (logiciels installés, services, ports, comptes, pare-feu) à ce qu'en disent les outils du système, et note ce qui ralentit. Rien n'est changé, rien n'est envoyé, aucune notification ; reporté pendant un jeu. « vanguard autotest » le fait à la main.",
-            "Yes: once a week, with the monitoring, Vanguard compares its own readings (installed software, services, ports, accounts, firewall) with what the system's tools say, and notes what slows down. Nothing is changed, nothing is sent, no notification; postponed during a game. “vanguard autotest” does it by hand."
+            "Yes: once a week, with the monitoring, Vanguard compares its own readings (installed software, services, ports, accounts, firewall) with what the system's tools say, and notes what slows down. Nothing is changed, nothing is sent, no notification; postponed during a game. “vanguard self-test” does it by hand."
         ),
         Reglage::PaquetsAur => tr!(
             "Arch Linux : oui, le bilan envoie à aur.archlinux.org le nom des paquets installés hors des dépôts officiels, pour dire ceux qui ne sont plus mis à jour (règle LNX-MAJ-006). Non : rien n'est envoyé, et ces paquets ne sont pas vérifiés, ce qui est dit.",

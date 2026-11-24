@@ -34,6 +34,17 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 - **Des lectures bornées.** Les fichiers pièges, les versions des navigateurs, les journaux lus directement et
   l'empreinte d'un très gros programme se lisent avec une limite et seulement si ce sont de vrais fichiers : un tube ou
   un fichier immense mis à leur place ne fige plus la vérification.
+- **Fenêtre : le vert se mérite.** « En veille » n'apparaît que si la surveillance et le temps réel sont allumés, et
+  lus comme tels ; la coche « aucune alerte » demande en plus un journal vérifié en entier. Sinon c'est dit. La note du
+  bilan porte sa lettre, la même que dans le terminal, et la légende du bilan ne se coupe plus au milieu d'un groupe.
+- **Des messages qui disent quoi faire.** Quand la fenêtre ne s'ouvre pas, le message dit pourquoi en mots simples et
+  comment continuer. Ce que la fenêtre ne fait pas encore renvoie à la bonne commande (« vanguard --menu »,
+  « vanguard corriger »).
+- **Les commandes citées existent, et dans la bonne langue.** Des textes anglais donnaient le nom français d'une
+  commande, et quelques textes une commande qui n'existe pas ; un essai relit maintenant chaque commande citée.
+  `disclose` a ses options en anglais (`--tool`, `--program`, `--language`, `--delete`).
+- **Clé USB : l'ouverture sous Linux connaît plus de terminaux.** Sans terminal trouvé, un message le dit au lieu de
+  ne rien faire. Les modes d'emploi de la clé parlent de la fenêtre.
 
 ## 24 novembre 2026 : version 0.98.0
 

@@ -7,7 +7,8 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
 
 1. LE PLUS SIMPLE
 
-   Double-cliquer « autorun.sh » à la racine de la clé : un terminal s'ouvre avec le menu.
+   Double-cliquer « autorun.sh » à la racine de la clé : Vanguard s'ouvre (sa fenêtre, ou le menu
+   dans un terminal). S'il s'ouvre comme un texte : clic droit, « Exécuter comme un programme ».
    GNOME le propose aussi au branchement de la clé (« Lancer le logiciel ? »).
 
 
@@ -26,7 +27,8 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
 
 3. COMMANDES UTILES
 
-   Sans rien après « vanguard » : le menu. Sinon (« vanguard » = le chemin complet ci-dessus) :
+   Sans rien après « vanguard » : la fenêtre de Vanguard sur un bureau graphique, sinon le menu ;
+   --menu force le menu. Sinon (« vanguard » = le chemin complet ci-dessus) :
 
      vanguard bilan                bilan complet : cet ordinateur, puis le réseau
      vanguard bilan --texte        même bilan, rapport en texte simple (serveur sans écran)
@@ -44,8 +46,8 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
 
 4. BON À SAVOIR
 
-   - Le terminal n'a pas besoin d'être lancé en root : une correction demande ton mot de passe (sudo) au
-     moment où tu l'acceptes, jamais avant.
+   - Le terminal n'a pas besoin d'être lancé en root : une correction demande votre mot de passe (sudo)
+     au moment où vous l'acceptez, jamais avant.
    - « Permission non accordée » : la clé est montée sans droit d'exécution (option noexec). Copier le
      programme puis le lancer :  cp /run/media/$USER/VANGUARD/Linux/vanguard ~/ && ~/vanguard
    - L'installer sur cet ordinateur : copier « vanguard » dans ~/.local/bin, puis taper simplement

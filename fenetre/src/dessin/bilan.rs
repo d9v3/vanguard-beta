@@ -285,6 +285,9 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                                 }
                             }
                             ui.label(texte("/100", 20.0, p.discret));
+                            if let Some(n) = v.note {
+                                ui.label(texte(crate::donnees::bilan::Vue::lettre(n), 28.0, p.encre));
+                            }
                         });
                         if let Some(k) = incomplete {
                             let ecrire = |k| crate::trf!("{} pas pu vérifier", "{} could not check", k);
@@ -430,6 +433,12 @@ fn legende(ui: &mut Ui, v: &Vue, part: f32) {
             let k = v.compte(r);
             if r == Rang::SansObjet && k == 0 {
                 continue;
+            }
+            // Une pastille, son nombre et son nom restent sur la même ligne : à la ligne avant, s'ils n'y tiennent pas.
+            let mesurer = |t: String| ui.painter().layout_no_wrap(t, moyenne(13.0), p.encre).size().x;
+            let large = 6.0 + mesurer(k.to_string()) + mesurer(r.nom().to_string()) + 2.0 * ui.spacing().item_spacing.x;
+            if large > ui.available_size_before_wrap().x {
+                ui.end_row();
             }
             let (z, _) = ui.allocate_exact_size(vec2(6.0, 14.0), Sense::hover());
             if r == Rang::NonVerifie {
@@ -613,7 +622,7 @@ fn carte_constat(ui: &mut Ui, c: &Constat, offre: bool) -> bool {
                         ui.label(texte(
                             crate::tr!(
                                 "La correction se fait depuis le terminal pour l'instant : vanguard corriger.",
-                                "The fix is done from the terminal for now: vanguard corriger."
+                                "The fix is done from the terminal for now: vanguard fix."
                             ),
                             12.0,
                             p.discret,

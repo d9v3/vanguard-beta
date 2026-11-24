@@ -691,7 +691,7 @@ relevé (`amelioration/`), la file d'envoi (`envoi/`) et l'identifiant d'install
 l'Agent et les mesures de l'autodiagnostic restent sur l'ordinateur. `VANGUARD_ENVOI=0` l'emporte toujours : rien
 n'est relevé ni envoyé. Ce qui sortira, et comment : [MODELE-DE-MENACE.md](MODELE-DE-MENACE.md).
 
-**Extensions** (menu 12, `vanguard extensions`) — des programmes personnels dans Vanguard, sans toucher à son code. Un
+**Extensions** (menu 13.10, `vanguard extensions`) — des programmes personnels dans Vanguard, sans toucher à son code. Un
 plugin est un dossier avec un manifeste `plugin.toml`, ajouté une fois depuis un dossier ou une archive .zip
 (`vanguard plugins ajouter`) ; un script du laboratoire est un fichier posé tel quel (`vanguard labo`), pour essayer
 une idée vite. Un plugin est un script (sh, bash, PowerShell, Python) ou un programme compilé, en Rust par exemple
@@ -859,10 +859,12 @@ Chaque entrée du menu existe aussi en commande.
 <details>
 <summary><b>Toutes les commandes</b></summary>
 
+Presque toutes les commandes acceptent aussi `--json` ; la liste complète des options : `vanguard <commande> --help`.
+
 | Commande | Rôle |
 |---|---|
 | **Bilan de sécurité** | |
-| `vanguard bilan [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (mode urgence) |
+| `vanguard bilan [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (pour un serveur sans écran) |
 | `vanguard corriger` | corriger les problèmes trouvés |
 | `vanguard rapport` | le rapport détaillé dans le navigateur : le bilan de cette session, sinon un bilan complet d'abord |
 | `vanguard chercher <mots> [--premier] [--json]` | chercher un outil, une page du guide, un logiciel ou un réglage, comme à l'accueil du menu : synonymes (« box » → routeur) et fautes de frappe compris ; un numéro ouvre le résultat |

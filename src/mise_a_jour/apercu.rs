@@ -193,7 +193,7 @@ impl Refus {
             Refus::NonVerifie(r) => trf!("non vérifié : {}", "not verified: {}", r),
             Refus::SansLectureSeule => tr!(
                 "l'aperçu se demande par « vanguard se-mettre-a-jour --voir », « se-mettre-a-jour » en premier : rien d'autre ne le donne",
-                "the preview is asked for with “vanguard se-mettre-a-jour --voir”, “se-mettre-a-jour” first: nothing else gives it"
+                "the preview is asked for with “vanguard self-update --voir”, “self-update” first: nothing else gives it"
             )
             .to_string(),
             Refus::MalForme => tr!(

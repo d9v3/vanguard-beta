@@ -209,6 +209,32 @@ pub struct Vue {
     pub evenements: Vec<Evenement>,
 }
 
+impl Vue {
+    /// Ce que dit un journal sans alerte, et s'il mérite une coche verte : seulement si la veille est allumée et si
+    /// le journal est vérifié en entier. Sans surveillance, « aucune alerte » ne dit rien de l'ordinateur.
+    pub fn sans_alerte(&self, veille: bool) -> (bool, &'static str) {
+        if self.illisibles > 0 || self.etat.gravite().is_some() {
+            (
+                false,
+                crate::tr!(
+                    "Aucune alerte dans ce qui a été lu, mais le journal n'est pas vérifié en entier.",
+                    "No alert in what was read, but the log is not fully verified."
+                ),
+            )
+        } else if veille {
+            (true, crate::tr!("Aucune alerte notée.", "No alert recorded."))
+        } else {
+            (
+                false,
+                crate::tr!(
+                    "Aucune alerte notée, mais la veille est éteinte (ou n'a pas pu être lue) : cette absence ne prouve rien.",
+                    "No alert recorded, but the watch is off (or could not be read): this absence proves nothing."
+                ),
+            )
+        }
+    }
+}
+
 pub fn lire(sortie: &[u8]) -> Result<Vue, String> {
     let b: Brut = super::lire(sortie)?;
     let illisibles = b
@@ -267,6 +293,26 @@ mod tests {
             "abîmé"
         ]
     }"#;
+
+    /// « Aucune alerte » n'est une bonne nouvelle que si quelque chose surveillait, et si tout a été lu.
+    #[test]
+    fn sans_alerte_coche_seulement_si_vrai() {
+        let vue = |etat: &str, illisibles: u32| {
+            lire(
+                format!(r#"{{"etat": "{etat}", "raison": null, "illisibles": {illisibles}, "evenements": []}}"#)
+                    .as_bytes(),
+            )
+            .expect("journal lu")
+        };
+        for sain in ["intact", "vide"] {
+            assert!(vue(sain, 0).sans_alerte(true).0, "{sain}");
+            assert!(!vue(sain, 0).sans_alerte(false).0, "{sain} sans veille");
+            assert!(!vue(sain, 1).sans_alerte(true).0, "{sain}, une ligne illisible");
+        }
+        for douteux in ["adopte", "incomplet", "falsifie", "demain"] {
+            assert!(!vue(douteux, 0).sans_alerte(true).0, "{douteux}");
+        }
+    }
 
     #[test]
     fn lit_le_journal() {

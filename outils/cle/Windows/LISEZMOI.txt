@@ -19,7 +19,7 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
 
      & "$((Get-Volume -FileSystemLabel VANGUARD).DriveLetter):\Windows\vanguard.exe"
 
-   Si tu connais la lettre de la clé (ici E:, voir l'Explorateur de fichiers > Ce PC) :
+   Si vous connaissez la lettre de la clé (ici E:, voir l'Explorateur de fichiers > Ce PC) :
 
      & "E:\Windows\vanguard.exe"
      & "E:\Windows\vanguard.exe" bilan
@@ -35,7 +35,7 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
 
 4. COMMANDES UTILES
 
-   Sans rien après « vanguard.exe » : le menu. Sinon :
+   Sans rien après « vanguard.exe » : la fenêtre de Vanguard, sinon le menu ; --menu force le menu. Sinon :
 
      vanguard.exe bilan                bilan complet : cet ordinateur, puis le réseau
      vanguard.exe bilan --texte        même bilan, rapport en texte simple
@@ -59,13 +59,13 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
      « Exécuter quand même ») et Microsoft Defender peut le signaler, car il scanne des ports. Lancé
      depuis la clé, SmartScreen ne dit en général rien.
    - Si Defender bloque Vanguard (faux positif) : « Lancer Vanguard.bat » le dit et propose d'ouvrir
-     Sécurité Windows. C'est toi qui choisis « Autoriser sur l'appareil » dans l'historique de
+     Sécurité Windows. C'est vous qui choisissez « Autoriser sur l'appareil » dans l'historique de
      protection ; Vanguard ne touche jamais lui-même à Defender.
    - En anglais :  $env:VANGUARD_LANG = "en"  (PowerShell)  ou  set VANGUARD_LANG=en  (cmd), puis la
      commande.
    - La clé peut être retirée pendant que Vanguard tourne : il s'est recopié sur cet ordinateur et
      continue depuis cette copie. Sauf lancé en administrateur, ou si la copie n'a pas pu se faire :
-     il tourne alors depuis la clé (il le dit au démarrage), ne la retire pas avant de le quitter.
+     il tourne alors depuis la clé (il le dit au démarrage), ne la retirez pas avant de le quitter.
      Clé retirée, le rapport, le diagnostic et le journal vont dans le dossier de Vanguard de cet
      ordinateur (leur chemin est dit). Une copie laissée par une fenêtre fermée de force ou une clé
      arrachée s'efface au prochain lancement de Vanguard sans droits d'administrateur, par le même

@@ -92,7 +92,7 @@ fn coupe_pour_le_reseau(p: &INetFwPolicy2) -> String {
         .map_or_else(|| "pare-feu-prive-actif".to_string(), Clone::clone);
     trf!(
         "le Pare-feu Windows est coupé pour le réseau actif : une règle n'y bloquerait rien, aucune n'est posée. Rallumez-le d'abord : Options de défense › Pare-feu, ou « vanguard options-defense --rallumer {rallumer} »",
-        "the Windows Firewall is off for the active network: a rule would block nothing there, none is added. Turn it back on first: Defense options › Firewall, or “vanguard options-defense --rallumer {rallumer}”"
+        "the Windows Firewall is off for the active network: a rule would block nothing there, none is added. Turn it back on first: Defense options › Firewall, or “vanguard defense-options --turn-back-on {rallumer}”"
     )
 }
 

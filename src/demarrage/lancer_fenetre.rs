@@ -420,16 +420,18 @@ fn ouvrir_depuis(c: Contexte, chemin: &Path, programme: &Path) -> bool {
         Lancement::Refusee(r) => eprintln!(
             "{}",
             trf!(
-                "Fenêtre de Vanguard laissée de côté ({}) : le menu du terminal.",
-                "Vanguard window left aside ({}): the terminal menu.",
+                "Fenêtre de Vanguard laissée de côté ({}) : le menu du terminal. Si cela se répète : menu 13.3, Mettre \
+                 Vanguard à jour (les deux fichiers doivent être de la même version).",
+                "Vanguard window left aside ({}): the terminal menu. If it keeps happening: menu 13.3, Update Vanguard \
+                 (both files must be the same version).",
                 r
             )
         ),
         Lancement::PasOuverte => eprintln!(
             "{}",
             tr!(
-                "La fenêtre de Vanguard ne s'est pas ouverte : le menu du terminal.",
-                "The Vanguard window did not open: the terminal menu."
+                "La fenêtre de Vanguard n'a pas répondu à temps : le menu du terminal, qui fait tout aussi.",
+                "The Vanguard window did not answer in time: the terminal menu, which does everything too."
             )
         ),
     }
@@ -788,8 +790,8 @@ fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl Fn
             eprintln!(
                 "{}",
                 trf!(
-                    "Fenêtre déjà ouverte non ramenée ({}) : rien ne lui est demandé, une nouvelle s'ouvre.",
-                    "Already open window not brought back ({}): nothing is asked of it, a new one opens.",
+                    "Ce qui répond à la place de la fenêtre n'a pas été reconnu ({}) : rien ne lui est demandé, une nouvelle s'ouvre.",
+                    "What answers in the window's place was not recognized ({}): nothing is asked of it, a new one opens.",
                     r
                 )
             );
@@ -799,8 +801,8 @@ fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl Fn
             eprintln!(
                 "{}",
                 trf!(
-                    "Une seule fenêtre impossible ici ({}) : une nouvelle s'ouvre.",
-                    "Single window impossible here ({}): a new one opens.",
+                    "Une nouvelle fenêtre s'ouvre : impossible ici de savoir si une autre est déjà ouverte ({}).",
+                    "A new window opens: it cannot be known here whether another one is already open ({}).",
                     r
                 )
             );
@@ -810,8 +812,8 @@ fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl Fn
             eprintln!(
                 "{}",
                 trf!(
-                    "La fenêtre déjà ouverte n'a pas été ramenée ({}) : une nouvelle s'ouvre, sans prendre son canal.",
-                    "The already open window was not brought back ({}): a new one opens, without taking its channel.",
+                    "Une nouvelle fenêtre s'ouvre : celle déjà ouverte n'a pas été ramenée ({}) ; son canal lui est laissé.",
+                    "A new window opens: the one already open was not brought back ({}); its channel is left to it.",
                     r
                 )
             );
@@ -826,8 +828,8 @@ fn une_seule(ramener: impl FnOnce() -> super::une_fenetre::Tour, ouvrir: impl Fn
         eprintln!(
             "{}",
             trf!(
-                "Ordre des lancements non garanti ({}) : un lancement simultané pourrait ouvrir une seconde fenêtre.",
-                "Launch order not guaranteed ({}): a simultaneous launch could open a second window.",
+                "Deux lancements en même temps pourraient ouvrir deux fenêtres ({}).",
+                "Two launches at the same time could open two windows ({}).",
                 r
             )
         );

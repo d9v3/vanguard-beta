@@ -707,7 +707,7 @@ fn suite_reglage(id: crate::machine::gestes::IdReglage) -> String {
     let remise = if id.annulable() {
         trf!(
             "valeur d'avant notée, remise par « vanguard options-defense --remettre {} »",
-            "previous value noted, put back by “vanguard options-defense --remettre {}”",
+            "previous value noted, put back by “vanguard defense-options --put-back {}”",
             id.mot()
         )
     } else {
@@ -1018,7 +1018,7 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             let f = crate::ui::affichable(f.texte());
             trf!(
                 "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais le vrai programme de Windows ou de Defender ; un nom seul ou un raccourci illisible se demande). Une copie vérifiée de son contenu est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait, jusqu'à huit par fichier (au-delà, la plus vieille ne s'efface qu'après une question) ; seulement le contenu : ses dates, ses droits et ses flux, dont la marque « téléchargé d'Internet », ne seront pas remis. Remise : vanguard options-defense --remettre demarrage-commun:<chemin>",
-                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never the real Windows or Defender program; a name alone or an unreadable shortcut is asked about). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal, up to eight per file (beyond that, the oldest is only erased after a question); content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored. Put back: vanguard options-defense --remettre demarrage-commun:<path>"
+                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never the real Windows or Defender program; a name alone or an unreadable shortcut is asked about). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal, up to eight per file (beyond that, the oldest is only erased after a question); content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored. Put back: vanguard defense-options --put-back demarrage-commun:<path>"
             )
         }
         Acte::DemarrageRemettre(f, n) => {
@@ -1093,14 +1093,14 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         ),
         Acte::SshDroits(CibleSsh::ClesAdmin) => tr!(
             r"Réserver %ProgramData%\ssh\administrators_authorized_keys à SYSTEM et aux administrateurs (le fichier n'est ni vidé ni réécrit ; liste des droits d'avant notée, remise par « vanguard options-defense --remettre ssh:cles-admin »)",
-            r"Restrict %ProgramData%\ssh\administrators_authorized_keys to SYSTEM and administrators (the file is neither emptied nor rewritten; previous list of rights noted, put back by “vanguard options-defense --remettre ssh:cles-admin”)"
+            r"Restrict %ProgramData%\ssh\administrators_authorized_keys to SYSTEM and administrators (the file is neither emptied nor rewritten; previous list of rights noted, put back by “vanguard defense-options --put-back ssh:cles-admin”)"
         )
         .to_string(),
         Acte::SshDroits(CibleSsh::Cle(n)) => {
             let n = crate::ui::affichable(n.texte());
             trf!(
                 r"Réserver la clé privée .ssh\{n} à votre compte, SYSTEM et aux administrateurs (la clé n'est pas touchée ; liste des droits d'avant notée, remise par « vanguard options-defense --remettre ssh-cle:{n} »)",
-                r"Restrict the private key .ssh\{n} to your account, SYSTEM and administrators (the key itself is not touched; previous list of rights noted, put back by “vanguard options-defense --remettre ssh-cle:{n}”)"
+                r"Restrict the private key .ssh\{n} to your account, SYSTEM and administrators (the key itself is not touched; previous list of rights noted, put back by “vanguard defense-options --put-back ssh-cle:{n}”)"
             )
         }
         Acte::SshDroitsRemettre(CibleSsh::ClesAdmin) => tr!(
@@ -1119,7 +1119,7 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             let (m, n) = (r.mot_cle(), r.mot());
             trf!(
                 "Mettre « {m} no » dans sshd_config : nouvelle version éprouvée par « sshd -t » avant de remplacer, copie d'avant gardée (remise par « vanguard options-defense --remettre sshd:{n} ») ; sshd redémarré seulement sans session SSH ouverte, sinon au prochain redémarrage",
-                "Set “{m} no” in sshd_config: new version checked by “sshd -t” before replacing, previous copy kept (put back by “vanguard options-defense --remettre sshd:{n}”); sshd restarted only with no SSH session open, otherwise at the next restart"
+                "Set “{m} no” in sshd_config: new version checked by “sshd -t” before replacing, previous copy kept (put back by “vanguard defense-options --put-back sshd:{n}”); sshd restarted only with no SSH session open, otherwise at the next restart"
             )
         }
         Acte::SshdReglageRemettre(r) => {
@@ -1133,7 +1133,7 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             let n = crate::ui::affichable(n.texte());
             trf!(
                 "Mettre entre guillemets le chemin du service « {n} », que Vanguard ne peut pas vérifier entièrement : le service peut ne plus démarrer (question avant ; chemin d'avant noté, remis par « vanguard options-defense --remettre service:{n} »)",
-                "Put the path of the “{n}” service in quotes, which Vanguard cannot fully check: the service may no longer start (question first; previous path noted, put back by “vanguard options-defense --remettre service:{n}”)"
+                "Put the path of the “{n}” service in quotes, which Vanguard cannot fully check: the service may no longer start (question first; previous path noted, put back by “vanguard defense-options --put-back service:{n}”)"
             )
         }
         Acte::ServiceCheminRemettre(n) => {

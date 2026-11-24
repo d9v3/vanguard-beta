@@ -155,7 +155,7 @@ impl Refus {
             .to_string(),
             Refus::Autre => tr!(
                 "elle ne se remet pas d'ici : depuis le terminal (vanguard changements)",
-                "it is not restored from here: from the terminal (vanguard changements)"
+                "it is not restored from here: from the terminal (vanguard changes)"
             )
             .to_string(),
             Refus::PlusRecente(titre) => trf!(
@@ -188,7 +188,7 @@ impl Refus {
             Refus::LectureSeule => super::appliquer::lecture_seule(),
             Refus::Windows => tr!(
                 "sous Windows, rien ne se remet d'ici pour l'instant : vanguard changements dans un terminal",
-                "on Windows, nothing is restored from here for now: vanguard changements in a terminal"
+                "on Windows, nothing is restored from here for now: vanguard changes in a terminal"
             )
             .to_string(),
         }

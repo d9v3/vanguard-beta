@@ -7,7 +7,8 @@ The program: "vanguard", in this folder. Any 64-bit distribution (x86_64), nothi
 
 1. THE EASIEST WAY
 
-   Double-click "autorun.sh" at the root of the key: a terminal opens with the menu.
+   Double-click "autorun.sh" at the root of the key: Vanguard opens (its window, or the menu in
+   a terminal). If it opens as text: right-click, "Run as a Program".
    GNOME also offers it when the key is plugged in ("Run software?").
 
 
@@ -26,7 +27,8 @@ The program: "vanguard", in this folder. Any 64-bit distribution (x86_64), nothi
 
 3. USEFUL COMMANDS
 
-   Nothing after "vanguard": the menu. Otherwise ("vanguard" = the full path above):
+   Nothing after "vanguard": the Vanguard window on a graphical desktop, otherwise the menu;
+   --menu forces the menu. Otherwise ("vanguard" = the full path above):
 
      vanguard check                full check: this machine, then the network
      vanguard check --text         same check, report as plain text (server without a screen)

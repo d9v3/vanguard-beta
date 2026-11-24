@@ -1716,7 +1716,7 @@ fn derniere_publiee() -> Result<Version, crate::modele::Echec> {
                 "mise_a_jour/historique",
                 tr!(
                     "les versions déjà vues ici ont été changées hors de Vanguard ; lancez « vanguard se-mettre-a-jour » avec Internet et acceptez de repartir de la version signée reçue",
-                    "the versions already seen here were changed outside Vanguard; run “vanguard se-mettre-a-jour” with Internet and agree to start over from the signed version received"
+                    "the versions already seen here were changed outside Vanguard; run “vanguard self-update” with Internet and agree to start over from the signed version received"
                 ),
             ));
         }
@@ -2164,7 +2164,7 @@ fn sans_github(doute: Option<crate::voulues::Doute>) -> bool {
 fn doute_hors_github(d: crate::voulues::Doute) -> String {
     trf!(
         "  Non vérifié : la liste des copies posées par Vanguard {} ; rien ne dit\n  qu'une copie plus récente n'y était pas notée, et GitHub n'a pas été consulté :\n  rien n'est remplacé, et la liste reste en doute. Relancez « vanguard se-mettre-a-jour »\n  avec Internet, ou reposez la copie depuis une clé à la dernière version signée.",
-        "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it, and GitHub was not reached:\n  nothing is replaced, and the list stays in doubt. Run “vanguard se-mettre-a-jour”\n  again with Internet, or set the copy up again from a key at the latest signed version.",
+        "  Not checked: the list of copies set up by Vanguard {}; nothing shows\n  that a newer copy was not noted in it, and GitHub was not reached:\n  nothing is replaced, and the list stays in doubt. Run “vanguard self-update”\n  again with Internet, or set the copy up again from a key at the latest signed version.",
         d.texte()
     )
 }

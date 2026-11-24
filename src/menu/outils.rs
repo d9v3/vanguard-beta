@@ -271,7 +271,7 @@ pub(crate) const OUTILS: &[Outil] = &[
                temps réel real time" },
     Outil { action: Action::LogicielsEspions, commande: "logiciels-espions", groupe: Some(Groupe::Virus), lettre: "",
         titre: ["Logiciels espions : en ai-je un ?", "Spyware: is someone watching me?"],
-        precision: ["clavier épié, indicateurs Échap", "keyboard spying, Échap indicators"],
+        precision: ["clavier épié, espions connus", "keyboard spying, known spyware"],
         mots: "espion spyware stalkerware logiciel espion keylogger enregistreur de frappe clavier keyboard \
                surveillance monitoring harcèlement stalking échap mspy flexispy contrôle parental parental control" },
     Outil { action: Action::QuiParle, commande: "connexions-sortantes", groupe: Some(Groupe::Virus), lettre: "",
@@ -499,7 +499,7 @@ pub(crate) const OUTILS: &[Outil] = &[
         mots: "apprentissage learning appris learned choix choices normal oublier forget" },
     Outil { action: Action::MettreAJour, commande: "se-mettre-a-jour", groupe: Some(Groupe::Vanguard), lettre: "",
         titre: ["Mettre Vanguard à jour", "Update Vanguard"],
-        precision: ["sur cet ordinateur, depuis la clé", "on this computer, from the key"],
+        precision: ["depuis la clé ou GitHub", "from the key or GitHub"],
         mots: "mise à jour mettre update upgrade vanguard version nouvelle new copie copy installer install" },
     Outil { action: Action::VerifierVanguard, commande: "", groupe: Some(Groupe::Vanguard), lettre: "",
         titre: ["Vérifier Vanguard lui-même", "Verify Vanguard itself"],
@@ -522,7 +522,7 @@ pub(crate) const OUTILS: &[Outil] = &[
         precision: ["suivis par la clé VANGUARD", "tracked by the VANGUARD key"],
         mots: "ordinateurs computers tableau dashboard suivi parc famille family clé key" },
     Outil { action: Action::ProtegerDonnees, commande: "", groupe: Some(Groupe::Vanguard), lettre: "",
-        titre: ["Protéger les données de la clé", "Protect the drive's data"],
+        titre: ["Protéger les données de la clé", "Protect the key's data"],
         precision: ["carnet chiffré par une phrase", "record encrypted by a passphrase"],
         mots: "chiffrer encrypt chiffrement encryption phrase passphrase mot de passe password protéger protect \
                perdue lost" },

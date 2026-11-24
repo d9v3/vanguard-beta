@@ -229,13 +229,13 @@ impl Annulation {
         if self.retouche || self.coupe {
             return Some(crate::tr!(
                 "Ce qui est montré n'est pas exactement le texte de Vanguard : elle ne se remet pas d'ici (vanguard changements dans un terminal).",
-                "What is shown is not exactly Vanguard's text: it is not restored from here (vanguard changements in a terminal)."
+                "What is shown is not exactly Vanguard's text: it is not restored from here (vanguard changes in a terminal)."
             ));
         }
         if self.signes() > super::correction::SIGNES_ACCEPTABLES {
             return Some(crate::tr!(
                 "Trop longue pour se lire ici d'un coup d'œil : vanguard changements dans un terminal.",
-                "Too long to read here at a glance: vanguard changements in a terminal."
+                "Too long to read here at a glance: vanguard changes in a terminal."
             ));
         }
         None

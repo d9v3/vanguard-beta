@@ -150,25 +150,25 @@ impl Apercu {
         if self.droits != Droits::Compte {
             return Some(crate::tr!(
                 "Elle ne s'applique pas d'ici : vanguard corriger dans un terminal.",
-                "It is not applied from here: vanguard corriger in a terminal."
+                "It is not applied from here: vanguard fix in a terminal."
             ));
         }
         if !self.annulable {
             return Some(crate::tr!(
                 "Elle ne s'annule pas : elle ne s'applique pas d'ici (vanguard corriger dans un terminal).",
-                "It cannot be undone: it is not applied from here (vanguard corriger in a terminal)."
+                "It cannot be undone: it is not applied from here (vanguard fix in a terminal)."
             ));
         }
         if self.retouche || self.coupe {
             return Some(crate::tr!(
                 "Ce qui est montré n'est pas exactement le texte de Vanguard : elle ne s'applique pas d'ici (vanguard corriger dans un terminal).",
-                "What is shown is not exactly Vanguard's text: it is not applied from here (vanguard corriger in a terminal)."
+                "What is shown is not exactly Vanguard's text: it is not applied from here (vanguard fix in a terminal)."
             ));
         }
         if self.signes() > SIGNES_ACCEPTABLES {
             return Some(crate::tr!(
                 "Trop longue pour se lire ici d'un coup d'œil : vanguard corriger dans un terminal.",
-                "Too long to read here at a glance: vanguard corriger in a terminal."
+                "Too long to read here at a glance: vanguard fix in a terminal."
             ));
         }
         None

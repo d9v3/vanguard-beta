@@ -47,6 +47,15 @@ impl Vue {
     pub fn compte(&self, allure: Allure) -> usize {
         self.interrupteurs.iter().filter(|i| i.allure == allure).count()
     }
+
+    /// Cet ordinateur est surveillé : la surveillance est posée, et le temps réel n'est pas coupé. Le temps réel seul
+    /// ne suffit pas : il vaut « oui » tant que rien ne le coupe, même là où aucune surveillance n'a été posée.
+    pub fn veille(&self) -> bool {
+        ["temps-reel", "surveillance"].iter().all(|id| {
+            let mut du_nom = self.interrupteurs.iter().filter(|i| i.id == *id).peekable();
+            du_nom.peek().is_some() && du_nom.all(|i| i.allure == Allure::Allume)
+        })
+    }
 }
 
 fn allure(etat: &str) -> Allure {
@@ -87,6 +96,30 @@ pub fn lire(sortie: &[u8]) -> Result<Vue, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// « En veille » et la coche verte d'un journal vide : seulement si la surveillance et le temps réel sont allumés.
+    #[test]
+    fn la_veille_demande_la_surveillance_et_le_temps_reel() {
+        let v = |temps_reel: &str, surveillance: &str| {
+            lire(
+                serde_json::json!({"interrupteurs": [
+                    {"interrupteur": "temps-reel", "nom": "t", "etat": temps_reel},
+                    {"interrupteur": "surveillance", "nom": "s", "etat": surveillance},
+                ]})
+                .to_string()
+                .as_bytes(),
+            )
+            .unwrap()
+            .veille()
+        };
+        assert!(v("oui", "activée") && v("yes", "on"));
+        assert!(!v("oui", "désactivée"), "jamais surveillé");
+        assert!(!v("oui", "activée, en pause"));
+        assert!(!v("non (jusqu'à reprise)", "activée"));
+        assert!(!v("oui (fichier illisible)", "activée"));
+        assert!(!v("oui", ""), "état pas lu");
+        assert!(!Vue::default().veille());
+    }
 
     #[test]
     fn lit_les_interrupteurs() {

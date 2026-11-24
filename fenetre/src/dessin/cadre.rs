@@ -7,7 +7,6 @@ use eframe::egui::{self, Align2, Frame, Margin, Rect, RichText, Sense, Stroke, U
 use super::{icones, melange, moyenne, n_f32, pal, police, survol};
 use crate::appli::{Appli, Ecran, commande_de};
 use crate::commandes::{Commande, Rubrique};
-use crate::donnees::protection::Allure;
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
@@ -236,14 +235,14 @@ fn bulle_veille(appli: &Appli) -> String {
     let ou = Commande::Protection.rubrique().nom();
     if veille(appli).1 {
         crate::trf!(
-            "La veille en temps réel est allumée sur cet ordinateur (détail : {}).",
-            "Real-time watch is on for this computer (details: {}).",
+            "La surveillance de cet ordinateur est allumée (détail : {}).",
+            "Monitoring of this computer is on (details: {}).",
             ou
         )
     } else {
         crate::trf!(
-            "Aucune veille en temps réel n'est allumée sur cet ordinateur (détail : {}).",
-            "No real-time watch is on for this computer (details: {}).",
+            "La surveillance de cet ordinateur est coupée, en pause, ou n'a pas pu être lue (détail : {}).",
+            "Monitoring of this computer is off, paused, or could not be read (details: {}).",
             ou
         )
     }
@@ -270,11 +269,7 @@ pub(super) fn veille(appli: &Appli) -> (&'static str, bool, egui::Color32) {
     match appli.protection() {
         None => (crate::tr!("Protection pas lue", "Protection not read"), false, p.gris),
         Some(v) => {
-            let veille = v
-                .interrupteurs
-                .iter()
-                .any(|i| matches!(i.id.as_str(), "temps-reel" | "surveillance") && i.allure == Allure::Allume);
-            if veille {
+            if v.veille() {
                 (crate::tr!("En veille", "Watching"), true, p.accent)
             } else {
                 (crate::tr!("Veille éteinte", "Watch off"), false, p.moyen)

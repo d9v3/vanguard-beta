@@ -41,7 +41,9 @@ const MARGE: f32 = 32.0;
 const TITRE_ET_PIED: f32 = 190.0;
 
 /// Ce que la personne copie pour faire la correction elle-même, dans un terminal.
-const COMMANDE_TERMINAL: &str = "vanguard corriger";
+fn commande_terminal() -> &'static str {
+    crate::tr!("vanguard corriger", "vanguard fix")
+}
 
 /// Les textes de Vanguard de la feuille, déjà mis en page (vérification de Fable n° 4, N6). Dessiné signe par signe,
 /// un texte a un tronçon par signe : egui referait à chaque image le travail de le décrire et de le hacher en entier
@@ -351,7 +353,7 @@ fn pied(ui: &mut Ui, f: &FeuilleCorrection, depasse: bool, offerte: bool) -> Rep
                 }
                 let terminal = matches!(etat, EtatFeuille::Lue(Lecture::Lue(a)) if a.droits != Droits::Compte);
                 if terminal && bouton(ui, crate::tr!("Copier la commande", "Copy the command"), false, true).clicked() {
-                    ui.ctx().copy_text(COMMANDE_TERMINAL.to_owned());
+                    ui.ctx().copy_text(commande_terminal().to_owned());
                 }
             });
         }
@@ -844,8 +846,8 @@ fn apercu(ui: &mut Ui, a: &Apercu, memoire: &mut Memoire) {
             ui,
             p.jaune,
             crate::tr!(
-                "Cette correction demande les droits d'administrateur. Elle arrivera ici avec le prochain lot. D'ici là : vanguard corriger dans un terminal.",
-                "This fix needs administrator rights. It will come here with the next batch. Until then: vanguard corriger in a terminal."
+                "Cette correction demande les droits d'administrateur. Elle arrivera ici plus tard. D'ici là : vanguard corriger dans un terminal.",
+                "This fix needs administrator rights. It will come here later. Until then: vanguard fix in a terminal."
             ),
             13.0,
         ),
@@ -854,7 +856,7 @@ fn apercu(ui: &mut Ui, a: &Apercu, memoire: &mut Memoire) {
             p.jaune,
             crate::tr!(
                 "Cette correction pose une question : elle se fait dans le terminal (vanguard corriger).",
-                "This fix asks a question: it is done in the terminal (vanguard corriger)."
+                "This fix asks a question: it is done in the terminal (vanguard fix)."
             ),
             13.0,
         ),

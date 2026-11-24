@@ -296,7 +296,7 @@ fn cameras_du_reseau(e: &Entree) -> Vec<Constat> {
             "COM-APP-005",
             tr!(
                 "Caméras non cherchées (passe rapide, ou recherche impossible) : « vanguard audit-reseau » cherche les flux vidéo sans mot de passe.",
-                "Cameras not searched (quick pass, or search impossible): “vanguard audit-reseau” looks for video streams without a password."
+                "Cameras not searched (quick pass, or search impossible): “vanguard network-audit” looks for video streams without a password."
             ),
         )];
     };

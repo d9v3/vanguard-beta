@@ -269,18 +269,16 @@ fn dernieres_alertes(appli: &Appli, ui: &mut Ui) {
     titre(ui, crate::tr!("Dernières alertes", "Latest alerts"), &compte);
     let (zone, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTENU), Sense::hover());
     if alertes.is_empty() {
+        let (sain, phrase) = j.sans_alerte(super::cadre::veille(appli).1);
         let coche = Rect::from_min_size(zone.min, vec2(18.0, 18.0));
-        super::icones::coche(ui.painter(), coche, p.bon);
-        let g = ui.painter().layout(
-            crate::tr!(
-                "Aucune alerte notée : Vanguard n'a rien vu d'inquiétant.",
-                "No alert recorded: Vanguard has seen nothing worrying."
-            )
-            .to_owned(),
-            police(13.0),
-            p.doux,
-            zone.width() - 26.0,
-        );
+        if sain {
+            super::icones::coche(ui.painter(), coche, p.bon);
+        } else {
+            ui.painter().circle_filled(coche.center(), 4.0, p.gris);
+        }
+        let g = ui
+            .painter()
+            .layout(phrase.to_owned(), police(13.0), p.doux, zone.width() - 26.0);
         ui.painter().galley(pos2(zone.left() + 26.0, zone.top()), g, p.doux);
         return;
     }

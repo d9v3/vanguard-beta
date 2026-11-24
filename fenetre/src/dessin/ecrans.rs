@@ -275,8 +275,8 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
         ui,
         crate::tr!("Vue d'ensemble", "Overview"),
         crate::tr!(
-            "Ce que Vanguard a lu sur cet ordinateur. Rien n'est changé d'ici.",
-            "What Vanguard read on this computer. Nothing is changed from here."
+            "Ce que Vanguard a lu sur cet ordinateur. Rien ne change d'ici sans votre accord.",
+            "What Vanguard read on this computer. Nothing changes from here without your consent."
         ),
     );
     ui.add_space(24.0);
@@ -285,7 +285,7 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
         (Some(v), _) => (
             v.note.map_or_else(
                 || crate::tr!("Sans note", "No score").to_string(),
-                |n| format!("{n}/100"),
+                |n| format!("{} · {n}/100", crate::donnees::bilan::Vue::lettre(n)),
             ),
             v.resume(),
             // Des points non vérifiés : la note en couleur d'alerte, comme dans le bilan.
@@ -398,8 +398,8 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Ici : le démarrage, les corrections du compte et leur remise comme avant, la mise à jour. Le reste de ce qui change l'ordinateur (corrections de tout l'ordinateur, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant : il arrive ici lot par lot, avec les mêmes garde-fous.",
-            "Here: startup, account fixes and putting them back, the update. The rest of what changes the computer (whole-computer fixes, settings, quarantine) stays in Vanguard's menu for now: it comes here batch by batch, with the same safeguards."
+            "Ici : le démarrage, les corrections du compte et leur remise comme avant, la mise à jour. Le reste de ce qui change l'ordinateur (corrections de tout l'ordinateur, réglages, quarantaine) reste dans le menu de Vanguard pour l'instant (« vanguard --menu » dans un terminal) : il arrive ici lot par lot, avec les mêmes garde-fous.",
+            "Here: startup, account fixes and putting them back, the update. The rest of what changes the computer (whole-computer fixes, settings, quarantine) stays in Vanguard's menu for now (“vanguard --menu” in a terminal): it comes here batch by batch, with the same safeguards."
         ),
         13.0,
         p.discret,
@@ -510,8 +510,8 @@ fn rubrique(appli: &mut Appli, ui: &mut Ui, r: Rubrique) {
             ui.set_width(ui.available_width());
             ui.label(texte(
                 crate::tr!(
-                    "Cette rubrique arrive dans un prochain lot. Pour l'instant : le menu de Vanguard.",
-                    "This section comes in a later batch. For now: Vanguard's menu."
+                    "Pas dans la fenêtre : cette rubrique est dans le menu de Vanguard (« vanguard --menu » dans un terminal).",
+                    "Not in the window: this section is in Vanguard's menu (“vanguard --menu” in a terminal)."
                 ),
                 14.0,
                 p.doux,
@@ -589,7 +589,7 @@ fn commande(appli: &mut Appli, ui: &mut Ui, c: Commande) {
         Contenu::Protection(v) => protection_liste(ui, v),
         Contenu::Libre(v) => libre_liste(ui, v),
         Contenu::Changements(v) => changements_liste(appli, ui, v),
-        Contenu::Evenements(v) => journal(ui, v),
+        Contenu::Evenements(v) => journal(ui, v, super::cadre::veille(appli).1),
         Contenu::Appareils(v) => appareils_liste(ui, v),
         Contenu::Erreur(e) => erreur(ui, e),
     }
@@ -676,7 +676,7 @@ fn changements_liste(appli: &mut Appli, ui: &mut Ui, v: &changements::Vue) {
             ui.label(texte(
                 &crate::trf!(
                     "Et {} plus anciens, dans « vanguard changements » au terminal.",
-                    "And {} older ones, in “vanguard changements” in the terminal.",
+                    "And {} older ones, in “vanguard changes” in the terminal.",
                     v.plus_anciens
                 ),
                 13.0,
@@ -764,8 +764,8 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
     if v.appareils.len() > APPAREILS_MAX {
         ui.label(texte(
             &crate::trf!(
-                "Les {} premiers seulement : le reste, dans le menu de Vanguard.",
-                "The first {} only: the rest, in Vanguard's menu.",
+                "Les {} premiers seulement : le reste, dans le menu de Vanguard (« vanguard --menu » dans un terminal).",
+                "The first {} only: the rest, in Vanguard's menu (“vanguard --menu” in a terminal).",
                 APPAREILS_MAX
             ),
             13.0,
@@ -794,8 +794,8 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
     ui.add_space(12.0);
     ui.label(texte(
         crate::tr!(
-            "Lecture seule : nommer un appareil, le déclarer connu ou fermer un port se fait dans le menu de Vanguard.",
-            "Read-only: naming a device, marking it known or closing a port is done in Vanguard's menu."
+            "Lecture seule : nommer un appareil, le déclarer connu ou fermer un port se fait dans le menu de Vanguard (« vanguard --menu » dans un terminal).",
+            "Read-only: naming a device, marking it known or closing a port is done in Vanguard's menu (“vanguard --menu” in a terminal)."
         ),
         13.0,
         p.discret,
@@ -1058,8 +1058,8 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
     ui.add_space(12.0);
     ui.label(texte(
         crate::tr!(
-            "Allumer ou éteindre se fait dans le menu de Vanguard pour l'instant (montré, puis confirmé).",
-            "Turning on or off is done in Vanguard's menu for now (shown, then confirmed)."
+            "Allumer ou éteindre se fait dans le menu de Vanguard pour l'instant (« vanguard --menu » dans un terminal) : montré, puis confirmé.",
+            "Turning on or off is done in Vanguard's menu for now (“vanguard --menu” in a terminal): shown, then confirmed."
         ),
         13.0,
         p.discret,
@@ -1126,7 +1126,7 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
         ui.add_space(16.0);
     }
     match appli.journal().cloned() {
-        Some(j) => journal(ui, &j),
+        Some(j) => journal(ui, &j, super::cadre::veille(appli).1),
         None => vide::carte_vide(
             ui,
             c.rubrique(),
@@ -1140,7 +1140,7 @@ fn alertes(appli: &mut Appli, ui: &mut Ui) {
     }
 }
 
-fn journal(ui: &mut Ui, j: &evenements::Vue) {
+fn journal(ui: &mut Ui, j: &evenements::Vue, veille: bool) {
     let p = pal();
     carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
@@ -1171,13 +1171,10 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
     let alertes: Vec<&evenements::Evenement> = j.alertes().collect();
     titre_section(ui, crate::tr!("Alertes", "Alerts"), Some(alertes.len()));
     if alertes.is_empty() {
-        vide::rien_a_signaler(
-            ui,
-            crate::tr!(
-                "Aucune alerte notée : Vanguard n'a rien vu d'inquiétant.",
-                "No alert recorded: Vanguard has seen nothing worrying."
-            ),
-        );
+        match j.sans_alerte(veille) {
+            (true, phrase) => vide::rien_a_signaler(ui, phrase),
+            (false, phrase) => signale(ui, p.gris, phrase, 14.0),
+        }
     }
     for e in alertes.iter().take(EVENEMENTS_MAX) {
         evenement(ui, e, maintenant);
@@ -1191,8 +1188,8 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
     if autres.len() > EVENEMENTS_MAX || alertes.len() > EVENEMENTS_MAX {
         ui.label(texte(
             &crate::trf!(
-                "Les {} plus récents seulement : le reste, dans le menu de Vanguard.",
-                "The {} most recent only: the rest, in Vanguard's menu.",
+                "Les {} plus récents seulement : le reste, dans le menu de Vanguard (« vanguard --menu » dans un terminal).",
+                "The {} most recent only: the rest, in Vanguard's menu (“vanguard --menu” in a terminal).",
                 EVENEMENTS_MAX
             ),
             13.0,
@@ -1355,8 +1352,8 @@ fn carte_mise_a_jour(appli: &mut Appli, ui: &mut Ui) {
         });
     });
     let rep = rep.on_hover_text(crate::tr!(
-        "Voir l'aperçu : rien ne s'installe d'ici",
-        "See the preview: nothing is installed from here"
+        "Voir l'aperçu : rien ne s'installe sans votre accord",
+        "See the preview: nothing is installed without your consent"
     ));
     if rep.clicked() {
         appli.voir_mise_a_jour();
@@ -1402,8 +1399,8 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(16.0);
     ui.label(texte(
         crate::tr!(
-            "Le reste de Vanguard (corrections, réglages, quarantaine, clé USB) est dans son menu, en attendant d'arriver ici.",
-            "The rest of Vanguard (fixes, settings, quarantine, USB key) is in its menu, until it comes here."
+            "Le reste de Vanguard (corrections de tout l'ordinateur, réglages, quarantaine, clé USB) est dans son menu (« vanguard --menu » dans un terminal), en attendant d'arriver ici.",
+            "The rest of Vanguard (whole-computer fixes, settings, quarantine, USB key) is in its menu (“vanguard --menu” in a terminal), until it comes here."
         ),
         13.0,
         p.discret,

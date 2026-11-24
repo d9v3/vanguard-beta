@@ -35,7 +35,7 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
 
 4. USEFUL COMMANDS
 
-   Nothing after "vanguard.exe": the menu. Otherwise:
+   Nothing after "vanguard.exe": the Vanguard window, otherwise the menu; --menu forces the menu. Otherwise:
 
      vanguard.exe check               full check: this machine, then the network
      vanguard.exe check --text        same check, report as plain text

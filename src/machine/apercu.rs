@@ -437,7 +437,7 @@ impl Refus {
             ),
             Refus::EcritAilleurs => tr!(
                 "cette vérification lance d'autres programmes, qui peuvent écrire leurs propres fichiers : pas d'aperçu pour l'instant, la correction se fait depuis le terminal (vanguard corriger)",
-                "this check runs other programs, which may write their own files: no preview for now, the fix is done from the terminal (vanguard corriger)"
+                "this check runs other programs, which may write their own files: no preview for now, the fix is done from the terminal (vanguard fix)"
             ),
             Refus::SansLectureSeule => tr!(
                 "l'aperçu se demande par « vanguard correction --voir <jeton> », « correction » en premier : rien d'autre ne le donne",
@@ -718,7 +718,7 @@ fn lignes(a: &Apercu) -> Vec<String> {
             "compte" => tr!("  Droits : ceux de votre compte", "  Rights: those of your account"),
             "terminal" => tr!(
                 "  Elle pose une question : elle se fait dans le terminal (vanguard corriger)",
-                "  It asks a question: it is done in the terminal (vanguard corriger)"
+                "  It asks a question: it is done in the terminal (vanguard fix)"
             ),
             _ => tr!("  Droits : administrateur", "  Rights: administrator"),
         }

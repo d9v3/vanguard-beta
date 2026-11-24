@@ -507,19 +507,19 @@ pub(crate) enum Commande {
         #[arg(long)]
         incident: Option<String>,
         /// Le dernier examen d'un outil (PRO-ESP-001, PRO-PER-001, PRO-COU-001).
-        #[arg(long)]
+        #[arg(long, visible_alias = "tool")]
         outil: Option<String>,
         /// Le programme : msrc, google, chrome, mozilla, apple, ghsa, cert-cc, cert-fr ou vanguard.
-        #[arg(long)]
+        #[arg(long, visible_alias = "program")]
         programme: Option<String>,
         /// La langue du brouillon (fr ou en) ; par défaut, celle que le programme lit.
-        #[arg(long)]
+        #[arg(long, visible_alias = "language")]
         langue: Option<String>,
         /// Le tri et le brouillon en JSON, pour un script : rien n'est écrit ni noté, aucune question.
         #[arg(long)]
         json: bool,
         /// Liste les brouillons gardés et les efface après accord.
-        #[arg(long)]
+        #[arg(long, visible_alias = "delete")]
         effacer: bool,
     },
     /// Caméra et micro : qui s'en sert ? Sous Windows, chaque programme et la dernière fois ; sous Linux, ce qui les

@@ -192,7 +192,7 @@ Au menu principal, elle trouve aussi chaque outil des sous-menus (« 6.1.3 » : 
          (vanguard veilleur on) ; avec la protection active et votre accord, arrêt à son lancement d'un malware
          connu posé dans vos dossiers (vanguard veilleur connus on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
          rançongiciels : alerte en quelques secondes, gel puis arrêt d'un cas quasi certain seulement avec la
-                  protection active (vanguard veilleur rancongiciel on). Avec lui, le temps réel des fichiers : chaque
+         protection active (vanguard veilleur rancongiciel on). Avec lui, le temps réel des fichiers : chaque
          fichier écrit dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart examiné dès son
          écriture, sans droits (certain : quarantaine annulable ; famille connue : un clic ; suspect : alerte)
   ── EN PLUS ──
@@ -213,11 +213,12 @@ Au menu principal, elle trouve aussi chaque outil des sous-menus (« 6.1.3 » : 
        10.10 Par thème : les programmes de tous les systèmes rangés par sujet (réseau, disques, sécurité…).
        En ligne de commande : vanguard guide fedora, vanguard guide winget, vanguard guide cache dns,
        vanguard guide 6.7.2, vanguard guide windows --sommaire
- 11  Dépanner pas à pas › pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante,
-       disque plein : deux ou trois questions, puis Vanguard vérifie et propose la bonne réparation.
-       Et : après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté,
-       collecter les traces, ordinateur d'un proche (trois questions, un résumé en mots simples, la page à laisser ;
-       vanguard depanner proche). En ligne de commande : vanguard depanner son
+ 11  Dépanner pas à pas › deux ou trois questions, puis Vanguard vérifie et propose la bonne réparation :
+       11.1 pas d'Internet · 11.2 Wi-Fi qui coupe · 11.3 ordinateur lent · 11.4 pas de son · 11.5 imprimante ·
+       11.6 disque plein · 11.7 après une infection · 11.8 nouvel ordinateur · 11.9 ordinateur qui part (vente,
+       don) · 11.10 compte piraté · 11.11 collecter les traces · 11.12 ordinateur d'un proche (trois questions, un
+       résumé en mots simples, la page à laisser ; vanguard depanner proche).
+       En ligne de commande : vanguard depanner son
        11.13 Réparer une panne connue (Internet, navigation détournée, pare-feu, disque plein, mises à jour bloquées…)
        11.14 Diagnostic du matériel (matériel, plantages et erreurs récents, copie texte sur la clé)
  12  Optimiser et installer ›
@@ -240,8 +241,8 @@ Au menu principal, elle trouve aussi chaque outil des sous-menus (« 6.1.3 » : 
        13.1 Paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps
          réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch
          (masquée), second avis ClamAV, programmes indésirables (PUA), coulisses (chaque commande lancée par
-         Vanguard en une ligne grise, éteintes par défaut) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
-         propre écran (vanguard parametres). Protection en temps réel : la surveillance horaire et la protection
+         Vanguard en une ligne grise, éteintes par défaut) ; la valeur d'avant est montrée, sauf
+         pour les alertes apprises et le blocage, qui ouvrent leur propre écran (vanguard parametres). Protection en temps réel : la surveillance horaire et la protection
          active du blocage coupées d'un coup, après accord, pendant 1 h, 4 h ou jusqu'à reprise ; jamais Defender,
          le pare-feu ni l'UAC, et un blocage déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h).
          Agent Vanguard (sans IA) : quatre missions qui règlent Vanguard lui-même, dans le sens sûr seulement, un
@@ -268,7 +269,7 @@ Au menu principal, elle trouve aussi chaque outil des sous-menus (« 6.1.3 » : 
   s  Paramètres · q  Quitter
   Raccourcis des anciennes versions, depuis le menu principal : u mises à jour, r réparer, o diagnostic,
   i intégrité, n nommer, c connexion, a clé USB, b bac à sable, p mots de passe, e courriel, l logiciels,
-  g jeux vidéo, d exporter ou importer.
+  g jeux vidéo, v nettoyer, d exporter ou importer.
 
 Le bilan vérifie notamment : pare-feu, ports ouverts, mises à jour, logiciels pas à jour (Windows) et
 logiciels installés depuis le dernier bilan, chiffrement, comptes, règle des mots de passe, SSH (ses tentatives de

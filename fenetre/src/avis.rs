@@ -19,10 +19,10 @@ pub(crate) fn texte(erreur: &str) -> String {
     };
     let sep = if cause.is_empty() { "" } else { "\n\n" };
     trf!(
-        "La fenêtre de Vanguard n'a pas pu s'ouvrir.\n\n{cause}{sep}Vanguard marche quand même : lance vanguard.exe, \
-         il ouvre le menu du terminal.\n\nDétail : {erreur}",
-        "The Vanguard window could not open.\n\n{cause}{sep}Vanguard still works: run vanguard.exe, it opens the \
-         terminal menu.\n\nDetail: {erreur}"
+        "La fenêtre de Vanguard n'a pas pu s'ouvrir.\n\n{cause}{sep}Vanguard marche quand même : lancez \
+         « vanguard.exe --menu » dans un terminal, il ouvre le menu.\n\nDétail : {erreur}",
+        "The Vanguard window could not open.\n\n{cause}{sep}Vanguard still works: run \
+         “vanguard.exe --menu” in a terminal, it opens the menu.\n\nDetail: {erreur}"
     )
 }
 

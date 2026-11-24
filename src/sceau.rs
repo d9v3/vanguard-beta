@@ -1456,7 +1456,7 @@ fn juger_constat(falsifies: &[&str], illisibles: bool, copie_ancienne: bool) -> 
     if copie_ancienne {
         message += tr!(
             " Cause probable : la copie de Vanguard de cet ordinateur est plus ancienne et écrit ces fichiers sans sceau ; mettez-la à jour (« vanguard se-mettre-a-jour »).",
-            " Likely cause: the copy of Vanguard on this computer is older and writes these files without a seal; update it (“vanguard se-mettre-a-jour”)."
+            " Likely cause: the copy of Vanguard on this computer is older and writes these files without a seal; update it (“vanguard self-update”)."
         );
     } else if falsifies.iter().all(|n| SCELLES_DEPUIS_0891.contains(n)) {
         // Un retour à la 0.89.0, puis de nouveau cette version : la copie n'est plus ancienne, mais la 0.89.0 a

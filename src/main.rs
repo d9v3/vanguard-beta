@@ -156,7 +156,13 @@ impl Session {
             }
             Err(e) => {
                 journal::erreur(crate::compte_rendu::Contexte::ScanReseau, &e);
-                eprintln!("{}", trf!("Scan réseau impossible : {e}", "Network scan failed: {e}"));
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "Scan réseau impossible : {e}. Vérifiez que l'ordinateur est relié à un réseau, puis réessayez.",
+                        "Network scan failed: {e}. Check that this computer is on a network, then try again."
+                    )
+                );
             }
         }
     }

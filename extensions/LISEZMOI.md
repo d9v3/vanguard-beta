@@ -11,7 +11,7 @@ Deux formes :
 - **Script du labo** : un fichier posé tel quel, sans manifeste, pour essayer vite (`vanguard labo ouvrir`
   donne le dossier).
 
-Le menu principal a l'entrée **12. Extensions** (`vanguard extensions`) : 1 les plugins, 2 les scripts du labo,
+Le menu Vanguard a l'entrée **13.10 Extensions** (`vanguard extensions`) : 1 les plugins, 2 les scripts du labo,
 3 l'interrupteur des restrictions.
 
 ## Où sont les extensions

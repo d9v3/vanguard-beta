@@ -651,3 +651,103 @@ pub(crate) fn aide_courte_selon(livree: bool) -> String {
     );
     t
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    /// Les fichiers `.rs` d'un dossier, et de ses sous-dossiers.
+    fn sources(dossier: &Path, dans: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dossier)
+            .expect("dossier des sources lisible")
+            .flatten()
+        {
+            let c = e.path();
+            if c.is_dir() {
+                sources(&c, dans);
+            } else if c.extension().is_some_and(|x| x == "rs") {
+                dans.push(c);
+            }
+        }
+    }
+
+    /// Les mots qui suivent « vanguard » dans un texte, juste après un de ces guillemets ouvrants.
+    fn mots_cites<'a>(texte: &'a str, guillemets: &[&str]) -> Vec<&'a str> {
+        let mut mots = Vec::new();
+        for g in guillemets {
+            for programme in ["vanguard ", "vanguard.exe "] {
+                for (i, trouve) in texte.match_indices(&format!("{g}{programme}")) {
+                    let reste = &texte[i + trouve.len()..];
+                    let fin = reste
+                        .find(|c: char| !(c.is_ascii_lowercase() || c == '-'))
+                        .unwrap_or(reste.len());
+                    let mot = &reste[..fin];
+                    if !mot.is_empty() && !mot.starts_with('-') {
+                        mots.push(mot);
+                    }
+                }
+            }
+        }
+        mots
+    }
+
+    /// Une commande citée dans un texte existe vraiment, et un texte anglais la cite par son nom anglais (passe du
+    /// 24 nov. 2026 : « vanguard defense-eleve », « vanguard corriger » en anglais, « vanguard jeux »).
+    #[test]
+    fn chaque_commande_citee_existe_et_dans_sa_langue() {
+        // Chaque mot accepté par clap, et le nom anglais qui le remplace (aucun : le nom est le même).
+        let mut connus = BTreeSet::new();
+        let mut anglais: BTreeMap<String, String> = BTreeMap::new();
+        for c in Args::command().get_subcommands() {
+            connus.insert(c.get_name().to_string());
+            connus.extend(c.get_all_aliases().map(str::to_string));
+            if let Some(a) = c.get_visible_aliases().next() {
+                anglais.insert(c.get_name().to_string(), a.to_string());
+            }
+        }
+        connus.insert("help".to_string());
+
+        let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut fichiers = Vec::new();
+        sources(&racine.join("src"), &mut fichiers);
+        sources(&racine.join("fenetre/src"), &mut fichiers);
+        for f in ["README.md", "README.en.md", "outils/LISEZMOI.txt", "outils/README.txt"] {
+            fichiers.push(racine.join(f));
+        }
+        let (mut ecarts, mut vus) = (Vec::new(), 0usize);
+        for f in &fichiers {
+            let texte = std::fs::read_to_string(f).expect("source lisible");
+            let nom = f.strip_prefix(racine).unwrap_or(f).display().to_string();
+            let en_entier = nom.ends_with(".en.md") || nom.ends_with("README.txt");
+            for (n, ligne) in texte.lines().enumerate() {
+                if ligne.trim_start().starts_with("//") {
+                    continue;
+                }
+                let francais = mots_cites(ligne, &["« ", "«\u{a0}", "«\u{202f}", "`"]);
+                let en_anglais = mots_cites(ligne, &["“"]);
+                for m in francais.iter().chain(&en_anglais) {
+                    vus = vus.saturating_add(1);
+                    if !connus.contains(*m) {
+                        ecarts.push(format!("{nom}:{} : « vanguard {m} » n'existe pas", n.saturating_add(1)));
+                    }
+                }
+                let a_relire: &[&str] = if en_entier { &francais } else { &[] };
+                for m in en_anglais.iter().chain(a_relire) {
+                    if let Some(a) = anglais.get(*m) {
+                        ecarts.push(format!(
+                            "{nom}:{} : “vanguard {m}” se dit “vanguard {a}”",
+                            n.saturating_add(1)
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(ecarts.is_empty(), "{}", ecarts.join("\n"));
+        assert!(
+            vus > 100,
+            "{vus} commandes citées seulement : le balayage ne lit plus rien"
+        );
+    }
+}

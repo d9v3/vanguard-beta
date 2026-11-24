@@ -261,7 +261,7 @@ fn agir(j: &Jeton, accord: &str) -> (Option<String>, Issue) {
 fn non_annulable() -> String {
     tr!(
         "elle ne s'annulerait pas : elle se fait depuis le terminal (vanguard corriger)",
-        "it could not be undone: it is done from the terminal (vanguard corriger)"
+        "it could not be undone: it is done from the terminal (vanguard fix)"
     )
     .to_string()
 }
@@ -337,12 +337,12 @@ fn admin_ou_terminal(droits: &str) -> String {
     if droits == super::Droits::Terminal.mot() {
         tr!(
             "cette correction pose une question : elle se fait dans le terminal (vanguard corriger)",
-            "this fix asks a question: it is done in the terminal (vanguard corriger)"
+            "this fix asks a question: it is done in the terminal (vanguard fix)"
         )
     } else {
         tr!(
-            "cette correction demande les droits d'administrateur : elle arrivera ici avec un prochain lot ; d'ici là, vanguard corriger dans un terminal",
-            "this fix needs administrator rights: it will come here with a later batch; until then, vanguard corriger in a terminal"
+            "cette correction demande les droits d'administrateur : elle arrivera ici plus tard ; d'ici là, vanguard corriger dans un terminal",
+            "this fix needs administrator rights: it will come here later; until then, vanguard fix in a terminal"
         )
     }
     .to_string()

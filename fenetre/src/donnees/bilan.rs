@@ -379,6 +379,17 @@ impl Vue {
         }
     }
 
+    /// La lettre d'une note, aux mêmes seuils que `vanguard bilan` (`risk::note`).
+    pub fn lettre(note: u32) -> &'static str {
+        match note {
+            90..=100 => "A",
+            75..=89 => "B",
+            60..=74 => "C",
+            40..=59 => "D",
+            _ => "F",
+        }
+    }
+
     /// Une note montrée alors que des vérifications n'ont pas pu se faire : leur nombre. La note de Vanguard ne les
     /// compte pas ; la fenêtre le dit à côté du chiffre, en couleur d'alerte, pour qu'un 100/100 ne passe pas pour
     /// « tout est sain ».
@@ -446,6 +457,17 @@ impl Vue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les mêmes seuils que le menu et le rapport : `risk::note`, relu dans sa source.
+    #[test]
+    fn lettre_comme_le_menu() {
+        let source = include_str!("../../../src/risk.rs");
+        for (bas, haut, lettre) in [(90, 100, "A"), (75, 89, "B"), (60, 74, "C"), (40, 59, "D")] {
+            assert_eq!((Vue::lettre(bas), Vue::lettre(haut)), (lettre, lettre));
+            assert!(source.contains(&format!("{bas}..={haut} => \"{lettre}\"")), "{lettre}");
+        }
+        assert_eq!((Vue::lettre(39), Vue::lettre(0)), ("F", "F"));
+    }
 
     #[test]
     fn une_note_avec_des_points_non_verifies_le_dit() {

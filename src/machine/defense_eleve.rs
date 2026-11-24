@@ -1826,8 +1826,8 @@ fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugeme
     })?;
     if service_de_pare_feu(lu.as_ref(), &texte, &*a) {
         return Err(refus(trf!(
-            "{nom} lance un programme de pare-feu : le couper ferait tomber des règles. Un pare-feu se coupe par les Options de défense (vanguard defense), jamais ici",
-            "{nom} runs a firewall program: turning it off would drop rules. A firewall is turned off from the defense Options (vanguard defense), never here"
+            "{nom} lance un programme de pare-feu : le couper ferait tomber des règles. Un pare-feu se coupe par les Options de défense (vanguard options-defense), jamais ici",
+            "{nom} runs a firewall program: turning it off would drop rules. A firewall is turned off from the defense Options (vanguard defense-options), never here"
         )));
     }
     if let Some(lu) = lu {

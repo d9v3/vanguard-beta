@@ -172,7 +172,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        8.6 Event log: alerts, blocks and incidents, linked (vanguard events)
        8.7 What Vanguard changed: each fix run here, dated, successful or not; those marked "undoable" can be
          undone there one by one, then the previous state is read back
-       8.8 Put everything back: undoes Optimize settings, check-up fixes, Gaming, blocks and public Wi-Fi mode;
+       8.8 Put everything back: undoes Optimize settings, check fixes, Gaming, blocks and public Wi-Fi mode;
          the previous value is put back (vanguard optimize undo)
        8.9 Report a flaw to a vendor: a draft in the program's format (MSRC, Mozilla, GHSA advisory…), what is
          personal removed; nothing is ever sent (vanguard disclose)
@@ -184,7 +184,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          (vanguard watcher on); with active protection and your consent, known malware placed in your
          folders is stopped when it starts (vanguard watcher known on); and, on request, personal folders watched live against ransomware: an alert
          within seconds, freeze then stop of an almost-certain case only with active protection
-                  (vanguard watcher ransomware on). With it, real-time file scanning: each file written to Downloads,
+         (vanguard watcher ransomware on). With it, real-time file scanning: each file written to Downloads,
          the Desktop, ~/.local/bin or ~/.config/autostart scanned as soon as it is written, without privileges
          (certain: undoable quarantine; known family: one click; suspect: alert)
   ── ALSO INCLUDED ──
@@ -201,14 +201,14 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        you type; each one can be copied, or run here if it only reads. And the tldr-pages examples, already on
        the key and updated every week: to copy only. From the command line:
        vanguard guide fedora, vanguard guide winget, vanguard guide dns cache, vanguard guide 6.7.2,
-       vanguard guide windows --summary. 10.10 By topic: the programs of all systems by subject
-       (network, disks, security…). 10.9 Vanguard commands: every command, sorted like the menu, with its
-       place in the menu; each page ends with its path and command ("Path: 10.6.7.2 · vanguard guide 6.7.2").
- 11  Step-by-step troubleshooting › no Internet, Wi-Fi dropping, slow computer, no sound, printer, disk full:
-       two or three questions, then Vanguard checks and suggests the right repair.
-       And: after an infection, new computer, computer leaving (sale, gift), hacked account, collect the
-       evidence, a relative's computer (three questions, a summary in plain words, the page to leave;
-       vanguard troubleshoot relative). From the command line: vanguard troubleshoot sound
+       vanguard guide windows --summary. 10.9 Vanguard commands: every command, sorted like the menu,
+       with its place in the menu; each page ends with its path and command ("Path: 10.6.7.2 · vanguard
+       guide 6.7.2"). 10.10 By topic: the programs of all systems by subject (network, disks, security…).
+ 11  Step-by-step troubleshooting › two or three questions, then Vanguard checks and suggests the right repair:
+       11.1 no Internet · 11.2 Wi-Fi dropping · 11.3 slow computer · 11.4 no sound · 11.5 printer · 11.6 disk full ·
+       11.7 after an infection · 11.8 new computer · 11.9 computer leaving (sale, gift) · 11.10 hacked account ·
+       11.11 collect the evidence · 11.12 a relative's computer (three questions, a summary in plain words, the
+       page to leave; vanguard troubleshoot relative). From the command line: vanguard troubleshoot sound
        11.13 Repair a known problem (Internet, hijacked browsing, firewall, disk full, stuck updates…)
        11.14 Hardware diagnostics (hardware, recent crashes and errors, text copy on the key)
  12  Optimize and install ›
@@ -229,10 +229,10 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        Each setting shows its state and can be reverted exactly: the previous value is put back (8.8).
  13  Vanguard ›
        13.1 Settings (also "s" in the main menu): language, emojis, working without the Internet, real-time
-         protection, monitoring, check-up, learned alerts, blocking, extension restrictions, abuse.ch key
+         protection, monitoring, maintenance, learned alerts, blocking, extension restrictions, abuse.ch key
          (masked), ClamAV second opinion, unwanted programs (PUA), backstage (each command run by Vanguard as
-         one grey line, off by default); the previous value is shown, except for learned alerts and blocking, which open their own
-         screen (vanguard settings). Real-time protection: the hourly monitoring and the active protection of
+         one grey line, off by default); the previous value is shown, except for
+         learned alerts and blocking, which open their own screen (vanguard settings). Real-time protection: the hourly monitoring and the active protection of
          blocking turned off at once, after your consent, for 1 h, 4 h or until turned back on; never Defender,
          the firewall or UAC, and a block already made stays in place (vanguard settings real-time no --for 1h).
          Vanguard Agent (no AI): four missions that tune Vanguard itself, in the safe direction only, a switch
@@ -246,7 +246,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          Rule self-test: each one runs without changing anything (vanguard self-test)
        13.5 Check rules: IDs and CIS, Microsoft or ANSSI references (vanguard rules)
        13.6 My computers: those where the key ran a check, their grade and remaining problems (vanguard computers)
-       13.7 Protect the drive's data: device record encrypted by a passphrase, asked only elsewhere
+       13.7 Protect the key's data: device record encrypted by a passphrase, asked only elsewhere
        13.8 Export or import settings (nicknames, network history)
        13.9 Shortcut on this computer: Vanguard copied here and started with one click
        13.10 Extensions › your own programs, outside Vanguard's code: plugins (a folder with plugin.toml, added
@@ -258,7 +258,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          twice (vanguard uninstall)
   s  Settings · q  Quit
   Shortcuts from earlier versions, in the main menu: u updates, r repair, o diagnostics, i integrity,
-  n name, c connection, a USB drive, b sandbox, p passwords, e email, l software, g gaming, d export/import.
+  n name, c connection, a USB drive, b sandbox, p passwords, e email, l software, g gaming, v clean up,
+  d export/import.
 
 The check covers, among others: firewall, open ports, updates, outdated software (Windows) and software
 installed since the last check, encryption, accounts, password policy, SSH (its failed login attempts, its broken

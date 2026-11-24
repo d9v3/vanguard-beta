@@ -662,7 +662,7 @@ pub(super) fn guillemets_risques(nom: &NomFichier) -> Resultat {
     }
     let question = trf!(
         "  Service « {} » : {raison}.\n  Avec les guillemets, le service peut ne plus démarrer (chemin d'avant noté : « vanguard options-defense --remettre service:{} » le remet).\n  Mettre les guillemets ? [o/N] : ",
-        "  Service “{}”: {raison}.\n  With the quotes, the service may no longer start (previous path noted: “vanguard options-defense --remettre service:{}” puts it back).\n  Add the quotes? [y/N]: ",
+        "  Service “{}”: {raison}.\n  With the quotes, the service may no longer start (previous path noted: “vanguard defense-options --put-back service:{}” puts it back).\n  Add the quotes? [y/N]: ",
         affichable(nom.texte()),
         affichable(nom.texte())
     );

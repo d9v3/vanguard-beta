@@ -780,7 +780,7 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
         correctif: Some(crate::machine::Correctif {
             action: crate::tr!(
                 "Menu Vanguard › Protéger les données de la clé (une phrase, demandée seulement sur les autres ordinateurs)",
-                "Vanguard menu › Protect the drive's data (a passphrase, asked only on other computers)"
+                "Vanguard menu › Protect the key's data (a passphrase, asked only on other computers)"
             )
             .to_string(),
             commandes: Vec::new(),

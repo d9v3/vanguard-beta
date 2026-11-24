@@ -32,6 +32,16 @@ example, finds it, to rebuild it if needed.
   checkup, with the command that shows them.
 - **Bounded reads.** Decoy files, browser versions, logs read directly and the hash of a very large program are read
   with a limit and only if they are real files: a pipe or a huge file put in their place no longer freezes the check.
+- **Window: green has to be earned.** “Watching” only appears if monitoring and real time are on, and read as such; the
+  “no alert” tick also asks for a fully verified log. Otherwise it is said. The checkup score carries its letter, the same as in
+  the terminal, and the checkup legend no longer breaks in the middle of a group.
+- **Messages that say what to do.** When the window does not open, the message says why in plain words and how to
+  continue. What the window does not do yet points to the right command (“vanguard --menu”, “vanguard fix”).
+- **The commands quoted exist, and in the right language.** Some English texts gave the French name of a command, and a
+  few texts a command that does not exist; a test now reads every quoted command again. `disclose` has its options in
+  English (`--tool`, `--program`, `--language`, `--delete`).
+- **USB key: the Linux opener knows more terminals.** With no terminal found, a message says so instead of doing
+  nothing. The key's instructions mention the window.
 
 ## November 24, 2026: version 0.98.0
 
