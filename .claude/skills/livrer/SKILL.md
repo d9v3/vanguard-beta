@@ -24,7 +24,11 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    `outils/deployer.sh`. Si elle demande un commit (lien corrigé, détail retiré) ou si un commit d'ailleurs est sur
    master : une branche posée sur master (worktree neuf, le correctif dessus s'il en faut un), livrée par
    `outils/livrer-branche.sh`, jamais un commit fait à la main sur master (deployer.sh le refuserait à chaque
-   relance). Alors seulement retirer worktree et branche. Si l'arbre principal a
+   relance). Alors seulement retirer worktree et branche. « ⚠ fusionné, déployé et envoyé …, mais page de la version
+   pas publiée » (code 4) : le code est en ligne, pas sa page ; cause réglée, relancer `outils/deployer.sh` (il reprend
+   la page, celle du dépôt et les tickets), puis retirer worktree et branche. Un code 1 après « fusion et déploiement »
+   peut venir de la seule clé (« Clé VANGUARD pas à jour ») : la page est alors tentée quand même, et la clé se reprend
+   au branchement suivant. Si l'arbre principal a
    des changements non committés d'une autre session sur les mêmes fichiers : arrête-toi et demande. Si les captures
    n'ont pas pu se faire, le dire. « ✖ le vocabulaire de la porte MCP n'est pas dans les programmes » (compiler-version.sh,
    contrôle croisé V1) : chaque mot nommé est un texte que rustc n'a pas gardé ; la cause se règle dans la lecture
@@ -36,7 +40,8 @@ ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=
    0.5.9 requis ici, attestées par le travail « nomenclatures » de ci.yml), notes tirées des commits de version depuis
    la page précédente, aperçu par `--notes` ; notification ; seule la dernière version garde sa page). Une version
    intermédiaire (`VANGUARD_INTERMEDIAIRE=1`) n'en a pas : la ligne « sans page sur GitHub » le dit, et la suivante la
-   reprendra. S'il l'a ratée, il dit pourquoi : corriger, puis relancer `outils/publier-version.sh`.
+   reprendra. S'il l'a ratée, il dit pourquoi : corriger, puis relancer `outils/deployer.sh`
+   (`outils/publier-version.sh` seul laisserait la page du dépôt et les tickets).
    Puis les tickets : vérifier la sortie de `outils/tickets-version.py` (section de la version cochée dans le
    ticket #1, tickets « journal » cités fermés) ; code 3 = hors ligne, relancer `--appliquer` plus tard.
 5. Mises à jour qui suivent chaque version :

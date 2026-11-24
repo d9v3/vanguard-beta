@@ -9,6 +9,8 @@
 #   outils/publier-version.sh --premier la toute première version du dépôt des versions (l'historique y commence)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=outils/github-commun.sh
+source outils/github-commun.sh
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 # Le nom du programme, avec sa majuscule (« Vanguard ») : titre de la page de la version.
@@ -353,7 +355,13 @@ if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
   echo "Ce commit n'est pas la tête de master sur GitHub : lancer d'abord outils/deployer.sh."
   exit 1
 fi
-if gh release view "$TAG" >/dev/null 2>&1; then
+PAGE=0
+page_en_ligne "$TAG" || PAGE=$?
+if ((PAGE == 2)); then
+  echo "Page de $TAG : rien conclu (voir ci-dessus), rien de publié ; relancer une fois GitHub joignable."
+  exit 1
+fi
+if ((PAGE == 0)); then
   echo "La version $TAG est déjà publiée."
   # Rien n'est publié ni signé : un passe-droit pris plus haut n'a servi à rien, et rien n'en est noté nulle part.
   for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
@@ -369,7 +377,8 @@ python3 -I outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-
   { echo "Liens : rien de publié."; exit 1; }
 
 DOSSIER=$(mktemp -d)
-trap 'rm -rf "$DOSSIER"' EXIT
+GARDER_DOSSIER=""
+trap '[[ -n $GARDER_DOSSIER ]] || rm -rf "$DOSSIER"' EXIT
 # Les nomenclatures (SBOM) d'ici, avant d'attendre GitHub : un cargo-cyclonedx absent ou d'une autre version
 # s'arrête maintenant, pas après dix minutes. Comparées plus bas à celles du passage attesté de ci.yml.
 bash outils/sbom.sh "$DOSSIER/sbom" >/dev/null || { echo "Nomenclatures (SBOM) : rien de publié."; exit 1; }
@@ -760,11 +769,18 @@ python3 -I outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64
 # une relance qui disait « déjà publiée ».
 DEPOT_VERSIONS=d9v3/vanguard-update
 SIGNEE=""
-if ! gh repo view "$DEPOT_VERSIONS" >/dev/null 2>&1; then
-  # Un passe-droit (ou la CI d'après) n'est gardé que dans l'historique signé de ce dépôt : sans lui (absent, ou gh
-  # en panne, réseau, jeton : on ne distingue pas), la page dirait le passe-droit sans trace signée. Rien de publié.
+DEPOT_VU=0
+depot_en_ligne "$DEPOT_VERSIONS" || DEPOT_VU=$?
+if ((DEPOT_VU == 2)); then
+  # Une panne prise pour un dépôt absent publierait la page du code sans la mise à jour signée.
+  echo "Dépôt public des versions ($DEPOT_VERSIONS) : rien conclu (voir ci-dessus), rien de publié."
+  exit 1
+fi
+if ((DEPOT_VU != 0)); then
+  # Un passe-droit (ou la CI d'après) n'est gardé que dans l'historique signé de ce dépôt : sans lui, la page dirait le
+  # passe-droit sans trace signée. Rien de publié.
   if ((${#PASSE_DROITS[@]})) || [[ -n $CI_APRES_COMPLET ]]; then
-    echo "Dépôt public des versions injoignable ($DEPOT_VERSIONS) : le passe-droit ou la CI d'après n'entrerait pas dans \
+    echo "Dépôt public des versions absent ($DEPOT_VERSIONS) : le passe-droit ou la CI d'après n'entrerait pas dans \
 l'historique signé : rien de publié."
     exit 1
   fi
@@ -893,7 +909,14 @@ PRECEDENTE=$(gh release view -R "$DEPOT_CODE" --json tagName -q .tagName 2>/dev/
 # relance disait « déjà publiée ». Ici, son échec arrête tout avant la page du code : une relance refait tout.
 PUBLIEE_SIGNEE=""
 if [[ -n $SIGNEE ]]; then
-  if gh release view "$TAG" -R "$DEPOT_VERSIONS" >/dev/null 2>&1; then
+  # L'absence se prouve juste avant : sans elle, rien n'est créé, donc rien n'est effacé plus bas.
+  PAGE=0
+  page_en_ligne "$TAG" -R "$DEPOT_VERSIONS" || PAGE=$?
+  if ((PAGE == 2)); then
+    echo "✖ $DEPOT_VERSIONS : rien conclu (voir ci-dessus), rien de publié ; relancer outils/publier-version.sh."
+    exit 1
+  fi
+  if ((PAGE == 0)); then
     echo "✖ $TAG est déjà dans $DEPOT_VERSIONS sans page du code : à régler à la main (DOSSIER gardé : $DOSSIER)."
     trap - EXIT
     exit 1
@@ -901,14 +924,37 @@ if [[ -n $SIGNEE ]]; then
   if ! gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
     "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
     "$DOSSIER/vanguard-fenetre-windows-x86_64.exe" "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
-    "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
+    "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig" 2>"$DOSSIER/creation.txt"; then
+    cat "$DOSSIER/creation.txt" >&2
     # Une page à moitié créée (fichiers manquants) est retirée, avec son étiquette : la relance repart de rien.
-    gh release delete "$TAG" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null 2>&1 || true
+    # Seulement celle née de cet appel : absente juste avant, et gh ne dit pas qu'elle existait déjà.
+    if grep -qi "already exists" "$DOSSIER/creation.txt"; then
+      echo "⚠ $TAG existait déjà dans $DEPOT_VERSIONS (posée ailleurs entre-temps) : rien n'y est effacé, à regarder."
+    else
+      PAGE=0
+      page_en_ligne "$TAG" -R "$DEPOT_VERSIONS" || PAGE=$?
+      if ((PAGE == 2)) || { ((PAGE == 0)) &&
+        ! gh release delete "$TAG" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null 2>&1; }; then
+        echo "⚠ La page de $TAG à moitié créée est peut-être encore dans $DEPOT_VERSIONS : à retirer à la main."
+      fi
+    fi
     echo "✖ Version non publiée dans $DEPOT_VERSIONS : rien de publié, ni page du code ; relancer outils/publier-version.sh."
     exit 1
   fi
   echo "Version $TAG signée dans $DEPOT_VERSIONS : les Vanguard sans clé la proposeront."
   PUBLIEE_SIGNEE=1
+  # Gardé tout de suite, avant la page du code : elle ratée, l'historique en ligne a déjà cette version, et le point sûr
+  # d'avant ferait dire à la signature suivante que la clé principale est peut-être entre d'autres mains.
+  # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
+  # versions ; la signature suivante s'y comparera.
+  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  mkdir -p "$(dirname "$POINT_SUR")" && cp "$DOSSIER/historique.txt" "$POINT_SUR.nouveau" &&
+    cp "$DOSSIER/historique.txt.sig" "$POINT_SUR.sig.nouveau" && mv -f "$POINT_SUR.sig.nouveau" "$POINT_SUR.sig" &&
+    mv -f "$POINT_SUR.nouveau" "$POINT_SUR" || {
+    echo "⚠ Point sûr de l'historique pas gardé ($POINT_SUR) : la signature suivante dira à tort une version \
+signée ailleurs. Y copier $DOSSIER/historique.txt et sa signature (DOSSIER gardé)."
+    GARDER_DOSSIER=1
+  }
 fi
 if ! gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
   "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-fenetre-linux-x86_64" \
@@ -920,14 +966,9 @@ $TAG à la main (DOSSIER gardé : $DOSSIER) ; les pages d'avant restent."
 fi
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 if [[ -n $PUBLIEE_SIGNEE ]]; then
-  # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
-  # versions ; la signature suivante s'y comparera.
-  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
-  mkdir -p "$(dirname "$POINT_SUR")" && cp "$DOSSIER/historique.txt" "$POINT_SUR.nouveau" &&
-    cp "$DOSSIER/historique.txt.sig" "$POINT_SUR.sig.nouveau" && mv -f "$POINT_SUR.sig.nouveau" "$POINT_SUR.sig" &&
-    mv -f "$POINT_SUR.nouveau" "$POINT_SUR" || echo "⚠ Point sûr de l'historique pas gardé ($POINT_SUR)."
   for ancienne in $(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
-    gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null
+    gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null ||
+      echo "⚠ Page de $ancienne pas retirée de $DEPOT_VERSIONS (la version $TAG, elle, est publiée)."
   done
 fi
 # Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées
@@ -936,7 +977,8 @@ fi
 # n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
 if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
   for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
-    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée."
+    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée." ||
+      echo "⚠ Page de $ancienne pas retirée (la version $TAG, elle, est publiée)."
   done
   retirer_etiquette_precedente || true
 fi

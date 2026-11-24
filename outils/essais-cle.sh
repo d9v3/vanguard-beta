@@ -1429,6 +1429,85 @@ voir "--accepter-cle sur une compilation de worktree : code 1, rien copié" eval
   montrer "$BANC/sortie"
 rm -f "$DD/target/x86_64-unknown-linux-musl/release/vanguard.d"
 rm -rf /run/media/alice
+# Ce qui suit l'envoi (icônes, VM, clé) ne retient jamais la page de la version, et une page ratée a son code (9) :
+# deployer.sh tel quel, la page déjà décidée (PUBLIER=1) et un faux publier-version.sh.
+sed 's/^PUBLIER=""$/PUBLIER=1 VERSION=0.0.0/' outils/deployer.sh >"$DD/outils/deployer.sh"
+printf '#!/bin/sh\necho page >>"$BANC/page.log"\nexit "$(cat "$BANC/page.code")"\n' >"$DD/outils/publier-version.sh"
+: >"$DD/outils/github.py"
+: >"$DD/outils/tickets-version.py"
+chmod +x "$DD/outils/publier-version.sh"
+publie() { # code du faux publier-version.sh
+  rm -f "$BANC/page.log"
+  echo "$1" >"$BANC/page.code"
+  deployer --sans-compiler
+}
+voir "deployer.sh décide de la page dans PUBLIER, vide au départ" grep -q '^PUBLIER=1 ' "$DD/outils/deployer.sh"
+cle_neuve() { # fichier mis à la place d'un dossier de la clé (aucun par défaut)
+  rm -rf /run/media/alice "$BANC/etat/vanguard/deploiement-en-cours-$J"
+  mkdir -p "$K"
+  echo temoin >"$K/vanguard.cle"
+  echo "$J" >"$K/vanguard.jeton"
+  [[ -z ${1-} ]] || echo obstacle >"$K/$1"
+  (cd "$K" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$BANC/reference"
+}
+cle_neuve
+publie 0
+code=$?
+voir "clé à jour et page publiée : code 0" \
+  eval '((code == 0)) && dit "$BANC/page.log" page && dit "$BANC/sortie" "Clé VANGUARD à jour"' || montrer "$BANC/sortie"
+publie 1
+code=$?
+voir "page de la version pas publiée : dite, code 9 (la clé, elle, est à jour)" \
+  eval '((code == 9)) && dit "$BANC/sortie" "Page de la version pas publiée" && dit "$BANC/sortie" "Clé VANGUARD à jour"' ||
+  montrer "$BANC/sortie"
+# La clé en panne en pleine copie (un fichier là où Linux/ doit être) : la page est quand même tentée, code 1, dit et notifié, sans
+# « à jour », et le repère reste pour la reprise.
+for suite in 0 1; do
+  cle_neuve Linux
+  publie "$suite"
+  code=$?
+  voir "clé en panne pendant la copie, page $suite : page tentée, panne dite et notifiée, code 1, reprise gardée" \
+    eval '((code == 1)) && dit "$BANC/page.log" page && dit "$BANC/sortie" "✖ Clé VANGUARD pas à jour : en panne" &&
+      pas_dit "$BANC/sortie" "Clé VANGUARD à jour :" && dit "$BANC/notifications.log" "Clé VANGUARD pas à jour" &&
+      pas_dit "$BANC/vanguard.log" "manifeste --ecrire" && [[ -e $BANC/etat/vanguard/deploiement-en-cours-$J ]]' ||
+    montrer "$BANC/sortie"
+done
+# La clé changée en voyage : rien n'y est écrit, une seule notification (la sienne), et la page est quand même tentée.
+cle_neuve
+echo piege >"$K/Photos.lnk"
+publie 0
+code=$?
+voir "clé changée en voyage : page tentée, code 1, une seule notification" \
+  eval '((code == 1)) && dit "$BANC/page.log" page && [[ ! -e $K/Linux ]] &&
+    (($(grep -c VANGUARD "$BANC/notifications.log") == 1)) && pas_dit "$BANC/sortie" "en panne"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+# Les icônes en panne : le reste continue, la clé est mise à jour, et le code final le dit.
+cle_neuve
+mv "$DD/assets/icones/vanguard-16.png" "$BANC/icone-de-cote"
+publie 0
+code=$?
+mv "$BANC/icone-de-cote" "$DD/assets/icones/vanguard-16.png"
+voir "icônes en panne : dites, clé à jour, page tentée, code 1" \
+  eval '((code == 1)) && dit "$BANC/sortie" "✖ Icône du lanceur : en panne" && dit "$BANC/sortie" "Clé VANGUARD à jour :" &&
+    dit "$BANC/page.log" page' || montrer "$BANC/sortie"
+# Clé débranchée : la page ratée garde son code 9.
+rm -rf /run/media/alice
+publie 1
+code=$?
+voir "clé débranchée, page pas publiée : code 9" eval '((code == 9)) && dit "$BANC/sortie" "non branchée"' ||
+  montrer "$BANC/sortie"
+publie 0
+code=$?
+voir "clé débranchée, page publiée : code 0" eval '((code == 0)) && dit "$BANC/page.log" page' || montrer "$BANC/sortie"
+# Rien qui n'intègre le code ne suit la copie du dépôt : pas de __pycache__ sur la clé.
+cle_neuve
+mkdir -p "$DD/outils/__pycache__" "$K/source/outils/__pycache__" && : >"$DD/outils/__pycache__/x.pyc"
+(cd "$K" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$BANC/reference"
+publie 0
+voir "code source de la clé : sans __pycache__" eval '[[ -d $K/source/outils ]] && [[ ! -e $K/source/outils/__pycache__/x.pyc ]]' ||
+  montrer "$BANC/sortie"
+rm -rf "$DD/outils/__pycache__" /run/media/alice
+cp outils/deployer.sh "$DD/outils/deployer.sh"
 # Un journal au-delà de la borne de src/journal.rs (4 Mio) : mis de côté, rien n'en part vers GitHub.
 mkdir -p "$BANC/donnees/vanguard"
 { echo "== 2026-10-24 · vanguard 0.86.0 · linux · fr · bilan"; head -c $((5 * 1024 * 1024)) /dev/zero | tr '\0' x; } \

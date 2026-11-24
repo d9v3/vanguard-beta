@@ -16,6 +16,9 @@
 # master pendant le déploiement fait refuser l'envoi (envoi_borne).
 # Rien de parti sur GitHub (envoi refusé, sans Internet) : la livraison n'est faite qu'ici, c'est dit (« ⚠ … rien
 # n'est parti sur GitHub »), worktree et branche gardés, code 3 ; jamais « ✔ livré ».
+# Page de la version pas publiée alors que le code est parti (deployer.sh, code 9) : « ⚠ … page pas publiée », worktree
+# et branche gardés, code 4 ; jamais « ✔ livré » non plus.
+# Une seule livraison à la fois par dépôt : la suivante attend la fin de celle qui tourne, puis repart de son master.
 # S'arrête à la première étape en échec, sans rien fusionner. Le déploiement passe avant le ménage : un ménage raté
 # (worktree verrouillé, branche gardée) est dit, sans défaire une livraison faite.
 # Essais : outils/essais-livrer-branche.sh (dépôts jetables, faux verifier.sh et deployer.sh).
@@ -34,6 +37,14 @@ DEPOT=$(realpath "$(dirname "$COMMUN")")
 [[ $(git -C "$ARBRE" rev-parse --show-toplevel) == "$ARBRE" ]] ||
   { echo "✖ $ARBRE n'est pas la racine d'un worktree" >&2; exit 2; }
 [[ $(git -C "$ARBRE" branch --show-current) == "$BRANCHE" ]] || { echo "✖ $ARBRE n'est pas sur $BRANCHE" >&2; exit 2; }
+# Une livraison à la fois : deux ensemble se voleraient le dossier de compilation et le master que l'autre vérifie. Le
+# verrou est tenu par flock lui-même (-o : ce qu'il lance ne l'hérite pas, un git gc détaché ne le garderait pas).
+if [[ ${VANGUARD_LIVRAISON_VERROU:-} != "$COMMUN" ]]; then
+  VERROU=$COMMUN/vanguard-livraison.lock
+  flock -n "$VERROU" true || echo "· une autre livraison tourne dans ce dépôt : attente de sa fin"
+  VANGUARD_LIVRAISON_VERROU=$COMMUN exec flock -o "$VERROU" bash "$0" "$@"
+fi
+unset VANGUARD_LIVRAISON_VERROU
 # L'arbre `$1` est propre (rien de non commité, aucun fichier non suivi). Propre se prouve : un git status qui échoue
 # (index abîmé, dépôt illisible) n'écrit rien, ce qui passerait pour un arbre propre ([[ ]] ne voit pas l'échec d'une
 # substitution, set -e non plus) ; c'est un refus, dit (relecture 0.94, N-2).
@@ -132,8 +143,13 @@ VANGUARD_COMMIT_VERIFIE=$SHA outils/deployer.sh >"$JOURNAUX/deploiement-$NOM.log
 # ici, pas laissée dans le journal (relecture 0.95, V-4).
 PAS_ENVOYE=$(awk '/^(Rien n.est envoyé sur GitHub|GitHub refuse l.envoi|GitHub injoignable : le code)/ { p = 1; print; next }
   p && /^  / { print; next } { p = 0 }' "$JOURNAUX/deploiement-$NOM.log")
-if ((DEPLOI != 0)) && ! [[ $DEPLOI == 8 && -n $PAS_ENVOYE ]]; then
+# Code 9 : tout est fait, sauf la page de la version ; seulement si sa ligne est au journal, sinon un échec ordinaire.
+PAGE_ABSENTE=$(grep -m 1 "^Page de la version pas publiée" "$JOURNAUX/deploiement-$NOM.log" || true)
+if ((DEPLOI != 0)) && ! [[ $DEPLOI == 8 && -n $PAS_ENVOYE ]] && ! [[ $DEPLOI == 9 && -n $PAGE_ABSENTE ]]; then
   tail -30 "$JOURNAUX/deploiement-$NOM.log"
+  # Ce qui n'est pas parti se lit ici, pas seulement dans les lignes de la fin.
+  [[ -z $PAS_ENVOYE ]] || { echo "  rien n'est parti sur GitHub :"; head -n 15 <<<"$PAS_ENVOYE"; }
+  [[ -z $PAGE_ABSENTE ]] || echo "  $PAGE_ABSENTE"
   echo "✖ déploiement en échec (code $DEPLOI) : master contient ${SHA:0:12}, worktree et branche gardés"
   exit 1
 fi
@@ -148,6 +164,14 @@ if [[ -n $PAS_ENVOYE ]]; then
   echo "  cause qui demande un commit (lien corrigé, détail retiré) ou commit d'ailleurs sur master : une branche posée"
   echo "  sur master (worktree neuf, le correctif dessus s'il en faut un), livrée par outils/livrer-branche.sh"
   exit 3
+fi
+if ((DEPLOI == 9)); then
+  # Les raisons de publier-version.sh sont juste avant sa ligne.
+  grep -B 12 -m 1 "^Page de la version pas publiée" "$JOURNAUX/deploiement-$NOM.log"
+  echo "⚠ fusionné, déployé et envoyé (${SHA:0:12}), mais page de la version pas publiée : worktree et branche gardés"
+  echo "  journal : $JOURNAUX/deploiement-$NOM.log"
+  echo "  cause réglée : relancer outils/deployer.sh, qui reprend la page, celle du dépôt et les tickets"
+  exit 4
 fi
 # Le ménage, une fois la livraison faite : son échec se dit, il ne défait rien.
 menage=()

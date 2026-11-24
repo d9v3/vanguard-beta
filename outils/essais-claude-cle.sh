@@ -563,7 +563,7 @@ attendu "R9-CR-3 : reposé sans alerte" 0 bash outils/claude-cle.sh --cle "$CLE"
 # R8-CLE-1 : pour le code 2, outils/deployer.sh disait « remplacé par la copie vérifiée, ou retiré », même quand le
 # binaire était laissé sur la clé ou gardé. Le texte de la branche 2 (terminal et notification) ne dit plus que
 # l'alerte, et nomme les quatre issues.
-branche2=$(sed -n '/^case \$code_claude in$/,/^esac$/p' outils/deployer.sh | sed -n '/^  2)/,/;;$/p')
+branche2=$(sed -n '/^ *case \$code_claude in$/,/^ *esac$/p' outils/deployer.sh | sed -n '/^ *2)/,/;;$/p')
 [[ -n $branche2 && $branche2 != *"remplacé par la copie vérifiée"* && $branche2 == *"laissé sur la clé ou gardé"* &&
   $branche2 == *"Remplacé, retiré, laissé sur la clé ou gardé"* ]] &&
   bon "R8-CLE-1 : deployer.sh, code 2 : l'alerte seule, jamais un « remplacé » qui n'a pas eu lieu" ||

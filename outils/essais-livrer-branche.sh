@@ -573,5 +573,78 @@ else
   ko "deployer.sh en code 8 (avec raison $code_raison, sans raison $CODE) : $(tail -n 2 <<<"$sortie_raison")"
 fi
 
+# 18. Page de la version pas publiée (deployer.sh, code 9) : code 4, dit avec ses raisons, worktree et branche gardés,
+# jamais « livré » ; sans sa ligne au journal, un échec comme un autre. Une clé en panne avec elle (code 1) : les deux dits.
+LIGNE_PAGE="Page de la version pas publiée (voir ci-dessus) : relancer outils/deployer.sh, qui la reprend."
+grep -qF "$LIGNE_PAGE" "$RACINE/outils/deployer.sh" || ko "« Page de la version pas publiée » n'est plus dit par outils/deployer.sh"
+monter page-absente
+printf '%s\n' "✖ raison de publier-version.sh" "$LIGNE_PAGE" "Durées : 1 s" >"$CAS/consigne-deploi-sortie"
+echo 9 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+if ((CODE == 4)) && [[ $(tete master) == "$(cat "$CAS/vu-deploye" 2>/dev/null)" && -d $LOT ]] && tete refs/heads/lot >/dev/null &&
+  grep -q "^✖ raison de publier-version.sh" <<<"$SORTIE" && grep -q "page de la version pas publiée : worktree" <<<"$SORTIE" &&
+  grep -q "relancer outils/deployer.sh" <<<"$SORTIE" && ! grep -q "✔ livré" <<<"$SORTIE"; then
+  ok "page de la version pas publiée (code 9) : dite avec sa raison, code 4, worktree et branche gardés, jamais « livré »"
+else
+  ko "page de la version pas publiée (code $CODE) : $(tail -n 3 <<<"$SORTIE")"
+fi
+monter page-absente-muette
+echo 9 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+code_muet=$CODE sortie_muette=$SORTIE
+monter page-absente-et-cle
+printf '%s\n' "✖ Clé VANGUARD pas à jour : en panne (code 1), le reste du déploiement continue." "$LIGNE_PAGE" >"$CAS/consigne-deploi-sortie"
+echo 1 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+if ((code_muet == 1 && CODE == 1)) && ! grep -q "✔ livré" <<<"$sortie_muette$SORTIE" &&
+  grep -q "déploiement en échec (code 9)" <<<"$sortie_muette" && grep -q "✖ Clé VANGUARD pas à jour" <<<"$SORTIE" &&
+  grep -q "^  Page de la version pas publiée" <<<"$SORTIE"; then
+  ok "code 9 sans sa ligne : échec (code 1) ; clé en panne et page absente : les deux dites, code 1"
+else
+  ko "code 9 muet ($code_muet), clé et page ($CODE) : $(tail -n 3 <<<"$sortie_muette$SORTIE")"
+fi
+# Rien n'est parti ET code 9 : « rien n'est parti » passe avant (code 3).
+monter pas-envoye-code-9
+printf '%s\n' "GitHub injoignable : le code partira au prochain déploiement." "$LIGNE_PAGE" >"$CAS/consigne-deploi-sortie"
+echo 9 >"$CAS/consigne-deploi"
+livrer lot "$LOT"
+((CODE == 3)) && grep -q "rien n'est parti sur GitHub" <<<"$SORTIE" && ok "code 9 alors que rien n'est parti : code 3" ||
+  ko "code 9 et rien de parti (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+
+# 19. Une livraison à la fois : la deuxième attend la fin de la première, le dit, et ne fait rien d'ici là. Un verrou
+# laissé (fichier sans personne) ne bloque pas ; un enfant détaché de deployer.sh ne le garde pas.
+monter verrou
+VERROU=$DEPOT/.git/vanguard-livraison.lock
+mkfifo "$CAS/pret" "$CAS/lacher"
+flock "$VERROU" bash -c 'echo >"$1/pret"; read -r _ <"$1/lacher"' _ "$CAS" &
+TENEUR=$!
+read -r _ <"$CAS/pret"
+DEPART=$(tete master)
+(livrer lot "$LOT"; printf '%s\n' "$CODE" "$SORTIE" >"$CAS/fin") &
+LIVREUR=$!
+sleep 3
+attend=non
+[[ ! -e $CAS/fin ]] && rien_livre "$DEPART" && [[ ! -e $CAS/vu-verifie ]] && attend=oui
+echo >"$CAS/lacher"
+wait "$TENEUR" "$LIVREUR"
+if [[ $attend == oui && $(head -n 1 "$CAS/fin") == 0 && -e $VERROU ]] && grep -q "une autre livraison tourne" "$CAS/fin" &&
+  grep -q "^✔ livré" "$CAS/fin"; then
+  ok "deux livraisons : la deuxième attend et le dit, puis livre"
+else
+  ko "deux livraisons (attend : $attend) : $(tail -n 3 "$CAS/fin")"
+fi
+monter verrou-enfant
+printf '%s\n' '#!/usr/bin/env bash' 'git rev-parse HEAD >"$ESSAI_CAS/vu-deploye"' \
+  'setsid sleep 20 >/dev/null 2>&1 & echo $! >"$ESSAI_CAS/enfant"' >"$DEPOT/outils/deployer.sh"
+git -C "$DEPOT" commit -qam "deployer qui détache" && git -C "$DEPOT" update-ref refs/remotes/origin/master master
+git -C "$LOT" rebase -q master
+livrer lot "$LOT"
+if ((CODE == 0)) && flock -n "$DEPOT/.git/vanguard-livraison.lock" true; then
+  ok "verrou rendu à la fin, même avec un processus détaché par le déploiement"
+else
+  ko "verrou gardé après la livraison (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+fi
+kill "$(cat "$CAS/enfant" 2>/dev/null)" 2>/dev/null
+
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "livrer-branche.sh : tout est juste."

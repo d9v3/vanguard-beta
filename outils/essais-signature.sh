@@ -777,7 +777,7 @@ GH
   awk '/^PRECEDENTE=\$\(gh release view -R "\$DEPOT_CODE"/ { p = NR } /^if ! gh release create "\$TAG" --target/ { c = NR }
     /^  if ! gh release create "\$TAG" -R "\$DEPOT_VERSIONS"/ { v = NR } c && !x && /^  exit 1$/ { x = NR }
     v && !y && /^    exit 1$/ { y = NR }
-    /^  if gh release view "\$TAG" -R "\$DEPOT_VERSIONS"/ { g = NR } g && !z && /^    exit 1$/ { z = NR }
+    /^  page_en_ligne "\$TAG" -R "\$DEPOT_VERSIONS"/ { g = NR } g && !z && /^    exit 1$/ { z = NR }
     /^if \[\[ -z \$SIGNEE \|\| -n \$PUBLIEE_SIGNEE \]\]; then$/ { s = NR } s && /gh release delete "\$ancienne" --yes/ { d = NR }
     d && /^  retirer_etiquette_precedente \|\| true$/ { r = NR } s && !f && /^fi$/ { f = NR }
     END { exit !(p && g && v && c && p < g && g < z && z < v && v < y && y < c && x > c && s > x && d > s && r > d && f > r) }' "$DEPOT/outils/publier-version.sh" &&
@@ -1624,24 +1624,126 @@ r=$(controle 0 VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1)
 [[ $(tail -n 1 <<<"$r") == "code=0 droits=sans-controle-sources-codeabsent-degradationsinconnu-non-verifieesinconnu" ]] &&
   ok "publier : contrôle absent + passe-droit : « absent » porté par le passe-droit" ||
   ko "publier : contrôle absent mal porté ($r)"
+# La création de la page signée, jugée telle quelle face à un faux gh : rien n'est effacé que la page née de cet appel
+# (absente juste avant, et gh ne dit pas qu'elle existait), et le point sûr est gardé avant la page du code.
+{ cat "$DEPOT/outils/github-commun.sh"
+  echo 'SIGNEE=1 PASSE_DROITS=() GARDER_DOSSIER=""'
+  awk '/^PUBLIEE_SIGNEE=""$/,/^fi$/' "$DEPOT/outils/publier-version.sh"
+  echo 'echo "suite gardé=$GARDER_DOSSIER"'; } >"$T/page-signee.sh"
+cat >"$T/gh-page.sh" <<'GH'
+#!/usr/bin/env bash
+# $G : un fichier « vue-1 », « vue-2 »… par réponse attendue de « release view » (absente, la, panne) ; « creation » et
+# « retrait » : code et message.
+G=$GH_PAGE
+case $2 in
+  view)
+    n=$(($(cat "$G/n" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$G/n"
+    case $(cat "$G/vue-$n" 2>/dev/null) in
+      absente) echo "release not found" >&2; exit 1 ;;
+      la) exit 0 ;;
+      *) echo "error connecting to api.github.com" >&2; exit 1 ;;
+    esac
+    ;;
+  create | delete)
+    echo "$2" >>"$G/appels"
+    [[ ! -f $G/$2 ]] || { cat "$G/$2" >&2; exit 1; }
+    ;;
+esac
+GH
+page_signee() { # nom, réponses de « release view »… ; $CREATION et $RETRAIT : message d'un échec
+  local g=$T/page-$1 n=0 v
+  shift
+  mkdir -p "$g/bin" "$g/dossier" && cp "$T/gh-page.sh" "$g/bin/gh" && chmod +x "$g/bin/gh" && : >"$g/appels"
+  for v in "$@"; do
+    n=$((n + 1))
+    echo "$v" >"$g/vue-$n"
+  done
+  [[ -z ${CREATION-} ]] || echo "$CREATION" >"$g/create"
+  [[ -z ${RETRAIT-} ]] || echo "$RETRAIT" >"$g/delete"
+  echo historique >"$g/dossier/historique.txt" && echo sig >"$g/dossier/historique.txt.sig"
+  GH_PAGE=$g PATH="$g/bin:$PATH" DOSSIER=$g/dossier TAG=v0.0.0 DEPOT_VERSIONS=x/y NOM=V VERSION=0.0.0 NOTES=n \
+    VANGUARD_HISTORIQUE_PUBLIE=${POINT-$g/point/sur.txt} bash -c "set -euo pipefail; source '$T/page-signee.sh'" 2>&1
+  tr '\n' ' ' <"$g/appels"
+}
+r=$(page_signee bien absente)
+[[ $r == *"suite gardé="$'\n'"create " && $(cat "$T/page-bien/point/sur.txt" "$T/page-bien/point/sur.txt.sig") == $'historique\nsig' ]] &&
+  ok "publier : page signée créée, point sûr gardé aussitôt (avant la page du code)" ||
+  ko "publier : point sûr pas gardé après la page signée ($r)"
+r=$(page_signee panne panne)
+[[ $r == *"rien conclu"* && $r != *suite* && $r != *create* && $r != *delete* ]] &&
+  ok "publier : page signée dont l'absence n'est pas prouvée : rien créé, rien effacé" ||
+  ko "publier : page signée créée ou effacée sur une panne de GitHub ($r)"
+r=$(page_signee la la)
+[[ $r == *"déjà dans x/y"* && $r != *suite* && $r != *create* && $r != *delete* ]] &&
+  ok "publier : page signée déjà là : rien créé, rien effacé" || ko "publier : page signée déjà là mal traitée ($r)"
+r=$(CREATION="a release with the same tag name already exists: v0.0.0" page_signee existait absente la)
+[[ $r == *"rien n'y est effacé"*"create " && $r != *suite* && $r != *delete* ]] &&
+  ok "publier : page posée ailleurs entre-temps (« already exists ») : jamais effacée" ||
+  ko "publier : page née ailleurs effacée ($r)"
+r=$(CREATION="HTTP 502" page_signee moitie absente la)
+[[ $r == *"rien de publié"*"create delete " && $r != *suite* && $r != *"à la main"* ]] &&
+  ok "publier : page à moitié créée par cet appel : retirée, rien de publié" ||
+  ko "publier : page à moitié créée pas retirée ($r)"
+r=$(CREATION="HTTP 502" page_signee partie absente absente)
+[[ $r == *"rien de publié"*"create " && $r != *delete* && $r != *"à la main"* ]] &&
+  ok "publier : création ratée sans page laissée : rien à retirer" || ko "publier : retrait d'une page absente ($r)"
+r=$(CREATION="HTTP 502" RETRAIT="HTTP 502" page_signee reste absente la)
+r2=$(CREATION="HTTP 502" page_signee muette absente panne)
+[[ $r == *"à retirer à la main"* && $r2 == *"à retirer à la main"* && $r2 != *delete* ]] &&
+  ok "publier : page à moitié créée restée (retrait refusé, GitHub muet) : dite" ||
+  ko "publier : page à moitié créée restée sans être dite ($r / $r2)"
+r=$(POINT=/dev/null/sur.txt page_signee point absente)
+[[ $r == *"Point sûr de l'historique pas gardé"*"suite gardé=1"* ]] &&
+  ok "publier : point sûr pas gardé : dit, et l'historique signé reste dans DOSSIER" ||
+  ko "publier : point sûr pas gardé sans être dit ($r)"
 # Une version déjà publiée : rien de publié ni signé, et le passe-droit pris est dit sans objet (relecture C5, n°22).
 mkdir -p "$T/faux-gh-oui" && printf '#!/bin/sh\nexit 0\n' >"$T/faux-gh-oui/gh" && chmod +x "$T/faux-gh-oui/gh"
-awk '/^if gh release view "\$TAG" >\/dev\/null 2>&1; then$/,/^fi$/' "$DEPOT/outils/publier-version.sh" >"$T/deja.sh"
+{ cat "$DEPOT/outils/github-commun.sh"
+  awk '/^PAGE=0$/ { p = 1 } p { print } p && /^fi$/ && ++n == 2 { exit }' "$DEPOT/outils/publier-version.sh"; } >"$T/deja.sh"
 r=$(PATH="$T/faux-gh-oui:$PATH" TAG=v0.0.0 bash -c "set -euo pipefail; \
   PASSE_DROITS=(sans-controle-sources-code2-degradations0-non-verifiees1); source '$T/deja.sh'; echo suite" 2>&1)
 [[ $r == *"déjà publiée"* && $r == *"sans-controle-sources-code2-degradations0-non-verifiees1 : sans objet"* &&
   $r != *suite* ]] && ok "publier : version déjà publiée, le passe-droit pris est dit sans objet, rien d'autre" ||
   ko "publier : relance sur une version publiée mal dite ($r)"
-# Le dépôt public des versions injoignable (gh repo view en échec) avec un passe-droit : rien de publié (n°21).
-awk '/^if ! gh repo view "\$DEPOT_VERSIONS" >\/dev\/null 2>&1; then$/,/^else$/' "$DEPOT/outils/publier-version.sh" |
-  sed '$d' >"$T/depot-versions.sh" && echo "fi" >>"$T/depot-versions.sh"
+# Une panne de GitHub (autre message que « release not found », autre code, délai) n'est jamais une page absente : rien
+# n'est publié, et ce que gh a dit est montré. Absente pour de bon : la publication continue (passe du 24 nov., n° 15).
+faux_gh_dit() { # dossier, code, message d'erreur : un gh qui répond toujours ça
+  mkdir -p "$T/$1" && printf '#!/bin/sh\necho "%s" >&2\nexit %s\n' "$3" "$2" >"$T/$1/gh" && chmod +x "$T/$1/gh"
+}
+deja() { # dossier du faux gh
+  PATH="$T/$1:$PATH" TAG=v0.0.0 bash -c "set -euo pipefail; PASSE_DROITS=(); source '$T/deja.sh'; echo suite" 2>&1
+}
+faux_gh_dit gh-absente 1 "release not found"
+faux_gh_dit gh-reseau 1 "error connecting to api.github.com"
+faux_gh_dit gh-compte 4 "release not found"
+faux_gh_dit gh-autre 1 "HTTP 502: release not found upstream"
+r=$(deja gh-absente)
+[[ $r == suite ]] && ok "publier : page absente pour de bon (« release not found ») : la publication continue" ||
+  ko "publier : page absente mal lue ($r)"
+for panne in gh-reseau gh-compte gh-autre; do
+  r=$(deja "$panne")
+  [[ $r == *"rien conclu"*"rien de publié"* && $r != *suite* && $r != *"déjà publiée"* ]] &&
+    ok "publier : panne de GitHub ($panne) jamais prise pour une page absente : rien de publié" ||
+    ko "publier : panne de GitHub ($panne) mal lue ($r)"
+done
+# Le dépôt public des versions absent (gh repo view le dit) avec un passe-droit : rien de publié (n°21).
+{ cat "$DEPOT/outils/github-commun.sh"
+  awk '/^DEPOT_VU=0$/,/^else$/' "$DEPOT/outils/publier-version.sh" | sed '$d'; echo "fi"; } >"$T/depot-versions.sh"
 depot_versions() { # passe-droits… : la dernière ligne, « suite » si on continue
-  PATH="$T/faux-gh-notes:$PATH" DEPOT_VERSIONS=x/y CI_APRES_COMPLET=${CI_ESSAI-} bash -c "set -euo pipefail; \
+  PATH="$T/${GH_ESSAI:-gh-sans-depot}:$PATH" DEPOT_VERSIONS=x/y CI_APRES_COMPLET=${CI_ESSAI-} bash -c "set -euo pipefail; \
     PASSE_DROITS=(\"\$@\"); source '$T/depot-versions.sh'; echo suite" _ "$@" 2>&1 | tail -n 1
 }
+faux_gh_dit gh-sans-depot 1 "GraphQL: Could not resolve to a Repository with the name 'x/y'. (repository)"
+for panne in gh-reseau gh-compte gh-autre; do
+  r=$(GH_ESSAI=$panne depot_versions)
+  [[ $r == *"rien conclu"*"rien de publié." ]] &&
+    ok "publier : panne de GitHub ($panne) jamais prise pour un dépôt des versions absent" ||
+    ko "publier : dépôt des versions dit absent sur une panne ($panne : $r)"
+done
 [[ $(depot_versions sans-vm) == *"rien de publié." && $(CI_ESSAI=$CI_SHA depot_versions) == *"rien de publié." &&
   $(depot_versions) == suite ]] &&
-  ok "publier : dépôt des versions injoignable avec passe-droit ou CI d'après : rien de publié (sans : on continue)" ||
+  ok "publier : dépôt des versions absent avec passe-droit ou CI d'après : rien de publié (sans : on continue)" ||
   ko "publier : passe-droit publié sans historique signé ($(depot_versions sans-vm))"
 
 # Le contrôle tourne avant toute requête à GitHub (git fetch, gh), après l'arrêt de --notes (qui n'en fait aucune).
