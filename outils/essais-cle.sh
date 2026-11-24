@@ -651,10 +651,15 @@ voir "pendant le torrent de Kali : aria2c arrêté, le script aussi (pas de repl
 # --- Images (images-cle.sh) ------------------------------------------------------------------------------------------
 
 echo "Images de la clé :"
-USER=bob bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
+USER=bob VANGUARD_PROGRAMME=/usr/bin/true bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
 code=$?
 voir "sans /run/media/\$USER : « rien à copier », sans erreur" \
   eval '((code == 0)) && dit "$BANC/sortie" "non branchée : rien à copier"' || montrer "$BANC/sortie"
+USER=bob VANGUARD_PROGRAMME=$BANC/absent bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
+code=$?
+voir "sans programme pour reconnaître la clé : dite pas reconnue, code 5 (jamais « rien à copier »)" \
+  eval '((code == 5)) && dit "$BANC/sortie" "pas reconnue" && pas_dit "$BANC/sortie" "rien à copier"' ||
+  montrer "$BANC/sortie"
 USER=bob bash outils/images-cle.sh --etat >"$BANC/sortie" 2>&1
 code=$?
 voir "--etat sans /run/media/\$USER : « pas branchée », sans erreur" \
@@ -1032,7 +1037,21 @@ voir "et la copie se refait au passage suivant" \
 cat >"$BANC/faux-vanguard" <<'FIN'
 #!/usr/bin/env bash
 echo "$*" >>"$BANC/faux-vanguard.log"
-if [[ "$1 $2" == "deploiement relire-image" && -n ${ESSAI_RELUE:-} ]]; then echo "ISO/$ESSAI_RELUE"; exit 2; fi
+case "$1 $2" in
+  "deploiement cle") echo "${ESSAI_CLE:-}"; exit "${ESSAI_CODE_CLE:-0}" ;;
+  "deploiement relire-image")
+    [[ -z ${ESSAI_RELUE:-} ]] || { echo "ISO/$ESSAI_RELUE"; exit "${ESSAI_RELUE_CODE:-2}"; }
+    exit "${ESSAI_RELUE_CODE:-0}"
+    ;;
+  "deploiement recopie-image")
+    # Ce qui est sur la clé au moment de la note : la note doit précéder le retrait.
+    ls "$3/ISO" | sed 's/^/sur la clé : /' >>"$BANC/faux-vanguard.log"
+    [[ $* == *--debut* || $* == *--ratee* ]] || printf '%s' "${ESSAI_ATTENTE:-}"
+    if [[ $* == *--ratee* ]]; then exit "${ESSAI_RATEE_CODE:-0}"; fi
+    exit "${ESSAI_RECOPIE_CODE:-0}"
+    ;;
+  "manifeste --images") ls "$3/ISO" | sed 's/^/au manifeste : /' >>"$BANC/faux-vanguard.log" ;;
+esac
 exit 0
 FIN
 chmod +x "$BANC/faux-vanguard"
@@ -1052,6 +1071,118 @@ voir "image remplacée par une autre de même taille : dite, recopiée, son empr
   eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && dit "$BANC/notifications.log" "image remplacée" &&
     dit "$BANC/faux-vanguard.log" "manifeste --images $BANC/cle5 --image ${IMAGE5##*/}=$SHA5"' ||
   { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+voir "image remplacée : notée dans la référence avant d'être retirée" \
+  eval 'dit "$BANC/faux-vanguard.log" "deploiement recopie-image $BANC/cle5 --debut=${IMAGE5##*/} -- ${IMAGE5##*/}" &&
+    grep -A1 -F -- "--debut=${IMAGE5##*/}" "$BANC/faux-vanguard.log" | grep -qF "sur la clé : ${IMAGE5##*/}"' ||
+  montrer "$BANC/faux-vanguard.log"
+# Retirée, puis une copie qui rate : la sorte reste à reposer, rien n'est dit à jour ; clé toujours là (témoin), c'est
+# elle qui a raté, noté.
+: >"$BANC/cle5/vanguard.cle"
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+rm -f "$BANC/faux-vanguard.log" "$BANC/notifications.log"
+ESSAI_SYNC=echec ESSAI_RELUE=${IMAGE5##*/} VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "recopie ratée : image remplacée déjà retirée, copie ratée notée à la référence" \
+  eval '((code == 1)) && [[ ! -e $NEUVE ]] && dit "$BANC/faux-vanguard.log" "recopie-image $BANC/cle5 --ratee=${IMAGE5##*/}" &&
+    pas_dit "$BANC/notifications.log" "à remplacer"' || { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+rm -f "$PART" "$BANC/faux-vanguard.log" "$BANC/notifications.log"
+# Clé débranchée juste après le retrait : ni image ni .part ; seule la référence le sait.
+ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "recopie interrompue avant toute copie : reprise au passage suivant" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5"' || montrer "$BANC/sortie"
+rm -f "$NEUVE" "$BANC/faux-vanguard.log"
+VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+voir "image absente sans recopie notée : pas posée d'elle-même" eval '[[ ! -e $NEUVE ]]' || montrer "$BANC/sortie"
+# Une recopie qui en reprend une autre (l'image neuve a changé de version entre-temps) : ce que l'autre avait retiré est
+# renoté avec la nouvelle remplaçante, sinon il resterait attendu pour toujours.
+ESSAI_ATTENTE=$'kali-linux-2026.1-live-everything-amd64.iso\tkali-linux-2026.2-live-everything-amd64.iso\n' \
+  VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+voir "recopie reprise par une autre version : ce qui était parti est renoté" \
+  eval 'cmp -s "$NEUVE" "$IMAGE5" && dit "$BANC/faux-vanguard.log" \
+    "--debut=${IMAGE5##*/} -- kali-linux-2026.1-live-everything-amd64.iso"' || montrer "$BANC/faux-vanguard.log"
+# Deuxième copie ratée : la clé est à remplacer, dit une fois.
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+rm -f "$BANC/notifications.log"
+ESSAI_RATEE_CODE=4 ESSAI_SYNC=echec ESSAI_RELUE=${IMAGE5##*/} VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+voir "copies ratées à répétition : clé à remplacer, dit une seule fois" \
+  eval '[[ $(grep -c "à remplacer" "$BANC/notifications.log") == 1 ]]' || montrer "$BANC/notifications.log"
+rm -f "$PART"
+# L'image du cache abîmée : la copie rate, et ce n'est pas la clé.
+cp "$IMAGE5" "$BANC/image5-saine"
+printf x | dd of="$IMAGE5" conv=notrunc status=none
+rm -f "$BANC/faux-vanguard.log"
+ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "image du cache abîmée : copie refusée, jamais comptée contre la clé" \
+  eval '((code == 1)) && [[ ! -e $NEUVE ]] && pas_dit "$BANC/faux-vanguard.log" "--ratee" &&
+    dit "$BANC/sortie" "n'"'"'est plus celle qui a été vérifiée"' || { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+cp "$BANC/image5-saine" "$IMAGE5"
+rm -f "$PART"
+# Illisible : dite « à vérifier », jamais retirée ni recopiée.
+cp "$IMAGE5" "$NEUVE"
+rm -f "$BANC/notifications.log"
+ESSAI_RELUE=${IMAGE5##*/} ESSAI_RELUE_CODE=3 VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "image illisible : dite à vérifier, laissée en place" \
+  eval '((code == 0)) && [[ -f $NEUVE ]] && dit "$BANC/notifications.log" "image à vérifier" &&
+    pas_dit "$BANC/notifications.log" "copie de"' || { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+# Trouvée toute seule : ce qui n'a pas été vu rend 5, jamais « à jour ».
+seule() { VANGUARD_IMAGES=${CACHE_SEULE:-$BANC/cache5} ESSAI_CLE=$BANC/cle5 VANGUARD_PROGRAMME=$BANC/faux-vanguard \
+  bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1; }
+seule
+code=$?
+voir "clé trouvée seule, image relue, rien à copier : code 0" eval '((code == 0))' || montrer "$BANC/sortie"
+ESSAI_RELUE_CODE=1 seule
+code=$?
+voir "relecture pas faite (clé retirée, pas de référence) : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+ESSAI_RELUE_CODE=5 seule
+code=$?
+voir "images sans empreinte à relire : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+ESSAI_RELUE_CODE=2 seule
+code=$?
+voir "programme d'avant (code 2 sans nom) : code 5, rien de retiré" eval '((code == 5)) && [[ -f $NEUVE ]]' ||
+  montrer "$BANC/sortie"
+VANGUARD_IMAGES=$BANC/cache5 ESSAI_CODE_CLE=4 VANGUARD_PROGRAMME=$BANC/faux-vanguard \
+  bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
+code=$?
+voir "clé pas reconnue (jeton inconnu, copie) : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+ln -s "$BANC/disque-debranche" "$BANC/cache-mort"
+CACHE_SEULE=$BANC/cache-mort seule
+code=$?
+voir "cache sur un disque débranché : code 5" eval '((code == 5))' || montrer "$BANC/sortie"
+# Clé à remplacer, trouvée seule : l'image changée est retirée (notée), rien n'est recopié ; à la main, oui.
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+rm -f "$BANC/notifications.log"
+ESSAI_RELUE=${IMAGE5##*/} ESSAI_RELUE_CODE=4 seule
+code=$?
+voir "clé à remplacer, trouvée seule : image changée retirée, plus rien de copié, dit ; code 5" \
+  eval '((code == 5)) && [[ ! -e $NEUVE ]] && dit "$BANC/notifications.log" "Clé VANGUARD à remplacer" &&
+    pas_dit "$BANC/notifications.log" "copie de"' || { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+ESSAI_RECOPIE_CODE=4 ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' seule
+code=$?
+voir "clé à remplacer : toujours rien de copié au passage suivant" eval '((code == 5)) && [[ ! -e $NEUVE ]]' ||
+  montrer "$BANC/sortie"
+ESSAI_RECOPIE_CODE=4 ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "clé à remplacer, désignée à la main : copiée tout de même" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5"' || montrer "$BANC/sortie"
+# Deux images : la première est redite à la référence dès qu'elle est posée, sans attendre la deuxième, menu écrit avant.
+DEB5=$BANC/cache5/debian-13.2.0-amd64-netinst.iso
+head -c 100000 /dev/urandom >"$DEB5"
+sha256sum "$DEB5" | cut -d' ' -f1 >"$DEB5.sha256"
+rm -f "$NEUVE" "$BANC/cle5/ventoy/ventoy.json" "$BANC/faux-vanguard.log"
+: >"$BANC/cle5/ISO/debian-13.1.0-amd64-netinst.iso"
+ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "deux images : la première redite aussitôt posée, l'ancienne notée avant d'être retirée" \
+  eval '((code == 0)) && grep -m1 -A3 "^manifeste --images" "$BANC/faux-vanguard.log" >"$BANC/premier" &&
+    dit "$BANC/premier" "--image debian-13.2.0" && pas_dit "$BANC/premier" "kali" &&
+    dit "$BANC/premier" "au manifeste : debian-13.1.0" &&
+    dit "$BANC/faux-vanguard.log" "--debut=${DEB5##*/} -- debian-13.1.0-amd64-netinst.iso" &&
+    [[ ! -e $BANC/cle5/ISO/debian-13.1.0-amd64-netinst.iso ]] && cmp -s "$NEUVE" "$IMAGE5"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+rm -f "$DEB5" "$DEB5.sha256"
 # La clé trouvée toute seule (branchement, chaque jour) et changée depuis sa référence : aucune image n'y est écrite.
 cat >"$BANC/faux-vanguard-ecart" <<FIN
 #!/usr/bin/env bash
@@ -1066,8 +1197,9 @@ head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
 cp "$NEUVE" "$BANC/neuve-avant"
 ESSAI_RELUE=${IMAGE5##*/} VANGUARD_IMAGES=$BANC/cache5 VANGUARD_PROGRAMME=$BANC/faux-vanguard-ecart \
   bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
-voir "clé trouvée seule mais changée depuis sa référence : aucune image écrite, et dit" \
-  eval 'cmp -s "$NEUVE" "$BANC/neuve-avant" && dit "$BANC/sortie" "aucune image copiée"' || montrer "$BANC/sortie"
+code=$?
+voir "clé trouvée seule mais changée depuis sa référence : aucune image écrite, et dit ; code 5" \
+  eval '((code == 5)) && cmp -s "$NEUVE" "$BANC/neuve-avant" && dit "$BANC/sortie" "aucune image copiée"' || montrer "$BANC/sortie"
 /usr/bin/umount "$BANC/cle5"
 
 # Kali cède sa place : une nouvelle SystemRescue (14 Mio) ne tient pas sur la clé de 530 Mio, même sans l'ancienne
@@ -1158,7 +1290,8 @@ echo "Mise à jour du jour :"
 M=$BANC/depot-maj
 mkdir -p "$M/outils" /run/media/alice/VANGUARD
 : >/run/media/alice/VANGUARD/vanguard.cle
-cp outils/maj-cle.sh "$M/outils/"
+cp outils/maj-cle.sh outils/cle-commun.sh "$M/outils/"
+export ESSAI_CLE=/run/media/alice/VANGUARD VANGUARD_PROGRAMME=$BANC/faux-vanguard
 cat >"$M/outils/deployer.sh" <<'FIN'
 #!/usr/bin/env bash
 [[ ${ESSAI_DEPLOYER:-} == rate ]] && exit 1
@@ -1187,6 +1320,31 @@ code=$?
 voir "programme raté pour une autre raison : la notification du jour le dit" \
   eval '((code == 1)) && dit "$BANC/notifications.log" "mise à jour du jour incomplète|Raté : programme."' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+# Les images pas vues (code 5 d'images-cle.sh) : jamais dites à jour, sans être un échec.
+printf '#!/bin/sh\n[ "$1" = --cle ] && exit 5\nexit 0\n' >"$M/outils/images-cle.sh"
+rm -f "$BANC/notifications.log"
+ESSAI_DEPLOYER=ok bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
+code=$?
+voir "images pas vues : « à jour » ne les compte pas ; code 0, aucune notification" \
+  eval '((code == 0)) && [[ ! -s $BANC/notifications.log ]] && dit "$BANC/sortie" "images pas vues" &&
+    pas_dit "$BANC/sortie" "programme, images et démarrage"' || montrer "$BANC/sortie"
+printf '#!/bin/sh\n[ "$1" = --cle ] && exit 1\nexit 0\n' >"$M/outils/images-cle.sh"
+ESSAI_DEPLOYER=ok bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
+code=$?
+voir "images ratées : dites ratées" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "Raté : images"' || montrer "$BANC/sortie"
+# Un volume au témoin que cet ordinateur ne connaît pas : deployer.sh le dit, et ni images ni démarrage ne passent.
+printf '#!/bin/sh\necho "$*" >>"$BANC/maj0.log"\nexit 0\n' >"$M/outils/images-cle.sh"
+rm -f "$BANC/notifications.log" "$BANC/maj0.log"
+ESSAI_CLE="" ESSAI_CODE_CLE=3 ESSAI_DEPLOYER=ok bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
+code=$?
+voir "clé pas reconnue : ni images ni démarrage, jamais « à jour »" \
+  eval '((code == 0)) && [[ ! -e $BANC/maj0.log ]] && dit "$BANC/sortie" "pas reconnue" &&
+    pas_dit "$BANC/sortie" "à jour :"' || montrer "$BANC/sortie"
+ESSAI_CLE="" ESSAI_DEPLOYER=rate bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
+code=$?
+voir "pas de clé de cet ordinateur : rien à faire, code 0" \
+  eval '((code == 0)) && dit "$BANC/sortie" "non branchée"' || montrer "$BANC/sortie"
 # La clé de secours coupée : le vrai images-cle.sh le dit, et ni les images ni le démarrage ne passent.
 cp outils/images-cle.sh "$M/outils/"
 printf '#!/bin/sh\necho "$*" >>"$BANC/maj0.log"\nexit 0\n' >"$M/outils/cle-secours.sh"
@@ -1199,6 +1357,7 @@ voir "mise à jour du jour, clé de secours coupée : le programme seul, ni imag
     pas_dit "$BANC/sortie" "== images" && dit "$BANC/sortie" "ni images ni démarrage"' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
 reglage CLE_SECOURS=oui
+unset ESSAI_CLE VANGUARD_PROGRAMME
 rm -rf /run/media/alice
 
 # --- Déploiement de la clé (deployer.sh, cle-commun.sh) ------------------------------------------------------------

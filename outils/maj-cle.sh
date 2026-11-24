@@ -14,15 +14,28 @@
 # Clé absente : rien à faire, sans erreur.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=outils/cle-commun.sh
+source outils/cle-commun.sh || exit 1
 
 avertir() { # titre texte
   command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -- "$1" "$2" || true
 }
 
-CLE=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1)
+# La clé de cet ordinateur (son jeton), jamais « le premier volume au témoin » : avec deux clés branchées, la lecture
+# seule et le reste se jugeaient sur celle d'un autre.
+CODE_CLE=0
+CLE=$(cle_connue) || CODE_CLE=$?
 if [[ -z $CLE ]]; then
-  echo "Clé VANGUARD non branchée : rien à faire."
-  exit 0
+  if ((CODE_CLE == 0)) || [[ -z $(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle 2>/dev/null) ]]; then
+    echo "Clé VANGUARD non branchée : rien à faire."
+    exit 0
+  fi
+  # Un volume au témoin, pas reconnu (jeton inconnu, en double, ou pas de programme pour le dire) : deployer.sh le juge
+  # et le dit ; rien d'autre n'y est fait, et rien n'est dit « à jour ».
+  outils/deployer.sh --branchement
+  CODE_CLE=$?
+  echo "Clé VANGUARD pas reconnue : ni programme, ni images, ni démarrage mis à jour."
+  exit "$CODE_CLE"
 fi
 # Montée en lecture seule (un exFAT abîmé par un arrêt brutal, que le noyau remonte ainsi) : rien ne s'y écrirait, et
 # chaque étape échouerait sans dire pourquoi.
@@ -58,7 +71,14 @@ SECOURS=$(outils/images-cle.sh --secours 2>/dev/null) || true
 if [[ $SECOURS == non ]]; then
   TENU="programme (clé de secours coupée sur cet ordinateur : ni images ni démarrage)"
 else
-  etape "images" outils/images-cle.sh --cle || RATEES+=(images)
+  CODE_IMAGES=0
+  etape "images" outils/images-cle.sh --cle || CODE_IMAGES=$?
+  # 5 : rien de raté, mais les images n'ont pas été vues (dit par images-cle.sh) ; jamais dites à jour.
+  case $CODE_IMAGES in
+    0) ;;
+    5) TENU="programme et démarrage (images pas vues : le détail au-dessus)" ;;
+    *) RATEES+=(images) ;;
+  esac
   etape "démarrage" outils/cle-secours.sh --a-jour || RATEES+=("démarrage")
 fi
 if ((${#RATEES[@]})); then

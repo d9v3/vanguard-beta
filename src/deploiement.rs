@@ -71,7 +71,9 @@ pub(crate) enum Etape {
     #[command(name = "catalogue-sources")]
     CatalogueSources,
     /// Relire en entier une image de ISO/ (la moins récemment relue) et comparer son SHA-256 à la référence. Code 2 :
-    /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée).
+    /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée) ; 4 : de même, et la clé est à
+    /// remplacer ; 3 : l'image ne se lit pas (notée, les autres passent ensuite) ; 5 : aucune image à relire ; 1 :
+    /// rien de conclu. Le chemin de l'image sur la sortie pour 2, 3 et 4.
     #[command(name = "relire-image")]
     RelireImage {
         /// La racine de la clé.
@@ -79,6 +81,23 @@ pub(crate) enum Etape {
         /// « NOM=SHA256 » d'une image vérifiée du cache, pour une image que la référence a sans empreinte.
         #[arg(long)]
         empreinte: Vec<String>,
+    },
+    /// Une recopie d'image par outils/images-cle.sh. Sans option : dire les images dont la recopie n'est pas finie (une
+    /// par ligne : le fichier qui manque, une tabulation, l'image qui le remplace). `--debut` avant tout retrait : ces fichiers pourront manquer sans que la clé soit « changée ».
+    /// `--ratee` : la copie n'a pas été retrouvée sur la clé. Code 4 : la clé est à remplacer.
+    #[command(name = "recopie-image")]
+    RecopieImage {
+        /// La racine de la clé.
+        racine: PathBuf,
+        /// L'image qui va être copiée.
+        #[arg(long, conflicts_with = "ratee")]
+        debut: Option<String>,
+        /// L'image dont la copie n'a pas été retrouvée.
+        #[arg(long)]
+        ratee: Option<String>,
+        /// Avec `--debut` : les fichiers de ISO/ que la recopie peut retirer.
+        #[arg(requires = "debut")]
+        noms: Vec<String>,
     },
 }
 
@@ -109,6 +128,12 @@ pub(crate) fn executer(etape: Etape) -> i32 {
         Etape::Cle => return cle(),
         Etape::ComparerCle { racine, reprise } => return comparer_cle(&racine, reprise),
         Etape::RelireImage { racine, empreinte } => return relire_image(&racine, &empreinte),
+        Etape::RecopieImage {
+            racine,
+            debut,
+            ratee,
+            noms,
+        } => return recopie_image(&racine, debut.as_deref(), ratee.as_deref(), &noms),
         // Écrit sans print! (qui panique sur une sortie fermée) ; une écriture ratée est un échec dit par le code.
         Etape::CatalogueSources => {
             if let Some(texte) = crate::logiciels::catalogue_exporte() {
@@ -208,7 +233,7 @@ fn cle() -> i32 {
 
 fn comparer_cle(racine: &Path, reprise: bool) -> i32 {
     match crate::protection::manifeste::avant_deploiement(racine, reprise) {
-        Ok(n) => {
+        Ok((n, images)) => {
             println!(
                 "{}",
                 trf!(
@@ -216,6 +241,10 @@ fn comparer_cle(racine: &Path, reprise: bool) -> i32 {
                     "✔ Key identical to its reference ({n} files checked)."
                 )
             );
+            // Ce qui n'a pas été vu des images se dit avec le résultat, jamais compté comme vérifié.
+            for ligne in images.lignes() {
+                println!("· {ligne}");
+            }
             0
         }
         Err((code, pourquoi)) => {
@@ -244,7 +273,7 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
                     "· No image on the key has a checksum to re-read."
                 )
             );
-            0
+            5
         }
         Ok(Relecture::Pareille(c)) => {
             println!(
@@ -257,7 +286,7 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
             );
             0
         }
-        Ok(Relecture::Differente(c)) => {
+        Ok(Relecture::Differente(c, usee)) => {
             // Le chemin sur la sortie : outils/images-cle.sh recopie l'image vérifiée.
             println!("{c}");
             eprintln!(
@@ -268,14 +297,26 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
                     affichable(&c)
                 )
             );
-            2
+            if usee { 4 } else { 2 }
         }
         Ok(Relecture::Illisible(c)) => {
+            println!("{c}");
             eprintln!(
                 "{}",
                 trf!(
-                    "· {} pas relue (illisible, clé retirée ?) : rien de conclu.",
-                    "· {} not re-read (unreadable, key removed?): nothing concluded.",
+                    "✖ {} ne se lit pas sur la clé : à vérifier. Le bilan le dit ; les autres images passent ensuite.",
+                    "✖ {} cannot be read from the key: to check. The check-up reports it; the other images come next.",
+                    affichable(&c)
+                )
+            );
+            3
+        }
+        Ok(Relecture::Interrompue(c)) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "· {} pas relue (clé retirée ?) : rien de conclu.",
+                    "· {} not re-read (key removed?): nothing concluded.",
                     affichable(&c)
                 )
             );
@@ -283,6 +324,29 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
         }
         Err(e) => {
             eprintln!("{}", trf!("✖ Relecture impossible : {e}", "✖ Re-read impossible: {e}"));
+            1
+        }
+    }
+}
+
+fn recopie_image(racine: &Path, debut: Option<&str>, ratee: Option<&str>, noms: &[String]) -> i32 {
+    use crate::protection::manifeste::images::{Geste, recopie};
+    let geste = match (debut, ratee) {
+        (Some(par), _) => Geste::Debut { par, noms },
+        (None, Some(par)) => Geste::Ratee { par },
+        (None, None) => Geste::Voir,
+    };
+    match recopie(racine, &geste) {
+        Ok((en_attente, usee)) => {
+            if geste == Geste::Voir {
+                for (nom, par) in en_attente {
+                    println!("{nom}\t{par}");
+                }
+            }
+            if usee { 4 } else { 0 }
+        }
+        Err(e) => {
+            eprintln!("{}", trf!("✖ Recopie pas notée : {e}", "✖ Copy not recorded: {e}"));
             1
         }
     }

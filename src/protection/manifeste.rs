@@ -48,6 +48,7 @@ use crate::modele::Echec;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+pub(crate) mod images;
 pub(crate) mod resultat;
 
 const CAT: &str = "Clé USB";
@@ -87,6 +88,15 @@ struct Entree {
     /// jusqu'à ce qu'images-cle.sh repose l'image vérifiée.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     differente: bool,
+    /// « AAAA-MM-JJ HH:MM » de la dernière relecture ratée (image illisible sur la clé, clé présente), effacée par une
+    /// relecture réussie : la rotation passe aux autres images, et le bilan dit celle-ci « à vérifier ».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    illisible: Option<String>,
+    /// Le nom de l'image vérifiée qu'outils/images-cle.sh recopie à la place de ce fichier, noté avant qu'il ne le
+    /// retire : la clé débranchée en route, ce fichier peut manquer sans que la clé soit « changée » (la recopie
+    /// reprend seule) ; présent, il est jugé comme un autre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recopie: Option<String>,
 }
 
 /// Les dossiers des images de secours (taille) et du menu de Ventoy (empreinte), relevés depuis la 0.86.
@@ -106,10 +116,13 @@ struct Manifeste {
     /// clé à ce jeton a déjà été comparée ici. Absent dans une référence d'avant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     jeton: Option<String>,
+    /// Les incidents des images de cette clé (`images::Incident`) : le compte qui la dit « à remplacer ».
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    incidents: Vec<images::Incident>,
 }
 
 /// Ce qui a changé sur la clé depuis le manifeste.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Ecart {
     pub verifies: usize,
     pub nouveaux: Vec<String>,
@@ -120,6 +133,9 @@ pub struct Ecart {
     pub illisibles: Vec<String>,
     /// Les images ISO/ (par leur taille) et le menu ventoy/ ont été comparés (référence de la 0.86 ou d'après).
     pub images: bool,
+    /// Ce qui est su des images jugées à la taille : leurs relectures, l'illisible, la recopie pas finie, l'usure. Rien
+    /// de cela n'est « la clé a changé », et rien n'est compté sain : c'est dit.
+    pub(crate) etat: images::Etat,
 }
 
 impl Ecart {
@@ -447,6 +463,8 @@ fn entree(racine: &Path, chemin: String, taille: u64, gros: u64) -> Entree {
         sha256: None,
         relue: None,
         differente: false,
+        illisible: None,
+        recopie: None,
     }
 }
 
@@ -462,6 +480,8 @@ fn garder_empreintes(fichiers: &mut [Entree], avant: &[Entree]) {
             e.sha256.clone_from(&a.sha256);
             e.relue.clone_from(&a.relue);
             e.differente = a.differente;
+            e.illisible.clone_from(&a.illisible);
+            e.recopie.clone_from(&a.recopie);
         }
     }
 }
@@ -558,8 +578,7 @@ fn retirer_le_suspens(racine: &Path, ecart: Ecart) -> std::io::Result<(Ecart, Ve
             .filter(|c| !depose_par_le_deploiement(c))
             .cloned()
             .collect(),
-        illisibles: ecart.illisibles.clone(),
-        images: ecart.images,
+        ..ecart.clone()
     };
     if !reste.vide() {
         return Ok((ecart, Vec::new()));
@@ -691,11 +710,26 @@ fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: b
             e.chemin
         ));
     }
+    let mut incidents = Vec::new();
     if let Ok(avant) = lire(reference) {
         garder_empreintes(&mut fichiers, &avant.fichiers);
-        if !garder_differentes {
+        if garder_differentes {
+            // Une recopie pas finie reste notée (le fichier manque encore), et le compte des incidents avec elle : le
+            // déploiement, qui passe avant images-cle.sh, ne les efface pas.
+            let manquantes = avant
+                .fichiers
+                .into_iter()
+                .filter(|a| a.recopie.is_some() && !fichiers.iter().any(|e| e.chemin == a.chemin))
+                .collect::<Vec<_>>();
+            fichiers.extend(manquantes);
+            fichiers.sort_by(|a, b| a.chemin.cmp(&b.chemin));
+            incidents = avant.incidents;
+        } else {
             for e in fichiers.iter_mut().filter(|e| e.differente) {
                 (e.sha256, e.relue, e.differente) = (None, None, false);
+            }
+            for e in &mut fichiers {
+                (e.illisible, e.recopie) = (None, None);
             }
         }
     }
@@ -706,6 +740,7 @@ fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: b
         fichiers,
         images: true,
         jeton: crate::protection::cles_connues::jeton_de(racine),
+        incidents,
     };
     enregistrer(reference, &manifeste).map_err(|e| e.to_string())?;
     Ok(manifeste.fichiers.len())
@@ -773,13 +808,28 @@ fn rafraichir_images_dans(
             }
             e
         } else if let Some(e) = avant.iter().find(|e| e.chemin == chemin && e.taille == taille) {
-            e.clone()
+            // Sur la clé : il n'est plus attendu absent (images-cle.sh le renote avant tout retrait).
+            Entree {
+                recopie: None,
+                ..e.clone()
+            }
         } else {
             continue;
         };
         images = images.saturating_add(usize::from(e.chemin.starts_with("ISO/")));
         m.fichiers.push(e);
     }
+    // Une recopie pas finie (l'image qui la remplace n'est pas encore là, connue) : le fichier qu'elle a retiré reste
+    // noté.
+    let connue = |chemin: &str| m.fichiers.iter().any(|e| e.chemin == chemin);
+    let en_attente = avant
+        .into_iter()
+        .filter(|a| {
+            let finie = a.recopie.as_ref().is_none_or(|par| connue(&format!("ISO/{par}")));
+            !finie && !connue(&a.chemin)
+        })
+        .collect::<Vec<_>>();
+    m.fichiers.extend(en_attente);
     m.fichiers.sort_by(|a, b| a.chemin.cmp(&b.chemin));
     m.date = maintenant();
     enregistrer(reference, &m)?;
@@ -846,6 +896,7 @@ fn lire(reference: &Path) -> Result<Manifeste, String> {
 fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
     let mut ecart = Ecart {
         images: manifeste.images,
+        etat: images::etat(manifeste, chrono::Local::now().date_naive()),
         ..Ecart::default()
     };
     let Releve {
@@ -877,7 +928,12 @@ fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
     {
         // Sous un dossier illisible, un fichier n'est pas « disparu » : il n'a pas pu être vu.
         if !presents.iter().any(|(c, _)| *c == attendu.chemin) && !sous_un_illisible(&attendu.chemin, &illisibles) {
-            ecart.disparus.push(attendu.chemin.clone());
+            // Retirée pour être recopiée, recopie pas finie : dite, jamais « la clé a changé ».
+            if attendu.recopie.is_some() && d_images(&attendu.chemin) {
+                ecart.etat.recopies.push(attendu.chemin.clone());
+            } else {
+                ecart.disparus.push(attendu.chemin.clone());
+            }
         }
     }
     ecart.illisibles = illisibles;
@@ -893,9 +949,10 @@ pub fn comparer(racine: &Path) -> Result<Ecart, String> {
 
 /// Avant que le déploiement n'écrive quoi que ce soit sur la clé `racine` (`vanguard deploiement comparer-cle`) :
 /// elle doit être exactement sa référence (`reprise`, après un déploiement arrêté en route : ce que le déploiement pose
-/// lui-même et qui diffère est retiré de la clé, `retirer_le_suspens`, si rien d'autre ne diffère). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
-/// qu'il faut dire : 2, la clé a changé (l'écart) ; 3, pas de référence pour elle ici.
-pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (i32, String)> {
+/// lui-même et qui diffère est retiré de la clé, `retirer_le_suspens`, si rien d'autre ne diffère). `Ok` : le nombre de
+/// fichiers vérifiés, et ce qui n'a pas été vu des images. Sinon le code de sortie et ce qu'il faut dire : 2, la clé a
+/// changé (l'écart) ; 3, pas de référence pour elle ici.
+pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<(usize, images::Etat), (i32, String)> {
     let base = crate::socle::dossier_local();
     let Some(reference) = reference(racine) else {
         let pourquoi = if identifiant_change(&base, racine) {
@@ -916,7 +973,12 @@ pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (
 }
 
 /// `avant_deploiement`, la référence lue.
-fn comparer_avant_deploiement(racine: &Path, m: &Manifeste, reprise: bool, gros: u64) -> Result<usize, (i32, String)> {
+fn comparer_avant_deploiement(
+    racine: &Path,
+    m: &Manifeste,
+    reprise: bool,
+    gros: u64,
+) -> Result<(usize, images::Etat), (i32, String)> {
     let mut ecart = comparer_avec(racine, m, gros);
     // La reprise d'un déploiement arrêté en route (clé retirée, rsync en échec) : ce qu'il pose lui-même a pu rester
     // à moitié écrit ; ce qui diffère en est retiré, et il le repose. Un fichier qu'il ne pose pas compte toujours.
@@ -935,7 +997,7 @@ fn comparer_avant_deploiement(racine: &Path, m: &Manifeste, reprise: bool, gros:
         }
     }
     if ecart.vide() {
-        Ok(ecart.verifies)
+        Ok((ecart.verifies, ecart.etat))
     } else {
         Err((2, resume_ecart(&ecart)))
     }
@@ -977,14 +1039,17 @@ pub(crate) enum Relecture {
     Rien,
     /// L'image a été relue en entier : mêmes octets que l'image vérifiée.
     Pareille(String),
-    /// Autres octets : l'image a été remplacée (notée `differente` dans la référence).
-    Differente(String),
-    /// Illisible (clé retirée en route) : rien de conclu, rien de noté.
+    /// Autres octets : l'image a été remplacée (notée `differente` dans la référence) ; vrai : la clé est à remplacer
+    /// (`images::usee`).
+    Differente(String, bool),
+    /// L'image ne se lit pas sur la clé, pourtant là : noté, la rotation passe aux autres, le bilan le dit.
     Illisible(String),
+    /// La clé n'est plus là (retirée en route) : rien de conclu, rien de noté.
+    Interrompue(String),
 }
 
-/// Relit en entier une image de ISO/, celle dont la dernière relecture est la plus ancienne (jamais relue d'abord),
-/// et compare son SHA-256 à celui de la référence, ou, à défaut, à celui d'`empreintes` (les images vérifiées du
+/// Relit en entier une image de ISO/, celle dont la dernière relecture, réussie ou ratée, est la plus ancienne (jamais
+/// tentée d'abord : une image illisible ne bloque plus les autres), et compare son SHA-256 à celui de la référence, ou, à défaut, à celui d'`empreintes` (les images vérifiées du
 /// cache d'images-cle.sh). Une par appel : une image se lit en quelques dizaines de secondes à quelques minutes
 /// (16 Gio pour Kali), et images-cle.sh passe au branchement et chaque jour.
 fn relire_image_dans(
@@ -1004,7 +1069,9 @@ fn relire_image_dans(
         .fichiers
         .iter_mut()
         .filter(|e| e.chemin.starts_with("ISO/") && e.blake3.is_none() && attendue(e).is_some())
-        .min_by(|a, b| a.relue.cmp(&b.relue))
+        // Recopie pas finie : il n'y a rien à relire, et ce n'est pas une image illisible.
+        .filter(|e| e.recopie.is_none() || racine.join(&e.chemin).is_file())
+        .min_by(|a, b| images::tentee(a).cmp(&images::tentee(b)))
     else {
         return Ok(Relecture::Rien);
     };
@@ -1013,19 +1080,32 @@ fn relire_image_dans(
         return Ok(Relecture::Rien);
     };
     let chemin = e.chemin.clone();
-    let Some(lue) = lire_sha256(&racine.join(&chemin)).map(|h| h.to_ascii_lowercase()) else {
-        return Ok(Relecture::Illisible(chemin));
-    };
-    let resultat = if lue == sha {
-        e.sha256 = Some(sha);
-        e.relue = Some(maintenant());
-        e.differente = false;
-        Relecture::Pareille(chemin)
-    } else {
-        // Relue quand même : la rotation passe aux autres images, même si celle-ci ne peut pas être recopiée.
-        e.differente = true;
-        e.relue = Some(maintenant());
-        Relecture::Differente(chemin)
+    let lue = lire_sha256(&racine.join(&chemin)).map(|h| h.to_ascii_lowercase());
+    if lue.is_none() && !racine.join(crate::reseau::TEMOIN_CLE).is_file() {
+        return Ok(Relecture::Interrompue(chemin));
+    }
+    let resultat = match lue {
+        None => {
+            e.illisible = Some(maintenant());
+            Relecture::Illisible(chemin)
+        }
+        Some(lue) if lue == sha => {
+            e.sha256 = Some(sha);
+            e.relue = Some(maintenant());
+            (e.differente, e.illisible) = (false, None);
+            Relecture::Pareille(chemin)
+        }
+        Some(_) => {
+            // Relue quand même : la rotation passe aux autres images, même si celle-ci ne peut pas être recopiée.
+            // Restée différente (pas d'image vérifiée pour la reposer) : le même incident, pas un de plus.
+            let deja = std::mem::replace(&mut e.differente, true);
+            (e.relue, e.illisible) = (Some(maintenant()), None);
+            if !deja {
+                images::noter_incident(&mut m, images::Sorte::Differente, &chemin);
+            }
+            let usee = images::usee(&m);
+            Relecture::Differente(chemin, usee)
+        }
     };
     enregistrer(reference, &m).map_err(|e| Echec::ecriture("manifeste/relire", &e))?;
     Ok(resultat)
@@ -1040,7 +1120,8 @@ pub(crate) fn relire_image(racine: &Path, empreintes: &[(String, Option<String>)
         )
     })?;
     relire_image_dans(racine, &reference, empreintes, |f| {
-        crate::protection::telechargement::calculer(f, crate::protection::telechargement::Algo::Sha256).ok()
+        crate::protection::telechargement::calculer_sur_le_support(f, crate::protection::telechargement::Algo::Sha256)
+            .ok()
     })
 }
 
@@ -1082,14 +1163,14 @@ pub fn constat() -> Option<Constat> {
     }
     Some(match comparer(&cle) {
         Err(e) => impossible(CAT, &trf!("manifeste de la clé illisible : {e}", "key manifest unreadable: {e}")),
-        Ok(ecart) if ecart.vide() && ecart.images => ok(
-            CAT,
-            trf!(
-                "La clé VANGUARD n'a pas changé depuis son écriture ({} fichiers vérifiés, menu Ventoy compris, images ISO par leur taille ; données mises à part).",
-                "The VANGUARD key has not changed since it was written ({} files checked, Ventoy menu included, ISO images by their size; data aside).",
+        Ok(ecart) if ecart.vide() && ecart.images => {
+            let sans_changement = trf!(
+                "La clé VANGUARD n'a pas changé depuis son écriture ({} fichiers vérifiés, menu Ventoy compris ; données mises à part).",
+                "The VANGUARD key has not changed since it was written ({} files checked, Ventoy menu included; data aside).",
                 ecart.verifies
-            ),
-        ),
+            );
+            ecart.etat.constat(CAT, sans_changement)
+        }
         Ok(ecart) if ecart.vide() => ok(
             CAT,
             trf!(
@@ -1607,11 +1688,16 @@ pub fn commande(ecrire_dossier: Option<&Path>, forcer: bool, accepter: bool, ima
             "  ✖ Pas de référence lisible sur cet ordinateur ({e}) : le manifeste s'écrit au déploiement, chez le propriétaire.",
             "  ✖ No readable reference on this computer ({e}): the manifest is written at deployment, on the owner's computer."
         ),
-        Ok(ecart) if ecart.vide() => trp!(
-            "  {VERT}✔{RESET} La clé n'a pas changé depuis son écriture ({} fichiers vérifiés).",
-            "  {VERT}✔{RESET} The key has not changed since it was written ({} files checked).",
-            ecart.verifies
-        ),
+        Ok(ecart) if ecart.vide() => {
+            trp!(
+                "  {VERT}✔{RESET} La clé n'a pas changé depuis son écriture ({} fichiers vérifiés).",
+                "  {VERT}✔{RESET} The key has not changed since it was written ({} files checked).",
+                ecart.verifies
+            );
+            for ligne in ecart.etat.lignes() {
+                println!("  · {ligne}");
+            }
+        }
         Ok(ecart) => {
             for (liste, mot) in [
                 (&ecart.nouveaux, tr!("nouveau", "new")),
@@ -1797,9 +1883,12 @@ mod tests {
                 sha256: None,
                 relue: None,
                 differente: false,
+                illisible: None,
+                recopie: None,
             }],
             images: true,
             jeton: None,
+            incidents: Vec::new(),
         };
         assert_eq!(comparer_avec(&racine, &manifeste, 64).modifies, Vec::<String>::new());
         // Le même nom devenu un lien vers un fichier du même contenu : plus d'empreinte, donc pas « pareil ».
@@ -2234,7 +2323,7 @@ mod tests {
         // L'image remplacée, même taille : différente, et le bilan la dit modifiée.
         let lire_autre = |_: &Path| Some(AUTRE.to_string());
         let r = relire_image_dans(&racine, &reference, &cache, lire_autre).unwrap();
-        assert!(matches!(r, Relecture::Differente(_)), "{r:?}");
+        assert!(matches!(r, Relecture::Differente(_, false)), "{r:?}");
         let m = lire(&reference).unwrap();
         let ecart = comparer_avec(&racine, &m, 10);
         assert_eq!(ecart.modifies.len(), 1, "{ecart:?}");
@@ -2253,12 +2342,14 @@ mod tests {
         let nom = ecart.modifies[0].rsplit('/').next().unwrap().to_string();
         rafraichir_images_dans(&racine, &reference, &[(nom, Some(SHA.into()))], 10).unwrap();
         assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
-        // Illisible : rien de conclu, rien de noté.
+        // Clé retirée en route (son témoin n'est plus là) : rien de conclu, rien de noté.
         let illisible = |_: &Path| None;
+        let avant = std::fs::read(&reference).unwrap();
         assert!(matches!(
             relire_image_dans(&racine, &reference, &[], illisible).unwrap(),
-            Relecture::Illisible(..)
+            Relecture::Interrompue(..)
         ));
+        assert_eq!(std::fs::read(&reference).unwrap(), avant);
         assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
         // Les noms et empreintes donnés par images-cle.sh.
         assert_eq!(image_et_empreinte("a.iso"), Ok(("a.iso".into(), None)));

@@ -13,7 +13,9 @@ After=network-online.target
 Type=oneshot
 ExecStart=-%h/Projects/vanguard/outils/images-cle.sh --chercher
 # Claude Code pour la clé : sa propre minuterie, chaque jour (vanguard-claude-cle.timer).
-# Clé absente : « rien à copier », sans erreur. Le même verrou que deployer.sh.
+# Clé absente : « rien à copier », sans erreur. Code 5 : images pas vues (dit dans le journal), pas un échec. Le même
+# verrou que deployer.sh.
+SuccessExitStatus=5
 ExecStart=%h/Projects/vanguard/outils/images-cle.sh --cle
 # En arrière-plan, sans gêner le reste de l'ordinateur : quelques gigaoctets, et 16 Gio de plus pour une nouvelle Kali
 # Linux, en torrent (images-cle.sh arrête aria2c au bout de 5 heures ; il reprend à la recherche suivante), puis la
