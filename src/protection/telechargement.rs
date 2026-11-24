@@ -215,12 +215,13 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
 
 /// `calculer`, lu sur le support lui-même : les pages du fichier en mémoire sont rendues avant (sous Linux). Juste
 /// après une copie, la mémoire répondrait sinon à la place de la clé, et une clé abîmée passerait pour saine.
-pub(crate) fn calculer_sur_le_support(fichier: &Path, algo: Algo) -> Result<String, String> {
-    let mut ouvert = Ouvert::ouvrir(fichier).map_err(|e| affichable(&e.to_string()))?;
+pub(crate) fn calculer_sur_le_support(fichier: &Path, algo: Algo) -> Result<String, Echec> {
+    let mut ouvert =
+        Ouvert::ouvrir(fichier).map_err(|e| Echec::echoue(CONTEXTE_EMPREINTE, affichable(&e.to_string())))?;
     // Les pages pas encore écrites ne sont pas rendues : d'abord écrites (en lecture seule, Windows refuse, sans effet).
     let _ = ouvert.f.sync_all();
     crate::copier::sans_cache(&ouvert.f);
-    calculer_ouvert(&mut ouvert, algo).map_err(String::from)
+    calculer_ouvert(&mut ouvert, algo)
 }
 
 /// Le contexte stable des échecs d'empreinte (`Echec`), pour le journal des erreurs.
