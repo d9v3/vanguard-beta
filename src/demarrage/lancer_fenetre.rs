@@ -865,10 +865,8 @@ fn lancer_la_fenetre(chemin: &Path, programme: &Path, attendue: &[u8; 32], rempl
     let mut c = commande(&verifiee, std::env::vars_os());
     #[cfg(windows)]
     let mut c = commande(&verifiee);
-    c.args(arguments(programme, &soi))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    c.args(arguments(programme, &soi));
+    sorties(&mut c);
     if remplacer {
         c.arg("--remplacer-prise");
     }
@@ -879,10 +877,22 @@ fn lancer_la_fenetre(chemin: &Path, programme: &Path, attendue: &[u8; 32], rempl
     attendre_ouverte(c)
 }
 
+/// L'entrée et les sorties de la fenêtre : un tube pour « ouverte », rien d'autre.
+fn sorties(c: &mut Command) {
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+}
+
+/// Démarre la commande de la fenêtre. Sous Windows, les sorties reçues du terminal ne lui passent pas.
+fn demarrer(c: &mut Command) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    crate::machine::windows::eleve::sorties_non_heritees();
+    c.spawn_suivi()
+}
+
 /// Démarre la commande de la fenêtre et attend qu'elle dise « ouverte » (`ATTENTE` au plus), sinon l'arrête.
 fn attendre_ouverte(mut c: Command) -> Lancement {
     // Refusé par le système (exécution interdite par une politique, /proc absent…) : la raison est dite.
-    let mut enfant = match c.spawn_suivi() {
+    let mut enfant = match demarrer(&mut c) {
         Ok(enfant) => enfant,
         Err(e) => {
             return Lancement::Refusee(trf!("lancement impossible : {}", "launch impossible: {}", e));
@@ -1202,6 +1212,102 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&sortie.stdout).trim_end(), "verifiee");
         drop(v);
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Windows : le rôle de ce programme d'essai relancé par l'essai suivant (« lanceur » ou « fenetre »).
+    #[cfg(windows)]
+    const ROLE_POIGNEES: &str = "VANGUARD_ESSAI_POIGNEES";
+
+    #[cfg(windows)]
+    const DUREE_POIGNEES: &str = "VANGUARD_ESSAI_POIGNEES_FIN";
+
+    /// Ce programme d'essai, relancé pour n'y jouer que `role`.
+    #[cfg(windows)]
+    fn rejouer_poignees(role: &str) -> Command {
+        let mut c = Command::new(std::env::current_exe().unwrap());
+        c.args([
+            "--exact",
+            "demarrage::lancer_fenetre::tests::windows_joue_les_poignees",
+            "--ignored",
+            "--nocapture",
+            "--quiet",
+            "--test-threads=1",
+        ])
+        .env(ROLE_POIGNEES, role);
+        c
+    }
+
+    /// Joue « lanceur » (Vanguard, sa sortie d'erreur redirigée vers un fichier) ou « fenetre » (qui vit jusqu'à ce
+    /// que le fichier de fin paraisse, 60 s au plus). Ne fait rien sans son rôle.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "lancé seulement par l'essai des poignées de la fenêtre"]
+    // La fausse fenêtre doit survivre au lanceur, comme la vraie ; elle finit seule (fichier de fin, 60 s au plus).
+    #[expect(clippy::zombie_processes)]
+    fn windows_joue_les_poignees() {
+        match std::env::var(ROLE_POIGNEES).as_deref() {
+            // La commande de la fenêtre, lancée comme dans `lancer_la_fenetre` : son « ouverte » n'est pas la première
+            // ligne ici (libtest écrit avant elle), donc il est attendu sans juger l'issue.
+            Ok("lanceur") => {
+                let mut c = rejouer_poignees("fenetre");
+                sorties(&mut c);
+                let mut enfant = demarrer(&mut c).unwrap();
+                let sortie = enfant.stdout.take().unwrap();
+                assert!(
+                    BufReader::new(sortie).lines().any(|l| l.is_ok_and(|l| l == OUVERTE)),
+                    "la fausse fenêtre n'a pas démarré"
+                );
+            }
+            Ok("fenetre") => {
+                let fin = PathBuf::from(std::env::var_os(DUREE_POIGNEES).unwrap());
+                println!("\n{OUVERTE}");
+                let limite = std::time::Instant::now() + Duration::from_secs(60);
+                while !fin.exists() && std::time::Instant::now() < limite {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Windows : la fenêtre ne garde pas le fichier où le terminal envoie les erreurs de Vanguard (`vanguard 2> f`).
+    /// `CreateProcess` passe à l'enfant toutes les poignées héritables, pas seulement ses trois sorties : sans la
+    /// correction, le fichier restait tenu tant que la fenêtre vivait (mesuré le 24 nov. 2026).
+    #[cfg(windows)]
+    #[test]
+    fn windows_la_fenetre_ne_garde_pas_la_sortie_du_terminal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dossier = crate::essais::temporaire().join(crate::essais::nom_unique("fenetre-poignees"));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let (erreurs, fin) = (dossier.join("erreurs.txt"), dossier.join("fin"));
+        let seul = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(&erreurs)
+        };
+        let mut lanceur = rejouer_poignees("lanceur");
+        lanceur
+            .env(DUREE_POIGNEES, &fin)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&erreurs).unwrap());
+        let code = lanceur.status().unwrap();
+        // `Command` garde ouverte la copie du fichier qu'il donne : relâchée, seule la fenêtre pourrait encore le tenir.
+        drop(lanceur);
+        // Relâché aussitôt : gardé, il ferait échouer le témoin plus bas.
+        let libre = seul().map(drop);
+        std::fs::write(&fin, b"").unwrap();
+        assert!(code.success(), "le lanceur a échoué : {code}");
+        // La fin de la fausse fenêtre, puis le ménage : le témoin que l'ouverture seule réussit bien sans elle.
+        let limite = std::time::Instant::now() + Duration::from_secs(20);
+        while seul().is_err() && std::time::Instant::now() < limite {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(seul().is_ok(), "le fichier reste tenu même sans la fenêtre");
+        let _ = std::fs::remove_dir_all(&dossier);
+        assert!(libre.is_ok(), "la fenêtre tient le fichier des erreurs : {libre:?}");
     }
 
     /// L3 (relecture 0.96) : un lancement refusé par le système (exécution interdite, /proc absent, fichier

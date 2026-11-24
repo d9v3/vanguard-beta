@@ -9,6 +9,13 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
+## 0.99 (in preparation)
+
+- **Windows: the window no longer holds the terminal's files.** Started by `vanguard 2> errors.txt`, the window kept
+  that file open for as long as it lived, even without writing to it: it could not be deleted, nor the same command
+  run again. The input and outputs received from the terminal are no longer passed to the window. Any other file the
+  program starting Vanguard may have left it to inherit, besides those three, is not touched.
+
 ## November 24, 2026: version 0.98.0
 
 - **Only one window.** Running `vanguard` again while its window is open asks that window to come back to the front

@@ -156,6 +156,9 @@ const SCRIPT_MAX: u64 = 16 << 20;
 const HERITEE: u32 = 0x1;
 /// STD_INPUT_HANDLE ((DWORD)-10) : l'entrée standard du processus.
 const ENTREE_STANDARD: u32 = 0xFFFF_FFF6;
+/// STD_OUTPUT_HANDLE ((DWORD)-11) et STD_ERROR_HANDLE ((DWORD)-12) : les deux sorties du processus.
+const SORTIE_STANDARD: u32 = 0xFFFF_FFF5;
+const ERREUR_STANDARD: u32 = 0xFFFF_FFF4;
 
 /// L'entrée est-elle une vraie console (GetConsoleMode réussit) ? Une réponse qui arrive par un tube ou un fichier
 /// n'a pas été tapée par la personne devant cette fenêtre : la question d'une baisse y vaut non.
@@ -169,6 +172,25 @@ pub(crate) fn console_reelle() -> bool {
     // SAFETY: `entree` est la poignée d'entrée du processus, `mode` une variable vivante pendant l'appel ; une poignée
     // qui n'est pas une console fait échouer l'appel, sans rien écrire ailleurs.
     unsafe { GetConsoleMode(entree, &raw mut mode) != 0 }
+}
+
+/// L'entrée et les sorties reçues du terminal ne passent plus d'elles-mêmes aux processus créés ensuite.
+///
+/// `CreateProcess` avec héritage (ce que fait std) donne à l'enfant toutes les poignées héritables, en plus des trois
+/// qui lui sont choisies : lancée par `vanguard 2> f`, la fenêtre tenait `f` tant qu'elle vivait. Les enfants qui
+/// héritent exprès des sorties les gardent : std leur en donne une copie à part (`Stdio::inherit`). Une autre poignée
+/// héritable reçue du terminal n'est pas touchée. Un refus du système laisse l'héritage comme avant.
+pub(crate) fn sorties_non_heritees() {
+    for quelle in [ENTREE_STANDARD, SORTIE_STANDARD, ERREUR_STANDARD] {
+        // SAFETY: simple lecture d'une poignée du processus, sans pointeur.
+        let h = unsafe { GetStdHandle(quelle) };
+        if h.is_null() || h == POIGNEE_INVALIDE {
+            continue;
+        }
+        // SAFETY: `h` est une poignée standard de ce processus ; SetHandleInformation ne lit ni n'écrit aucune
+        // mémoire de ce processus, il change un drapeau de l'objet noyau, et une poignée refusée fait échouer l'appel.
+        unsafe { SetHandleInformation(h, HERITEE, 0) };
+    }
 }
 
 /// Une ligne de la liste, relue.
