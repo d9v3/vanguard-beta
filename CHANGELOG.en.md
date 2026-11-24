@@ -42,6 +42,17 @@ example, finds it, to rebuild it if needed.
   English (`--tool`, `--program`, `--language`, `--delete`).
 - **USB key: the Linux opener knows more terminals.** With no terminal found, a message says so instead of doing
   nothing. The key's instructions mention the window.
+- **USB key: a recovered image is no longer forgotten.** The copy of a damaged image is written in the sealed
+  reference before the image is removed, and reported until it is replaced; a power cut in between recovers by itself.
+  The same image copied twice means the key is wearing out, and it is said. Updating the key keeps these notes, and a
+  program that does not recognize the key says “not recognized”, never “nothing to do”.
+- **Release: a failure no longer passes for a success.** A failing key, icon or test machine no longer stops the
+  version page, and a page that is not online is no longer counted as delivered. An unreachable GitHub is no longer
+  taken for “the page does not exist”: nothing is published or deleted when in doubt. The page only goes out if a real
+  Windows has tried the delivered program, byte for byte.
+- **Checks and audit: a green that tried nothing is a failure.** A filter that finds no test, a skipped test or a
+  fuzzing run without a single execution make the check fail. Audit exceptions of a test dependency no longer cover
+  the published programs; the remaining one carries a review date.
 
 ## November 24, 2026: version 0.98.0
 

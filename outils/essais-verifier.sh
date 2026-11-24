@@ -50,6 +50,10 @@
 #      sauté ou en échec font échouer ; une option mal écrite est refusée, code 2.
 #  17. Les canaris de la CI (canaris-ci.sh, faux cargo) : un format refusé deux fois, aucune source lue, un essai absent
 #      ou sauté font échouer ; refusé une seule fois, ou une source injoignable, non, et c'est dit.
+#  18. Le résumé que lit la page des fonctions : remplacé à la fin d'un passage complet et vert, jamais par un --rapide,
+#      un --seulement ni un échec ; les journaux d'échec, un dossier par arbre (lu dans verifier.sh).
+#  19. Le fuzzing (fuzz.sh, faux cargo) : zéro exécution, ou aucune comptée, est un échec, jamais un ✔ ; un journal par
+#      passe.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -794,6 +798,59 @@ canaris "ok ok ok ok" -; saute=$CODE
   ok "canaris : format refusé deux fois, aucune source lue, essai absent ou sauté : un échec" ||
   ko "canaris en échec : deux fois $deux_fois, aucune lue $aucune, essai absent $essai_absent, sauté $saute"
 rm -rf "${faux:?}"
+
+# 18. Le résumé et les journaux d'échec (la fin de verifier.sh et ces lignes-là, lues dans le fichier).
+banc=$(mktemp -d)
+fin=$(sed -n '/^DUREE=/,$p' outils/verifier.sh)
+garde=$(grep '^garder_resume()' outils/verifier.sh)
+chemin=$(grep '^ECHECS_GARDES=' outils/verifier.sh)
+passage() { # échecs, seulement, mode : joue la fin de verifier.sh ; dit ce que le résumé gardé contient
+  echo ancien >"$banc/garde"
+  mkdir -p "$banc/t" && echo nouveau >"$banc/resume"
+  env -i PATH="$PATH" ECHECS="$1" SEULEMENT="$2" MODE="$3" LISTE=x DEBUT=0 SAUTES_DITS=0 TRAVAIL="$banc/t" \
+    RESUME="$banc/resume" RESUME_GARDE="$banc/garde" bash -c "$garde
+NON_VERIFIEES=()
+$fin" >/dev/null 2>&1
+  cat "$banc/garde"
+}
+echecs_de() { (mkdir -p "$banc/$1" && cd "$banc/$1" && HOME=/h && eval "$chemin" && echo "$ECHECS_GARDES"); }
+un=$(echecs_de a/depot) && deux=$(echecs_de b/depot) && encore=$(echecs_de a/depot)
+[[ -n $fin && -n $garde && $(passage 0 "" "") == nouveau && $(passage 1 "" "") == ancien &&
+  $(passage 0 x "") == ancien && $(passage 0 "" --rapide) == ancien ]] &&
+  ok "résumé : remplacé par un passage complet et vert, jamais par un partiel, --seulement ou un échec" ||
+  ko "résumé : vert $(passage 0 "" ""), échec $(passage 1 "" ""), seulement $(passage 0 x ""), rapide $(passage 0 "" --rapide)"
+[[ $un == /h/.cache/vanguard-dev/verifier-echecs/depot-* && $un != "$deux" && $un == "$encore" ]] &&
+  ok "journaux d'échec : un dossier par arbre, le même d'un passage à l'autre" ||
+  ko "journaux d'échec : $un, $deux, $encore"
+# Rien d'autre n'écrit le résumé gardé : il ne vient que de garder_resume.
+[[ $(grep -c 'verifier-dernier\.txt' outils/verifier.sh) == 1 && $(grep -c '^garder_resume ||' outils/verifier.sh) == 1 ]] &&
+  ok "résumé gardé : un seul endroit l'écrit" || ko "résumé gardé : écrit ailleurs que dans garder_resume"
+
+# 19. fuzz.sh : un faux cargo qui « fuzze » et dit le nombre d'exécutions demandé par l'essai.
+outils_faux=$banc/h/.cargo/bin # fuzz.sh met ce dossier-là devant le PATH
+mkdir -p "$outils_faux"
+cat >"$outils_faux/cargo" <<'FAUX'
+#!/usr/bin/env bash
+[[ "$*" == *" fuzz run "* ]] || exit 0
+[[ $VAUT == vide ]] || echo "stat::number_of_executed_units: $VAUT"
+echo "cov: 12"
+FAUX
+printf '#!/usr/bin/env bash\necho nightly-x86_64-unknown-linux-gnu\n' >"$outils_faux/rustup"
+printf '#!/usr/bin/env bash\necho host: x86_64-unknown-linux-gnu\n' >"$outils_faux/rustc"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$outils_faux/cargo-fuzz"
+chmod +x "$outils_faux"/*
+fuzzer() {
+  SORTIE=$(env HOME="$banc/h" VAUT="$1" VANGUARD_FUZZ="$banc/fuzz-$1" bash outils/fuzz.sh agent_etat 1 2>&1)
+  CODE=$?
+}
+fuzzer 4210; plein=$CODE; dit=$SORTIE
+fuzzer 0; zero=$CODE; nomme=$SORTIE
+fuzzer vide; vide=$CODE
+[[ $plein == 0 && $dit == *"4210 exécutions"* && $zero == 1 && $vide == 1 && $nomme == *"aucune exécution comptée"* &&
+  -z $(compgen -G "$banc/fuzz-4210/*.log") && -n $(compgen -G "$banc/fuzz-0/*-*.log") ]] &&
+  ok "fuzzing : zéro exécution, ou aucune comptée, est un échec ; son journal reste" ||
+  ko "fuzzing : plein $plein, zéro $zero, vide $vide : $(tail -n 3 <<<"$dit")"
+rm -rf "${banc:?}"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "verifier.sh : tout est juste."

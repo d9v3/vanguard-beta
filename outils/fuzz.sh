@@ -86,7 +86,8 @@ ECHECS=0
 for c in "${liste[@]}"; do
   corpus=$FUZZ/corpus/$c
   plantages=$FUZZ/plantages/$c
-  journal=$FUZZ/$c.log
+  # Un journal par passe : deux arbres qui fuzzent la même cible se l'écrasaient, et l'un lisait les nombres de l'autre.
+  journal=$FUZZ/$c-$$.log
   mkdir -p "$corpus" "$plantages"
   echo "▶ $c, $DUREE s"
   # Un dictionnaire (fuzz/dictionnaires/<cible>.dict, s'il existe) : les mots que le fuzzer ne trouverait pas seul en
@@ -100,10 +101,17 @@ for c in "${liste[@]}"; do
     >"$journal" 2>&1; then
     # -a : le journal recopie parfois des octets d'une entrée ; grep le disait binaire (« Binary file matches »), et
     # le nombre d'exécutions manquait (« ? »).
-    executions=$(grep -ao 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$')
+    executions=$(grep -ao 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$' | tail -n1)
     couverture=$(grep -ao 'cov: [0-9]*' "$journal" | tail -n1 | grep -o '[0-9]*$')
-    printf '  ✔ %-12s %s exécutions, couverture %s, corpus de %s entrées\n' "$c" "${executions:-?}" \
+    # Sans nombre d'exécutions, ou à zéro, rien n'a été essayé : jamais un ✔.
+    if [[ ! $executions =~ ^[0-9]*[1-9][0-9]*$ ]]; then
+      ECHECS=$((ECHECS + 1))
+      echo "  ✖ $c : aucune exécution comptée, rien n'est essayé (journal : $journal)"
+      continue
+    fi
+    printf '  ✔ %-12s %s exécutions, couverture %s, corpus de %s entrées\n' "$c" "$executions" \
       "${couverture:-?}" "$(find "$corpus" -type f | wc -l)"
+    rm -f "$journal"
   else
     ECHECS=$((ECHECS + 1))
     echo "  ✖ $c : plantage ou erreur de compilation (journal : $journal ; données : $plantages/)"

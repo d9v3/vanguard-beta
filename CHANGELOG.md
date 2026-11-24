@@ -45,6 +45,17 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   `disclose` a ses options en anglais (`--tool`, `--program`, `--language`, `--delete`).
 - **Clé USB : l'ouverture sous Linux connaît plus de terminaux.** Sans terminal trouvé, un message le dit au lieu de
   ne rien faire. Les modes d'emploi de la clé parlent de la fenêtre.
+- **Clé USB : une image recopiée n'est plus oubliée.** La copie d'une image abîmée est notée dans la référence
+  scellée avant que l'image soit retirée, et dite tant qu'elle n'est pas remplacée ; un courant coupé au milieu se
+  reprend seul. La même image recopiée deux fois veut dire que la clé s'use, et c'est dit. Mettre la clé à jour garde
+  ces notes, et un programme qui ne reconnaît pas la clé dit « pas reconnue », jamais « rien à faire ».
+- **Publication : une panne ne passe plus pour une réussite.** Une clé, une icône ou une machine d'essai en panne
+  n'arrête plus la page de la version, et une page qui n'est pas en ligne n'est plus comptée comme livrée. GitHub
+  injoignable n'est plus pris pour « la page n'existe pas » : rien n'est publié ni effacé dans le doute. La page ne sort
+  que si un vrai Windows a essayé le programme livré, octet pour octet.
+- **Contrôles et audit : un vert qui n'a rien essayé est un échec.** Un filtre qui ne trouve aucun essai, un essai
+  sauté ou un fuzzing sans une seule exécution font échouer le contrôle. Les exceptions d'audit d'une dépendance
+  d'essai ne couvrent plus les programmes publiés ; celle qui reste porte une date de relecture.
 
 ## 24 novembre 2026 : version 0.98.0
 

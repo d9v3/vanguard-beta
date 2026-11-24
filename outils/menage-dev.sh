@@ -48,6 +48,26 @@ for d in "$DEV"/target-* "$DEV"/repro-target; do
   ((j >= JOURS_COMPILATION)) && retirer "$d" "compilation inutilisée depuis $j jours, se recrée"
 done
 
+# Les autres dossiers de compilation, où qu'ils soient dans les deux premiers niveaux (une-fenetre/cible-attaque…) : le
+# CACHEDIR.TAG que cargo y écrit dit que tout s'y recrée ; aucun autre dossier n'est touché. Même délai. Un outil
+# compilé là pour servir (un dossier « …-install ») est gardé : le recréer demande de le retélécharger.
+for tag in "$DEV"/*/CACHEDIR.TAG "$DEV"/*/*/CACHEDIR.TAG; do
+  d=${tag%/*}
+  [[ -f $tag && ! -L $tag && ! -L $d && ! -L ${d%/*} && $d != *-install &&
+    $d != "$DEV"/target-* && $d != "$DEV"/repro-target ]] || continue
+  grep -q '^# This file is a cache directory tag created by cargo\.$' "$tag" || continue
+  # Dans un dossier lui-même de compilation (une cible de plus) : retiré avec lui, ou gardé avec lui.
+  [[ ! -e ${d%/*}/CACHEDIR.TAG ]] || continue
+  j=$(inactif_depuis "$d")
+  ((j >= JOURS_COMPILATION)) && retirer "$d" "compilation inutilisée depuis $j jours, se recrée"
+done
+
+# Journaux d'échec de verifier.sh, un dossier par arbre : plus de 30 jours.
+for d in "$DEV"/verifier-echecs/*; do
+  [[ -e $d && ! -L $d && -n $(find "$d" -maxdepth 0 -mtime +29 2>/dev/null) ]] || continue
+  retirer "$d" "journaux d'une vérification d'il y a plus de 30 jours"
+done
+
 # Restes d'essais interrompus (verifier.sh, essais en pty, signatures d'essai, un --importer tué…) : plus d'un jour.
 # Sauf un torrent en cours (son .torrent et l'image commencée) : effacé, il repartirait de zéro, et une image de 16 Gio
 # qui ne se prend pas en une seule passe de 5 heures ne finirait jamais.

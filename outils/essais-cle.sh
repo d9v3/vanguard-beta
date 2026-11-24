@@ -1845,6 +1845,21 @@ XDG_CACHE_HOME=$BANC/xdg6 bash outils/menage-dev.sh --voir >"$BANC/sortie" 2>&1
 voir "torrent de Kali en cours (7 jours) gardé pour reprendre ; un curl interrompu et un torrent abandonné partent" \
   eval 'pas_dit "$BANC/sortie" ".nouveau-kali-2026.3" && dit "$BANC/sortie" ".nouveau-arch" &&
     dit "$BANC/sortie" ".nouveau-kali-2026.1" && [[ -d $I/.nouveau-arch ]]' || montrer "$BANC/sortie"
+# Les dossiers de compilation : le CACHEDIR.TAG de cargo, vieux de quinze jours, et lui seul.
+C=$BANC/xdg7/vanguard-dev
+mkdir -p "$C"/{lot/cible-vieille/debug,lot/cible-neuve,lot/{outil,kani-install},cible-seule/x86_64/debug,verifier-echecs/{vieux,neuf}}
+for d in lot/cible-vieille lot/cible-neuve lot/kani-install cible-seule cible-seule/x86_64; do
+  printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' \
+    '# This file is a cache directory tag created by cargo.' >"$C/$d/CACHEDIR.TAG"
+done
+printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' '# created by kani' >"$C/lot/outil/CACHEDIR.TAG"
+echo notes >"$C/lot/notes.md"
+find "$C" -exec touch -d '40 days ago' {} +
+touch "$C/lot/cible-neuve/CACHEDIR.TAG" "$C/verifier-echecs/neuf"
+XDG_CACHE_HOME=$BANC/xdg7 bash outils/menage-dev.sh >"$BANC/sortie" 2>&1
+voir "compilations inutilisées retirées par la marque de cargo ; une récente, un outil et des notes gardés" \
+  eval '[[ ! -e $C/lot/cible-vieille && ! -e $C/cible-seule && -d $C/lot/cible-neuve && -d $C/lot/outil && -d $C/lot/kani-install &&
+    -f $C/lot/notes.md && ! -e $C/verifier-echecs/vieux && -d $C/verifier-echecs/neuf ]]' || montrer "$BANC/sortie"
 
 echo "$ESSAIS essais, $ECHECS en échec."
 ((ECHECS == 0))

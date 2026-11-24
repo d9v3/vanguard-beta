@@ -111,9 +111,11 @@ menage_travaux
 TRAVAIL=$(mktemp -d "$HOME/.cache/vanguard-dev/verifier.$$.XXXX")
 trap 'rm -rf "$TRAVAIL"' EXIT
 # Journal entier de chaque étape en échec, gardé après la fin (TRAVAIL est effacé) : la fin seule cache souvent la
-# cause (zizmor écrit ses constats d'abord, son total ensuite). Vidé à chaque passe : il ne parle que de la dernière.
-ECHECS_GARDES=$HOME/.cache/vanguard-dev/verifier-echecs
-rm -rf "$ECHECS_GARDES" && mkdir -p "$ECHECS_GARDES"
+# cause (zizmor écrit ses constats d'abord, son total ensuite). Vidé à chaque passe : il ne parle que de la dernière
+# de cet arbre-ci. Un dossier par arbre (nom, puis empreinte de son chemin) : deux worktrees vérifiés en même temps
+# s'effaçaient leurs journaux.
+ECHECS_GARDES=$HOME/.cache/vanguard-dev/verifier-echecs/$(basename "$PWD")-$(printf '%s' "$PWD" | sha256sum | cut -c1-8)
+rm -rf "${ECHECS_GARDES:?}" && mkdir -p "$ECHECS_GARDES"
 exec {VERROU}>"$TRAVAIL/verrou"
 flock -n "$VERROU" || { echo "✖ verrou de $TRAVAIL déjà pris : rien n'est vérifié"; exit 1; }
 DEBUT=$SECONDS
@@ -838,11 +840,13 @@ sautes_dits() {
 # Les étapes d'un passage partiel qui n'ont rien vérifié, nommées à la fin.
 NON_VERIFIEES=()
 # Le résumé est aussi gardé dans un fichier : la page des fonctions (outils/page-fonctions.py) y lit les nombres de
-# tests de la dernière vérification, au déploiement.
-RESUME=$HOME/.cache/vanguard-dev/verifier-dernier.txt
-# Avec --seulement, le résumé de la dernière vérification complète reste celui que la page des fonctions lit.
-[[ -n $SEULEMENT ]] && RESUME=/dev/null
-mkdir -p "$HOME/.cache/vanguard-dev" && : >"$RESUME"
+# tests de la dernière vérification, au déploiement. Écrit dans le dossier de cette passe, il n'y prend sa place qu'à
+# la fin d'un passage complet et tout vert (garder_resume) : un --rapide, un passage en échec ou en cours dans un autre
+# arbre ne l'efface plus, et la page n'y lit jamais un résumé à moitié écrit.
+RESUME=$TRAVAIL/resume
+RESUME_GARDE=$HOME/.cache/vanguard-dev/verifier-dernier.txt
+: >"$RESUME"
+garder_resume() { cp "$RESUME" "$RESUME_GARDE.$$" && mv "$RESUME_GARDE.$$" "$RESUME_GARDE"; }
 ligne() {
   local nom=$1 libelle=$2 etat=absente duree quoi
   [[ -z $SEULEMENT || $SEULEMENT == *",$nom,"* ]] || return 0
@@ -1020,6 +1024,7 @@ if [[ -n $MODE ]]; then
   exit 0
 fi
 # Les tests de cargo sautés (fichiers de VANGUARD_TESTS_SAUTES, montrés par raisons_des_sautes) comptent aussi.
+garder_resume || echo "  ⚠ résumé pas gardé ($RESUME_GARDE) : la page des fonctions montrerait le passage d'avant"
 SAUTES_DITS=$((SAUTES_DITS + $(cat "$TRAVAIL"/sautes-*.txt 2>/dev/null | wc -l)))
 if ((SAUTES_DITS)); then
   echo "Tout est vert, avec $SAUTES_DITS essai(s) sauté(s) dits plus haut, en $((DUREE / 60)) min $((DUREE % 60)) s."
