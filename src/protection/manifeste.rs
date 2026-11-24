@@ -1850,6 +1850,7 @@ mod tests {
         assert!(fichier_exclu(".DS_Store"));
         assert!(!fichier_exclu("ISO/omarchy.iso"));
         assert!(!fichier_exclu("ISO/sous/.omarchy.iso.part"));
+        assert!(!fichier_exclu("ISO/.cache/omarchy.iso.part"));
         assert!(!fichier_exclu("Linux/.vanguard.part"));
         // Leur nom ne suffit pas : un dossier ainsi nommé est parcouru.
         assert!(!exclu("ISO/.omarchy.iso.part"));

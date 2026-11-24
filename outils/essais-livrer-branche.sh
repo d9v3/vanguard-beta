@@ -798,7 +798,10 @@ deja() { (cd "$V/depot" && VERSION=$1 LINUX=src/main.rs && set -e && eval "$DEJA
 refus=()
 [[ -z $(deja 1.0.0) ]] || refus+=("même commit : $(deja 1.0.0)")
 avancer_v docs/index.html
-[[ -z $(deja 1.0.0) && -z $(deja 1.1.0) ]] || refus+=("hors code : $(deja 1.0.0) $(deja 1.1.0)")
+# Annotée sur GitHub seulement (son objet n'est pas ici) : c'est le commit qu'elle vise qui se compare.
+git -C "$V/github.git" -c user.name=essai -c user.email=essai@exemple.invalid tag -a -m note v1.2.0 'v1.0.0^{commit}'
+[[ -z $(deja 1.0.0) && -z $(deja 1.1.0) && -z $(deja 1.2.0) ]] ||
+  refus+=("hors code : $(deja 1.0.0) $(deja 1.1.0) $(deja 1.2.0)")
 avancer_v src/main.rs
 for v in 1.0.0 1.1.0; do
   [[ $(deja $v) == "⚠ v$v déjà publiée avec un autre code"* ]] || refus+=("autre code ($v) : $(deja $v)")
