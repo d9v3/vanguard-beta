@@ -41,6 +41,8 @@
 #      celui d'un autre en cours, même d'un autre espace de PID (verrou tenu, numéro absent d'ici), ni un tout neuf.
 #  13. Les scripts shell (shellcheck) : chaque script suivi par git, crochets sans extension compris, un
 #      avertissement fait échouer ; shellcheck absent, l'étape se dit sautée, jamais verte.
+#  14. Les workflows (zizmor) : un fichier au YAML cassé fait échouer l'étape, jamais sauté en silence ; le même,
+#      réparé, passe ; zizmor absent, sautée ici, en échec en CI.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -599,6 +601,45 @@ else
     $suivi == 1 ]] && grep -q 'SC2164' <<<"$crochet_dit" &&
     ok "scripts shell : un avertissement (crochet sans extension compris) fait échouer, un non suivi n'est pas lu ; shellcheck absent : sautée" ||
     ko "scripts shell (absent $sans_code « $sans_raison », propre $propre, crochet $crochet, suivi $suivi)"
+fi
+rm -rf "$faux"
+
+# Les workflows relus par zizmor : un fichier illisible (YAML cassé) fait échouer ; GitHub n'en lancerait rien, et
+# zizmor sans --strict-collection le sauterait en rendant 0. Lue dans verifier.sh, sur un dépôt jetable dont le
+# workflow est propre : le YAML cassé est la seule cause possible de l'échec (la commande finie par « :: », celle du
+# 23 nov. 2026). Un second workflow reste propre : seul, le cassé ferait dire à zizmor « rien à lire », un échec même
+# sans --strict-collection.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-workflows.XXXX")
+fonction=$(awk '/^workflows\(\) \{/,/^\}/' outils/verifier.sh)
+workflows_juges() { # PATH, MODE
+  SORTIE=$(cd "$faux/depot" && PATH=$1 MODE=$2 SAUTEE=77 "$BASH" -c "$fonction
+workflows" 2>&1)
+  CODE=$?
+}
+workflow() { # nom du fichier, la ligne « run » telle quelle
+  printf '%s\n' 'name: essai' 'on: push' 'permissions: {}' 'concurrency:' '  group: essai' \
+    '  cancel-in-progress: true' 'jobs:' '  essai:' '    name: essai' '    runs-on: ubuntu-24.04' \
+    '    steps:' '      - name: essai' "        run: $2" >"$faux/depot/.github/workflows/$1.yml"
+}
+mkdir -p "$faux/depot/.github/workflows" "$faux/sans"
+git -C "$faux/depot" init -q
+workflow autre "'cargo test'"
+workflow essai "'cargo test une_fenetre::'"
+workflows_juges "$faux/sans" ""; sans_code=$CODE
+workflows_juges "$faux/sans" --ci; sans_ci=$CODE
+if ! command -v zizmor >/dev/null; then
+  [[ -n $fonction && $sans_code == 77 && $sans_ci == 1 ]] &&
+    ok "zizmor absent : l'étape se dit sautée, en échec en CI" || ko "zizmor absent (ici $sans_code, CI $sans_ci)"
+  echo "  (sauté : zizmor absent ici, YAML cassé pas essayé)"
+else
+  workflows_juges "$PATH" ""; propre=$CODE
+  propre_dit=$SORTIE
+  workflow essai 'cargo test une_fenetre::'
+  workflows_juges "$PATH" ""; casse=$CODE
+  [[ -n $fonction && $sans_code == 77 && $sans_ci == 1 && $propre == 0 && $casse != 0 && $casse != 77 ]] &&
+    grep -q 'invalid YAML syntax' <<<"$SORTIE" &&
+    ok "workflows : un YAML cassé fait échouer, le même réparé passe ; zizmor absent : sautée, en échec en CI" ||
+    ko "workflows (absent $sans_code, CI $sans_ci, propre $propre, cassé $casse) : $(tail -n 2 <<<"$propre_dit$SORTIE")"
 fi
 rm -rf "$faux"
 

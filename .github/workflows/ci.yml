@@ -434,7 +434,7 @@ jobs:
         if: always()
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
-        run: cargo test --locked --manifest-path fenetre/Cargo.toml --target x86_64-pc-windows-msvc une_fenetre::
+        run: 'cargo test --locked --manifest-path fenetre/Cargo.toml --target x86_64-pc-windows-msvc une_fenetre::'
       - name: Tests sautés sur le vrai Windows
         if: always()
         env:

@@ -490,6 +490,9 @@ textes() {
 # et sans jeton : sinon zizmor interroge GitHub de lui-même, et son verdict changerait avec le réseau. Sautée sans
 # zizmor (pacman -S zizmor), sauf en CI, qui le pose par install-action (version épinglée) : là, son absence échoue,
 # pour qu'une liste d'install-action changée ne laisse pas la CI verte sans rien relire.
+# --strict-collection : un fichier que zizmor ne sait pas lire fait échouer. Sans elle, il n'avertit que d'une ligne,
+# saute le fichier et rend 0 ; le 23 nov. 2026, un ci.yml au YAML cassé (un « : » en fin de commande, sans
+# guillemets) a ainsi passé la vérification, et GitHub n'a lancé aucune CI sur master.
 workflows() {
   if ! command -v zizmor >/dev/null; then
     echo "zizmor absent (pacman -S zizmor)"
@@ -497,7 +500,7 @@ workflows() {
     return "$SAUTEE"
   fi
   zizmor --version
-  env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github
+  env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --strict-collection --format plain .github
 }
 
 # Les dépendances relues selon cargo vet (supply-chain/, et fenetre/supply-chain/ pour la fenêtre) : chaque version
