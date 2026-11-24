@@ -1589,17 +1589,20 @@ pub(super) fn endroits_temporaires() -> Vec<PathBuf> {
     ["/tmp", "/var/tmp", "/dev/shm"].iter().map(PathBuf::from).collect()
 }
 
-/// Les points de montage de cet ordinateur, que le parcours des fichiers récents ne traverse pas.
-pub(super) fn points_de_montage() -> Vec<PathBuf> {
-    montages_selon(&crate::socle::lire_texte("/proc/self/mountinfo").unwrap_or_default())
+/// Les points de montage de cet ordinateur, que le parcours des fichiers récents ne traverse pas. Une erreur : rien ne
+/// se parcourt, un montage qui ne répond plus figerait la collecte.
+pub(super) fn points_de_montage() -> std::io::Result<Vec<PathBuf>> {
+    std::fs::read("/proc/self/mountinfo").map(|o| montages_selon(&o))
 }
 
-/// Le point de montage est le cinquième champ de chaque ligne de mountinfo, ses espaces écrits en octal.
-fn montages_selon(mountinfo: &str) -> Vec<PathBuf> {
+/// Le point de montage est le cinquième champ de chaque ligne de mountinfo, ses espaces écrits en octal. Lu octet pour
+/// octet : un nom hors UTF-8, rendu en texte, ne serait plus reconnu, et le parcours interrogerait ce montage.
+fn montages_selon(mountinfo: &[u8]) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
     mountinfo
-        .lines()
-        .filter_map(|l| l.split(' ').nth(4))
-        .map(|c| PathBuf::from(crate::copier::sans_echappements(c)))
+        .split(|&o| o == b'\n')
+        .filter_map(|l| l.split(|&o| o == b' ').nth(4))
+        .map(|c| PathBuf::from(std::ffi::OsString::from_vec(crate::copier::octets_sans_echappements(c))))
         .collect()
 }
 
@@ -1917,18 +1920,21 @@ mod tests {
 
     #[test]
     fn points_de_montage_lus() {
-        let mountinfo = "22 1 0:21 / /tmp rw,nosuid shared:5 - tmpfs tmpfs rw\n\
+        use std::os::unix::ffi::OsStrExt;
+        let mountinfo = b"22 1 0:21 / /tmp rw,nosuid shared:5 - tmpfs tmpfs rw\n\
             98 22 0:52 / /tmp/com.freerdp.client.cliprdr.108479 rw - fuse /dev/fuse rw\n\
-            99 22 0:53 / /tmp/mon\\040dossier ro - fuse.essai essai ro\n";
+            99 22 0:53 / /tmp/mon\\040dossier ro - fuse.essai essai ro\n\
+            99 22 0:54 / /tmp/muet\xff ro - fuse.essai essai ro\n";
         assert_eq!(
             montages_selon(mountinfo),
             [
                 PathBuf::from("/tmp"),
                 PathBuf::from("/tmp/com.freerdp.client.cliprdr.108479"),
-                PathBuf::from("/tmp/mon dossier")
+                PathBuf::from("/tmp/mon dossier"),
+                PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/muet\xff"))
             ]
         );
-        assert!(points_de_montage().contains(&PathBuf::from("/")));
+        assert!(points_de_montage().unwrap().contains(&PathBuf::from("/")));
     }
 
     #[test]

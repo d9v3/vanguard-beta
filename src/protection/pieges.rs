@@ -171,7 +171,7 @@ pub(crate) fn chemins_poses() -> Vec<PathBuf> {
 pub(crate) fn dossiers_a_veiller() -> Vec<PathBuf> {
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-    let declares = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+    let declares = dossiers_declares(&config);
     let mut liste = dossiers();
     liste.extend(dossiers_en_plus(&declares, &maison).into_iter().filter(|d| d.is_dir()));
     liste.sort();
@@ -251,7 +251,7 @@ fn dossiers_du_systeme() -> Vec<PathBuf> {
     let maison = crate::socle::maison();
     // Noms des dossiers dans la langue du bureau : ~/.config/user-dirs.dirs (« XDG_DOCUMENTS_DIR="$HOME/Documents" »).
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
-    let declares = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+    let declares = dossiers_declares(&config);
     let mut liste: Vec<PathBuf> = ["XDG_DOCUMENTS_DIR", "XDG_PICTURES_DIR", "XDG_DESKTOP_DIR"]
         .iter()
         .filter_map(|cle| dossier_declare(&declares, cle, &maison))
@@ -265,7 +265,16 @@ fn dossiers_du_systeme() -> Vec<PathBuf> {
     liste
 }
 
-/// Un dossier de user-dirs.dirs. « $HOME » seul (dossier non configuré) n'est pas un dossier personnel.
+/// Le texte de user-dirs.dirs, vide s'il ne se lit pas. Le fichier est au compte : un commentaire hors UTF-8 ne cache
+/// pas ses lignes, un tube à sa place ne fige rien.
+#[cfg(target_os = "linux")]
+pub(crate) fn dossiers_declares(config: &Path) -> String {
+    crate::socle::lire_ordinaire_au_bout(&config.join("user-dirs.dirs"), 64 << 10)
+        .map_or_default(crate::socle::texte_des_octets)
+}
+
+/// Un dossier de user-dirs.dirs. « $HOME » seul (dossier non configuré) n'est pas un dossier personnel ; un nom hors
+/// UTF-8, rendu en texte, en désignerait un autre : pas de dossier.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn dossier_declare(declares: &str, cle: &str, maison: &Path) -> Option<PathBuf> {
     let valeur = declares
@@ -277,7 +286,7 @@ pub(crate) fn dossier_declare(declares: &str, cle: &str, maison: &Path) -> Optio
         Some(reste) => maison.join(reste.trim_start_matches('/')),
         None => PathBuf::from(valeur),
     };
-    (chemin != maison && chemin.is_absolute()).then_some(chemin)
+    (chemin != maison && chemin.is_absolute() && !valeur.contains(char::REPLACEMENT_CHARACTER)).then_some(chemin)
 }
 
 /// Windows : les dossiers déclarés pour le compte (déplacés dans OneDrive le cas échéant), sinon ceux du profil.
@@ -1112,6 +1121,27 @@ mod tests {
         // « $HOME » seul : dossier non configuré.
         assert_eq!(dossier_declare(declares, "XDG_DESKTOP_DIR", maison), None);
         assert_eq!(dossier_declare(declares, "XDG_MUSIC_DIR", maison), None);
+        // Un nom hors UTF-8 : jamais le dossier d'un autre nom.
+        let declares = crate::socle::texte_des_octets(b"XDG_DOCUMENTS_DIR=\"$HOME/Caf\xe9\"\n".to_vec());
+        assert_eq!(dossier_declare(&declares, "XDG_DOCUMENTS_DIR", maison), None);
+    }
+
+    /// Un commentaire hors UTF-8 ne cache pas les dossiers déclarés ; un tube à la place du fichier ne fige rien.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn user_dirs_hors_utf8() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let f = d.join("user-dirs.dirs");
+        std::fs::write(&f, b"# Caf\xe9\nXDG_MUSIC_DIR=\"$HOME/Sons\"\n").unwrap();
+        assert_eq!(
+            dossier_declare(&dossiers_declares(&d), "XDG_MUSIC_DIR", Path::new("/home/alice")),
+            Some(PathBuf::from("/home/alice/Sons"))
+        );
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(dossiers_declares(&d), "");
+        crate::essais::tube_nomme(&f).unwrap();
+        assert_eq!(dossiers_declares(&d), "");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

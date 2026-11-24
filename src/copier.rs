@@ -202,8 +202,13 @@ fn gros_fichiers(dossiers: &[(Sorte, PathBuf)]) -> Vec<PathBuf> {
 /// sont écrits en octal (« \040 » pour l'espace).
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn sans_echappements(t: &str) -> String {
-    let mut sortie = Vec::with_capacity(t.len());
-    let octets = t.as_bytes();
+    String::from_utf8_lossy(&octets_sans_echappements(t.as_bytes())).into_owned()
+}
+
+/// `sans_echappements`, octet pour octet : le chemin d'un montage dont le nom n'est pas de l'UTF-8.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn octets_sans_echappements(octets: &[u8]) -> Vec<u8> {
+    let mut sortie = Vec::with_capacity(octets.len());
     let mut i = 0;
     while let Some(&octet) = octets.get(i) {
         let code = octets
@@ -220,7 +225,7 @@ pub(crate) fn sans_echappements(t: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&sortie).into_owned()
+    sortie
 }
 
 #[cfg(windows)]

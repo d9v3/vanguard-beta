@@ -1010,6 +1010,7 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques, tris: usize) {
             .take(16)
             .map(|(point, e)| format!("marque: {}: {e}", sortie::borner(point))),
     );
+    alertes.extend(marques.incomplet.map(|r| format!("montages: {r}")));
     let perdus = p.compteurs.evenements_perdus.load(Ordering::Relaxed);
     if perdus > 0 {
         alertes.push(format!("evenements: {perdus} non écrits (file pleine)"));
@@ -1025,7 +1026,7 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques, tris: usize) {
         pause_jusqu_a,
         certain,
         alertes,
-        marques: u64::try_from(marques.marques.len()).unwrap_or(u64::MAX),
+        marques: u64::try_from(marques.systemes.len()).unwrap_or(u64::MAX),
         compteurs: p.compteurs.lire(),
         listes_retirees,
         listes_bloquees,
@@ -1052,19 +1053,25 @@ fn entretien(
 ) {
     let demarre = super::maintenant();
     let mut montages = Montages::ouvrir().ok();
+    // Une lecture ratée a consommé le signal du noyau : elle est refaite au tour suivant, sans attendre un changement.
+    let mut a_relire = marques.incomplet.is_some() && montages.is_some();
     while !p.arret.load(Ordering::Relaxed) {
+        if montages.is_none() {
+            montages = Montages::ouvrir().ok();
+            a_relire = montages.is_some();
+        }
         let change = if let Some(m) = &montages {
             m.attendre(1000).unwrap_or(false)
         } else {
             std::thread::sleep(Duration::from_secs(1));
             false
         };
-        if change
+        if (change || a_relire)
             && let Some(m) = &mut montages
-            && let Ok(info) = m.lire()
         {
-            marques.oublier_demontes(&info);
-            for nouveau in marques.completer(&p.groupe, &info) {
+            let lu = m.lire();
+            a_relire = lu.is_err();
+            for nouveau in marques.suivre(&p.groupe, lu) {
                 let mut e = evenement("montage");
                 e.chemin = sortie::borner(&nouveau.point);
                 e.systeme = Some(nouveau.genre);
@@ -1175,15 +1182,14 @@ pub(crate) fn servir() -> i32 {
     relecture.relire_reglages(&p, true);
     relecture.charger_union(&p);
     let mut marques = Marques::default();
-    let info = Montages::ouvrir().and_then(|mut m| m.lire()).unwrap_or_default();
-    marques.completer(&p.groupe, &info);
-    if marques.marques.is_empty() {
+    marques.suivre(&p.groupe, Montages::ouvrir().and_then(|mut m| m.lire()));
+    if marques.systemes.is_empty() {
         eprintln!("garde: aucun système de fichiers marqué");
         return SORTIE_GROUPE;
     }
     let mut e = evenement("demarrage");
     e.demarrage = Some(sortie::Demarrage {
-        marques: u64::try_from(marques.marques.len()).unwrap_or(u64::MAX),
+        marques: u64::try_from(marques.systemes.len()).unwrap_or(u64::MAX),
         refuses: u64::try_from(marques.echecs.len()).unwrap_or(u64::MAX),
         pidfd: p.groupe.options.pidfd,
         audit: p.groupe.options.audit,

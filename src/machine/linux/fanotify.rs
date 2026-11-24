@@ -424,6 +424,31 @@ pub(crate) struct Montages {
 /// Au plus autant d'octets lus de mountinfo.
 const MOUNTINFO_MAX: u64 = 4 << 20;
 
+/// mountinfo, lu dans ses bornes.
+#[derive(Debug, Default)]
+pub(crate) struct Mountinfo {
+    pub texte: String,
+    /// Toutes ses lignes y sont : ce qui manque au texte n'est plus monté. Un compte peut remplir le sien (mille
+    /// montages FUSE au nom long) : un disque au-delà de la borne n'est pas parti pour autant.
+    pub entier: bool,
+}
+
+impl Mountinfo {
+    fn des_octets(mut octets: Vec<u8>) -> Mountinfo {
+        let max = usize::try_from(MOUNTINFO_MAX).unwrap_or(usize::MAX);
+        let mut entier = octets.len() <= max;
+        if !entier {
+            // La dernière ligne est coupée : elle désignerait un autre point de montage.
+            let fin = octets.get(..max).and_then(|o| o.iter().rposition(|&o| o == b'\n'));
+            octets.truncate(fin.unwrap_or(0));
+        }
+        // Un point de montage au nom non UTF-8 ne cache pas les autres.
+        let texte = crate::socle::texte_des_octets(octets);
+        entier &= texte.lines().count() <= lecture::MONTAGES_MAX;
+        Mountinfo { texte, entier }
+    }
+}
+
 impl Montages {
     pub(crate) fn ouvrir() -> io::Result<Montages> {
         Ok(Montages {
@@ -432,13 +457,14 @@ impl Montages {
     }
 
     /// Le texte de mountinfo maintenant (relu du début : c'est aussi ce qui remet le signal de `poll` à zéro).
-    pub(crate) fn lire(&mut self) -> io::Result<String> {
+    pub(crate) fn lire(&mut self) -> io::Result<Mountinfo> {
         use std::io::{Read, Seek};
         self.fichier.seek(io::SeekFrom::Start(0))?;
         let mut octets = Vec::new();
-        (&self.fichier).take(MOUNTINFO_MAX).read_to_end(&mut octets)?;
-        // Un point de montage au nom non UTF-8 ne cache pas les autres.
-        Ok(crate::socle::texte_des_octets(octets))
+        (&self.fichier)
+            .take(MOUNTINFO_MAX.saturating_add(1))
+            .read_to_end(&mut octets)?;
+        Ok(Mountinfo::des_octets(octets))
     }
 
     /// Attend un changement des montages au plus `delai_ms` : vrai s'il y en a eu un.
@@ -468,22 +494,64 @@ impl Montages {
 #[derive(Debug, Default)]
 pub(crate) struct Marques {
     /// Les major:minor marqués.
-    pub marques: Vec<(u32, u32)>,
+    pub systemes: Vec<(u32, u32)>,
     /// Les points qui n'ont pas pu l'être, avec l'erreur.
     pub echecs: Vec<(String, String)>,
+    /// La liste des montages n'a pas été lue en entier : pourquoi. Un disque peut manquer aux marques.
+    pub incomplet: Option<&'static str>,
 }
 
 impl Marques {
+    /// Suit les montages d'après ce qui vient d'être lu : rend ceux marqués cette fois. Une lecture ratée ou coupée est
+    /// dite ; elle ne fait oublier aucune marque.
+    pub(crate) fn suivre(&mut self, groupe: &Groupe, lu: io::Result<Mountinfo>) -> Vec<lecture::Montage> {
+        self.suivre_par(lu, |point| groupe.marquer(point))
+    }
+
+    fn suivre_par(
+        &mut self,
+        lu: io::Result<Mountinfo>,
+        marquer: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Vec<lecture::Montage> {
+        let Ok(info) = lu else {
+            self.incomplet = Some(crate::tr!("liste illisible", "list unreadable"));
+            return Vec::new();
+        };
+        if info.entier {
+            self.incomplet = None;
+            self.oublier_demontes(&info.texte);
+        } else {
+            self.incomplet = Some(crate::tr!(
+                "liste trop longue, lue en partie : un disque peut ne pas être surveillé",
+                "list too long, read in part: a disk may not be watched"
+            ));
+        }
+        self.completer(&info.texte, marquer)
+    }
+
     /// Marque ce que `mountinfo` a de systèmes de fichiers locaux pas encore marqués : rend ceux marqués cette fois.
-    pub(crate) fn completer(&mut self, groupe: &Groupe, mountinfo: &str) -> Vec<lecture::Montage> {
+    fn completer(
+        &mut self,
+        mountinfo: &str,
+        mut marquer: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Vec<lecture::Montage> {
         let mut nouveaux = Vec::new();
         for m in lecture::locaux(mountinfo) {
-            if self.marques.contains(&m.dev) {
+            if self.systemes.contains(&m.dev) {
                 continue;
             }
-            match groupe.marquer(Path::new(&m.point)) {
+            // Lu avec des « � », le nom n'est pas celui du disque : un dossier posé sous ce nom-là, sur un autre
+            // système de fichiers, serait marqué à la place, et celui-ci passerait pour surveillé.
+            if m.point.contains(char::REPLACEMENT_CHARACTER) {
+                if !self.echecs.iter().any(|(p, _)| *p == m.point) {
+                    let raison = crate::tr!("nom hors UTF-8, non marqué", "name not in UTF-8, not marked");
+                    self.echecs.push((m.point.clone(), raison.to_string()));
+                }
+                continue;
+            }
+            match marquer(Path::new(&m.point)) {
                 Ok(()) => {
-                    self.marques.push(m.dev);
+                    self.systemes.push(m.dev);
                     self.echecs.retain(|(p, _)| *p != m.point);
                     nouveaux.push(m);
                 }
@@ -499,9 +567,9 @@ impl Marques {
 
     /// Oublie les systèmes de fichiers qui ne sont plus montés (le noyau a retiré leur marque avec eux) : remontés,
     /// ils seront marqués de nouveau.
-    pub(crate) fn oublier_demontes(&mut self, mountinfo: &str) {
+    fn oublier_demontes(&mut self, mountinfo: &str) {
         let montes: Vec<(u32, u32)> = lecture::locaux(mountinfo).iter().map(|m| m.dev).collect();
-        self.marques.retain(|d| montes.contains(d));
+        self.systemes.retain(|d| montes.contains(d));
     }
 }
 
@@ -538,11 +606,66 @@ mod tests {
     #[test]
     fn mountinfo_se_lit_et_se_surveille() {
         let mut m = Montages::ouvrir().unwrap();
-        let texte = m.lire().unwrap();
-        assert!(texte.lines().count() > 0);
+        let lu = m.lire().unwrap();
+        assert!(lu.entier && lu.texte.lines().count() > 0);
         // Rien ne change en 10 ms (le plus souvent) ; l'appel rend sans erreur.
         let _ = m.attendre(10).unwrap();
-        assert_eq!(m.lire().unwrap().lines().next(), texte.lines().next());
+        assert_eq!(m.lire().unwrap().texte.lines().next(), lu.texte.lines().next());
+    }
+
+    fn lu(texte: &[u8]) -> Mountinfo {
+        Mountinfo::des_octets(texte.to_vec())
+    }
+
+    /// Un point de montage lu avec un « � » n'est jamais donné au noyau (ce serait le chemin d'un autre dossier) : son
+    /// système de fichiers n'est pas compté marqué, et c'est dit une fois.
+    #[test]
+    fn un_nom_hors_utf8_n_est_pas_marque_a_la_place_d_un_autre() {
+        let mut m = Marques::default();
+        let mut vus = Vec::new();
+        for _ in 0..2 {
+            m.suivre_par(
+                Ok(lu(
+                    b"40 1 8:1 / /mnt/caf\xe9 rw - ext4 /dev/sda1 rw\n42 1 8:2 / /home rw - ext4 /dev/sda2 rw\n",
+                )),
+                |p| {
+                    vus.push(p.to_path_buf());
+                    Ok(())
+                },
+            );
+        }
+        assert_eq!(vus, [Path::new("/home")]);
+        assert_eq!(m.systemes, [(8, 2)]);
+        assert_eq!(m.echecs.len(), 1);
+        assert!(m.echecs[0].0.contains(char::REPLACEMENT_CHARACTER));
+    }
+
+    /// Une lecture ratée ou coupée est dite et n'oublie aucune marque ; la lecture entière d'après l'efface et oublie.
+    #[test]
+    fn une_lecture_coupee_n_oublie_rien() {
+        let mut m = Marques::default();
+        let deux = b"40 1 8:1 / / rw - ext4 /dev/sda1 rw\n42 1 8:2 / /home rw - ext4 /dev/sda2 rw\n";
+        assert_eq!(m.suivre_par(Ok(lu(deux)), |_| Ok(())).len(), 2);
+        assert!(m.incomplet.is_none());
+        // Au-delà de la borne d'octets : la ligne coupée n'est pas lue, le disque d'après n'est pas oublié.
+        let mut long = b"40 1 8:1 / / rw - ext4 /dev/sda1 rw\n".to_vec();
+        long.resize(usize::try_from(MOUNTINFO_MAX).unwrap() - 20, b'x');
+        long.extend_from_slice(b"\n43 1 8:3 / /mnt/suite rw - ext4 /dev/sda3 rw\n");
+        let coupe = Mountinfo::des_octets(long);
+        assert!(!coupe.entier && !coupe.texte.contains("8:3"));
+        assert_eq!(m.suivre_par(Ok(coupe), |_| Ok(())).len(), 0);
+        assert!(m.incomplet.is_some());
+        assert_eq!(m.systemes, [(8, 1), (8, 2)]);
+        // Trop de lignes.
+        let lignes = "40 1 0:5 / /x rw - fuse x rw\n".repeat(lecture::MONTAGES_MAX + 1);
+        assert!(!lu(lignes.as_bytes()).entier);
+        // Illisible.
+        m.incomplet = None;
+        assert_eq!(m.suivre_par(Err(io::Error::other("x")), |_| Ok(())).len(), 0);
+        assert!(m.incomplet.is_some() && m.systemes.len() == 2);
+        m.suivre_par(Ok(lu(b"40 1 8:1 / / rw - ext4 /dev/sda1 rw\n")), |_| Ok(()));
+        assert!(m.incomplet.is_none());
+        assert_eq!(m.systemes, [(8, 1)]);
     }
 
     #[test]

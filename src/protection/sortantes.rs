@@ -392,7 +392,8 @@ pub(crate) fn appimage(chemin: &str, montages: &str) -> bool {
     let point = format!("/tmp/.mount_{}", reste.split('/').next().unwrap_or_default());
     montages
         .lines()
-        .any(|l| l.split_whitespace().nth(1) == Some(point.as_str()))
+        // Une espace, et elle seule : la source d'un montage FUSE peut porter une espace insécable.
+        .any(|l| l.split(' ').nth(1) == Some(point.as_str()))
 }
 
 /// L'image d'où tourne une AppImage, d'après son environnement (`/proc/<pid>/environ` : « APPIMAGE=…\0 »).

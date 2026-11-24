@@ -337,6 +337,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "COM-DIS-001",
         &[
             ("protection/distance.rs", "constats"),
+            ("protection/distance/resultat.rs", "juger_releve"),
             ("protection/distance.rs", "juger"),
         ],
     ),
@@ -644,6 +645,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "PRO-DIS-001",
         &[
             ("protection/distance.rs", "constats"),
+            ("protection/distance/resultat.rs", "juger_releve"),
             ("protection/distance.rs", "juger"),
         ],
     ),

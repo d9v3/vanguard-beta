@@ -156,12 +156,18 @@ pub(super) fn espace_initial(lien: &str) -> bool {
 }
 
 /// /proc monté avec « hidepid » : sans droits, les processus des autres comptes manquent à la liste ou se lisent
-/// mal, ce qui fausserait le compte. La dernière ligne de /proc/self/mounts pour /proc est celle qui vaut.
+/// mal, ce qui fausserait le compte. La dernière ligne de /proc/self/mounts pour /proc est celle qui vaut. Les champs
+/// sont séparés par une espace, et par elle seule : un montage FUSE du compte choisit le sien, et une espace insécable
+/// y décalerait les autres.
 pub(crate) fn proc_masque(montages: &str) -> bool {
     montages
         .lines()
-        .rfind(|l| l.split_whitespace().nth(1) == Some("/proc"))
-        .and_then(|l| l.split_whitespace().nth(3))
+        .filter_map(|l| {
+            let mut c = l.split(' ');
+            let (_, point, genre, options) = (c.next()?, c.next()?, c.next()?, c.next()?);
+            (point == "/proc" && genre == "proc").then_some(options)
+        })
+        .next_back()
         .is_some_and(|options| {
             options
                 .split(',')
@@ -318,7 +324,8 @@ pub(super) fn processus_caches() -> Constat {
         return impossible("Persistance", tr!("/proc illisible", "/proc unreadable"));
     };
     let initial = std::fs::read_link("/proc/self/ns/pid").is_ok_and(|l| espace_initial(&l.to_string_lossy()));
-    let masque = crate::socle::lire_texte("/proc/self/mounts").is_ok_and(|m| proc_masque(&m));
+    // Montages illisibles : rien ne prouve que le compte vaut.
+    let masque = crate::socle::lire_texte("/proc/self/mounts").map_or(true, |m| proc_masque(&m));
     let ecart = if initial && !masque { compter_les_fils() } else { None };
     if ecart == Some(0) {
         return juger_processus_caches(&[], &Couverture::Compte, &[]);
@@ -979,6 +986,14 @@ mod tests {
         assert!(!proc_masque(&m("rw,hidepid=0")));
         // Remonté sans hidepid par-dessus : la dernière ligne vaut.
         assert!(!proc_masque(&format!("{}proc /proc proc rw 0 0\n", m("rw,hidepid=2"))));
+        // Une espace insécable dans la source d'un montage FUSE ne fait pas une ligne de /proc, ni son type.
+        let fuse = "a\u{a0}/proc\u{a0}proc\u{a0}hidepid=2 /m fuse rw 0 0\n";
+        assert!(!proc_masque(&format!("{}{fuse}", m("rw"))));
+        assert!(proc_masque(&format!(
+            "{}a\u{a0}/proc\u{a0}proc\u{a0}rw /m fuse rw 0 0\n",
+            m("rw,hidepid=2")
+        )));
+        assert!(proc_masque(&format!("{}autre /proc fuse rw 0 0\n", m("rw,hidepid=2"))));
     }
 
     #[test]

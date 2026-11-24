@@ -1077,8 +1077,9 @@ fn lecture_coupee(quoi: Bi, lus: usize, max: usize) -> Option<Manque> {
 }
 
 /// Pas de montage à écarter sous Windows : un autre système de fichiers y est un autre lecteur.
-pub(super) fn points_de_montage() -> Vec<PathBuf> {
-    Vec::new()
+#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux, où la liste peut être illisible
+pub(super) fn points_de_montage() -> std::io::Result<Vec<PathBuf>> {
+    Ok(Vec::new())
 }
 
 /// La place que peuvent prendre les journaux : leur taille entière, au plus (l'export ne garde que 7 jours).

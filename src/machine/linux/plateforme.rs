@@ -451,7 +451,11 @@ pub(super) fn juger_espaces_de_noms(
 }
 
 pub(super) fn espaces_de_noms() -> Option<Constat> {
-    let lire = |chemin: &str| std::fs::read_to_string(chemin).ok().and_then(|v| v.trim().parse().ok());
+    let lire = |chemin: &str| {
+        crate::socle::lire_texte(chemin)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+    };
     juger_espaces_de_noms(
         lire("/proc/sys/kernel/unprivileged_userns_clone"),
         lire("/proc/sys/user/max_user_namespaces"),

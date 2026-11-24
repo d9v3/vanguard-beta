@@ -58,16 +58,18 @@ pub(super) fn juger_arret(pid: u32, debut: u64, a: &mut dyn Acces) -> Jugement {
             "{nom} ({pid}) is not stopped: {g}. Nothing is done"
         )));
     }
-    let Some(raison) = a.soupcon(pid, &v) else {
-        return Err(refus(trf!(
-            "relu en administrateur, {nom} ({pid}) n'a rien de suspect : rien n'est fait",
-            "read again as administrator, {nom} ({pid}) has nothing suspicious: nothing is done"
-        )));
-    };
+    // Avant le soupçon : d'un programme qui ne se lit pas (son chemin hors UTF-8, par exemple), « rien de suspect »
+    // serait faux.
     let Some(exe) = v.exe.clone() else {
         return Err(refus(trf!(
             "le programme de {nom} ({pid}) ne se lit pas : rien n'est arrêté à l'aveugle",
             "the program of {nom} ({pid}) cannot be read: nothing is stopped blindly"
+        )));
+    };
+    let Some(raison) = a.soupcon(pid, &v) else {
+        return Err(refus(trf!(
+            "relu en administrateur, {nom} ({pid}) n'a rien de suspect : rien n'est fait",
+            "read again as administrator, {nom} ({pid}) has nothing suspicious: nothing is done"
         )));
     };
     let montre = echappe(exe.as_bytes());

@@ -1127,7 +1127,13 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
         ),
         commandes,
     );
-    if r.commandes.is_empty() {
+    if r.commandes.is_empty() && !detournees.is_empty() {
+        // Des redirections trouvées, sans nouvelle version du fichier : à défaire à la main, jamais « rien à faire ».
+        r.bloquee = Some(tr!(
+            "le fichier hosts se corrige à la main (# devant les lignes trouvées)",
+            "the hosts file is fixed by hand (# in front of the lines found)"
+        ));
+    } else if r.commandes.is_empty() {
         r.inutile = Some(rien_de_detourne(hosts_lu, etat.is_some()).into());
     } else {
         // Par son chemin dans System32, jamais par son seul nom (`gestes::PROGRAMMES`).

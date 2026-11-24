@@ -22,9 +22,15 @@ pub fn constat() -> Constat {
 /// PowerShell). Rien n'est conclu pour eux.
 fn non_lu(inutile: &str) -> Option<&'static str> {
     let dit = |fr, en| inutile.contains(fr) || inutile.contains(en);
-    if dit("fichier hosts non lu", "hosts file not read") {
+    let proxy = dit("réglages du proxy non lus", "proxy settings not read");
+    if dit("fichier hosts non lu", "hosts file not read") && proxy {
+        Some(tr!(
+            "fichier hosts et réglages du proxy illisibles",
+            "hosts file and proxy settings unreadable"
+        ))
+    } else if dit("fichier hosts non lu", "hosts file not read") {
         Some(tr!("fichier hosts illisible", "hosts file unreadable"))
-    } else if dit("non lus", "not read") {
+    } else if proxy {
         Some(tr!("réglages du proxy illisibles", "proxy settings unreadable"))
     } else {
         None
@@ -77,7 +83,7 @@ mod tests {
         );
         assert_eq!(
             non_lu("fichier hosts non lu, réglages du proxy non lus"),
-            Some("fichier hosts illisible")
+            Some("fichier hosts et réglages du proxy illisibles")
         );
         assert_eq!(
             non_lu("aucune redirection dans le fichier hosts (réglages du proxy non lus)"),

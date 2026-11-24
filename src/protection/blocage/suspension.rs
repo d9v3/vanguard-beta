@@ -216,9 +216,12 @@ pub(crate) fn lire(pid: u32, chemin: &str, depart_connu: Option<u64>) -> Lu {
             }
             Err(_) => return Lu::Illisible,
         };
-        if matches!(processus::etat_du_stat(&stat), Some('Z' | 'X')) {
-            return Lu::Fini;
-        }
+        let etat = match processus::etat_du_stat(&stat) {
+            Some('Z' | 'X') => return Lu::Fini,
+            Some('T' | 't') => Lu::Gele,
+            Some(_) => Lu::Tourne,
+            None => return Lu::Illisible,
+        };
         let Some(d) = processus::debut_du_stat(&stat) else {
             return Lu::Illisible;
         };
@@ -229,15 +232,18 @@ pub(crate) fn lire(pid: u32, chemin: &str, depart_connu: Option<u64>) -> Lu {
         // départ connu et le même, c'est bien le processus suspendu (un `exec` garde le départ) : stat, lisible de
         // tous, dit s'il tourne ; alors la suspension de Vanguard n'y est plus, rien à reprendre.
         match super::gestes::chemin_du_processus(pid) {
-            None if depart_connu.is_some() && processus::est_gele(pid) == Some(false) => return Lu::Tourne,
+            None if depart_connu.is_some() && etat == Lu::Tourne => return Lu::Tourne,
             None => return Lu::Illisible,
             Some(a) if !super::gestes::meme_chemin(&a, chemin) => return Lu::Autre,
             Some(_) => {}
         }
-        match processus::est_gele(pid) {
-            Some(true) => Lu::Gele,
-            Some(false) => Lu::Tourne,
-            None => Lu::Fini,
+        // Relu, pas celui de plus haut : une lecture ratée ici ne prouve ni la fin ni la reprise.
+        match crate::socle::lire_texte(format!("/proc/{pid}/stat")).map(|s| processus::etat_du_stat(&s)) {
+            Ok(Some('Z' | 'X')) => Lu::Fini,
+            Ok(Some('T' | 't')) => Lu::Gele,
+            Ok(Some(_)) => Lu::Tourne,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => Lu::Fini,
+            Ok(None) | Err(_) => Lu::Illisible,
         }
     }
     #[cfg(windows)]

@@ -416,8 +416,9 @@ pub(crate) fn locaux(mountinfo: &str) -> Vec<Montage> {
         }
         match v.iter_mut().find(|x| x.dev == m.dev) {
             None => v.push(m),
-            // Un point de montage hors UTF-8, lu avec des « � », ne désigne rien sur le disque : marqué par un autre
-            // point du même système de fichiers, s'il y en a un (sinon l'échec du marquage est compté et dit).
+            // Un point de montage hors UTF-8, lu avec des « � », ne désigne pas ce dossier-là (un autre peut porter ce
+            // nom) : marqué par un autre point du même système de fichiers, s'il y en a un ; sinon `Marques` ne le
+            // marque pas et le dit.
             Some(x)
                 if x.point.contains(char::REPLACEMENT_CHARACTER) && !m.point.contains(char::REPLACEMENT_CHARACTER) =>
             {

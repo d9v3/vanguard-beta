@@ -14,6 +14,26 @@ use crate::{tr, trf};
 
 const CAT: &str = "Extensions";
 
+/// Ce qui se lit au plus d'un fichier de profil : les plus gros font quelques Mio.
+const PROFIL_MAX: u64 = 64 << 20;
+
+/// Les noms traduits d'une extension : quelques dizaines de Kio.
+const MESSAGES_MAX: u64 = 4 << 20;
+
+/// Le texte d'un fichier de profil. Ces dossiers sont au compte : un tube ou un fichier énorme posé là est dit
+/// illisible, jamais attendu ni chargé. Un lien est suivi (un profil rangé ailleurs par la personne).
+pub(super) fn lire_du_profil(chemin: &Path) -> std::io::Result<String> {
+    lire_borne(chemin, PROFIL_MAX)
+}
+
+fn lire_borne(chemin: &Path, max: u64) -> std::io::Result<String> {
+    #[cfg(unix)]
+    let octets = crate::socle::lire_ordinaire_au_bout(chemin, max)?;
+    #[cfg(windows)]
+    let octets = crate::socle::lire_ordinaire(chemin, max)?;
+    Ok(crate::socle::texte_des_octets(octets))
+}
+
 /// Une extension installée et active.
 #[derive(Debug, Default)]
 struct Extension {
@@ -62,11 +82,12 @@ fn chaines(v: &Value) -> Vec<&str> {
 
 /// Extensions actives d'un `extensions.json` de la famille Firefox (installées par l'utilisateur seulement :
 /// thèmes, dictionnaires et modules du navigateur exclus). Le nom, choisi par l'auteur de l'extension, est lu prêt
-/// à montrer, comme dans la famille Chromium. `None` : ce n'est pas du JSON, donc rien n'est lu (jamais « aucune extension »).
+/// à montrer, comme dans la famille Chromium. `None` : pas de
+/// liste dans ce texte, donc rien n'est lu (jamais « aucune extension »).
 fn lire_firefox(texte: &str) -> Option<Vec<Extension>> {
     let json = serde_json::from_str::<Value>(texte).ok()?;
     let mut extensions = Vec::new();
-    for a in json.get("addons").and_then(Value::as_array).into_iter().flatten() {
+    for a in json.get("addons")?.as_array()? {
         if a["location"] != "app-profile" || a["type"] != "extension" || a["active"] != true {
             continue;
         }
@@ -111,7 +132,7 @@ fn nom_chromium(manifeste: &Value, dossier: Option<&Path>) -> String {
     };
     let langue = manifeste["default_locale"].as_str().unwrap_or("en");
     dossier
-        .and_then(|d| std::fs::read_to_string(d.join("_locales").join(langue).join("messages.json")).ok())
+        .and_then(|d| lire_borne(&d.join("_locales").join(langue).join("messages.json"), MESSAGES_MAX).ok())
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|m| {
             m.as_object()?
@@ -125,16 +146,16 @@ fn nom_chromium(manifeste: &Value, dossier: Option<&Path>) -> String {
 /// Extensions actives de `extensions.settings` (Preferences ou Secure Preferences d'un profil Chromium).
 /// Emplacements : 1 boutique, 2-3 et 6 posées par un programme, 4 décompressée (mode développeur), 5 et 10
 /// composants du navigateur, 7 et 9 politique d'entreprise, 8 ligne de commande.
-/// `None` : ce n'est pas du JSON.
+/// `None` : ce ne sont pas des réglages (pas du JSON, pas un objet, une liste d'extensions d'un autre genre).
 fn lire_chromium(texte: &str, profil: &Path) -> Option<Vec<Extension>> {
     let json = serde_json::from_str::<Value>(texte).ok()?;
+    json.as_object()?;
     let mut extensions = Vec::new();
-    for (id, e) in json
-        .pointer("/extensions/settings")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
+    let inscrites = match json.pointer("/extensions/settings") {
+        Some(s) => Some(s.as_object()?),
+        None => None,
+    };
+    for (id, e) in inscrites.into_iter().flatten() {
         let manifeste = &e["manifest"];
         let emplacement = e["location"].as_i64().unwrap_or(0);
         let desactivee = e["disable_reasons"].as_array().is_some_and(|r| !r.is_empty())
@@ -343,6 +364,37 @@ pub(super) fn profils(racine: &Path, firefox: bool) -> Vec<(String, PathBuf)> {
     p
 }
 
+/// Ce qui empêche de connaître les profils d'une racine : elle, un de ses dossiers ou le fichier attendu existe sans
+/// pouvoir se lire. `profils` n'en voit rien.
+fn profils_non_lus(racine: &Path, firefox: bool) -> Vec<String> {
+    use std::io::ErrorKind::{NotADirectory, NotFound};
+    let absent = |e: &std::io::Error| matches!(e.kind(), NotFound | NotADirectory);
+    let entrees = match std::fs::read_dir(racine) {
+        Ok(entrees) => entrees,
+        Err(e) if absent(&e) => return Vec::new(),
+        Err(_) => return vec![tr!("dossier des profils", "profiles folder").to_string()],
+    };
+    let fichier = if firefox { "extensions.json" } else { "Preferences" };
+    let mut non_lus = Vec::new();
+    for entree in entrees {
+        let Ok(entree) = entree else {
+            non_lus.push(tr!("dossier des profils", "profiles folder").to_string());
+            continue;
+        };
+        let nom = affichable(&entree.file_name().to_string_lossy());
+        if !firefox && nom != "Default" && !nom.starts_with("Profile ") {
+            continue;
+        }
+        match std::fs::metadata(entree.path().join(fichier)) {
+            Ok(m) if m.is_file() => {}
+            Err(e) if absent(&e) => {}
+            _ => non_lus.push(format!("{nom}/{fichier}")),
+        }
+    }
+    non_lus.sort();
+    non_lus
+}
+
 /// Les extensions d'un profil, et ceux de ses fichiers qui existent sans se lire (droits, disque, JSON abîmé) : ce
 /// qui n'est pas lu est dit, jamais compté comme « aucune extension ».
 fn lire_profil(chemin: &Path, firefox: bool) -> (Vec<Extension>, Vec<&'static str>) {
@@ -356,9 +408,8 @@ fn lire_profil(chemin: &Path, firefox: bool) -> (Vec<Extension>, Vec<&'static st
     let mut extensions = Vec::new();
     let mut illisibles = Vec::new();
     for &f in fichiers {
-        let lu = match std::fs::read(chemin.join(f)) {
-            Ok(octets) => {
-                let texte = crate::socle::texte_des_octets(octets);
+        let lu = match lire_du_profil(&chemin.join(f)) {
+            Ok(texte) => {
                 if firefox {
                     lire_firefox(&texte)
                 } else {
@@ -379,7 +430,19 @@ fn lire_profil(chemin: &Path, firefox: bool) -> (Vec<Extension>, Vec<&'static st
 pub fn extensions() -> Vec<Constat> {
     let mut constats = Vec::new();
     let mut vus = Vec::new();
+    let mut non_lus_vus = Vec::new();
     for (nom, racine, firefox) in racines() {
+        for quoi in profils_non_lus(&racine, firefox) {
+            // Une racine atteinte par deux chemins ne se dit qu'une fois.
+            let dit = trf!(
+                "extensions de {nom} : {quoi} illisible",
+                "{nom} extensions: {quoi} unreadable"
+            );
+            if !non_lus_vus.contains(&dit) {
+                constats.push(impossible(CAT, &dit));
+                non_lus_vus.push(dit);
+            }
+        }
         let liste = profils(&racine, firefox);
         let plusieurs = liste.len() > 1;
         for (dossier, chemin) in liste {
@@ -461,7 +524,8 @@ mod tests {
             [Some(Niveau::Eleve), Some(Niveau::Info)]
         );
         assert!(c[1].message.contains("Espion ["));
-        assert!(lire_firefox("pas du json").is_none() && lire_firefox("{}").unwrap().is_empty());
+        assert!(lire_firefox("pas du json").is_none() && lire_firefox("{}").is_none());
+        assert!(lire_firefox(r#"{"addons":[]}"#).unwrap().is_empty());
     }
 
     #[test]
@@ -492,6 +556,11 @@ mod tests {
         // Nom à traduire sans dossier de langues : le nom brut reste, sans planter.
         let m: Value = serde_json::from_str(r#"{"name":"__MSG_extName__"}"#).unwrap();
         assert_eq!(nom_chromium(&m, None), "__MSG_extName__");
+        // Ni une liste, ni des extensions d'un autre genre : rien n'est lu.
+        for pas_des_reglages in ["[]", "null", r#"{"extensions":{"settings":[]}}"#] {
+            assert!(lire_chromium(pas_des_reglages, Path::new("/profil")).is_none());
+        }
+        assert!(lire_chromium("{}", Path::new("/profil")).unwrap().is_empty());
     }
 
     /// Un fichier d'extensions qui existe sans se lire (JSON abîmé, dossier à sa place) est dit illisible, jamais
@@ -516,6 +585,46 @@ mod tests {
         assert_eq!(lire(false), (vec![], vec![]));
         std::fs::create_dir(d.join("Secure Preferences")).unwrap();
         assert_eq!(lire(false), (vec![], vec!["Secure Preferences"]));
+        std::fs::remove_dir(d.join("Secure Preferences")).unwrap();
+        std::fs::File::create(d.join("Secure Preferences"))
+            .unwrap()
+            .set_len(PROFIL_MAX + 1)
+            .unwrap();
+        assert_eq!(lire(false), (vec![], vec!["Secure Preferences"]));
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(d.join("Secure Preferences")).unwrap();
+            crate::essais::tube_nomme(&d.join("Secure Preferences")).unwrap();
+            assert_eq!(lire(false), (vec![], vec!["Secure Preferences"]));
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Un profil dont le fichier est autre chose qu'un fichier, ou une racine fermée, est dit ; ce qui n'est pas un
+    /// profil et un navigateur absent ne disent rien.
+    #[test]
+    fn profils_non_lus_sont_dits() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("profiles.ini"), "").unwrap();
+        std::fs::create_dir(d.join("Crash Reports")).unwrap();
+        std::fs::create_dir_all(d.join("Profile 1/Preferences")).unwrap();
+        std::fs::create_dir_all(d.join("Autre/Preferences")).unwrap();
+        std::fs::create_dir(d.join("Default")).unwrap();
+        std::fs::write(d.join("Default/Preferences"), "{}").unwrap();
+        assert_eq!(profils_non_lus(&d, false), ["Profile 1/Preferences"]);
+        assert_eq!(profils_non_lus(&d, true), Vec::<String>::new());
+        assert_eq!(profils_non_lus(&d.join("absent"), true), Vec::<String>::new());
+        assert_eq!(profils_non_lus(&d.join("profiles.ini"), true), Vec::<String>::new());
+        #[cfg(unix)]
+        // Pour root, rien n'est fermé.
+        if crate::socle::euid() != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let droits = |m| std::fs::set_permissions(&d, std::fs::Permissions::from_mode(m)).unwrap();
+            droits(0o000);
+            let ferme = profils_non_lus(&d, true);
+            droits(0o700);
+            assert_eq!(ferme.len(), 1);
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 

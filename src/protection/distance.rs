@@ -431,6 +431,29 @@ struct Releve {
     lu: Lu,
 }
 
+/// La commande qui efface ce fichier, ou aucune : un nom hors UTF-8, rendu en texte, en désignerait un autre.
+#[cfg(unix)]
+fn retrait_du_fichier(commande: &str, chemin: &std::path::Path) -> Vec<String> {
+    chemin
+        .to_str()
+        .map(|c| format!("{commande} {}", sh_chaine(c)))
+        .into_iter()
+        .collect()
+}
+
+/// Où est ce fichier, et ce qu'il faut savoir pour l'effacer quand aucune commande ne le désigne.
+#[cfg(unix)]
+fn ou_avec_retrait(chemin: &std::path::Path) -> String {
+    let ou = chemin_affichable(chemin);
+    if chemin.to_str().is_some() {
+        return ou;
+    }
+    trf!(
+        "{ou} (nom hors UTF-8 : à effacer à la main)",
+        "{ou} (name not in UTF-8: to delete by hand)"
+    )
+}
+
 /// Un dossier lu, ou absent (rien à y trouver) ; `false` : il existe sans se lire.
 #[cfg(unix)]
 fn lisible_ou_absent(dossier: &std::path::Path) -> bool {
@@ -440,18 +463,10 @@ fn lisible_ou_absent(dossier: &std::path::Path) -> bool {
     }
 }
 
-/// Pour le bilan et le parcours : les trouvailles. Sous Linux, sans les processus, « rien trouvé » ne se conclut pas :
-/// `None`, non vérifié ; ce qui a été trouvé reste dit.
-fn relever() -> Option<Vec<Trouvaille>> {
-    pour_le_bilan(relever_tout())
-}
-
-fn pour_le_bilan(r: Option<Releve>) -> Option<Vec<Trouvaille>> {
-    let r = r?;
-    if cfg!(target_os = "linux") && !r.lu.en_cours && r.trouvailles.is_empty() {
-        return None;
-    }
-    Some(r.trouvailles)
+/// Pour le bilan et le parcours. Sous Linux, sans les processus, « rien trouvé » ne se conclut pas : `None`, non
+/// vérifié ; ce qui a été trouvé reste dit.
+fn pour_le_bilan(r: Option<Releve>) -> Option<Releve> {
+    r.filter(|r| !cfg!(target_os = "linux") || r.lu.en_cours || !r.trouvailles.is_empty())
 }
 
 // ───────────────────────────── Jugement ─────────────────────────────
@@ -593,12 +608,21 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
 
 /// Au bilan.
 pub fn constats() -> Vec<Constat> {
-    match relever() {
-        Some(t) => juger(&t, aujourd_hui()),
-        None => vec![impossible(
-            CAT,
-            tr!("PowerShell indisponible ou bloqué", "PowerShell unavailable or blocked"),
-        )],
+    match pour_le_bilan(relever_tout()) {
+        Some(r) => resultat::juger_releve(&r, aujourd_hui()),
+        None => vec![impossible(CAT, rien_de_lisible())],
+    }
+}
+
+/// Pourquoi rien ne s'est conclu (`pour_le_bilan`).
+fn rien_de_lisible() -> &'static str {
+    if cfg!(windows) {
+        tr!("PowerShell indisponible ou bloqué", "PowerShell unavailable or blocked")
+    } else {
+        tr!(
+            "programmes en cours : leur liste ne se lit pas",
+            "running programs: their list cannot be read"
+        )
     }
 }
 
@@ -639,13 +663,9 @@ fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) -> bool {
             t.push(Trouvaille {
                 logiciel: i,
                 trace: Trace::Fichier,
-                ou: chemin_affichable(&chemin),
+                ou: ou_avec_retrait(&chemin),
                 depuis: date_de(meta.modified()),
-                retrait: vec![format!(
-                    "rm -{} {}",
-                    if application { "rf" } else { "f" },
-                    sh_chaine(&chemin.to_string_lossy())
-                )],
+                retrait: retrait_du_fichier(if application { "rm -rf" } else { "rm -f" }, &chemin),
                 arret: Vec::new(),
                 refuse: false,
             });
@@ -686,7 +706,7 @@ fn relever_tout() -> Option<Releve> {
     // Les deux, toujours : l'un ne se lit pas sans que l'autre soit sauté.
     let en_cours = processus(&mut t) & services_en_marche(&mut t, en_marche.as_deref());
     let demarrage = demarrage_linux(&mut t, &maison);
-    let declares = std::fs::read_to_string(maison.join(".config/user-dirs.dirs")).unwrap_or_default();
+    let declares = crate::protection::pieges::dossiers_declares(&maison.join(".config"));
     let declare = |cle: &str, defaut: &str| {
         crate::protection::pieges::dossier_declare(&declares, cle, &maison).unwrap_or_else(|| maison.join(defaut))
     };
@@ -1024,9 +1044,9 @@ fn dossiers_opt(t: &mut Vec<Trouvaille>) {
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Installe,
-            ou: chemin_affichable(&chemin),
+            ou: ou_avec_retrait(&chemin),
             depuis: date_de(e.metadata().and_then(|m| m.modified())),
-            retrait: vec![format!("sudo rm -rf {}", sh_chaine(&chemin.to_string_lossy()))],
+            retrait: retrait_du_fichier("sudo rm -rf", &chemin),
             arret: Vec::new(),
             refuse: false,
         });
@@ -1106,6 +1126,16 @@ fn commande_d_unite(prefixe: &str, action: ActionUnite, unite: &str) -> String {
 #[cfg(target_os = "linux")]
 const LANCEUR_MAX: u64 = 1 << 20;
 
+/// Un lanceur qui ne lance rien : un dossier, ou un lien vers /dev/null (la façon de masquer celui du système). Une
+/// session ne lit que les simples fichiers.
+#[cfg(target_os = "linux")]
+fn lanceur_vide(chemin: &std::path::Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    std::fs::metadata(chemin).is_ok_and(|m| {
+        m.is_dir() || (m.file_type().is_char_device() && libc::major(m.rdev()) == 1 && libc::minor(m.rdev()) == 3)
+    })
+}
+
 /// Les lanceurs .desktop d'un dossier d'autostart. `false` : le dossier ou un lanceur existe sans se lire.
 #[cfg(target_os = "linux")]
 fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> bool {
@@ -1122,7 +1152,7 @@ fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> 
         let contenu = match crate::socle::lire_ordinaire_au_bout(&chemin, LANCEUR_MAX) {
             Ok(octets) => crate::socle::texte_des_octets(octets),
             Err(e) => {
-                lus &= e.kind() == std::io::ErrorKind::NotFound;
+                lus &= e.kind() == std::io::ErrorKind::NotFound || lanceur_vide(&chemin);
                 String::new()
             }
         };
@@ -1136,9 +1166,9 @@ fn autostart(t: &mut Vec<Trouvaille>, dossier: &std::path::Path, sudo: &str) -> 
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Demarrage,
-            ou: chemin_affichable(&chemin),
+            ou: ou_avec_retrait(&chemin),
             depuis: None,
-            retrait: vec![format!("{sudo}rm -f {}", sh_chaine(&chemin.to_string_lossy()))],
+            retrait: retrait_du_fichier(&format!("{sudo}rm -f"), &chemin),
             arret: Vec::new(),
             refuse: false,
         });
@@ -1936,19 +1966,27 @@ pub fn menu() {
     let releve = relever_tout();
     let aujourd_hui = aujourd_hui();
     crate::modele::resultat::verser(&resultat::resultat(releve.as_ref(), aujourd_hui, debut));
-    let Some(trouvailles) = pour_le_bilan(releve) else {
+    let Some(releve) = pour_le_bilan(releve) else {
+        let raison = rien_de_lisible();
         trp!(
-            "  ✖ Impossible de vérifier (PowerShell indisponible ou bloqué).",
-            "  ✖ Could not check (PowerShell unavailable or blocked)."
+            "  ✖ Impossible de vérifier ({raison}).",
+            "  ✖ Could not check ({raison})."
         );
         return;
     };
+    let non_lus = resultat::non_lus(&releve);
+    let trouvailles = releve.trouvailles;
     let visibles: Vec<&Trouvaille> = trouvailles
         .iter()
         // Un rang hors de la liste (jamais : il vient d'elle) reste visible plutôt que d'être tu.
         .filter(|t| LOGICIELS.get(t.logiciel).is_none_or(|l| !l.integre) || matches!(t.trace, Trace::EnCours { .. }))
         .collect();
-    if visibles.is_empty() {
+    for texte in &non_lus {
+        trp!("  ✖ Non vérifié : {texte}.", "  ✖ Not checked: {texte}.");
+    }
+    if visibles.is_empty() && !non_lus.is_empty() {
+        dire(resultat::rien_dans_ce_qui_est_lu());
+    } else if visibles.is_empty() {
         afficher_aligne(
             &format!("  {VERT}✔{RESET} "),
             tr!(
@@ -2374,11 +2412,13 @@ mod tests {
         assert_eq!(t, []);
     }
 
-    /// Un lanceur au nom en Latin-1 est jugé quand même ; un dossier ou un tube à sa place est dit illisible, sans
-    /// attendre ; un lien mort ne lance rien.
+    /// Un lanceur au contenu ou au nom en Latin-1 est jugé quand même (son retrait, sans commande : elle désignerait un
+    /// autre fichier) ; un tube ou un lanceur trop gros est dit illisible, sans attendre ; un lien mort, un dossier ou
+    /// un lien vers /dev/null ne lance rien.
     #[cfg(target_os = "linux")]
     #[test]
     fn autostart_lu_en_octets() {
+        use std::os::unix::ffi::OsStrExt;
         let d = jetable("autostart");
         assert!(autostart(&mut Vec::new(), &d.join("absent"), ""));
         std::fs::write(
@@ -2390,10 +2430,35 @@ mod tests {
         let mut t = Vec::new();
         assert!(autostart(&mut t, &d, ""));
         assert_eq!(t.len(), 1);
-        crate::essais::tube_nomme(&d.join("tube.desktop")).unwrap();
+        assert!(t[0].retrait[0].starts_with("rm -f "));
+        std::fs::create_dir(d.join("dossier.desktop")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", d.join("masque.desktop")).unwrap();
+        assert!(autostart(&mut Vec::new(), &d, ""));
+        let latin = d.join(std::ffi::OsStr::from_bytes(b"anydesk\xff.desktop"));
+        std::fs::write(&latin, b"").unwrap();
         let mut t = Vec::new();
-        assert!(!autostart(&mut t, &d, ""));
-        assert_eq!(t.len(), 1);
+        assert!(autostart(&mut t, &d, ""));
+        let du_latin: Vec<_> = t.iter().filter(|x| x.ou.contains("hors UTF-8")).collect();
+        assert_eq!((t.len(), du_latin.len()), (2, 1), "{t:?}");
+        assert_eq!(du_latin[0].retrait, Vec::<String>::new());
+        // Le nom vient du disque : toujours entre apostrophes.
+        assert_eq!(
+            retrait_du_fichier("rm -f", std::path::Path::new("/a;b'c")),
+            [r"rm -f '/a;b'\''c'"]
+        );
+        std::fs::remove_file(&latin).unwrap();
+        for pose in [0, 1] {
+            let p = d.join("illisible.desktop");
+            if pose == 0 {
+                crate::essais::tube_nomme(&p).unwrap();
+            } else {
+                std::fs::File::create(&p).unwrap().set_len(LANCEUR_MAX + 1).unwrap();
+            }
+            let mut t = Vec::new();
+            assert!(!autostart(&mut t, &d, ""), "{pose}");
+            assert_eq!(t.len(), 1);
+            std::fs::remove_file(&p).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

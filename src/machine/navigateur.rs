@@ -544,7 +544,7 @@ pub fn navigateurs() -> Vec<Constat> {
             }
             vus.push(reel);
             // Absent : un profil neuf, valeurs par défaut. Illisible : rien n'est conclu.
-            let lire = |f: &str| match std::fs::read_to_string(chemin.join(f)) {
+            let lire = |f: &str| match super::extensions::lire_du_profil(&chemin.join(f)) {
                 Ok(t) => Ok(t),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
                 Err(e) => Err(format!("{f} : {e}")),
@@ -559,7 +559,7 @@ pub fn navigateurs() -> Vec<Constat> {
                     r
                 })
             } else {
-                let etat_local = std::fs::read_to_string(racine.join("Local State")).unwrap_or_default();
+                let etat_local = super::extensions::lire_du_profil(&racine.join("Local State")).unwrap_or_default();
                 lire("Preferences").and_then(|p| {
                     let mut r = lire_chromium(&p, &etat_local).ok_or_else(|| "Preferences".to_string())?;
                     let lu = serde_json::from_str::<Value>(&p).unwrap_or_default();
@@ -965,7 +965,7 @@ pub fn post_quantique() -> Vec<Constat> {
             } else {
                 nom.to_string()
             };
-            let lire = |f: &str| match std::fs::read_to_string(chemin.join(f)) {
+            let lire = |f: &str| match super::extensions::lire_du_profil(&chemin.join(f)) {
                 Ok(t) => Ok(t),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
                 Err(e) => Err(format!("{f} : {e}")),

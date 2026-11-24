@@ -1049,7 +1049,19 @@ fn fichiers_recents(dossier: &Path) -> Partie {
     let depuis = SystemTime::now()
         .checked_sub(Duration::from_secs(JOURS_RECENTS.saturating_mul(86_400)))
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let mut parcours = parcourir(&racines, dossier, depuis, &os::points_de_montage());
+    let mut parcours = match os::points_de_montage() {
+        Ok(montages) => parcourir(&racines, dossier, depuis, &montages),
+        Err(e) => {
+            p.manque(
+                Bi::new(
+                    "Fichiers récents : points de montage illisibles, rien n'est parcouru",
+                    "Recent files: mount points unreadable, nothing is looked at",
+                ),
+                Raison::Erreur(e.to_string()),
+            );
+            parcourir(&[], dossier, depuis, &[])
+        }
+    };
     let mut empreintes = 0usize;
     let fin = Instant::now()
         .checked_add(DELAI_EMPREINTES)

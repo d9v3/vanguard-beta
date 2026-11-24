@@ -861,6 +861,12 @@ fn arret_refuse() {
             assert!(r.raison.contains("réinstallez"), "{}", r.raison);
         }
     }
+    // Ni lu ni soupçonné : « ne se lit pas », jamais « rien de suspect ».
+    let mut a = faux_programme(vue("mineur")).repondre("o");
+    a.soupcons.clear();
+    a.processus.get_mut(&4242).unwrap().exe = None;
+    let r = faire_avec(ARRET, &mut a, &mut FauxServices::nouveau());
+    assert!(!r.reussi && r.raison.contains("ne se lit pas"), "{}", r.raison);
     // Entrée seule : non, rien de copié ni d'arrêté.
     let mut a = faux_programme(vue("mineur")).repondre("");
     assert!(!faire_avec(ARRET, &mut a, &mut FauxServices::nouveau()).reussi);

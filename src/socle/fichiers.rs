@@ -262,6 +262,9 @@ pub(crate) fn texte_des_octets(octets: Vec<u8>) -> String {
 /// nom UTF-8 coupé à 15 octets), d'un fichier projeté, d'un point de montage. `read_to_string` refuse le fichier
 /// entier au premier octet qui n'est pas de l'UTF-8 : le programme devenait invisible, ou tous les montages. Deux
 /// noms différents peuvent se montrer pareils : on ne reconnaît personne à son seul nom.
+///
+/// Réservé à /proc, /sys et aux fichiers de root : rien ne borne la lecture, et un tube y attendrait. Un fichier du
+/// compte passe par `lire_ordinaire_au_bout`.
 pub(crate) fn lire_texte(chemin: impl AsRef<std::path::Path>) -> std::io::Result<String> {
     std::fs::read(chemin).map(texte_des_octets)
 }
@@ -702,7 +705,8 @@ mod tests {
     }
 
     /// Les lectures en UTF-8 strict de /proc et des fichiers du système qu'un nom d'ailleurs peut rendre illisibles :
-    /// numéro de ligne et extrait.
+    /// numéro de ligne et extrait. Ce qu'il ne voit pas, à relire soi-même : un chemin passé dans une variable ou par
+    /// une fermeture (`let lire = |c| read_to_string(c)`).
     fn lectures_strictes(code: &str) -> Vec<(usize, String)> {
         let sensibles = [
             "/proc/",
@@ -718,6 +722,13 @@ mod tests {
             "\"maps\"",
             "\"smaps\"",
             "\"children\"",
+            "/stat\"",
+            "/status\"",
+            "/comm\"",
+            "/cgroup\"",
+            "/maps\"",
+            "/mountinfo\"",
+            "/mounts\"",
             "fichier_hosts()",
         ];
         let mut trouves = Vec::new();
@@ -783,6 +794,7 @@ mod tests {
             "x;\nlet s = std::fs::read_to_string(racine.join(\"status\"));",
             "x;\nstd::fs::File::open(\"/proc/self/mounts\")?\n    .read_to_string(&mut t)?;",
             "std::fs::read_to_string(\"/etc/passwd\")",
+            "std::fs::read_to_string(racine.join(\"1/cgroup\"))",
         ] {
             assert_eq!(lectures_strictes(mauvais).len(), 1, "{mauvais}");
         }

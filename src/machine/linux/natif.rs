@@ -236,7 +236,7 @@ pub(crate) fn services_actifs(services: &[&str]) -> Option<Vec<bool>> {
 /// user.slice. Le processus 1 doit se lire : sinon /proc cache les autres comptes et « aucun » serait faux.
 fn services_actifs_sous(racine: &Path, services: &[&str]) -> Option<Vec<bool>> {
     let proc = sous(racine, "/proc");
-    std::fs::read_to_string(proc.join("1/cgroup")).ok()?;
+    crate::socle::lire_texte(proc.join("1/cgroup")).ok()?;
     let groupes: Vec<String> = services
         .iter()
         .map(|s| format!("/system.slice/{}", nom_complet(s)))

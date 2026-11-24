@@ -1406,11 +1406,6 @@ pub(crate) mod tests_sh_chaine {
             "lignes de nft du code, chacune passée par sh_chaine ; l'élément est une adresse ou un port analysés",
         ),
         (
-            "protection/distance.rs",
-            "if application { \"rf\" } else { \"f\" }",
-            "deux constantes",
-        ),
-        (
             "reparer.rs",
             "description",
             "entre_apostrophes, qui passe par sh_chaine sous Unix",

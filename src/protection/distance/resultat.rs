@@ -69,19 +69,30 @@ pub(super) fn resultat(r: Option<&Releve>, aujourd_hui: NaiveDate, debut: Debut)
             Couverture::default(),
         );
     };
-    let couverture = couverture(r);
-    let mut constats: Vec<Constat> = juger(&r.trouvailles, aujourd_hui);
-    // Rien trouvé dans ce qui a pu être lu : le « rien trouvé » du bilan affirmerait aussi ce qui n'a pas été lu.
-    if !couverture.non_verifies.is_empty() && constats.iter().all(|c| c.probleme.is_none()) {
-        constats = vec![ok(
-            CAT,
-            crate::tr!(
-                "Aucun logiciel de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…) dans ce qui a pu être lu ; le reste n'est pas vérifié.",
-                "No remote control tool (AnyDesk, TeamViewer, RustDesk…) in what could be read; the rest is not checked."
-            ),
-        )];
+    Resultat::nouveau(ID, debut, &juger_releve(r, aujourd_hui), couverture(r))
+}
+
+/// Ce qui n'a pas pu être lu, dans la langue du moment.
+pub(super) fn non_lus(r: &Releve) -> Vec<String> {
+    couverture(r).non_verifies
+}
+
+/// « Rien trouvé », quand tout n'a pas été lu.
+pub(super) fn rien_dans_ce_qui_est_lu() -> &'static str {
+    crate::tr!(
+        "Aucun logiciel de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…) dans ce qui a pu être lu ; le reste n'est pas vérifié.",
+        "No remote control tool (AnyDesk, TeamViewer, RustDesk…) in what could be read; the rest is not checked."
+    )
+}
+
+/// Le jugement du relevé (bilan et résultat). Rien trouvé sans avoir tout lu : le « rien trouvé » de `juger` affirmerait
+/// aussi ce qui n'a pas été lu.
+pub(super) fn juger_releve(r: &Releve, aujourd_hui: NaiveDate) -> Vec<Constat> {
+    let constats = juger(&r.trouvailles, aujourd_hui);
+    if constats.iter().all(|c| c.probleme.is_none()) && !non_lus(r).is_empty() {
+        return vec![ok(CAT, rien_dans_ce_qui_est_lu())];
     }
-    Resultat::nouveau(ID, debut, &constats, couverture)
+    constats
 }
 
 #[cfg(test)]
@@ -123,10 +134,16 @@ mod tests {
         };
         let r = resultat(Some(&sans_processus), aujourd_hui, debut());
         assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 3));
+        assert_eq!(
+            juger_releve(&sans_processus, aujourd_hui)[0].message,
+            rien_dans_ce_qui_est_lu()
+        );
+        assert_eq!(non_lus(&sans_processus).len(), 1);
         let tout = Releve {
             lu: TOUT_LU,
             ..Releve::default()
         };
+        assert_ne!(juger_releve(&tout, aujourd_hui)[0].message, rien_dans_ce_qui_est_lu());
         assert_eq!(resultat(Some(&tout), aujourd_hui, debut()).verdict(), "sain");
     }
 

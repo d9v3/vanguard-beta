@@ -80,7 +80,8 @@ fn hidepid(montages: &str) -> bool {
     montages
         .lines()
         .filter_map(|l| {
-            let mut c = l.split_whitespace();
+            // Une espace, et elle seule : la source d'un montage FUSE peut porter une espace insécable.
+            let mut c = l.split(' ');
             let (_, point, genre, options) = (c.next()?, c.next()?, c.next()?, c.next()?);
             (point == "/proc" && genre == "proc").then_some(options)
         })
@@ -554,5 +555,6 @@ mod tests {
         assert!(!hidepid(&proc("relatime")) && !hidepid(&proc("hidepid=0")) && !hidepid(&proc("hidepid=off")));
         // Un autre /proc (celui d'un conteneur) ne compte pas.
         assert!(!hidepid("proc /srv/x/proc proc rw,hidepid=2 0 0\n"));
+        assert!(!hidepid("a\u{a0}/proc\u{a0}proc\u{a0}hidepid=2 /m fuse rw 0 0\n"));
     }
 }
