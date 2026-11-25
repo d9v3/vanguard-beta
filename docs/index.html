@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.97</title>
+<title>Vanguard 0.98</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, GPL-3.0-or-later.">
 <meta name="theme-color" content="#f2f5f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Vanguard 0.97">
+<meta property="og:title" content="Vanguard 0.98">
 <meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, Rust.">
 <meta property="og:url" content="https://d9v3.github.io/vanguard-beta/">
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -327,7 +327,7 @@ details > summary::after { display: none; }
 </header>
 <div class="console" role="note" aria-label="État de la version">
 <div class="cadre">
-<p class="console-etat"><span>Version <b>0.97.0</b></span><span>publiée le <b>22 novembre 2026</b></span><span><b>5 300</b> tests sous Linux · <b>4 086</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
+<p class="console-etat"><span>Version <b>0.98.0</b></span><span>publiée le <b>24 novembre 2026</b></span><span><b>5 343</b> tests sous Linux · <b>4 119</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
 <form class="invite recherche" id="recherche" role="search" hidden>
 <label for="cherche"><b>vanguard ›</b><span class="cache-lecteur"> Chercher dans la page / Search this page</span></label>
 <input id="cherche" type="search" placeholder="chercher : rançongiciel, Wi-Fi, clé…  ( / )" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cherche-etat">
@@ -667,9 +667,9 @@ details > summary::after { display: none; }
 </details>
 <h3 class="sous-titre">Testé à chaque version</h3>
 <div class="chiffres">
-<div class="carte stat"><span class="valeur">≈ 476 400</span><span class="detail">lignes de code Rust</span></div>
-<div class="carte stat"><span class="valeur">5 300</span><span class="detail">tests sous Linux</span></div>
-<div class="carte stat"><span class="valeur">4 086</span><span class="detail">tests sous Windows (Wine)</span></div>
+<div class="carte stat"><span class="valeur">≈ 480 200</span><span class="detail">lignes de code Rust</span></div>
+<div class="carte stat"><span class="valeur">5 343</span><span class="detail">tests sous Linux</span></div>
+<div class="carte stat"><span class="valeur">4 119</span><span class="detail">tests sous Windows (Wine)</span></div>
 <div class="carte stat"><span class="valeur">251</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
@@ -847,7 +847,7 @@ details > summary::after { display: none; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 476 400 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 480 200 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64 ; la fenêtre, facultative, à poser à côté (glibc sous Linux)</dd></div>
 <div><dt>Règles du bilan</dt><dd>139 règles à identifiant stable (<code>LNX-SSH-006</code>) : 95 sous Linux, 82 sous Windows, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Fenêtre egui sur un bureau graphique (lancée seulement si son empreinte est celle gravée dans le programme), sinon menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
@@ -1056,7 +1056,7 @@ vanguard yara --complet</pre>
 <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · agent · extensions · verifier-cle</span></div></header>
 <ul>
 <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
-<li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
+<li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre ; relancer Vanguard ramène devant celle déjà ouverte, et « / » cherche dans tout Vanguard.</li>
 <li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions, second avis ClamAV, programmes indésirables, Agent Vanguard, partage avec l'auteur ; les <b>coulisses</b> montrent, si vous le voulez, chaque commande lancée par Vanguard ; « s » au menu principal.</li>
 </ul>
 <details class="plus"><summary>7 autres points</summary>
@@ -1075,37 +1075,18 @@ vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.97</p>
+<p class="surtitre">Nouveautés de la version 0.98</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>26 changements dans la version 0.97.0, tirés de son <a href="https://github.com/d9v3/vanguard-beta/blob/master/CHANGELOG.md">historique des versions</a>, où chacun se lit en entier.</p>
+<p>7 changements dans la version 0.98.0, tirés de son <a href="https://github.com/d9v3/vanguard-beta/blob/master/CHANGELOG.md">historique des versions</a>, où chacun se lit en entier.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Dépanner avec Claude, depuis la clé : une option, coupée par défaut, et un téléchargement vérifié</b><span>Claude Code, l&#x27;assistant d&#x27;Anthropic, peut voyager sur la clé pour dépanner l&#x27;ordinateur d&#x27;un proche ; <code>CLAUDE_CLE=oui</code> dans <code>~/.config/vanguard/images-cle.conf</code> l&#x27;allume.</span></li>
-      <li><b>Sur l&#x27;ordinateur visité, le lanceur vérifie avant de lancer, puis efface</b><span>« Depanner avec Claude.bat » sous Windows (10 version 1809 ou plus récent), <code>bash -p …/Claude/depanner.sh</code> sous Linux ou sur SystemRescue démarré depuis la clé.</span></li>
-      <li><b>Ce que le lanceur refuse</b></li>
-      <li><b>Sur la clé, chaque binaire est relu au retour, et un seul sort est dit</b><span>Chaque binaire posé est noté (son empreinte) et relu entier au dépôt suivant, comme avant la reprise d&#x27;un déploiement arrêté.</span></li>
-      <li><b>Lever un blocage de version : <code>outils/claude-cle.sh --accepter-version X</code>, et <code>--annuler-acceptation</code></b><span>Le pointeur « stable » n&#x27;est pas signé : une version authentique plus récente, prise une fois, bloque ensuite les plus anciennes.</span></li>
-      <li><b>Limites dites, aussi dans le mode d&#x27;emploi de la clé</b></li>
-      <li><b>Le journal des erreurs et le brouillon de <code>vanguard signaler</code> passent par le masquage commun</b></li>
-      <li><b>Le journal du système est lu en entier, comme <code>journalctl</code></b><span>Après un redémarrage, le journal peut redonner à une nouvelle entrée le numéro d&#x27;une entrée plus ancienne.</span></li>
-      <li><b>Nouvelle porte de lecture pour les assistants d&#x27;IA (<code>vanguard mcp</code>), sous Linux seulement</b><span>Un assistant que vous branchez peut lire l&#x27;état de Vanguard, ses événements et ses constats, sans pouvoir rien changer.</span></li>
-      <li><b>Le masqueur des adresses, commun au journal des erreurs et au brouillon de signalement, en retient plus</b><span>Dans le doute, il masque.</span></li>
-      <li><b>Fenêtre absente : le menu le dit et propose de l&#x27;ajouter</b><span>Quand rien d&#x27;autre ne garde le menu, il dit en une ligne que la fenêtre manque et donne l&#x27;entrée « Mettre Vanguard à jour », qui l&#x27;ajoute après l&#x27;avoir montrée, vérifiée contre l&#x27;empreinte gravée.</span></li>
-      <li><b>Fenêtre : une rubrique en liste et page, en un clic</b></li>
-      <li><b>Fenêtre : elle ne relance que le <code>vanguard</code> qui l&#x27;a ouverte</b><span>Elle relançait le même chemin pendant des heures, sans revoir le contenu : un <code>vanguard</code> remplacé par ce compte lui faisait afficher ses réponses et recevait ses gestes.</span></li>
-      <li><b>La mise à jour pose aussi la fenêtre qui manque</b></li>
-      <li><b>Une fenêtre qui ne se lit pas ne bloque plus la mise à jour du programme</b></li>
-      <li><b>Console de la fenêtre : dix lectures de plus, et une valeur tapée</b></li>
-      <li><b>Console : les dossiers liés ou déclarés, jugés plus juste</b></li>
-      <li><b>Console sous Windows : trois cas de plus au banc de la VM</b></li>
-      <li><b>Linux : une mise à jour qui ne se vérifie pas dit pourquoi</b><span>Firmware : une erreur rendue par fwupd est nommée, et sinon fwupd est dit injoignable, avec sa cause ; le remède « fwupdmgr refresh », souvent faux, n&#x27;est plus donné.</span></li>
-      <li><b>Linux : le témoin de <code>journalctl</code> coupé au milieu d&#x27;une lettre accentuée ne passe plus pour vide</b><span>Avant, toutes les entrées des fichiers du journal semblaient cachées par journalctl (fausse alerte).</span></li>
-      <li><b>Un Vanguard arrêté au mauvais moment ne fait plus attendre deux minutes</b><span>Pour rester compatible avec les versions d&#x27;avant la 0.87, Vanguard pose aussi leur ancien fichier de verrou, créé vide puis marqué.</span></li>
-      <li><b>Le principe de Vanguard, réécrit : Vanguard agit, vous gardez la main</b></li>
-      <li><b>Les textes envoyés pour améliorer Vanguard masquent plus de formes</b></li>
-      <li><b>La veille de nuit juge chaque crate par ses propres exceptions</b><span>Elle passait <code>cargo audit</code> sur quatre <code>Cargo.lock</code> avec la seule liste d&#x27;avis admis de Vanguard, et depuis l&#x27;arbre, où <code>.cargo/audit.toml</code> taisait ces avis pour toutes les crates.</span></li>
-      <li><b>Sécurité des dépendances</b></li>
-      <li><b>Rust 1.100.0</b><span>Les programmes sont maintenant compilés avec la dernière version de Rust, qui apporte ses correctifs ; ses nouvelles remarques de clippy sont réglées dans le code, sans en faire taire aucune.</span></li>
+      <li><b>Une seule fenêtre</b></li>
+      <li><b>Touche « / » partout</b><span>Dans n&#x27;importe quel menu, « / » ouvre « Rechercher dans Vanguard » : les outils, les réglages et le guide entiers, ouverts comme depuis l&#x27;accueil ; Échap ramène au menu d&#x27;où vous veniez.</span></li>
+      <li><b>Pastilles des commandes du guide</b><span>La page d&#x27;une commande montre « ⚠ modifie le système », « Administrateur », « Fenêtre » ou « Longue », tirées de ce que le guide sait déjà d&#x27;elle.</span></li>
+      <li><b>Guide Windows : les commandes administrateur le disent</b></li>
+      <li><b>Guide : par thème</b><span>Le menu du guide gagne « Par thème » (10) : paquets, réseau, disques, sécurité, services, matériel, comptes, démarrage, outils.</span></li>
+      <li><b>Guide : communs à Linux repliés</b><span>Le menu d&#x27;une distribution montre ses pas-à-pas et ses programmes, puis une seule ligne « Commandes communes à Linux » qui les ouvre.</span></li>
+      <li><b>Sources du catalogue contrôlées avant chaque publication</b></li>
     </ul>
 </section>
 <section id="en-cours">
@@ -1275,7 +1256,7 @@ vanguard yara --complet</pre>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.97.0 · 22 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.98.0 · 24 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 <script>
 // Le bouton n'apparaît qu'avec le script : sans lui, la page suit l'appareil, comme avant.
