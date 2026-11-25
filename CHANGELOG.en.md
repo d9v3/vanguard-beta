@@ -9,7 +9,7 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
-## 0.99 (in preparation)
+## November 25, 2026: version 0.99.0
 
 - **Windows: the window no longer holds the terminal's files.** Started by `vanguard 2> errors.txt`, the window kept
   that file open for as long as it lived, even without writing to it: it could not be deleted, nor the same command

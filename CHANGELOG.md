@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
-## 0.99 (en préparation)
+## 25 novembre 2026 : version 0.99.0
 
 - **Windows : la fenêtre ne garde plus les fichiers du terminal.** Lancée par `vanguard 2> erreurs.txt`, la fenêtre
   tenait ce fichier ouvert tant qu'elle vivait, même sans y écrire : impossible de l'effacer ou de relancer la même
