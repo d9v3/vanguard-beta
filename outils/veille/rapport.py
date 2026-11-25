@@ -744,7 +744,8 @@ def alertes_de(r):
         if e["etat"] == "echec":
             ajouter("verifier", e["etape"], etape=e["etape"])
     p = r.get("proptest") or {}
-    if p.get("etat") == "echec":
+    # Sans essai nommé (étape arrêtée à sa borne, compilation), rien à corriger par l'IA : l'étape en échec est notifiée.
+    if p.get("etat") == "echec" and p.get("tests"):
         # La clé : les tests en échec, sans la graine (celle du jour, qui change chaque nuit) ni la tête ; la graine
         # reste dans l'alerte pour rejouer. Un même échec n'appelle donc l'IA qu'une fois.
         empreinte = hashlib.sha256("\n".join(sorted(p.get("tests") or [])).encode()).hexdigest()[:16]

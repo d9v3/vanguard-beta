@@ -204,6 +204,7 @@ case " $* " in
     mkdir -p "$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release" && echo exe >"$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release/vanguard.exe" ;;
   *" test "*)
     [[ ${ESSAI_PROPTEST:-} == rouge && " $* " != *" --bin "* ]] && { echo "test a::b ... FAILED"; exit 101; }
+    [[ ${ESSAI_PROPTEST:-} == borne && " $* " != *" --bin "* ]] && exit 124
     exit 0 ;;
 esac
 exit 0
@@ -651,7 +652,8 @@ nettoyer; git -C "$VANGUARD_VEILLE_DEPOT" branch -q -D veille/2026-11-18-fuzz-ta
 echo "Nuit arrêtée par systemd (TERM) : notifiée"
 : >"$BANC/notifications.log"
 ESSAI_VERIFIER=lent VANGUARD_VEILLE_JOUR=2026-11-19 setsid bash "$ICI/nuit.sh" --sans-vm >>"$BANC/nuits.log" 2>&1 &
-p=$!; sleep 1.5; kill -TERM -- -"$p" 2>/dev/null; wait "$p"
+# Comme systemd : toute la session (timeout met chaque étape dans son propre groupe), pas le seul groupe de nuit.sh.
+p=$!; sleep 1.5; pkill -TERM -s "$p"; wait "$p"
 attendu '(($(notifs) == 1)) && grep -q "interrompue" "$R/a-lire"' "nuit interrompue : notifiée"
 
 echo "Verrou pris trop longtemps : notifié, jamais en silence"
@@ -667,7 +669,7 @@ attendu '(($(notifs) == 2)) && grep -q "résumé de la nuit" "$R/a-lire"' "alert
 kill "$v" 2>/dev/null; wait "$v" 2>/dev/null
 
 echo "Preuves : outil absent, échec, délai dépassé (trois jeudis)"
-flock -w 60 "$R/verrou" true # la nuit lente tuée plus haut : son sommeil tient encore le verrou
+flock -w 60 "$R/verrou" true # la nuit arrêtée plus haut a pu laisser un programme qui tient le verrou
 ESSAI_PREUVES=77 nuit 2026-11-26
 attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"sautee\" and .code == 77 and (.raison | test(\"^– absent, sauté : Kani\"))" "$R/2026-11-26.json" >/dev/null' \
   "outil absent : sautée, l'outil dit"
@@ -1210,14 +1212,18 @@ printf 'wchar: 5\nwrite_bytes: 7000000\ncancelled_write_bytes: 3\n' >"$BANC/io"
 io_fond=$!
 VANGUARD_VEILLE_IO=$BANC/io nuit $J
 kill "$io_fond" 2>/dev/null; wait "$io_fond" 2>/dev/null
-attendu 'grep -q "écrit sur le disque par la nuit : 42 Mo (sans la VM)$" "$BANC/veille/journal/$J.log"' "écritures de la nuit : la différence, en Mo"
+attendu 'grep -q "écrit sur le disque par la nuit : environ 42 Mo (sans la VM)$" "$BANC/veille/journal/$J.log"' "écritures de la nuit : la différence, en Mo"
 J=2027-03-10
 VANGUARD_VEILLE_IO=$BANC/absent nuit $J
 attendu 'grep -q "écrit sur le disque par la nuit : pas mesuré" "$BANC/veille/journal/$J.log"' "compteur illisible : dit, jamais compté zéro"
 J=2027-03-11
 nuit $J
-attendu 'grep -qE "écrit sur le disque par la nuit : [0-9]+ Mo" "$BANC/veille/journal/$J.log"' "le vrai compteur du noyau se lit"
-# La limite du script et celle du service sont la même, et le vrai banc de fuzzing y tient encore.
+attendu 'grep -qE "écrit sur le disque par la nuit : environ [0-9]+ Mo" "$BANC/veille/journal/$J.log"' "le vrai compteur du noyau se lit"
+J=2027-03-12
+ESSAI_PROPTEST=borne nuit $J
+attendu '[[ $(etat proptest) == echec ]] && jq -e "[.alertes[] | select(.type == \"proptest\")] == []" "$R/$J.json" >/dev/null' \
+  "proptest arrêté à sa borne : en échec, sans alerte pour l'IA"
+# La limite du script et celle du service sont la même, et 90 min de fuzz laissent une minute à chaque cible.
 # shellcheck disable=SC2034 # lus par attendu (eval)
 heures=$(sed -n 's/^TimeoutStartSec=\([0-9]*\)h$/\1/p' "$ICI/systemd/vanguard-veille-nuit.service")
 # shellcheck disable=SC2034
@@ -1226,8 +1232,32 @@ attendu '[[ $heures =~ ^[0-9]+$ && $limite =~ ^[0-9]+$ ]] && ((heures * 3600 == 
 # shellcheck disable=SC2034
 total=$(sed -n 's/.* FUZZ_TOTAL=\([0-9]*\) .*/\1/p' "$ICI/nuit.sh")
 vraies=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$ICI/../../fuzz/Cargo.toml" | tail -n +2 | wc -l)
-attendu '[[ $total =~ ^[0-9]+$ ]] && ((vraies > 0 && total / vraies >= 60))' "vrai banc ($vraies cibles) : au moins une minute chacune"
-attendu '! grep -nE "^ +etape (verifier|proptest|preuves|vm|fuzz) " "$ICI/nuit.sh"' "chaque étape longue est bornée"
+attendu '[[ $total =~ ^[0-9]+$ ]] && ((vraies > 0 && total / vraies >= 60))' "vrai banc ($vraies cibles) : une minute chacune quand les 90 min sont là"
+for n in verifier proptest preuves vm fuzz; do
+  attendu 'grep -qE "^ +etape_bornee $n " "$ICI/nuit.sh"' "étape longue bornée : $n"
+done
+# Chaque programme lancé par une étape courte aussi (commentaires mis à part).
+# Lignes coupées rejointes ; au moins huit commandes, pour qu'un motif qui ne trouve plus rien échoue aussi.
+# shellcheck disable=SC2034 # lu par attendu (eval)
+courtes=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$ICI/nuit.sh" | grep -v '^ *#' |
+  grep -E 'cargo (run|test|audit|\+nightly) -|cargo \+nightly|python3 -I outils/|releve-envois\.sh"|references-flotte\.sh"|failles-programmes\.sh --')
+attendu '(($(grep -c . <<<"$courtes") >= 8)) && ! grep -vE "borner|etape_bornee|timeout" <<<"$courtes" >&2' \
+  "étapes courtes : chaque commande bornée"
+# Les vraies fonctions de nuit.sh, coupant un vrai programme trop long.
+coupure() ( # secondes qui restent, puis l'appel
+  noter() { echo "$1 $2 $4 ${5:-}"; }
+  # shellcheck disable=SC2034 # lu par etape (eval)
+  ARBRE=$BANC
+  restant() { echo "$RESTE"; }
+  eval "$(sed -n '/^etape() {/,/^}/p; /^borner() {/,/^}/p; /^etape_bornee() {/,/^}/p; /^sauter() {/p' "$ICI/nuit.sh")"
+  RESTE=$1; shift
+  "$@"
+)
+attendu '[[ $(coupure 500 etape_bornee long "$BANC/l.log" 1 sleep 20) == "long echec 124 arrêtée"*"pas finie" ]]' "étape trop longue : vraiment coupée, en échec"
+attendu '[[ $(coupure 59 etape_bornee long "$BANC/l.log" 100 true) == "long sautee 77 plus le temps"* ]]' "moins d'une minute : étape longue sautée"
+attendu 'coupure 500 borner 1 sleep 20; (($? == 124))' "commande courte bloquée : vraiment coupée"
+attendu '[[ $(coupure -900 borner 5 echo fait) == fait ]]' "plus de temps du tout : une commande courte passe quand même"
+attendu '[[ $(coupure 500 etape court "$BANC/l.log" borner 1 sleep 20) == "court echec 124"* ]]' "commande courte coupée : étape en échec"
 nettoyer
 
 if ((ECHECS)); then

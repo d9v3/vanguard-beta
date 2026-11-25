@@ -69,7 +69,8 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    `sans-reponse`…). « Tout est vert » seulement si tout a été vérifié.
 
 Jamais de silence : une nuit reportée deux fois de suite, une partie qui trouve le verrou pris (alerte.sh envoie alors
-quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutStartSec`) ou à la main, notifient.
+quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutStartSec`,
+`systemctl --user stop`), notifient.
 
 ## Envois
 
@@ -240,8 +241,8 @@ pour RUSTSEC, écriture dans l'arbre et dans la compilation et le cargo jetables
 
 ## Coût et budget
 
-- Calcul : ~3 h par nuit, 4 h au plus (`TimeoutStartSec`) : chaque étape longue est bornée, `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, 8 tâches de compilation.
-- Disque : ce que la nuit a écrit (compteur du noyau, VM exclue) est une ligne de son journal, « écrit sur le disque ».
+- Calcul : ~3 h par nuit, 4 h au plus (`TimeoutStartSec`) : chaque étape est bornée, `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, 8 tâches de compilation.
+- Disque : ce que la nuit a écrit (compteur du noyau, VM exclue, ordre de grandeur) est une ligne de son journal, « écrit sur le disque ».
 - IA : au plus **1 correction par nuit**, **3 par semaine glissante**, plus **1 relecture hebdomadaire** (chaque
   correction coûte deux lancements : correction et relecture). **Une seule proposition en attente à la fois** : tant
   qu'une branche `veille/*` n'est ni fusionnée ni supprimée, aucune nouvelle correction. Une correction = un seul

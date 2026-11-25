@@ -9,7 +9,8 @@ set -uo pipefail
 source "$(dirname "$0")/commun.sh"
 
 [[ -e $VEILLE/COUPER-TOUT ]] && { journal "COUPER-TOUT présent : rien"; exit 0; }
-prendre_verrou 3600
+# La nuit finit à 07 h 35 au plus tard (03 h 30, 5 min de hasard, 4 h) : attendue jusqu'à 07 h 40.
+prendre_verrou 7800
 REPORT=$(raison_de_reporter)
 if [[ -n $REPORT ]]; then
   journal "relecture reportée : $REPORT"

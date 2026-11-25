@@ -47,8 +47,9 @@ RESERVE_RAPPORT=600 FUZZ_TOTAL=5400 FUZZ_COMPILATION=900 FUZZ_MINIMUM=10
 prendre_verrou 0
 DEBUT=$SECONDS
 # Ce que la nuit écrit sur le disque : le compteur du noyau (proc(5), write_bytes) de ce script et des programmes qu'il
-# a attendus. Ni la mémoire vive (tmpfs), ni ce qu'un autre service écrit pour la nuit (VM) ; IOAccounting ne compterait
-# rien ici (le contrôleur io n'est pas délégué aux services de l'utilisateur). Illisible : dit, jamais compté zéro.
+# a attendus. Un ordre de grandeur : avant la compression de btrfs, fichiers vite effacés compris ; ni la mémoire vive
+# (tmpfs), ni ce qu'un autre service écrit pour la nuit (VM). IOAccounting ne compterait rien ici (le contrôleur io
+# n'est pas délégué aux services de l'utilisateur). Illisible : dit, jamais compté zéro.
 IO=${VANGUARD_VEILLE_IO:-/proc/$$/io}
 octets_ecrits() { sed -n 's/^write_bytes: \([0-9]\{1,18\}\)$/\1/p' "$IO" 2>/dev/null; }
 ECRITS_AVANT=$(octets_ecrits)
@@ -80,18 +81,30 @@ etape() {
 sauter() { noter "$1" sautee "$SECONDS" 77 "$2"; }
 # Ce qui reste avant la limite du service, le rapport mis à part. SECONDS compte depuis le lancement, comme systemd.
 restant() { echo $((LIMITE - RESERVE_RAPPORT - SECONDS)); }
+# Une commande d'une étape courte : arrêtée à sa borne (code 124, jamais vert), ou plus tôt si la limite du service
+# approche ; trente secondes lui restent toujours, prises sur la réserve du rapport (une dizaine d'étapes au pire).
+borner() { # secondes-au-plus commande…
+  local borne=$1 reste
+  shift
+  reste=$(restant)
+  ((reste < 30)) && reste=30
+  ((reste < borne)) && borne=$reste
+  timeout --kill-after=10 "$borne" "$@"
+}
 # Une étape longue : arrêtée à sa borne, ou avant si la limite du service approche ; sans une minute devant elle, sautée
-# et dite. Une seule étape bloquée ne prive plus la nuit de son rapport.
+# et dite. Une étape bloquée ne prive plus la nuit de son rapport. Un programme sorti du groupe (setsid) survit à
+# timeout ; systemd l'arrête avec le service (KillMode par défaut : tout le groupe de contrôle).
 etape_bornee() { # nom journal secondes-au-plus commande…
   local nom=$1 log=$2 borne=$3 reste
   shift 3
   reste=$(restant)
+  ((reste >= 60)) || { sauter "$nom" "plus le temps avant la limite de la nuit"; return 77; }
   ((reste < borne)) && borne=$reste
-  ((borne >= 60)) || { sauter "$nom" "plus le temps avant la limite de la nuit"; return 77; }
   etape "$nom" "$log" timeout --kill-after=60 "$borne" "$@"
 }
 
-# Arrêtée par systemd (TimeoutStartSec) ou à la main : l'auteur le sait quand même.
+# Arrêtée par systemd (TimeoutStartSec, systemctl --user stop) : l'auteur le sait quand même. Un Ctrl-C n'atteint pas une
+# étape sous timeout (son groupe à elle) : il attend la fin de l'étape.
 interrompue() {
   trap - TERM INT
   journal "nuit interrompue avant la fin"
@@ -184,7 +197,7 @@ if [[ -n $ARBRE_OK ]]; then
   # l'autotest a rendu 0 ou 2 : l'alerte « lenteur ». ──
   autotest_de_nuit() {
     local code
-    cargo run -q -- autotest --json >"$TRAVAIL/autotest.json"
+    borner 900 cargo run -q -- autotest --json >"$TRAVAIL/autotest.json"
     code=$?
     if ((code == 2)); then
       echo "autotest : rien de fautif, en partie non vérifié (voir autotest.json)"
@@ -203,7 +216,7 @@ if [[ -n $ARBRE_OK ]]; then
     sauter journal "src/compte_rendu/triage.rs absent de $BASE"
   else
     journal_de_nuit() {
-      cargo run -q -- compte-rendu journal --cet-ordinateur "$RETOURS/journal-cet-ordinateur.txt" \
+      borner 900 cargo run -q -- compte-rendu journal --cet-ordinateur "$RETOURS/journal-cet-ordinateur.txt" \
         --cle "$RETOURS/journal-cle.txt" --etat "$ETAT/causes.json" --traitees "$ETAT/alertes-traitees.txt" \
         --sortie "$TRAVAIL/journal-file.json" >"$TRAVAIL/journal-comptes.txt"
     }
@@ -222,8 +235,8 @@ if [[ -n $ARBRE_OK ]]; then
   if [[ -n $SANS_RESEAU ]]; then
     sauter envois "--sans-reseau"
   else
-    etape envois "$TRAVAIL/envois.log" env VANGUARD_VEILLE_JOUR="$JOUR" VANGUARD_VEILLE_RETOURS="$RETOURS" \
-      bash "$ICI/releve-envois.sh"
+    etape envois "$TRAVAIL/envois.log" borner 900 env VANGUARD_VEILLE_JOUR="$JOUR" \
+      VANGUARD_VEILLE_RETOURS="$RETOURS" bash "$ICI/releve-envois.sh"
   fi
   if [[ ! -f $ARBRE/src/compte_rendu/flotte.rs ]]; then
     sauter flotte "src/compte_rendu/flotte.rs absent de $BASE"
@@ -235,8 +248,8 @@ if [[ -n $ARBRE_OK ]]; then
     fi
   else
     flotte_de_nuit() {
-      "$ICI/references-flotte.sh" "$ARBRE" "$TRAVAIL/references" || return 1
-      cargo run -q --locked ${SANS_RESEAU:+--offline} --features reception -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
+      borner 300 "$ICI/references-flotte.sh" "$ARBRE" "$TRAVAIL/references" || return 1
+      borner 900 cargo run -q --locked ${SANS_RESEAU:+--offline} --features reception -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
         --etat "$ETAT/flotte" --aujourdhui "$JOUR" --signaux "$TRAVAIL/flotte-signaux.json" \
         --tickets "$RETOURS/tickets" --noms "$ICI/noms-connus.txt" --arbre "$ARBRE" >"$TRAVAIL/flotte-comptes.txt"
     }
@@ -264,7 +277,7 @@ if [[ -n $ARBRE_OK ]]; then
     sauter rustsec "--sans-reseau : base RUSTSEC pas à jour"
   elif ! command -v cargo-audit >/dev/null; then
     sauter rustsec "cargo-audit absent"
-  elif ! (cd "$ARBRE" && bash outils/failles-programmes.sh --exceptions-depot) >"$TRAVAIL/verrous.tsv" \
+  elif ! (cd "$ARBRE" && borner 300 bash outils/failles-programmes.sh --exceptions-depot) >"$TRAVAIL/verrous.tsv" \
     2>>"$TRAVAIL/audit.log" || [[ ! -s $TRAVAIL/verrous.tsv ]]; then
     rm -f "$TRAVAIL/verrous.tsv"
     noter rustsec echec "$SECONDS" 1 "liste des Cargo.lock et de leurs exceptions illisible (audit.log)"
@@ -276,7 +289,7 @@ if [[ -n $ARBRE_OK ]]; then
     while IFS=$'\t' read -r lock _; do
       if [[ -f $ARBRE/$lock ]]; then
         # Code 1 quand une faille est trouvée : le JSON dit lesquelles ; seule une sortie illisible est un échec.
-        (cd "$VIDE" && cargo audit --json --file "$ARBRE/$lock") >"$TRAVAIL/audit-$i.json" 2>>"$TRAVAIL/audit.log"
+        (cd "$VIDE" && borner 300 cargo audit --json --file "$ARBRE/$lock") >"$TRAVAIL/audit-$i.json" 2>>"$TRAVAIL/audit.log"
         jq -e .vulnerabilities "$TRAVAIL/audit-$i.json" >/dev/null 2>&1 || { code=1; rm -f "$TRAVAIL/audit-$i.json"; }
       fi
       i=$((i + 1))
@@ -293,7 +306,7 @@ if [[ -n $ARBRE_OK ]]; then
   else
     rm -rf "$CANARIS" && mkdir -p "$CANARIS"
     canari() { # dossier, puis le nom exact de l'essai
-      env VANGUARD_CANARIS="$1" ${AVANT:+VANGUARD_CANARIS_AVANT="$AVANT"} \
+      borner 900 env VANGUARD_CANARIS="$1" ${AVANT:+VANGUARD_CANARIS_AVANT="$AVANT"} \
         cargo test -q --bin vanguard "canaris::$2" -- --ignored --exact
     }
     AVANT=""
@@ -309,7 +322,8 @@ if [[ -n $ARBRE_OK ]]; then
       fi
       etape canaris-kev "$TRAVAIL/canaris-kev.log" canari "$CANARIS" canaris_kev
       # Les essais existants, plus exigeants (seuils : ≥ 140 entrées d'Échap, > 1000 avis MFSA…), sur ces copies.
-      etape canaris-essais "$TRAVAIL/canaris-essais.log" env VANGUARD_ESSAI_PERIMES="$CANARIS" \
+      etape canaris-essais "$TRAVAIL/canaris-essais.log" borner 900 env \
+        VANGUARD_ESSAI_PERIMES="$CANARIS" \
         VANGUARD_ESSAI_ECHAP="$CANARIS/ioc.yaml" cargo test -q --bin vanguard -- \
         vraies_copies_si_presentes vraie_copie_si_presente vrai_fichier_d_echap
     fi
@@ -323,7 +337,7 @@ if [[ -n $ARBRE_OK ]]; then
   else
     # Un lien mort ne fait qu'entrer au rapport (code 1 de liens.py) ; mort trois nuits de suite, il devient une
     # alerte. Seule une panne de liens.py elle-même est un échec de l'étape.
-    liens() { python3 -I outils/liens.py; local c=$?; ((c == 1)) && return 0; return "$c"; }
+    liens() { borner 1500 python3 -I outils/liens.py; local c=$?; ((c == 1)) && return 0; return "$c"; }
     etape liens "$TRAVAIL/liens.log" liens
   fi
 
@@ -426,7 +440,7 @@ fi
 
 ECRITS=$(octets_ecrits)
 if [[ -n $ECRITS && -n $ECRITS_AVANT ]]; then
-  journal "écrit sur le disque par la nuit : $(((ECRITS - ECRITS_AVANT) / 1000000)) Mo (sans la VM)"
+  journal "écrit sur le disque par la nuit : environ $(((ECRITS - ECRITS_AVANT) / 1000000)) Mo (sans la VM)"
 else
   journal "écrit sur le disque par la nuit : pas mesuré ($IO illisible)"
 fi
