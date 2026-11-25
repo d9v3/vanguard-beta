@@ -24,14 +24,21 @@ enum Mode {
     Muet,
     /// Ferme sans rien répondre.
     Coupe,
-    /// Répond 200 puis un corps sans fin (il ne doit jamais être lu).
+    /// Répond 200 puis un corps sans fin (il ne doit jamais être lu) ; coupé à `CORPS_AU_PLUS` octets partis.
     SansFin,
     /// Renvoie ailleurs (302) : la redirection ne doit pas être suivie.
     Ailleurs(u16),
 }
 
+/// Le corps sans fin s'arrête là : bien plus que ce que les tampons du système prennent sans lecteur.
+const CORPS_AU_PLUS: usize = 256 << 20;
+/// Au-delà de ce que les tampons du système prennent quand personne ne lit : quelqu'un a lu le corps.
+const CORPS_LU: usize = 64 << 20;
+
 struct Serveur {
     port: u16,
+    /// Octets de corps que `Mode::SansFin` a pu écrire.
+    partis: Arc<AtomicUsize>,
     connexions: Arc<AtomicUsize>,
     demandes: Arc<Mutex<Vec<Vec<u8>>>>,
     fin: Arc<AtomicBool>,
@@ -46,7 +53,8 @@ impl Serveur {
         let connexions = Arc::new(AtomicUsize::new(0));
         let demandes = Arc::new(Mutex::new(Vec::new()));
         let fin = Arc::new(AtomicBool::new(false));
-        let (n, d, f) = (connexions.clone(), demandes.clone(), fin.clone());
+        let partis = Arc::new(AtomicUsize::new(0));
+        let (n, d, f, p) = (connexions.clone(), demandes.clone(), fin.clone(), partis.clone());
         std::thread::spawn(move || {
             while !f.load(Ordering::SeqCst) {
                 match ecoute.accept() {
@@ -55,8 +63,8 @@ impl Serveur {
                         // Sous Windows, la connexion acceptée hérite du mode non bloquant de l'écoute : la demande
                         // ne serait pas lue.
                         let _ = flux.set_nonblocking(false);
-                        let (d, f) = (d.clone(), f.clone());
-                        std::thread::spawn(move || servir(flux, mode, &d, &f));
+                        let (d, f, p) = (d.clone(), f.clone(), p.clone());
+                        std::thread::spawn(move || servir(flux, mode, &d, &f, &p));
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
                 }
@@ -64,6 +72,7 @@ impl Serveur {
         });
         Serveur {
             port,
+            partis,
             connexions,
             demandes,
             fin,
@@ -109,7 +118,7 @@ fn lire_demande(flux: &mut TcpStream) -> Vec<u8> {
     }
 }
 
-fn servir(mut flux: TcpStream, mode: Mode, demandes: &Mutex<Vec<Vec<u8>>>, fin: &AtomicBool) {
+fn servir(mut flux: TcpStream, mode: Mode, demandes: &Mutex<Vec<Vec<u8>>>, fin: &AtomicBool, partis: &AtomicUsize) {
     let demande = lire_demande(&mut flux);
     demandes.lock().unwrap().push(demande);
     match mode {
@@ -125,7 +134,12 @@ fn servir(mut flux: TcpStream, mode: Mode, demandes: &Mutex<Vec<Vec<u8>>>, fin: 
         Mode::SansFin => {
             let _ = write!(flux, "HTTP/1.1 200 OK\r\ncontent-length: 1000000000000\r\n\r\n");
             let bloc = [b'x'; 16 << 10];
-            while !fin.load(Ordering::SeqCst) && flux.write_all(&bloc).is_ok() {}
+            while !fin.load(Ordering::SeqCst)
+                && partis.load(Ordering::SeqCst) < CORPS_AU_PLUS
+                && flux.write_all(&bloc).is_ok()
+            {
+                partis.fetch_add(bloc.len(), Ordering::SeqCst);
+            }
         }
         Mode::Ailleurs(port) => {
             let _ = write!(
@@ -473,16 +487,26 @@ fn serveur_muet_ou_coupure() {
     }
 }
 
-/// Le corps de la réponse n'est jamais lu : un corps sans fin ne retient rien, le code suffit.
+/// Le corps de la réponse n'est jamais lu : un corps sans fin ne retient rien, le code suffit. Jugé aux octets partis,
+/// pas au temps : sous la charge de toute la vérification, une passe dure parfois plus de 2 s sans rien lire ; et avec
+/// un délai d'une seconde, un corps lu se voyait à peine au chronomètre.
 #[test]
 fn le_corps_de_la_reponse_n_est_jamais_lu() {
     let s = Serveur::lancer(Mode::SansFin);
     let d = Jetable::nouveau("envoi-sans-fin");
     let adresse = s.adresse();
-    let debut = Instant::now();
-    let b = passer(&cadre(&d, Some(&adresse)), &[9]);
-    assert!(debut.elapsed() < Duration::from_secs(2), "{:?}", debut.elapsed());
+    let b = passe_dans(
+        &cadre(&d, Some(&adresse)),
+        Sources {
+            plateforme: || Some(plateforme_essai()),
+            du_jour: |j: NaiveDate, base: Lot| (j == jour(9)).then_some(base),
+            poster: |adresse: &str, corps| crate::http::poster_sans_lire(adresse, corps, CONNEXION, DELAI),
+            encore: || true,
+        },
+    );
     assert_eq!((b.postes, b.recus), (1, 1));
+    let partis = s.partis.load(Ordering::SeqCst);
+    assert!(partis < CORPS_LU, "{partis} octets partis : le corps a été lu");
 }
 
 /// Une redirection n'est pas suivie : rien n'arrive à l'adresse donnée, le lot attend.
