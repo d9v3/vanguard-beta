@@ -12,7 +12,7 @@ et ne publie jamais rien.
 |---|---|---|---|
 | Nuit (`nuit.sh`) | chaque jour à 03 h 30 (après le renouvellement du quota du vendredi à 3 h) | non | ~3 h (le jeudi, plus les preuves : 45 min au plus), 4 h jamais dépassées |
 | Correction sur alerte (`alerte.sh`) | lancée par la nuit, si une alerte tient dans le budget | oui | ≤ 4 h 30 (correction, verifier.sh, relecture : 90 min chacun au plus ; pas de VM) |
-| Relecture hebdomadaire (`hebdo.sh`) | vendredi à 05 h 30 | oui, lecture seule | ≤ 90 min |
+| Relecture hebdomadaire (`hebdo.sh`) | vendredi à 05 h 30 | oui, lecture seule ; puis les bibliothèques en retard (`outils/retards.py`), sans IA | ≤ 90 min |
 | Rappel (`matin.sh`) | 08 h 30, si la notification de la nuit n'a pas été vue | non | secondes |
 
 Un jeu en cours (`gamemoded -s`) ou la VM réservée (`.test-en-cours.txt`) reporte la passe, et c'est dit. La nuit

@@ -102,6 +102,7 @@ FIN
 # Les cibles du banc, dans la forme du vrai fuzz/Cargo.toml : le paquet d'abord, puis une par [[bin]].
 printf '[package]\nname = "banc"\n\n[[bin]]\nname = "tar"\n\n[[bin]]\nname = "zip"\n' >"$D/fuzz/Cargo.toml"
 printf '#!/usr/bin/env python3\nprint("Liens : 3 vérifié(s), aucun mort.")\n' >"$D/outils/liens.py"
+printf 'import sys\nprint("retards : `2` inventés")\nprint("é" * 15000)\nsys.exit(1)\n' >"$D/outils/retards.py"
 printf '#!/usr/bin/env python3\nprint("RUSTSEC-2023-0071")\n' >"$D/outils/exceptions-rustsec.py"
 # Faux failles-programmes.sh --exceptions-depot : RUSTSEC-2026-0042 admis par le deny.toml de Vanguard seulement ; le
 # banc de fuzzing n'en a aucune, la fenêtre (verrou absent du faux dépôt) n'a pas sa preuve hors cibles. Une ligne
@@ -455,6 +456,26 @@ attendu '(($(appels) == n))' "signature déjà traitée : claude pas appelé"
 attendu 'jq -e ".alertes[] | select(.type == \"verifier\") | .suite == \"deja-traitee\"" "$R/2026-10-25.json" >/dev/null' \
   "dite déjà traitée"
 : >"$R/etat/budget.tsv"
+for etape in versions-epinglees-retards-dits essais-des-outils-de-la-cle; do
+  jq -n --arg s "verifier:$etape" '{jour: "2026-10-25", signature: $s}' >"$R/alerte-demandee.json"
+  VANGUARD_VEILLE_JOUR=2026-10-25 bash "$ICI/alerte.sh" >>"$BANC/nuits.log" 2>&1
+  attendu '(($(appels) == n)) && jq -e ".ia.raison_si_non | test(\"un essai de outils/\")" "$R/2026-10-25.json" >/dev/null' \
+    "étape portée par outils/ ($etape) : dite, claude pas appelé"
+done
+# Chaque clé de cette liste est celle que rapport.py tire d'un vrai libellé de verifier.sh : un libellé changé se voit.
+attendu 'python3 -I - "$ICI" <<"FIN"
+import re, sys
+from pathlib import Path
+ici = Path(sys.argv[1])
+sys.path.insert(0, str(ici))
+sys.dont_write_bytecode = True
+import rapport
+libelles = re.findall(r"^ *ligne [a-z-]+ \"([^\"$]+)\"", (ici.parent / "verifier.sh").read_text(), re.M)
+cles = {rapport.slug(x[:34].strip()) for x in libelles}
+liste = re.search(r"case \$\{CLE%%:\*\} in(.*?)\)\n", (ici / "alerte.sh").read_text(), re.S)[1]
+dites = re.findall(r"[a-z-]{3,}", liste)
+sys.exit(not (len(dites) >= 8 and set(dites) <= cles))
+FIN' "clés des étapes sans IA : celles des libellés de verifier.sh"
 
 echo "Nuit 7 (la correction touche .github : refusée par les garde-fous)"
 n=$(appels)
@@ -499,6 +520,11 @@ attendu '(($(appels) == n + 1)) && grep -A1 -x -- --max-turns "$H" | grep -qx 40
 attendu '! grep -qxE "Edit\(.*|Write\(.*|Bash\(git commit \*\)" <(sed -n "/^--allowedTools$/,/^--disallowedTools$/p" "$H")' \
   "hebdomadaire en lecture seule"
 attendu 'grep -q "fuzz-echap" "$R/2026-10-30-hebdo.md"' "propositions écrites"
+attendu 'grep -qx "retards : 2 inventés" "$R/2026-10-30-hebdo.md" && grep -q "^À corriger ou non vérifiés" "$R/2026-10-30-hebdo.md"' \
+  "retards ajoutés, leur échec dit"
+attendu 'grep -q "^Coupé" "$R/2026-10-30-hebdo.md" && (($(grep -cx "\`\`\`" "$R/2026-10-30-hebdo.md") == 2)) && iconv -f UTF-8 -t UTF-8 "$R/2026-10-30-hebdo.md" >/dev/null' \
+  "retards trop longs : coupure dite, bloc refermé, texte lisible"
+attendu '! grep -q "inventés" "$R/ia/2026-10-30-hebdo/hebdo-entree.json"' "retards jamais montrés à l'IA"
 attendu '! grep -q "Ignore previous" "$R/ia/2026-10-30-hebdo/hebdo-entree.json"' "entrée hebdomadaire sans texte hostile"
 VANGUARD_VEILLE_JOUR=2026-10-31 bash "$ICI/hebdo.sh" >>"$BANC/nuits.log" 2>&1
 attendu '(($(appels) == n + 1))' "une seule relecture par semaine"

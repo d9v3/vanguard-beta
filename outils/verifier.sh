@@ -11,7 +11,8 @@
 # (outils/textes.py), relais des lots (relais/, outils/relais-schema.py), protections des programmes lues dans leurs
 # en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
 # détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny ; bibliothèques à constructeurs
-# refusées : outils/essais-constructeurs.sh) et leurs failles connues (cargo audit), banc de fuzzing compilé et passé
+# refusées : outils/essais-constructeurs.sh), leurs failles connues (cargo audit) et leurs retards (outils/retards.py :
+# dits, jamais un échec ; une version épinglée sans raison écrite en est un), banc de fuzzing compilé et passé
 # quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
@@ -472,6 +473,20 @@ dependances() {
 # cargo-audit, et sans Internet : une base qui n'est plus à jour dirait vert à tort.
 failles_connues() { bash outils/failles-programmes.sh --depot; }
 
+# Les bibliothèques en retard et les versions épinglées exprès (outils/retards.py). Les épinglages se jugent toujours ;
+# sans Internet, les retards sont sautés : « rien en retard » y serait faux.
+retards() {
+  local index=https://index.crates.io/config.json
+  if [[ -n ${VANGUARD_HORS_LIGNE:-} ]] || ! curl -fsI --max-time 5 "$index" >/dev/null 2>&1; then
+    local epinglages code=0
+    epinglages=$(python3 -I outils/retards.py --gardees 2>&1) || code=$?
+    ((code == 0)) || { printf '%s\n' "$epinglages"; return 1; }
+    printf '%s\n' "sans Internet, retards pas cherchés" "$epinglages"
+    return "$SAUTEE"
+  fi
+  python3 -I outils/retards.py
+}
+
 # Les textes affichés comparés à master (outils/textes.py) : un texte perdu ou nouveau se voit avant le commit, un
 # tutoiement fait échouer. Sur master, le vouvoiement seul ; sans master (clone partiel de la CI), la comparaison
 # est sautée, pas le vouvoiement.
@@ -748,6 +763,8 @@ if [[ $MODE != --rapide ]]; then
   etape dependances dependances &
   etape relectures relectures &
   etape failles-connues failles_connues &
+  etape retards retards &
+  etape essais-retards python3 -I outils/essais-retards.py &
   etape fuzzing fuzzing &
   etape preuves-compilees preuves_compilees &
 fi
@@ -980,6 +997,10 @@ if [[ $MODE != --rapide ]]; then
   ligne dependances "dépendances (cargo deny)"
   remarques_dependances
   ligne failles-connues "failles connues (cargo audit)"
+  ligne retards "versions épinglées, retards dits"
+  [[ $(cat "$TRAVAIL/retards.etat" 2>/dev/null) != ok* ]] ||
+    grep -E '^(  [^ ]|retards :)' "$TRAVAIL/retards.log" | cut -c1-200 | sed 's/^ */      /'
+  ligne essais-retards "essais du contrôle des retards"
   ligne relectures "dépendances tracées (cargo vet)"
   [[ -f $TRAVAIL/relectures.log ]] && grep -m2 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" |
     sed '1s/^/      vanguard : /; 2s/^/      fenêtre : /'

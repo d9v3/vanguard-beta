@@ -59,10 +59,13 @@ grep -qxF "$SIGNATURE" "$ETAT/alertes-traitees.txt" 2>/dev/null && { conclure "a
 # Le sujet : [a-z0-9-]{1,40}, tiré de la signature (genre et premier morceau de la clé).
 CLE=${SIGNATURE#*:}
 # Une étape de verifier.sh portée par un essai de outils/, que les garde-fous interdisent à l'IA de toucher : l'appeler
-# brûlerait un lancement pour un refus certain. Dite à l'auteur, sans IA.
+# brûlerait un lancement pour un refus certain. Dite à l'auteur, sans IA. Les clés sont celles de rapport.py (le
+# libellé de l'étape, pas son nom) ; essai.sh exige que chacune vise un libellé de verifier.sh.
 if [[ $GENRE == verifier ]]; then
   case ${CLE%%:*} in
-    essais-cle | signature | essais-confidentialite | essais-verifier | essais-livrer | masque)
+    essais-des-outils-de-la-cle | signature-des-versions | garde-de-confidentialite-noms-ty | \
+      essais-de-verifier-sh-seulement | essais-de-livrer-branche-sh | mots-d-attaque-masques | \
+      versions-epinglees-retards-dits | essais-du-controle-des-retards)
       conclure "étape ${CLE%%:*} de verifier.sh : un essai de outils/ (protégé), à corriger par l'auteur, sans IA"
       exit 0 ;;
   esac

@@ -22,9 +22,9 @@ inscrit à la feuille de route.
 
 | Verdict | Points |
 |---|---:|
-| tenu | 40 |
+| tenu | 41 |
 | partiel | 12 |
-| écart | 2 |
+| écart | 1 |
 | dérogation | 1 |
 | sans objet | 5 |
 
@@ -62,7 +62,7 @@ CET sont affichés sans être exigés (voir `MODELE-DE-MENACE.md`).
 |---|---|---|---|
 | LIBS-VETTING-DIRECT | partiel | `cargo vet --locked --frozen` à chaque vérification et en CI (`supply-chain/`) : chaque version est soit couverte par une relecture importée (Google, Mozilla, Bytecode Alliance, Zcash, ISRG), soit exemptée à son numéro exact, et une version nouvelle échoue. Avec Internet, les relectures importées sont retéléchargées de leurs registres (`outils/verifier.sh`) : une entrée écrite à la main dans `imports.lock` ne compte pas. La plupart des dépendances directes n'ont encore qu'une exemption, qui trace la version sans dire que son code a été lu. | Relectures propres (`cargo vet certify`), d'abord pour les lecteurs de formats, le réseau et la cryptographie : feuille de route. |
 | LIBS-VETTING-TRANSITIVE | partiel | 111 crates sur 489 couvertes par les relectures importées, 2 en partie, 376 exemptées (`cargo vet`). | Même suite. |
-| LIBS-OUTDATED | écart | Les versions sont suivies à la main, sans outil qui signale une dépendance en retard. Quelques-unes sont gardées exprès, avec leur raison dans `Cargo.toml`. | `cargo outdated` dans la veille hebdomadaire, avec la liste des versions gardées exprès : feuille de route. |
+| LIBS-OUTDATED | tenu | `outils/retards.py` demande à Cargo (`cargo update --dry-run`, aucun outil de plus), pour chaque `Cargo.lock`, les versions plus récentes (pour les bibliothèques indirectes, seulement celles que `cargo update` prendrait) : à chaque vérification complète, chaque nuit dans la CI et chaque semaine dans la veille, sauf passe reportée, dite. Les versions gardées exprès sont dans `outils/versions-gardees.toml`, avec leur raison ; un épinglage sans raison est refusé. | Un retard est dit, sans bloquer : chaque version nouvelle se relit avant d'entrer, et une faille connue, elle, bloque (`cargo audit`, `cargo deny`). |
 | LIBS-AUDIT | tenu | `cargo audit` (étape « failles connues » de `outils/verifier.sh`), chaque nuit en CI, et `cargo deny` pour les failles RustSec (`deny.toml`). | — |
 
 ## Langage

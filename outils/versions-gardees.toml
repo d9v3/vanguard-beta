@@ -1,0 +1,53 @@
+# Les versions épinglées exprès (« =x.y.z » dans un Cargo.toml), avec leur raison. outils/retards.py exige que cette
+# liste et les Cargo.toml disent la même chose : un épinglage sans raison écrite, une raison qui ne vise plus rien ou un
+# numéro qui ne suit pas sont refusés (étape « retards » de outils/verifier.sh).
+# `comme` : la version doit aussi être celle que retient ce Cargo.lock-là (le banc de fuzzing essaie le code que le
+# programme publie, pas une version voisine).
+
+[[gardee]]
+manifeste = "Cargo.toml"
+nom = "evtx"
+version = "0.15.1"
+raison = "oracle des tests seulement ; bornes et failles notées à côté de la ligne dans Cargo.toml"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "miniz_oxide"
+version = "0.9.1"
+comme = "Cargo.lock"
+raison = "lecteurs gzip et zip essayés avec la version du programme"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "sha2"
+version = "0.11.1"
+comme = "Cargo.lock"
+raison = "empreinte de l'analyse des fichiers, la version du programme"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "md-5"
+version = "0.11.0"
+comme = "Cargo.lock"
+raison = "empreintes des bases ClamAV, la version du programme"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "sha1"
+version = "0.11.0"
+comme = "Cargo.lock"
+raison = "empreintes des bases ClamAV, la version du programme"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "serde_json"
+version = "1.0.154"
+comme = "Cargo.lock"
+raison = "états et journal de l'Agent, la version du programme"
+
+[[gardee]]
+manifeste = "fuzz/Cargo.toml"
+nom = "unicode-general-category"
+version = "1.1.0"
+comme = "fenetre/Cargo.lock"
+raison = "oracle de fenetre_donnees, la version de la fenêtre"

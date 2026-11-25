@@ -150,7 +150,8 @@ jobs:
   # de code, car les failles arrivent sans lui ; et à la demande. Les étapes « dépendances » et « failles connues » de
   # outils/verifier.sh, les mêmes que sur l'ordinateur de l'auteur (cargo deny sur Vanguard, la bibliothèque des
   # extensions, l'exemple en Rust et le banc de fuzzing ; cargo audit jugé par outils/failles-programmes.sh --depot).
-  # Avec elles, deux étapes qui n'ont besoin que de cargo deny et de Python, rien à compiler : le refus des
+  # Avec elles, trois étapes qui n'ont besoin que de cargo, cargo deny et Python, rien à compiler : les bibliothèques
+  # en retard et les versions épinglées exprès (retards ; un retard est dit, jamais un échec), le refus des
   # bibliothèques qui posent du code avant main (constructeurs, essais sur un dépôt jetable) et les nombres des README
   # (chiffres-readme), jugés aussi à chaque audit lancé à la main.
   # Rien à compiler : seuls les Cargo.lock et les Cargo.toml des dépendances sont lus.
@@ -171,8 +172,8 @@ jobs:
       # outils/failles-programmes.sh y échouait (nuits du 10 au 13 nov., seulement ses premiers appels).
       - name: Rust (chaîne épinglée)
         run: rustup toolchain install
-      - name: Dépendances, failles connues, constructeurs, nombres des README (outils/verifier.sh)
-        run: outils/verifier.sh --seulement dependances,failles-connues,constructeurs,chiffres-readme
+      - name: Dépendances, failles connues, retards, constructeurs, nombres des README (outils/verifier.sh)
+        run: outils/verifier.sh --seulement dependances,failles-connues,retards,constructeurs,chiffres-readme
 
   # Les canaris de format (src/canaris.rs), chaque nuit et à la demande : chaque vraie source (Échap, KEV,
   # endoflife.date, Homebrew, Edge, Chrome, Mozilla…), téléchargée par la même demande que le programme, relue par son

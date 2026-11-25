@@ -30,7 +30,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Mise en forme : `cargo fmt`, toujours avant un commit.
 - Dépendances : `cargo deny check` (`deny.toml` : failles RustSec, licences permises, crates.io seulement, doublons dits
   sans échouer ; une faille admise l'est avec sa preuve ; `extensions/deny.toml` pour la bibliothèque des extensions
-  et l'exemple en Rust) ; étape de verifier.sh, sautée sans `cargo-deny`. Relectures : `cargo vet --locked --frozen`
+  et l'exemple en Rust) ; étape de verifier.sh, sautée sans `cargo-deny`. Retards : `python3 -I outils/retards.py`
+  (étape `retards` : dits avec leur date, jamais un échec, une version épinglée retirée de crates.io comprise ; un
+  « =x.y.z » sans raison dans `outils/versions-gardees.toml` en est un ; moins de 7 jours : attendre). Relectures : `cargo vet --locked --frozen`
   (`supply-chain/`, cargo-vet 0.10.3 : relectures importées ou exemption au numéro exact) ; après un `cargo update`,
   `cargo vet` (Internet), puis pour chaque crate manquant `cargo vet add-exemption <crate> <version> --criteria …
   --notes "<pourquoi>"`, nommément (jamais `regenerate exemptions`, qui exempterait d'un coup tout ce qui est

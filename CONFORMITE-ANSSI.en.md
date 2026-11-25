@@ -22,9 +22,9 @@ added to the roadmap.
 
 | Verdict | Points |
 |---|---:|
-| met | 40 |
+| met | 41 |
 | partial | 12 |
-| gap | 2 |
+| gap | 1 |
 | waiver | 1 |
 | not applicable | 5 |
 
@@ -62,7 +62,7 @@ being required (see `MODELE-DE-MENACE.en.md`).
 |---|---|---|---|
 | LIBS-VETTING-DIRECT | partial | `cargo vet --locked --frozen` at every check and in the CI (`supply-chain/`): each version is either covered by an imported review (Google, Mozilla, Bytecode Alliance, Zcash, ISRG) or exempted at its exact number, and a new version fails. With Internet, the imported reviews are downloaded again from their registries (`outils/verifier.sh`): an entry written by hand in `imports.lock` does not count. Most direct dependencies still have only an exemption, which tracks the version without saying that its code was read. | Own reviews (`cargo vet certify`), first for the format readers, the network and cryptography: roadmap. |
 | LIBS-VETTING-TRANSITIVE | partial | 111 crates out of 489 covered by the imported reviews, 2 in part, 376 exempted (`cargo vet`). | Same next step. |
-| LIBS-OUTDATED | gap | Versions are tracked by hand, with no tool that reports a late dependency. A few are kept back on purpose, with the reason in `Cargo.toml`. | `cargo outdated` in the weekly watch, with the list of versions kept back on purpose: roadmap. |
+| LIBS-OUTDATED | met | `outils/retards.py` asks Cargo (`cargo update --dry-run`, no extra tool), for every `Cargo.lock`, for newer versions (for indirect libraries, only those `cargo update` would take): at every full check, every night in CI and every week in the watch, unless that run is postponed, which is reported. Versions kept back on purpose are listed in `outils/versions-gardees.toml`, with the reason; a pin without a reason is refused. | A late version is reported without blocking: every new version is reviewed before it comes in, while a known vulnerability does block (`cargo audit`, `cargo deny`). |
 | LIBS-AUDIT | met | `cargo audit` (the "known vulnerabilities" step of `outils/verifier.sh`), every night in the CI, and `cargo deny` for RustSec vulnerabilities (`deny.toml`). | — |
 
 ## Language
