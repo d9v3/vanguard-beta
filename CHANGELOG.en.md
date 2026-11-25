@@ -51,7 +51,8 @@ example, finds it, to rebuild it if needed.
   version page, and a page that is not online is no longer counted as delivered. An unreachable GitHub is no longer
   taken for “the page does not exist”: nothing is published or deleted when in doubt. The page only goes out if a real
   Windows has tried the program CI built from that same code. A page left as a draft, or a signed update whose page is
-  missing, is reported with the command to run.
+  missing, is reported with the command to run. Tickets are updated even when the version's tag was just
+  created on GitHub.
 - **Checks and audit: a green that tried nothing is a failure.** A filter that finds no test, a skipped test
   in the nightly canary checks or a fuzzing run without a single execution make the check fail. Audit exceptions of a
   test dependency no longer cover the published programs; the remaining one carries a review date. A source whose

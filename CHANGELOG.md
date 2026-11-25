@@ -54,7 +54,8 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   n'arrête plus la page de la version, et une page qui n'est pas en ligne n'est plus comptée comme livrée. GitHub
   injoignable n'est plus pris pour « la page n'existe pas » : rien n'est publié ni effacé dans le doute. La page ne sort
   que si un vrai Windows a essayé le programme compilé par la CI pour ce même code. Une page restée en brouillon, ou
-  une mise à jour signée dont la page manque, est dite avec la commande à lancer.
+  une mise à jour signée dont la page manque, est dite avec la commande à lancer. Les tickets se mettent à jour même
+  quand l'étiquette de la version vient d'être créée sur GitHub.
 - **Contrôles et audit : un vert qui n'a rien essayé est un échec.** Un filtre qui ne trouve aucun essai, un essai
   sauté dans les contrôles de nuit (canaris) ou un fuzzing sans une seule exécution font échouer le contrôle. Les
   exceptions d'audit d'une dépendance d'essai ne couvrent plus les programmes publiés ; celle qui reste porte une date

@@ -9,8 +9,10 @@ corps intact, case cochée à la main gardée, « en préparation » remplacée 
 écrite à la main gardée, ticket pas « journal » (ou fermé) jamais fermé, citations d'un autre dépôt ou d'une entité HTML
 ignorées, confidentialité refusée (fonction et vraie garde) → rien d'envoyé, corps vide ou raccourci → refus, hors
 ligne (VANGUARD_HORS_LIGNE=1, gh absent, gh sans réseau) → code 3 en moins d'une minute.
+Étiquette de la version absente ici : prise à origin, elle seule ; introuvable → code 2, aucun ticket fermé.
 """
 
+import copy
 import datetime
 import importlib.util
 import json
@@ -232,6 +234,38 @@ class Passage(unittest.TestCase):
         self.assertEqual(self.lancer(gh), 0)
         self.assertEqual(gh.envois(), [])
         self.assertIn("tickets du journal à fermer : #7", "\n".join(self.lignes))
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", self.tmp.name, *a], check=True, capture_output=True, text=True).stdout
+
+    def test_etiquette_creee_sur_github_recuperee(self):
+        # Après la page de la version, v0.2.0 n'existe que sur GitHub : elle est prise là, elle seule, et le ticket
+        # cité se ferme. Une autre étiquette d'origin ne vient pas avec elle.
+        with tempfile.TemporaryDirectory() as origine:
+            subprocess.run(["git", "clone", "-q", "--bare", self.tmp.name, origine], check=True, capture_output=True)
+            subprocess.run(["git", "-C", origine, "tag", "v0.1.5", "v0.1.0"], check=True, capture_output=True)
+            self.git("remote", "add", "origin", origine)
+            self.git("tag", "-d", "v0.2.0")
+            gh = FauxGh(tickets=copy.deepcopy(TICKETS_JOURNAL))
+            self.assertEqual(self.lancer(gh, "--appliquer"), 0, self.lignes)
+            self.assertEqual([a[2] for a in gh.envois() if a[1] == "close"], ["7"])
+            self.assertEqual(sorted(self.git("tag", "-l").split()), ["v0.1.0", "v0.2.0"])
+
+    def test_etiquette_introuvable_dite_code_2(self):
+        # Ni ici ni sur origin (origin vide, puis pas d'origin) : aucun ticket fermé, code 2, la raison dite.
+        self.git("tag", "-d", "v0.2.0")
+        with tempfile.TemporaryDirectory() as origine:
+            subprocess.run(["git", "init", "-q", "--bare", origine], check=True, capture_output=True)
+            self.git("remote", "add", "origin", origine)
+            for _ in range(2):
+                gh = FauxGh(tickets=copy.deepcopy(TICKETS_JOURNAL))
+                self.lignes.clear()
+                self.assertEqual(self.lancer(gh, "--appliquer"), 2, self.lignes)
+                self.assertEqual([a for a in gh.envois() if a[1] == "close"], [])
+                self.assertTrue(any("étiquette v0.2.0 absente" in l and "git fetch" in l for l in self.lignes),
+                                self.lignes)
+                if "origin" in self.git("remote"):
+                    self.git("remote", "remove", "origin")
 
     def test_seul_un_ticket_journal_ouvert_est_ferme(self):
         gh = FauxGh(tickets=json.loads(json.dumps(TICKETS_JOURNAL)))

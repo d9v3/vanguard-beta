@@ -264,15 +264,34 @@ def git(racine, *args):
     return r.stdout
 
 
+def recuperer_etiquette(racine, etiquette):
+    """Prend cette seule étiquette à origin, sans en déplacer une d'ici (pas de « + ») ; rend la raison d'un échec."""
+    ref = f"refs/tags/{etiquette}"
+    try:
+        r = subprocess.run(["git", "-C", racine, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin",
+                            f"{ref}:{ref}"], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
+    except subprocess.TimeoutExpired:
+        return "origin ne répond pas"
+    return "pas sur origin" if r.returncode == 0 else f"git fetch : {r.stderr.strip()[:200]}"
+
+
 def citations(racine, version):
     """{numéro: sha court} des tickets cités par les commits de la version (étiquette précédente exclue)."""
     def cle(e):
         return tuple(int(x) for x in e[1:].split("."))
 
-    etiquettes = [e for e in git(racine, "tag", "-l", "v*").split() if re.fullmatch(r"v\d+\.\d+\.\d+", e)]
+    def lues():
+        return [e for e in git(racine, "tag", "-l", "v*").split() if re.fullmatch(r"v\d+\.\d+\.\d+", e)]
+
     cible = f"v{version}"
+    etiquettes = lues()
     if cible not in etiquettes:
-        raise Refus(f"étiquette {cible} absente : commits de la version pas lus", 2)
+        # La page de la version crée l'étiquette sur GitHub : elle n'est pas encore ici.
+        pourquoi = recuperer_etiquette(racine, cible)
+        etiquettes = lues()
+        if cible not in etiquettes:
+            raise Refus(f"étiquette {cible} absente : commits de la version pas lus ({pourquoi})", 2)
     avant = [e for e in etiquettes if cle(e) < cle(cible)]
     plage = f"{max(avant, key=cle)}..{cible}" if avant else cible
     sortie = git(racine, "log", "--no-show-signature", "--no-color", "--format=%h%x00%B%x1e", plage)
