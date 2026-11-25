@@ -1203,6 +1203,20 @@ J=2027-03-08
 ESSAI_FUZZ=coupe nuit $J
 attendu '[[ $(etat fuzz) == echec ]] && jq -e ".fuzz.cibles_pas_essayees == [\"zip\"] and any(.etapes[]; .nom == \"fuzz\" and (.raison // \"\" | test(\"pas finie\")))" "$R/$J.json" >/dev/null && grep -q "cibles de fuzz pas essayées cette nuit : zip" "$R/$J.md"' \
   "fuzz arrêté en route : échec, et la cible pas essayée nommée"
+# Les écritures de la nuit : un faux compteur relu avant et après, et son absence dite.
+J=2027-03-09
+printf 'wchar: 5\nwrite_bytes: 7000000\ncancelled_write_bytes: 3\n' >"$BANC/io"
+(while sleep 0.1; do [[ -e $BANC/veille/nuits/$J/etapes.jsonl ]] && { sed 's/7000000/49000000/' "$BANC/io" >"$BANC/io.n" && mv "$BANC/io.n" "$BANC/io"; break; }; done) &
+io_fond=$!
+VANGUARD_VEILLE_IO=$BANC/io nuit $J
+kill "$io_fond" 2>/dev/null; wait "$io_fond" 2>/dev/null
+attendu 'grep -q "écrit sur le disque par la nuit : 42 Mo (sans la VM)$" "$BANC/veille/journal/$J.log"' "écritures de la nuit : la différence, en Mo"
+J=2027-03-10
+VANGUARD_VEILLE_IO=$BANC/absent nuit $J
+attendu 'grep -q "écrit sur le disque par la nuit : pas mesuré" "$BANC/veille/journal/$J.log"' "compteur illisible : dit, jamais compté zéro"
+J=2027-03-11
+nuit $J
+attendu 'grep -qE "écrit sur le disque par la nuit : [0-9]+ Mo" "$BANC/veille/journal/$J.log"' "le vrai compteur du noyau se lit"
 # La limite du script et celle du service sont la même, et le vrai banc de fuzzing y tient encore.
 # shellcheck disable=SC2034 # lus par attendu (eval)
 heures=$(sed -n 's/^TimeoutStartSec=\([0-9]*\)h$/\1/p' "$ICI/systemd/vanguard-veille-nuit.service")

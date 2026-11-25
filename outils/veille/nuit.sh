@@ -46,6 +46,12 @@ RESERVE_RAPPORT=600 FUZZ_TOTAL=5400 FUZZ_COMPILATION=900 FUZZ_MINIMUM=10
 [[ -e $VEILLE/COUPER-TOUT ]] && { journal "COUPER-TOUT présent : la nuit ne fait rien"; exit 0; }
 prendre_verrou 0
 DEBUT=$SECONDS
+# Ce que la nuit écrit sur le disque : le compteur du noyau (proc(5), write_bytes) de ce script et des programmes qu'il
+# a attendus. Ni la mémoire vive (tmpfs), ni ce qu'un autre service écrit pour la nuit (VM) ; IOAccounting ne compterait
+# rien ici (le contrôleur io n'est pas délégué aux services de l'utilisateur). Illisible : dit, jamais compté zéro.
+IO=${VANGUARD_VEILLE_IO:-/proc/$$/io}
+octets_ecrits() { sed -n 's/^write_bytes: \([0-9]\{1,18\}\)$/\1/p' "$IO" 2>/dev/null; }
+ECRITS_AVANT=$(octets_ecrits)
 TRAVAIL=$VEILLE/nuits/$JOUR
 rm -rf "$TRAVAIL" && mkdir -p "$TRAVAIL"
 journal "début de la nuit $JOUR (arbre $ARBRE, base $BASE)"
@@ -416,6 +422,13 @@ if [[ -n $ARBRE_OK ]]; then
       done
     fi
   fi
+fi
+
+ECRITS=$(octets_ecrits)
+if [[ -n $ECRITS && -n $ECRITS_AVANT ]]; then
+  journal "écrit sur le disque par la nuit : $(((ECRITS - ECRITS_AVANT) / 1000000)) Mo (sans la VM)"
+else
+  journal "écrit sur le disque par la nuit : pas mesuré ($IO illisible)"
 fi
 
 # ── 9. Rapport, notification, décision de l'IA. ──
