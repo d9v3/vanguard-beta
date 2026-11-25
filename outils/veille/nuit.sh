@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
 # master, verifier.sh complet, proptest à la graine du jour, l'autotest, le journal des erreurs rapatrié trié par le
-# programme, les envois des ordinateurs relevés au relais et comptés par le programme, fuzz de chaque cible (le corpus grandit : c'est l'adaptation), le jeudi Miri et Kani (outils/preuves.sh),
-# cargo audit sur chaque Cargo.lock (exceptions de son deny.toml) avec la base RUSTSEC fraîche, canaris des vraies sources lues par le
-# programme, liens.py, la VM par vm-tester.sh s'il existe.
+# programme, les envois des ordinateurs relevés au relais et comptés par le programme, le jeudi Miri et Kani
+# (outils/preuves.sh), cargo audit sur chaque Cargo.lock (exceptions de son deny.toml) avec la base RUSTSEC fraîche,
+# canaris des vraies sources lues par le programme, liens.py, la CI de nuit, la VM par vm-tester.sh s'il existe, et en
+# DERNIER le fuzz de chaque cible (le corpus grandit : c'est l'adaptation), dans le temps qui reste : c'est la seule
+# étape qui s'allonge à chaque cible ajoutée (nov. 2026 : 47 cibles × 5 min, la nuit coupée par systemd avant les
+# failles, les canaris et les liens, plusieurs nuits de suite).
 # Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le
 # budget, une correction proposée par alerte.sh.
 #   nuit.sh                       la nuit entière (minuterie vanguard-veille-nuit.timer)
 #   nuit.sh --sans-ia             sans jamais lancer alerte.sh
 #   nuit.sh --sans-fuzz --sans-vm --sans-verifier --sans-reseau
-#   nuit.sh --fuzz-secondes N     N secondes par cible (300 par défaut)
+#   nuit.sh --fuzz-secondes N     N secondes par cible au plus (300 par défaut), moins si le temps manque
 #   nuit.sh --essai               banc de essai.sh : rien de réel (voir essai.sh)
 # Une étape sautée dit pourquoi et n'est jamais comptée verte : le résumé la dit, et elle notifie sauf si elle a été
 # demandée (--sans-…).
@@ -34,6 +37,11 @@ done
 [[ $FUZZ_SECONDES =~ ^[1-9][0-9]*$ ]] || { echo "--fuzz-secondes : un nombre de secondes" >&2; exit 2; }
 # Deuxième essai d'un canari au format cassé, pour ne pas alerter sur une réponse d'un instant.
 ATTENTE_FORMAT=${VANGUARD_VEILLE_ATTENTE_FORMAT:-600}
+# La limite du service (TimeoutStartSec de vanguard-veille-nuit.service, comparée par essai.sh), et ce qui en reste
+# toujours pour le rapport. Le fuzz en tout : 90 min au plus, compilation à part, partagées entre les cibles.
+LIMITE=${VANGUARD_VEILLE_LIMITE:-14400}
+RESERVE_RAPPORT=600 FUZZ_TOTAL=5400 FUZZ_COMPILATION=900 FUZZ_MINIMUM=10
+[[ $LIMITE =~ ^[1-9][0-9]*$ ]] || { echo "VANGUARD_VEILLE_LIMITE : un nombre de secondes" >&2; exit 2; }
 
 [[ -e $VEILLE/COUPER-TOUT ]] && { journal "COUPER-TOUT présent : la nuit ne fait rien"; exit 0; }
 prendre_verrou 0
@@ -58,11 +66,24 @@ etape() {
   case $code in
     0) noter "$nom" ok "$debut" 0 ;;
     77) noter "$nom" sautee "$debut" 77 "$(head -n1 "$log" | cut -c1-120)" ;;
+    124 | 137) noter "$nom" echec "$debut" "$code" "arrêtée après $(((SECONDS - debut) / 60)) min : pas finie" ;;
     *) noter "$nom" echec "$debut" "$code" ;;
   esac
   return "$code"
 }
 sauter() { noter "$1" sautee "$SECONDS" 77 "$2"; }
+# Ce qui reste avant la limite du service, le rapport mis à part. SECONDS compte depuis le lancement, comme systemd.
+restant() { echo $((LIMITE - RESERVE_RAPPORT - SECONDS)); }
+# Une étape longue : arrêtée à sa borne, ou avant si la limite du service approche ; sans une minute devant elle, sautée
+# et dite. Une seule étape bloquée ne prive plus la nuit de son rapport.
+etape_bornee() { # nom journal secondes-au-plus commande…
+  local nom=$1 log=$2 borne=$3 reste
+  shift 3
+  reste=$(restant)
+  ((reste < borne)) && borne=$reste
+  ((borne >= 60)) || { sauter "$nom" "plus le temps avant la limite de la nuit"; return 77; }
+  etape "$nom" "$log" timeout --kill-after=60 "$borne" "$@"
+}
 
 # Arrêtée par systemd (TimeoutStartSec) ou à la main : l'auteur le sait quand même.
 interrompue() {
@@ -137,7 +158,7 @@ if [[ -n $ARBRE_OK ]]; then
   else
     RESUME_DEV=$HOME/.cache/vanguard-dev/verifier-dernier.txt
     [[ -f $RESUME_DEV ]] && cp -p "$RESUME_DEV" "$TRAVAIL/verifier-dernier.sauve"
-    etape verifier "$TRAVAIL/verifier.log" outils/verifier.sh
+    etape_bornee verifier "$TRAVAIL/verifier.log" 5400 outils/verifier.sh
     if [[ -f $TRAVAIL/verifier-dernier.sauve ]]; then
       cp -p "$TRAVAIL/verifier-dernier.sauve" "$RESUME_DEV"
     else
@@ -148,7 +169,7 @@ if [[ -n $ARBRE_OK ]]; then
   # ── 3. Proptest à la graine du jour : d'autres entrées chaque nuit (la graine fixe de .cargo/config.toml reste
   # celle de verifier.sh et de la CI) ; un échec se rejoue avec la graine du rapport. ──
   GRAINE=${JOUR//-/}
-  etape proptest "$TRAVAIL/proptest.log" env PROPTEST_RNG_SEED="$GRAINE" PROPTEST_CASES=2000 cargo test -q
+  etape_bornee proptest "$TRAVAIL/proptest.log" 3600 env PROPTEST_RNG_SEED="$GRAINE" PROPTEST_CASES=2000 cargo test -q
 
   # ── 3 bis. L'autodiagnostic de la base sur cet ordinateur (lecture seule, hors ligne) : la première machine à voir un
   # format changer (mise à jour d'Arch) est celle de l'auteur, la nuit même. Son --json ne porte aucune valeur (il peut
@@ -216,23 +237,7 @@ if [[ -n $ARBRE_OK ]]; then
     etape flotte "$TRAVAIL/flotte.log" flotte_de_nuit
   fi
 
-  # ── 4. Fuzz : chaque cible, le corpus suivi avant et après (il grandit), les plantages comparés à ceux connus. ──
-  if [[ -n $SANS_FUZZ ]]; then
-    sauter fuzz "--sans-fuzz"
-  else
-    python_rapport fuzz-compter "$FUZZ" "$TRAVAIL/fuzz-avant.tsv"
-    etape fuzz "$TRAVAIL/fuzz.log" env VANGUARD_FUZZ="$FUZZ" outils/fuzz.sh tout "$FUZZ_SECONDES"
-    # Le dimanche, le corpus de chaque cible est minimisé (cargo fuzz cmin) : il grandit sans s'alourdir.
-    if [[ $(date -d "$JOUR" +%u) == 7 && -z $ESSAI ]]; then
-      # Les cibles comme les lit fuzz.sh (chaque [[bin]] de fuzz/Cargo.toml), compilées dans le target/ de l'arbre.
-      for c in $(sed -n 's/^name = "\(.*\)"$/\1/p' "$ARBRE/fuzz/Cargo.toml" | tail -n +2); do
-        (cd "$ARBRE" && cargo +nightly fuzz cmin --fuzz-dir fuzz --target-dir "$ARBRE/target/fuzz" "$c" "$FUZZ/corpus/$c") \
-          >>"$TRAVAIL/fuzz-cmin.log" 2>&1 || journal "cmin $c : échec (corpus gardé tel quel)"
-      done
-    fi
-  fi
-
-  # ── 4 bis. Une fois par semaine, la nuit du jeudi (la relecture hebdomadaire du vendredi 05 h 30 lit les sept
+  # ── 4. Une fois par semaine, la nuit du jeudi (la relecture hebdomadaire du vendredi 05 h 30 lit les sept
   # dernières nuits ; celle du vendredi, qui finit après 05 h, n'y serait pas encore) : Miri sur les `unsafe` qui
   # touchent à la mémoire de Vanguard, puis les preuves bornées de Kani (outils/preuves.sh). Trop lentes pour chaque
   # nuit ; les autres nuits, l'étape n'apparaît pas. Sans Miri ou sans Kani : sautée, dite. ──
@@ -240,7 +245,7 @@ if [[ -n $ARBRE_OK ]]; then
     if [[ ! -x $ARBRE/outils/preuves.sh ]]; then
       sauter preuves "preuves.sh absent de $BASE"
     else
-      etape preuves "$TRAVAIL/preuves.log" timeout --kill-after=60 45m outils/preuves.sh
+      etape_bornee preuves "$TRAVAIL/preuves.log" 2700 outils/preuves.sh
     fi
   fi
 
@@ -372,7 +377,44 @@ if [[ -n $ARBRE_OK ]]; then
   else
     # Bornée sous le TimeoutStartSec du service : au-delà, le travail reste dans la file de la VM
     # (vm-tester.sh --attendre <id> pour le lire plus tard), et la nuit écrit quand même son rapport.
-    etape vm "$TRAVAIL/vm.log" timeout --kill-after=60 50m outils/vm-tester.sh --delai 30
+    etape_bornee vm "$TRAVAIL/vm.log" 3000 outils/vm-tester.sh --delai 30
+  fi
+
+  # ── 8 bis. Fuzz, en dernier : chaque cible, le corpus suivi avant et après (il grandit), les plantages comparés à ceux
+  # connus. Le temps qui reste, 90 min au plus, est partagé entre les cibles : une cible ajoutée raccourcit les autres,
+  # jamais le reste de la nuit (la CI passe en plus cinq minutes par cible chaque nuit). Les cibles comme les lit fuzz.sh
+  # (chaque [[bin]] de fuzz/Cargo.toml). ──
+  if [[ -n $SANS_FUZZ ]]; then
+    sauter fuzz "--sans-fuzz"
+  else
+    mapfile -t CIBLES < <(sed -n 's/^name = "\(.*\)"$/\1/p' "$ARBRE/fuzz/Cargo.toml" | tail -n +2)
+    # Le dimanche, le corpus de chaque cible est minimisé (cargo fuzz cmin) : 30 min gardées.
+    CMIN=0
+    [[ $(date -d "$JOUR" +%u) == 7 && -z $ESSAI ]] && CMIN=1800
+    pour_fuzz=$(($(restant) - CMIN - FUZZ_COMPILATION))
+    ((pour_fuzz > FUZZ_TOTAL)) && pour_fuzz=$FUZZ_TOTAL
+    # Aucune cible lue : fuzz.sh le dit lui-même, en échec.
+    par_cible=$((pour_fuzz / (${#CIBLES[@]} ? ${#CIBLES[@]} : 1)))
+    ((par_cible > FUZZ_SECONDES)) && par_cible=$FUZZ_SECONDES
+    if ((par_cible < FUZZ_MINIMUM && par_cible < FUZZ_SECONDES)); then
+      sauter fuzz "plus le temps : moins de $FUZZ_MINIMUM s pour chacune des ${#CIBLES[@]} cibles"
+    else
+      journal "fuzz : ${#CIBLES[@]} cibles, $par_cible s chacune"
+      python_rapport fuzz-compter "$FUZZ" "$TRAVAIL/fuzz-avant.tsv"
+      etape_bornee fuzz "$TRAVAIL/fuzz.log" "$(($(restant) - CMIN))" \
+        env VANGUARD_FUZZ="$FUZZ" outils/fuzz.sh tout "$par_cible"
+    fi
+    if ((CMIN)); then
+      for c in "${CIBLES[@]}"; do
+        # Jamais un cmin commencé sans cinq minutes devant lui.
+        reste=$(restant)
+        ((reste >= 300)) || { journal "cmin : plus le temps à partir de $c (corpus gardés tels quels)"; break; }
+        # Compilées dans le target/ de l'arbre.
+        (cd "$ARBRE" && timeout --kill-after=60 "$reste" cargo +nightly fuzz cmin --fuzz-dir fuzz \
+          --target-dir "$ARBRE/target/fuzz" "$c" "$FUZZ/corpus/$c") \
+          >>"$TRAVAIL/fuzz-cmin.log" 2>&1 || journal "cmin $c : échec (corpus gardé tel quel)"
+      done
+    fi
   fi
 fi
 

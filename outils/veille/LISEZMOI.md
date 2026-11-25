@@ -10,7 +10,7 @@ et ne publie jamais rien.
 
 | Quoi | Quand | IA | Durée |
 |---|---|---|---|
-| Nuit (`nuit.sh`) | chaque jour à 03 h 30 (après le renouvellement du quota du vendredi à 3 h) | non | ~1 h 45 (le jeudi, plus les preuves : 45 min au plus) |
+| Nuit (`nuit.sh`) | chaque jour à 03 h 30 (après le renouvellement du quota du vendredi à 3 h) | non | ~3 h (le jeudi, plus les preuves : 45 min au plus), 4 h jamais dépassées |
 | Correction sur alerte (`alerte.sh`) | lancée par la nuit, si une alerte tient dans le budget | oui | ≤ 4 h 30 (correction, verifier.sh, relecture : 90 min chacun au plus ; pas de VM) |
 | Relecture hebdomadaire (`hebdo.sh`) | vendredi à 05 h 30 | oui, lecture seule | ≤ 90 min |
 | Rappel (`matin.sh`) | 08 h 30, si la notification de la nuit n'a pas été vue | non | secondes |
@@ -36,9 +36,7 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    `etat/causes.json`. Voir « Journal des erreurs » plus bas.
    Puis la **relève des envois** du relais (`releve-envois.sh`, étape `envois`) et leur lecture par le programme de la
    base (`vanguard compte-rendu flotte`, étape `flotte`). Voir « Envois » plus bas.
-4. `outils/fuzz.sh tout 300` : corpus suivi avant/après (il grandit : c'est l'adaptation), plantages nouveaux
-   (SHA-256 jamais vu), cibles du banc absentes de `fuzz.sh`. Le dimanche, `cargo fuzz cmin`.
-   **Le jeudi seulement** (la relecture hebdomadaire du vendredi lit les sept dernières nuits ; celle du vendredi,
+4. **Le jeudi seulement** (la relecture hebdomadaire du vendredi lit les sept dernières nuits ; celle du vendredi,
    finie après 05 h 30, n'y serait pas) : `outils/preuves.sh`, borné à 45 min.
    Miri interprète, pour Linux puis pour Windows, les essais qui exercent les `unsafe` portant sur la mémoire de
    Vanguard (comportement indéfini = échec), puis Kani prouve les lecteurs de `outils/preuves/` pour toutes les
@@ -61,6 +59,10 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    plus de deux jours, « muette », notifiée. Ses champs sont revalidés (liste fermée), jamais donnés à l'IA.
 8. `outils/vm-tester.sh --delai 30` s'il existe (sinon « sautée »), borné à 50 min : au-delà, le travail reste dans la
    file de la VM (`vm-tester.sh --attendre <id>`) et la nuit écrit quand même son rapport.
+   Puis le **fuzz, en dernier** (`outils/fuzz.sh tout N`) : corpus suivi avant/après (il grandit : c'est l'adaptation),
+   plantages nouveaux (SHA-256 jamais vu), cibles du banc absentes de `fuzz.sh`, cibles pas essayées. Le temps qui
+   reste, 90 min au plus, est partagé entre les cibles (300 s chacune au plus) : une cible ajoutée raccourcit les
+   autres, jamais le reste de la nuit. Le dimanche, `cargo fuzz cmin` (30 min gardées).
 9. Rapport `~/.cache/vanguard-dev/veille/AAAA-MM-JJ.json` et `.md`, `dernier.txt` (une ligne), **une** notification
    du bureau si une étape échoue, s'il y a une alerte, une proposition en attente, une étape sautée sans l'avoir
    demandée (`--sans-…`), y compris dans verifier.sh, ou un canari qui n'a pas lu sa source (`http-404`,
@@ -238,7 +240,7 @@ pour RUSTSEC, écriture dans l'arbre et dans la compilation et le cargo jetables
 
 ## Coût et budget
 
-- Calcul : ~1 h 45 par nuit, `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, 8 tâches de compilation.
+- Calcul : ~3 h par nuit, 4 h au plus (`TimeoutStartSec`) : chaque étape longue est bornée, `Nice=19`, `IOSchedulingClass=idle`, `CPUWeight=20`, 8 tâches de compilation.
 - IA : au plus **1 correction par nuit**, **3 par semaine glissante**, plus **1 relecture hebdomadaire** (chaque
   correction coûte deux lancements : correction et relecture). **Une seule proposition en attente à la fois** : tant
   qu'une branche `veille/*` n'est ni fusionnée ni supprimée, aucune nouvelle correction. Une correction = un seul

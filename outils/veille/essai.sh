@@ -84,9 +84,11 @@ echo "Tout est vert."
 FIN
 cat >"$D/outils/fuzz.sh" <<'FIN'
 #!/usr/bin/env bash
-# Faux fuzz.sh : ESSAI_PLANTAGE=<nom> dépose un plantage de tar.
-CIBLES=(tar zip)
-for c in "${CIBLES[@]}"; do
+# Faux fuzz.sh : ESSAI_PLANTAGE=<nom> dépose un plantage de tar ; ESSAI_FUZZ=coupe s'arrête après la première cible,
+# comme timeout à l'échéance. Note ce qu'il reçoit.
+echo "$*" >>"$BANC/fuzz-args.log"
+for c in tar zip; do
+  [[ ${ESSAI_FUZZ:-} == coupe && $c == zip ]] && exit 124
   mkdir -p "$VANGUARD_FUZZ/corpus/$c"; echo "$RANDOM$c" >"$VANGUARD_FUZZ/corpus/$c/n-$RANDOM"
   if [[ $c == tar && -n ${ESSAI_PLANTAGE:-} ]]; then
     echo "$ESSAI_PLANTAGE" >"$VANGUARD_FUZZ/plantages/tar/crash-$ESSAI_PLANTAGE"
@@ -97,6 +99,8 @@ for c in "${CIBLES[@]}"; do
 done
 [[ -z ${ESSAI_PLANTAGE:-} ]]
 FIN
+# Les cibles du banc, dans la forme du vrai fuzz/Cargo.toml : le paquet d'abord, puis une par [[bin]].
+printf '[package]\nname = "banc"\n\n[[bin]]\nname = "tar"\n\n[[bin]]\nname = "zip"\n' >"$D/fuzz/Cargo.toml"
 printf '#!/usr/bin/env python3\nprint("Liens : 3 vérifié(s), aucun mort.")\n' >"$D/outils/liens.py"
 printf '#!/usr/bin/env python3\nprint("RUSTSEC-2023-0071")\n' >"$D/outils/exceptions-rustsec.py"
 # Faux failles-programmes.sh --exceptions-depot : RUSTSEC-2026-0042 admis par le deny.toml de Vanguard seulement ; le
@@ -1167,6 +1171,49 @@ J=2027-02-10
 ESSAI_CI=utf8 nuit $J
 attendu 'grep -q "réponse de GitHub refusée" "$R/dernier.txt" && (($(notifs) == 1))' \
   "CI verte pour jq, illisible pour rapport.py : refusée, notifiée"
+nettoyer
+
+echo "Le temps de la nuit (le fuzz en dernier, dans ce qui reste ; rien de court n'est privé par lui)"
+etat() { jq -r --arg n "$1" 'first(.etapes[] | select(.nom == $n) | .etat) // "absente"' "$R/$J.json"; }
+J=2027-03-02
+: >"$BANC/fuzz-args.log"
+nuit $J
+attendu 'jq -e "[.etapes[].nom] | .[-1] == \"fuzz\" and (index(\"rustsec\") and index(\"canaris\") and index(\"liens\") and index(\"ci-github\") and index(\"vm\"))" "$R/$J.json" >/dev/null' \
+  "le fuzz passe après les failles, les canaris, les liens, la CI et la VM"
+attendu '[[ $(cat "$BANC/fuzz-args.log") == "tout 300" ]]' "assez de temps : 300 s par cible, jamais plus"
+attendu 'jq -e ".fuzz.cibles_pas_essayees == []" "$R/$J.json" >/dev/null' "toutes les cibles essayées : rien à dire"
+J=2027-03-03
+: >"$BANC/fuzz-args.log"
+VANGUARD_VEILLE_LIMITE=1700 nuit $J
+# shellcheck disable=SC2034 # lu par attendu (eval)
+read -r _ par <"$BANC/fuzz-args.log"
+attendu '[[ $par =~ ^[0-9]+$ ]] && ((par >= 10 && par <= 100))' "peu de temps : 200 s au plus à partager entre deux cibles"
+J=2027-03-05
+: >"$BANC/fuzz-args.log"; : >"$BANC/notifications.log"
+VANGUARD_VEILLE_LIMITE=1500 nuit $J
+attendu '[[ $(etat fuzz) == sautee && ! -s $BANC/fuzz-args.log ]] && (($(notifs) == 1))' "plus le temps : fuzz sauté, dit, notifié"
+attendu '[[ $(etat rustsec) == ok && $(etat canaris) == ok && $(etat liens) == ok ]]' "fuzz sauté : le reste a tourné"
+J=2027-03-06
+: >"$BANC/notifications.log"
+VANGUARD_VEILLE_LIMITE=640 nuit $J
+attendu '[[ -s $R/$J.md && $(etat verifier) == sautee && $(etat proptest) == sautee && $(etat rustsec) == ok ]] && (($(notifs) == 1))' \
+  "moins d'une minute : les étapes longues sautées et dites, les courtes faites, le rapport écrit"
+J=2027-03-08
+: >"$BANC/notifications.log"
+ESSAI_FUZZ=coupe nuit $J
+attendu '[[ $(etat fuzz) == echec ]] && jq -e ".fuzz.cibles_pas_essayees == [\"zip\"] and any(.etapes[]; .nom == \"fuzz\" and (.raison // \"\" | test(\"pas finie\")))" "$R/$J.json" >/dev/null && grep -q "cibles de fuzz pas essayées cette nuit : zip" "$R/$J.md"' \
+  "fuzz arrêté en route : échec, et la cible pas essayée nommée"
+# La limite du script et celle du service sont la même, et le vrai banc de fuzzing y tient encore.
+# shellcheck disable=SC2034 # lus par attendu (eval)
+heures=$(sed -n 's/^TimeoutStartSec=\([0-9]*\)h$/\1/p' "$ICI/systemd/vanguard-veille-nuit.service")
+# shellcheck disable=SC2034
+limite=$(sed -n 's/^LIMITE=.*:-\([0-9]*\)}$/\1/p' "$ICI/nuit.sh")
+attendu '[[ $heures =~ ^[0-9]+$ && $limite =~ ^[0-9]+$ ]] && ((heures * 3600 == limite))' "limite de nuit.sh = TimeoutStartSec du service"
+# shellcheck disable=SC2034
+total=$(sed -n 's/.* FUZZ_TOTAL=\([0-9]*\) .*/\1/p' "$ICI/nuit.sh")
+vraies=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$ICI/../../fuzz/Cargo.toml" | tail -n +2 | wc -l)
+attendu '[[ $total =~ ^[0-9]+$ ]] && ((vraies > 0 && total / vraies >= 60))' "vrai banc ($vraies cibles) : au moins une minute chacune"
+attendu '! grep -nE "^ +etape (verifier|proptest|preuves|vm|fuzz) " "$ICI/nuit.sh"' "chaque étape longue est bornée"
 nettoyer
 
 if ((ECHECS)); then

@@ -10,5 +10,5 @@ Nice=19
 IOSchedulingClass=idle
 CPUWeight=20
 Environment=CARGO_BUILD_JOBS=8
-# ~1 h 45 sans la VM ; la VM est bornée à 51 min, les preuves du jeudi à 45 min (nuit.sh).
+# La même limite que LIMITE dans nuit.sh, qui borne ses étapes longues pour écrire son rapport avant (essai.sh compare).
 TimeoutStartSec=4h

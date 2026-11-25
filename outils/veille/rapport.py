@@ -201,11 +201,11 @@ def compter_corpus(fuzz):
 
 
 def cibles_de_fuzz_sh(arbre):
-    for ligne in lignes(Path(arbre) / "outils/fuzz.sh"):
-        m = re.match(r"^CIBLES=\((.*)\)", ligne)
-        if m:
-            return m.group(1).split()
-    return []
+    """Les cibles que passe fuzz.sh, lues comme lui : chaque « name = » de fuzz/Cargo.toml après le paquet. Il les
+    écrivait lui-même autrefois (CIBLES=(…)) : lue sous cette forme, la liste était vide, et chaque cible dite absente."""
+    noms = [m.group(1) for ligne in lignes(Path(arbre) / "fuzz/Cargo.toml")
+            if (m := re.match(r'^name = "(.*)"$', ligne))]
+    return noms[1:]
 
 
 def lire_fuzz(t, veille, arbre, fuzz):
@@ -255,6 +255,8 @@ def lire_fuzz(t, veille, arbre, fuzz):
         "plantages_gardes": len(tous),
         "premiere_nuit": premiere,
         "cibles_sans_fuzz_sh": [c for c in banc if c not in dans_script],
+        # Le fuzz arrêté avant la fin (borne de la nuit) : une cible sans ligne n'a pas été essayée, jamais comptée saine.
+        "cibles_pas_essayees": [c for c in dans_script if c not in {x["cible"] for x in cibles}],
         "corpus_sans_cible": [c for c in apres if c not in banc],
     }
 
@@ -866,6 +868,8 @@ def attend_auteur(r):
     f = r.get("fuzz") or {}
     if f.get("cibles_sans_fuzz_sh"):
         attend.append("cibles de fuzz absentes de outils/fuzz.sh : " + ", ".join(f["cibles_sans_fuzz_sh"]))
+    if f.get("cibles_pas_essayees"):
+        attend.append("cibles de fuzz pas essayées cette nuit : " + ", ".join(f["cibles_pas_essayees"]))
     if f.get("corpus_sans_cible"):
         attend.append("corpus sans cible dans fuzz/fuzz_targets : " + ", ".join(f["corpus_sans_cible"]))
     j = r.get("journal") or {}
