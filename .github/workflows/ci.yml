@@ -510,14 +510,14 @@ jobs:
               "::notice::$outil --liste refusé en administrateur (UAC) : voulu"
             } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
           }
-          # La fenêtre livrée : elle démarre (toutes ses DLL se chargent depuis System32) et dit la version du
-          # programme, qui porte l'empreinte de ces octets-là : une autre, et la fenêtre ne s'ouvrirait chez personne.
+          # La fenêtre livrée : elle démarre (toutes ses DLL se chargent depuis System32) et dit sa version ; le
+          # programme porte l'empreinte de ces octets-là : une autre, et la fenêtre ne s'ouvrirait chez personne.
           # Programme de fenêtre (windows_subsystem) : `&` n'attend pas sa fin, Start-Process si.
           $p = Start-Process $f -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput version-fenetre.txt
           if ($p.ExitCode -ne 0) { throw "vanguard-fenetre --version : code $($p.ExitCode)" }
-          $attendue = "vanguard-fenetre " + ((& $s --version | Out-String).Trim() -split ' ')[-1]
+          # Elle dit sa propre version (fenetre/Cargo.toml), pas celle du programme ; le lien, c'est l'empreinte, dessous.
           $dite = (Get-Content version-fenetre.txt -Raw).Trim()
-          if ($dite -ne $attendue) { throw "vanguard-fenetre --version : « $dite », attendu « $attendue »" }
+          if ($dite -notmatch '\Avanguard-fenetre \d+\.\d+\.\d+\z') { throw "vanguard-fenetre --version : « $dite »" }
           $empreinte = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
           $octets = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Resolve-Path $s)))
           if (-not $octets.Contains("VANGUARD-FENETRE:$empreinte;")) {
