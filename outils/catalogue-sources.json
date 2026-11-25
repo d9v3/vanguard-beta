@@ -79,7 +79,7 @@
           "MozillaThunderbird"
         ]
       },
-      "flatpak": "org.mozilla.Thunderbird",
+      "flatpak": "org.mozilla.thunderbird",
       "winget": "Mozilla.Thunderbird"
     },
     {
@@ -124,7 +124,7 @@
     },
     {
       "nom": "qBittorrent",
-      "licence": "GPL-2.0-or-later",
+      "licence": "GPL-3.0-or-later AND OpenSSL",
       "paquets": {
         "arch": [
           "qbittorrent"
@@ -396,7 +396,7 @@
     },
     {
       "nom": "GIMP",
-      "licence": "GPL-3.0",
+      "licence": "GPL-3.0+ AND LGPL-3.0+",
       "paquets": {
         "arch": [
           "gimp"

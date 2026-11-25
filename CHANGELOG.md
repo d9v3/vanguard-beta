@@ -43,6 +43,8 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (aucune autre valeur) : le contrôle tourne tout de même, et son résultat
   (code, dégradations, sources non vérifiées) est dit dans les notes de la version et gardé dans l'historique signé.
   Une dégradation admise ne vaut que pour la valeur exacte notée, avec sa date.
+  Déjà corrigé grâce à lui : Thunderbird vient de son application Flathub suivie (l'ancienne est en fin de vie), et
+  les licences de qBittorrent et de GIMP sont celles de leurs éditeurs.
   Après une campagne d'attaque, le contrôle est plus strict : il juge la liste que le programme publié imprime
   lui-même (pas un fichier qu'on pourrait changer à côté), lit son code et la liste des admis dans le commit publié
   en revérifiant l'empreinte de chaque objet de git, et tout le passage a une limite de temps (10 min pour les

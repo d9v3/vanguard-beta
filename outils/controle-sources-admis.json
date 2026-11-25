@@ -1,4 +1,59 @@
 {
   "format": 2,
-  "admis": []
+  "admis": [
+    {
+      "source": "arch",
+      "identifiant": "calibre",
+      "constat": "perime",
+      "detail": "extra/calibre 9.18.0 depuis le 2026-11-19T12:47:21.267Z",
+      "raison": "9.19.0 déjà dans extra-testing ; pour la 0.98 seulement.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    },
+    {
+      "source": "arch",
+      "identifiant": "audacity",
+      "constat": "perime",
+      "detail": "extra/audacity 3.7.9 depuis le 2026-09-07T12:40:53.858Z",
+      "raison": "Paquet signalé en retard sur Arch ; pour la 0.98 seulement.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    },
+    {
+      "source": "arch",
+      "identifiant": "mullvad-vpn",
+      "constat": "perime",
+      "detail": "extra/mullvad-vpn 2026.5 depuis le 2026-11-13T18:17:15.238Z",
+      "raison": "Paquet signalé en retard sur Arch ; pour la 0.98 seulement.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    },
+    {
+      "source": "flathub",
+      "identifiant": "org.torproject.torbrowser-launcher",
+      "constat": "licence",
+      "detail": "catalogue MPL-2.0 ; Flathub : MIT (libre)",
+      "raison": "Flathub décrit le lanceur (MIT), le catalogue Tor Browser lui-même (MPL-2.0) : les deux sont libres.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    },
+    {
+      "source": "arch",
+      "identifiant": "firefox",
+      "constat": "perime",
+      "detail": "extra/firefox 160.0.1 depuis le 2026-11-23T18:40:15.912Z",
+      "raison": "Paquet signalé en retard sur Arch depuis un jour ou moins ; pour la 0.98 seulement.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    },
+    {
+      "source": "arch",
+      "identifiant": "thunderbird",
+      "constat": "perime",
+      "detail": "extra/thunderbird 160.0 depuis le 2026-11-24T20:49:44.009Z",
+      "raison": "Paquet signalé en retard sur Arch depuis un jour ou moins ; pour la 0.98 seulement.",
+      "date": "2026-11-24",
+      "jusqu_au": "2026-12-08"
+    }
+  ]
 }

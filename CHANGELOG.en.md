@@ -42,6 +42,8 @@ example, finds it, to rebuild it if needed.
   full. Releasing anyway takes `VANGUARD_PUBLIER_SANS_CONTROLE_SOURCES=1` (no other value): the check still runs,
   and its result (code, degradations, unverified sources) is stated in the release notes and kept in the signed
   history. An accepted degradation only holds for the exact value noted, with its date.
+  Already fixed thanks to it: Thunderbird comes from its maintained Flathub app (the old one is end-of-life), and the
+  qBittorrent and GIMP licenses are the ones their publishers state.
   After an attack campaign, the check is stricter: it judges the list the released program prints itself (not a
   file that could be changed next to it), reads its code and the accepted list from the released commit while
   re-checking the hash of every git object, and the whole run has a time limit (10 min for the sources, 15 min in

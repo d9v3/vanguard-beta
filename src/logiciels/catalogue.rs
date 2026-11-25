@@ -151,7 +151,8 @@ pub const CATALOGUE: &[Logiciel] = &[
             &["thunderbird"],
             &["MozillaThunderbird"],
         ],
-        flatpak: Some("org.mozilla.Thunderbird"),
+        // Pas org.mozilla.Thunderbird (T majuscule) : en fin de vie sur Flathub, elle ne reçoit plus de correctifs.
+        flatpak: Some("org.mozilla.thunderbird"),
         commandes: &["thunderbird"],
         winget: Some(("Mozilla.Thunderbird", "Mozilla Thunderbird")),
     },
@@ -205,7 +206,8 @@ pub const CATALOGUE: &[Logiciel] = &[
             "Téléchargement par torrent, sans publicité.",
             "Torrent downloads, ad-free.",
         ),
-        licence: Some("GPL-2.0-or-later"),
+        // Le code est GPL-2.0-or-later ; le programme distribué, avec ses images, est GPL-3.0-or-later (COPYING).
+        licence: Some("GPL-3.0-or-later AND OpenSSL"),
         recommande: false,
         paquets: [&["qbittorrent"], &["qbittorrent"], &["qbittorrent"], &["qbittorrent"]],
         flatpak: Some("org.qbittorrent.qBittorrent"),
@@ -464,7 +466,8 @@ pub const CATALOGUE: &[Logiciel] = &[
             "Retouche photo et création d'images, l'équivalent libre de Photoshop.",
             "Photo retouching and image creation, the free counterpart of Photoshop.",
         ),
-        licence: Some("GPL-3.0"),
+        // GIMP et ses bibliothèques (libgimp) ; écrit comme l'éditeur, la forme longue ne tient pas en 33 caractères.
+        licence: Some("GPL-3.0+ AND LGPL-3.0+"),
         recommande: false,
         paquets: [&["gimp"], &["gimp"], &["gimp"], &["gimp"]],
         flatpak: Some("org.gimp.GIMP"),
