@@ -1867,12 +1867,27 @@ fn suggestion_ici() -> Option<String> {
         portail: linux::lecture::connectivite().map(|c| c == "portal"),
     };
     #[cfg(windows)]
+    let lu = windows::lecture::lire_pour_le_menu();
+    #[cfg(windows)]
     let s = portail::Signaux {
         force: force_windows(),
-        deja_public: windows::lecture::lire().profil.is_some_and(|(_, c, _)| c == "Public"),
+        deja_public: lu
+            .as_ref()
+            .and_then(|l| l.profil.as_ref())
+            .is_some_and(|(_, c, _)| c == "Public"),
         portail: None,
     };
-    portail::suggestion(s)
+    let suggestion = portail::suggestion(s);
+    #[cfg(windows)]
+    let suggestion = suggestion.or_else(|| {
+        lu.is_none().then(|| {
+            trf!(
+                "Réseau pas lu à temps : impossible de dire s'il vaut mieux allumer le mode.",
+                "Network not read in time: cannot tell whether the mode should be turned on."
+            )
+        })
+    });
+    suggestion
 }
 
 /// `vanguard wifi-public [on|off|portail]`.

@@ -155,6 +155,12 @@ pub(crate) mod lecture {
         crate::machine::windows::ps(super::LECTURE).map_or_default(|s| super::lire_sortie(&s))
     }
 
+    /// Comme `lire`, pour la seule suggestion du menu : PowerShell qui traîne (ordinateur chargé) ne retient pas
+    /// l'écran une minute. `None` : pas lu, à dire. L'allumage et la remise gardent le délai entier de `lire`.
+    pub(crate) fn lire_pour_le_menu() -> Option<super::Lu> {
+        crate::machine::windows::ps_delai(super::LECTURE, 15).map(|s| super::lire_sortie(&s))
+    }
+
     /// La catégorie d'un profil réseau dans le registre (0 Public, 1 Private, 2 DomainAuthenticated).
     pub(crate) fn categorie(guid: &str) -> Option<&'static str> {
         let n = dword(
