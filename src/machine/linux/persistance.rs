@@ -1214,7 +1214,10 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         use std::os::unix::fs::MetadataExt as _;
         std::fs::metadata(maison).ok().map(|m| m.uid())
     };
-    let de_systemd = session_de_systemd_pour(uid_du_compte(), proprietaire);
+    let (de_systemd, session_inconnue) = match session_de_systemd_pour(racine, uid_du_compte(), proprietaire) {
+        Ok(s) => (Some(s), None),
+        Err(raison) => (None, runtime.is_none().then_some(raison)),
+    };
     let session = runtime.clone().or_else(|| de_systemd.clone());
     // XDG_RUNTIME_DIR ailleurs que le dossier que systemd donne au compte : un programme du compte peut changer la
     // variable d'où Vanguard est lancé, le gestionnaire de la session lit toujours /run/user/<uid> (relecture
@@ -1280,6 +1283,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         dossiers_ajoutes: Vec::new(),
         session_de_systemd,
         session_sure,
+        session_inconnue,
         donnees_systeme: liste("XDG_DATA_DIRS"),
         config_systeme: liste("XDG_CONFIG_DIRS"),
         uwsm_session,
@@ -1484,6 +1488,23 @@ pub(super) fn persistance_dans(
             )
         };
         constat_sans_ligne(&mut t, &source, suspect, refus);
+    }
+    // Passe 5, S5-1 : aucune session lue (ni XDG_RUNTIME_DIR, ni le dossier que systemd donne au compte) : ce que
+    // « systemd-run --user » et les générateurs y rangent n'est pas vérifié, et ce n'est pas « rien de suspect ».
+    if let Some(raison) = t.r.session_inconnue.clone() {
+        let raison = crate::ui::affichable(&raison);
+        constat_sans_ligne(
+            &mut t,
+            "session inconnue",
+            trf!(
+                "le dossier de session du compte n'est pas connu ({raison}) et XDG_RUNTIME_DIR manque : les unités de sa session (systemd-run --user, générateurs) ne sont pas vérifiées (non vérifié)",
+                "the account's session folder is not known ({raison}) and XDG_RUNTIME_DIR is missing: the units of its session (systemd-run --user, generators) are not checked (not verified)"
+            ),
+            trf!(
+                "session du compte non vérifiée ({raison}) : l'alerte ne se déclare pas normale tant qu'elle ne se lit pas",
+                "account session not verified ({raison}): the alert cannot be declared normal while it cannot be read"
+            ),
+        );
     }
     if let (Some(autre), Some(variable)) = (t.r.session_de_systemd.clone(), t.r.runtime.clone())
         && std::fs::symlink_metadata(t.r.sous(&autre)).is_ok()
@@ -2533,6 +2554,9 @@ struct Releveur {
     /// personnel : seules ses unités se bornent dans le reste et se groupent (passe 3, N2). Faux quand XDG_RUNTIME_DIR
     /// mène ailleurs ou que le compte ne se connaît pas : tout est nommé.
     session_sure: bool,
+    /// Ni XDG_RUNTIME_DIR ni dossier de session de systemd connu (`session_de_systemd_pour`) : pourquoi. Aucune unité
+    /// de la session n'est lue, c'est dit non vérifié (passe 5, S5-1).
+    session_inconnue: Option<String>,
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
     donnees_systeme: Vec<std::path::PathBuf>,
     config_systeme: Vec<std::path::PathBuf>,
@@ -8092,15 +8116,57 @@ fn nom_d_unite_valide(nom: &str) -> bool {
             .all(|o| o.is_ascii_alphanumeric() || b":-_.\\@".contains(&o))
 }
 
-/// Le dossier de session que systemd donne au compte qui lance Vanguard (`uid`), `/run/user/<uid>`. Aucun en
-/// administrateur dans le dossier personnel d'un autre compte (`proprietaire`, inconnu compris) : /run/user/0 n'est
-/// pas sa session, et le lire taisait la sienne ; sans XDG_RUNTIME_DIR, c'est alors dit non vérifié (passe 4, N4-1).
-fn session_de_systemd_pour(uid: Option<u32>, proprietaire: Option<u32>) -> Option<std::path::PathBuf> {
-    let uid = uid?;
-    if uid == 0 && proprietaire != Some(0) {
-        return None;
+/// Le dossier de session que systemd donne au compte qui lance Vanguard (`uid`), `/run/user/<uid>`, lu sous `racine`.
+/// En administrateur dans le dossier personnel d'un autre compte (`proprietaire`), /run/user/0 n'est pas sa session,
+/// et le lire taisait la sienne (passe 4, N4-1) : c'est `/run/user/<proprietaire>`, pris seulement s'il est absent (le
+/// compte n'a pas de session ouverte : rien à lire) ou un vrai dossier à ce compte, sans lien (passe 5, S5-1 :
+/// sans XDG_RUNTIME_DIR, la session du compte n'était ni lue ni dite). /run/user est à root : le compte ne peut pas
+/// remplacer ce dossier entre ce jugement et la lecture. `Err` : pourquoi la session du compte n'est pas connue,
+/// dit non vérifié par `persistance_dans` quand aucune autre session n'est lue.
+fn session_de_systemd_pour(
+    racine: &Path,
+    uid: Option<u32>,
+    proprietaire: Option<u32>,
+) -> Result<std::path::PathBuf, String> {
+    let Some(uid) = uid else {
+        return Err(tr!("le compte qui lit ne se connaît pas", "the reading account is unknown").to_string());
+    };
+    if uid != 0 || proprietaire == Some(0) {
+        return Ok(std::path::PathBuf::from(format!("/run/user/{uid}")));
     }
-    Some(std::path::PathBuf::from(format!("/run/user/{uid}")))
+    let Some(compte) = proprietaire else {
+        return Err(tr!(
+            "le propriétaire du dossier personnel ne se connaît pas",
+            "the owner of the home folder is unknown"
+        )
+        .to_string());
+    };
+    let session = std::path::PathBuf::from(format!("/run/user/{compte}"));
+    let lu = if racine == Path::new("/") {
+        session.clone()
+    } else {
+        racine.join(session.strip_prefix("/").unwrap_or(&session))
+    };
+    match std::fs::symlink_metadata(&lu) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(session),
+        Err(e) => Err(trf!(
+            "{} ne se lit pas ({e})",
+            "{} cannot be read ({e})",
+            session.display()
+        )),
+        Ok(m) => {
+            use std::os::unix::fs::MetadataExt as _;
+            if m.file_type().is_dir() && m.uid() == compte {
+                Ok(session)
+            } else {
+                Err(trf!(
+                    "{} n'est pas un dossier au compte {compte}",
+                    "{} is not a folder owned by account {compte}",
+                    session.display()
+                ))
+            }
+        }
+    }
 }
 
 /// Les dossiers d'unités de l'utilisateur sous le dossier de la session (XDG_RUNTIME_DIR), dans l'ordre de systemd.
@@ -28465,20 +28531,91 @@ mod tests {
     }
 
     /// Passe 4, N4-1 : en administrateur dans le dossier d'un autre compte, /run/user/0 n'est pas pris pour sa
-    /// session ; dans le sien, ou sous un compte ordinaire, /run/user/<uid>.
+    /// session ; dans le sien, ou sous un compte ordinaire, /run/user/<uid>. Passe 5, S5-1 : celui du compte, absent
+    /// ou à lui ; un compte inconnu n'en donne aucun (dit par l'appelant).
     #[test]
     fn session_de_root_chez_un_compte() {
-        assert_eq!(session_de_systemd_pour(Some(0), Some(1000)), None);
-        assert_eq!(session_de_systemd_pour(Some(0), None), None);
+        let vide = crate::essais::temporaire().join(format!("vanguard-session-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&vide);
+        std::fs::create_dir_all(&vide).unwrap();
         assert_eq!(
-            session_de_systemd_pour(Some(0), Some(0)),
-            Some(std::path::PathBuf::from("/run/user/0"))
+            session_de_systemd_pour(&vide, Some(0), Some(1000)),
+            Ok(std::path::PathBuf::from("/run/user/1000"))
+        );
+        assert!(session_de_systemd_pour(&vide, Some(0), None).is_err());
+        assert_eq!(
+            session_de_systemd_pour(&vide, Some(0), Some(0)),
+            Ok(std::path::PathBuf::from("/run/user/0"))
         );
         assert_eq!(
-            session_de_systemd_pour(Some(1000), Some(1000)),
-            Some(std::path::PathBuf::from("/run/user/1000"))
+            session_de_systemd_pour(&vide, Some(1000), Some(1000)),
+            Ok(std::path::PathBuf::from("/run/user/1000"))
         );
-        assert_eq!(session_de_systemd_pour(None, Some(1000)), None);
+        assert!(session_de_systemd_pour(&vide, None, Some(1000)).is_err());
+        let _ = std::fs::remove_dir_all(&vide);
+    }
+
+    /// La maison `m` lue comme root la lit (UID_DU_COMPTE à 0), sans XDG_RUNTIME_DIR ; l'uid remis à la fin.
+    fn lancements_en_root_sans_runtime(m: &Maison) -> Vec<Constat> {
+        UID_DU_COMPTE.with(|u| u.set(0));
+        let c = persistance_dans(&m.racine, &m.maison(), |_| None, None, None);
+        UID_DU_COMPTE.with(|u| u.set(1000));
+        c
+    }
+
+    /// Passe 5, S5-1 (angle frontière-root) : en administrateur dans le dossier d'un compte, sans XDG_RUNTIME_DIR, la
+    /// session du compte (/run/user/<son uid>) se lit, au niveau de `persistance_dans` : une unité qu'il y range est
+    /// levée.
+    #[test]
+    fn root_chez_un_compte_lit_sa_session() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("root-session-lue");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 {
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        unites(
+            &m,
+            &format!("run/user/{compte}/systemd/transient"),
+            &[("run-porte.service", "[Service]\nExecStart=/tmp/.x/porte\n")],
+        );
+        let c = lancements_en_root_sans_runtime(&m);
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("transient/run-porte.service:2")),
+            "{messages:?}"
+        );
+    }
+
+    /// Passe 5, S5-1 : le dossier de session du compte qui n'est pas un vrai dossier à lui (ici un lien) n'est pas
+    /// lu, et c'est dit non vérifié dans le bilan, jamais compté comme sain.
+    #[test]
+    fn root_chez_un_compte_session_douteuse_dite() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("root-session-lien");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 {
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        unites(
+            &m,
+            "ailleurs/systemd/transient",
+            &[("run-porte.service", "[Service]\nExecStart=/tmp/.x/porte\n")],
+        );
+        std::fs::create_dir_all(m.racine.join("run/user")).unwrap();
+        std::os::unix::fs::symlink(m.racine.join("ailleurs"), m.racine.join(format!("run/user/{compte}"))).unwrap();
+        let c = lancements_en_root_sans_runtime(&m);
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("le dossier de session du compte n'est pas connu") && m.contains("(non vérifié)")),
+            "{messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("run-porte.service:2")),
+            "{messages:?}"
+        );
     }
 
     /// Passe 4, N4-3 : un fichier dont systemd refuse le nom (hors de sa liste permise) n'est jamais groupé ; il est
