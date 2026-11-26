@@ -1215,6 +1215,11 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     // XDG_RUNTIME_DIR ailleurs que le dossier que systemd donne au compte : un programme du compte peut changer la
     // variable d'où Vanguard est lancé, le gestionnaire de la session lit toujours /run/user/<uid> (relecture
     // adverse, B6). Les deux se lisent.
+    // Passe 3, N2 : seul le dossier que systemd donne au compte, quand la variable y mène, se borne et se groupe ;
+    // une variable posée ailleurs (~/.config, par exemple) ferait passer des unités durables pour de la session.
+    let session_sure = session
+        .as_ref()
+        .is_some_and(|s| Some(s) == de_systemd.as_ref() && !s.starts_with(maison) && !maison.starts_with(s));
     let session_de_systemd = de_systemd.filter(|d| Some(d) != session.as_ref());
     let liste = |nom: &str| -> Vec<std::path::PathBuf> {
         variable(nom).map_or_default(|v| std::env::split_paths(&v).filter(|p| p.is_absolute()).collect())
@@ -1270,6 +1275,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         hypr_inclus: Vec::new(),
         dossiers_ajoutes: Vec::new(),
         session_de_systemd,
+        session_sure,
         donnees_systeme: liste("XDG_DATA_DIRS"),
         config_systeme: liste("XDG_CONFIG_DIRS"),
         uwsm_session,
@@ -2217,6 +2223,9 @@ struct Lancements {
     de_session: std::collections::HashSet<String>,
     /// L'empreinte de la dernière unité regardée pour un groupe (`empreinte_d_unite`) : une fois par fichier.
     derniere_unite: Option<(std::path::PathBuf, Option<String>)>,
+    /// Les compléments et les alias de tous les dossiers d'unités du compte (`complements_des_dossiers`), relevés une
+    /// fois par bilan, au premier groupe : relevés à `None`, ils ne se relèvent pas et rien ne se groupe.
+    complements: std::cell::OnceCell<Option<Complements>>,
     r: Releveur,
 }
 
@@ -2280,75 +2289,149 @@ fn ligne_du_groupe(g: &Groupe) -> (String, Option<String>) {
 }
 
 /// La source d'un groupe dans la clé : « session-groupe » et l'empreinte, en lettres (`trace_en_lettres`), de sa
-/// ligne exacte (aucun blanc retiré de plus que systemd), de sa raison, de l'empreinte de l'unité et de ses dossiers.
+/// ligne exacte (aucun blanc retiré de plus que systemd), de l'empreinte de l'unité et de ses dossiers. Sans la
+/// raison, un texte traduit (passe 3, robustesse N1 : la clé changeait avec la langue), comme la source d'une ligne
+/// seule (`source_de`). Sur 128 bits (passe 3, N6) : deux états de même trace ne se cherchent pas.
 fn source_du_groupe(g: &Groupe) -> String {
-    let mut texte = format!("{}\0{}\0{}", g.ligne, g.raison, g.empreinte);
+    let mut texte = format!("{}\0{}", g.ligne, g.empreinte);
     for d in &g.dossiers {
         texte.push('\0');
         texte.push_str(d);
     }
-    format!("session-groupe#{}", trace_en_lettres(texte.as_bytes(), 8))
+    format!("session-groupe#{}", trace_en_lettres(texte.as_bytes(), 16))
 }
 
-/// La ligne commune d'un groupe telle qu'elle se montre : entière si elle tient dans `LIGNE_DU_GROUPE` colonnes et
-/// `LIGNE_DU_GROUPE_OCTETS` octets ; sinon son début et sa fin, chacun borné en colonnes et en octets, son nombre de
-/// caractères et le début de l'empreinte du groupe (`trace`) : deux lignes coupées pareilles se distinguent.
+/// La ligne commune d'un groupe telle qu'elle se montre, échappée (`echappee`) : entière si elle tient dans
+/// `LIGNE_DU_GROUPE` colonnes et `LIGNE_DU_GROUPE_OCTETS` octets ; sinon son début, « … » et sa fin, chacun borné en
+/// colonnes et en octets, la fin prise après le début (passe 3, robustesse N4 : jamais un caractère deux fois), son
+/// nombre de caractères et le début de l'empreinte du groupe (`trace`) : deux lignes coupées pareilles se distinguent.
 fn ligne_commune(ligne: &str, trace: &str) -> String {
     let affichee = crate::ui::affichable(ligne);
-    if crate::ui::largeur_affichee(&affichee) <= LIGNE_DU_GROUPE && affichee.len() <= LIGNE_DU_GROUPE_OCTETS {
-        return affichee;
+    let anglais = crate::langue::anglais();
+    let jetons: Vec<String> = affichee.chars().map(|c| echappee(c, anglais)).collect();
+    let entiere = jetons.concat();
+    if crate::ui::largeur_affichee(&entiere) <= LIGNE_DU_GROUPE && entiere.len() <= LIGNE_DU_GROUPE_OCTETS {
+        return entiere;
     }
-    let debut = crate::ui::couper(&affichee, LIGNE_DU_GROUPE.saturating_sub(30));
-    let debut = debut_borne(&debut, LIGNE_DU_GROUPE_OCTETS.saturating_sub(160));
-    let mut fin: Vec<char> = Vec::new();
+    // Le début : au plus 90 colonnes et 320 octets, « … » compris.
+    let (mut debut, mut colonnes, mut pris) = (String::new(), 0usize, 0usize);
+    for j in &jetons {
+        let c = colonnes.saturating_add(crate::ui::largeur_affichee(j));
+        if c >= LIGNE_DU_GROUPE.saturating_sub(30)
+            || debut.len().saturating_add(j.len())
+                > LIGNE_DU_GROUPE_OCTETS.saturating_sub(160_usize.saturating_add('…'.len_utf8()))
+        {
+            break;
+        }
+        debut.push_str(j);
+        colonnes = c;
+        pris = pris.saturating_add(1);
+    }
+    // La fin : au plus 24 caractères et 96 octets, parmi ceux qui suivent le début.
+    let mut fin: Vec<&str> = Vec::new();
     let mut octets = 0usize;
-    for c in affichee.chars().rev().take(24) {
-        octets = octets.saturating_add(c.len_utf8());
+    for j in jetons.get(pris..).unwrap_or_default().iter().rev().take(24) {
+        octets = octets.saturating_add(j.len());
         if octets > 96 {
             break;
         }
-        fin.push(c);
+        fin.push(j);
     }
     let fin: String = fin.into_iter().rev().collect();
     trf!(
-        "{debut}{fin} (coupée, {} caractères, groupe {})",
-        "{debut}{fin} (cut, {} characters, group {})",
+        "{debut}…{fin} (coupée, {} caractères, groupe {})",
+        "{debut}…{fin} (cut, {} characters, group {})",
         affichee.chars().count(),
         trace.get(..8).unwrap_or(trace)
     )
 }
 
-/// Le début de `texte` qui tient en `octets` octets, coupé sur une limite de caractère (« … » à la fin s'il a fallu
-/// couper).
-fn debut_borne(texte: &str, octets: usize) -> String {
-    if texte.len() <= octets {
-        return texte.to_string();
+/// Un caractère de la ligne commune tel qu'il se montre entre les guillemets du message : précédé d'une barre
+/// oblique inverse s'il en est une, ou un guillemet qui pourrait fermer la ligne (les chevrons `«` et `»` en
+/// français, `"` en anglais). Une ligne ne ferme jamais elle-même ses guillemets pour écrire un faux texte dans l'alerte (passe 3,
+/// robustesse N2).
+fn echappee(c: char, anglais: bool) -> String {
+    let guillemet = if anglais { c == '"' } else { matches!(c, '«' | '»') };
+    if c == '\\' || guillemet {
+        format!("\\{c}")
+    } else {
+        c.to_string()
     }
-    let mut fin = octets.saturating_sub('…'.len_utf8());
-    while !texte.is_char_boundary(fin) {
-        fin = fin.saturating_sub(1);
-    }
-    format!("{}…", texte.get(..fin).unwrap_or_default())
 }
 
 /// L'empreinte d'une unité du dossier de la session, pour son groupe (`Lancements::groupes`) : ses lignes telles que
 /// systemd les lit (`lignes_de_systemd` : sans commentaires ni lignes vides, rognées de ses seuls blancs), en lettres.
-/// `None`, jamais groupée : une unité qui ne se lit pas en entier ou pas en UTF-8, ou qui a un dossier de compléments
-/// à côté d'elle (« nom.service.d », « préfixe-.service.d »…), qui peut la changer à elle seule.
-fn empreinte_d_unite(f: &Path, lu: &Lecture) -> Option<String> {
+/// `None`, jamais groupée : une unité qui ne se lit pas en entier ou pas en UTF-8 ; un dossier de compléments qui
+/// s'applique à elle (« nom.service.d », « préfixe-.service.d », « service.d »…) dans n'importe quel dossier d'unités
+/// du compte (passe 3, N1 : systemd les lit tous, pas seulement celui de l'unité), ou un alias qui la nomme, qui
+/// peuvent la changer à elle seule ; des compléments qui ne se relèvent pas (`complements` vide).
+fn empreinte_d_unite(f: &Path, lu: &Lecture, complements: Option<&Complements>) -> Option<String> {
     if !lu.utf8 || !lu.entier {
         return None;
     }
     let nom = f.file_name()?.to_str()?;
-    let dossier = f.parent()?;
-    if ajouts_de(nom)
-        .iter()
-        .any(|d| std::fs::symlink_metadata(dossier.join(d)).is_ok())
-    {
+    let c = complements?;
+    if c.alias.contains(nom) || ajouts_de(nom).iter().any(|d| c.dossiers.contains(d)) {
         return None;
     }
     let lignes: Vec<String> = lignes_de_systemd(&lu.texte).into_iter().map(|l| l.texte).collect();
     Some(trace_en_lettres(lignes.join("\n").as_bytes(), 16))
+}
+
+/// Ce que les dossiers d'unités du compte (`dossiers_d_unites`) ajoutent à des unités nommées : les noms des
+/// dossiers de compléments (« x.service.d », « run-.service.d », « service.d »…) et les noms que portent leurs liens
+/// (l'alias et ce qu'il vise), hors de ce que seul root peut changer (`de_root_seul`).
+#[derive(Default)]
+struct Complements {
+    dossiers: std::collections::HashSet<String>,
+    alias: std::collections::HashSet<String>,
+}
+
+/// Relève `Complements` en une lecture de chaque dossier d'unités du compte (des milliers d'unités de systemd-run ne
+/// relisent pas tout chacune). Un dossier de compléments compte dès qu'il est là, même vide, sauf s'il est à root seul
+/// sans `.conf` que le compte peut changer. `None` : un dossier d'unités ou un lien qui ne se lit pas, ou la liste des
+/// dossiers qui ne se dresse pas (rien n'est conclu, rien ne se groupe).
+fn complements_des_dossiers(r: &Releveur) -> Option<Complements> {
+    let dossiers = dossiers_d_unites(r, true).ok()?;
+    let mut c = Complements::default();
+    for d in &dossiers {
+        let entrees = match std::fs::read_dir(d) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        for e in entrees {
+            let e = e.ok()?;
+            let genre = e.file_type().ok()?;
+            let nom = e.file_name().to_string_lossy().into_owned();
+            let chemin = e.path();
+            if genre.is_symlink() && !de_root_seul(&chemin) {
+                let vise = std::fs::read_link(&chemin).ok()?;
+                if let Some(v) = vise.file_name() {
+                    c.alias.insert(v.to_string_lossy().into_owned());
+                }
+                c.alias.insert(nom.clone());
+            }
+            if std::path::Path::new(&nom).extension().is_none_or(|x| x != "d") {
+                continue;
+            }
+            let compte = if !de_root_seul(&chemin) {
+                true
+            } else if genre.is_dir() {
+                std::fs::read_dir(&chemin).map_or(true, |dedans| {
+                    dedans
+                        .into_iter()
+                        .any(|e| e.map_or(true, |e| a_l_extension(&e.path(), "conf") && !de_root_seul(&e.path())))
+                })
+            } else {
+                false
+            };
+            if compte {
+                c.dossiers.insert(nom);
+            }
+        }
+    }
+    Some(c)
 }
 
 /// Ce qu'il faut pour relever ce que désigne une ligne : la racine lue, le dossier personnel, le dossier de la
@@ -2379,6 +2462,10 @@ struct Releveur {
     /// Le dossier de session que systemd donne au compte (`/run/user/<uid>`), quand XDG_RUNTIME_DIR mène ailleurs : lu
     /// aussi (relecture adverse, B6), ses unités comme celles de `dossiers_ajoutes`.
     session_de_systemd: Option<std::path::PathBuf>,
+    /// Le dossier de la session (`session`) est celui que systemd donne au compte (`/run/user/<uid>`), hors du dossier
+    /// personnel : seules ses unités se bornent dans le reste et se groupent (passe 3, N2). Faux quand XDG_RUNTIME_DIR
+    /// mène ailleurs ou que le compte ne se connaît pas : tout est nommé.
+    session_sure: bool,
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
     donnees_systeme: Vec<std::path::PathBuf>,
     config_systeme: Vec<std::path::PathBuf>,
@@ -2491,6 +2578,30 @@ impl Releveur {
         self.session
             .as_ref()
             .is_some_and(|d| f.starts_with(self.sous(&d.join("systemd"))))
+    }
+
+    /// Un fichier du dossier de la session que systemd donne au compte (`session_sure`) : seul il se borne dans le
+    /// reste (`Lancements::de_session`).
+    fn de_la_session_sure(&self, f: &Path) -> bool {
+        self.session_sure && self.de_la_session(f)
+    }
+
+    /// Une unité que systemd-run range dans le dossier de la session que systemd donne au compte : « run-… », posée
+    /// tout droit dans un de ses dossiers d'unités (`DOSSIERS_DE_LA_SESSION`). Seule elle se groupe (passe 3, N2 et
+    /// N3) : un complément (« x.service.d/y.conf ») ou une unité au nom d'un service du système, qui remplace
+    /// celui-ci, est toujours nommé.
+    fn groupable(&self, f: &Path) -> bool {
+        let (Some(session), Some(dossier), Some(nom)) = (
+            self.session.as_ref().filter(|_| self.session_sure),
+            f.parent(),
+            f.file_name(),
+        ) else {
+            return false;
+        };
+        nom.to_str().is_some_and(|n| n.starts_with("run-"))
+            && DOSSIERS_DE_LA_SESSION
+                .iter()
+                .any(|d| dossier == self.sous(&session.join(d)))
     }
 
     /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
@@ -12901,13 +13012,15 @@ fn lever(
     // systemd y met le nom de l'unité, son dossier ou une variable, et deux mêmes textes peuvent y lancer deux
     // programmes.
     let mut groupe = None;
-    if matches!(sorte, Sorte::Ajoutee(Ajout::Session)) && !ligne.contains(['%', '$']) {
+    if matches!(sorte, Sorte::Ajoutee(Ajout::Session)) && !ligne.contains(['%', '$']) && t.r.groupable(f) {
         let empreinte = match &t.derniere_unite {
             Some((vu, e)) if vu == f => e.clone(),
             _ => {
-                let e = empreinte_d_unite(f, lu);
-                t.derniere_unite = Some((f.to_path_buf(), e.clone()));
-                e
+                let releveur = &t.r;
+                let complements = t.complements.get_or_init(|| complements_des_dossiers(releveur));
+                let lue = empreinte_d_unite(f, lu, complements.as_ref());
+                t.derniere_unite = Some((f.to_path_buf(), lue.clone()));
+                lue
             }
         };
         groupe = empreinte.map(|e| (ligne.to_string(), raison.to_string(), e));
@@ -12967,7 +13080,7 @@ fn lever(
         return;
     }
     let suspect = trf!("{ou} : {raison}", "{ou}: {raison}");
-    if t.r.de_la_session(f) {
+    if t.r.de_la_session_sure(f) {
         t.de_session.insert(suspect.clone());
     }
     t.suspects.push(suspect);
@@ -27852,13 +27965,14 @@ mod tests {
         let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
         unites(&m, TRANSIENT, &[("run-a.service", commune), ("run-b.service", commune)]);
         let avant = m.lancements();
-        unites(&m, "run/user/1000/systemd/user", &[("garde.service", commune)]);
+        unites(&m, "run/user/1000/systemd/user", &[("run-garde.service", commune)]);
         let apres = m.lancements();
         assert!(apres.message.contains("3 unités du dossier"), "{}", apres.message);
         assert_ne!(apres.objet, avant.objet);
         let objet = apres.objet.texte().unwrap_or_default().to_string();
         let trace = objet.split("session-groupe#").nth(1).unwrap_or_default();
-        assert_eq!(trace.len(), 16, "{objet}");
+        // Passe 3, N6 : 128 bits.
+        assert_eq!(trace.len(), 32, "{objet}");
         assert!(trace.chars().all(|c| ('a'..='p').contains(&c)), "{objet}");
         assert!(trace_en_lettres(b"x", 32).chars().all(|c| ('a'..='p').contains(&c)));
     }
@@ -27918,6 +28032,204 @@ mod tests {
         let c = m.lancements();
         assert!(c.message.contains("2 unités du dossier"), "{}", c.message);
         assert!(c.message.contains("transient/run-c.service:2 : "), "{}", c.message);
+    }
+
+    /// Passe 3, N1 : un complément posé dans un autre dossier d'unités que l'unité (~/.config/systemd/user, le
+    /// dossier user de la session, un complément de préfixe « run-.service.d ») s'applique aussi à elle : l'unité
+    /// n'est jamais comptée dans le groupe, elle est nommée et la clé change. Un alias aussi.
+    #[test]
+    fn complement_d_un_autre_dossier_jamais_groupe() {
+        let commune = "[Service]\nWorkingDirectory=/opt/app\nExecStart=/tmp/.x/agent\n";
+        let liste = [
+            ("run-a.service", commune),
+            ("run-b.service", commune),
+            ("run-c.service", commune),
+            ("run-zz.service", commune),
+        ];
+        for (nom, complement) in [
+            ("complement-config", ".config/systemd/user/run-zz.service.d/x.conf"),
+            (
+                "complement-controle",
+                ".config/systemd/user.control/run-zz.service.d/x.conf",
+            ),
+            (
+                "complement-session",
+                "../../run/user/1000/systemd/user/run-zz.service.d/x.conf",
+            ),
+        ] {
+            let m = Maison::nouvelle(nom);
+            unites(&m, TRANSIENT, &liste);
+            let avant = m.lancements();
+            assert!(
+                avant.message.contains("4 unités du dossier"),
+                "{nom} : {}",
+                avant.message
+            );
+            m.ecrire(complement, "[Service]\nWorkingDirectory=/home/alice/Documents\n");
+            let c = m.lancements();
+            assert!(c.message.contains("3 unités du dossier"), "{nom} : {}", c.message);
+            assert!(
+                c.message.contains("transient/run-zz.service:3 : "),
+                "{nom} : {}",
+                c.message
+            );
+            assert_ne!(c.objet, avant.objet, "{nom}");
+        }
+        // Un complément de préfixe dans ~/.config : aucune ne se groupe.
+        let m = Maison::nouvelle("complement-prefixe");
+        unites(&m, TRANSIENT, &liste);
+        m.ecrire(
+            ".config/systemd/user/run-.service.d/x.conf",
+            "[Service]\nEnvironment=MODE=b\n",
+        );
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        // Un alias (lien) qui nomme l'unité : elle porte aussi les compléments de cet autre nom.
+        let m = Maison::nouvelle("complement-alias");
+        unites(&m, TRANSIENT, &liste);
+        let d = m.racine.join("home/alice/.config/systemd/user");
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink("run-zz.service", d.join("autre.service")).unwrap();
+        let c = m.lancements();
+        assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("transient/run-zz.service:3 : "), "{}", c.message);
+    }
+
+    /// Passe 3, N2 : XDG_RUNTIME_DIR posé ailleurs que le dossier que systemd donne au compte (~/.config) : rien ne
+    /// passe pour « de la session » ; les leurres et la vraie unité de ~/.config/systemd/user sont tous nommés, aucun
+    /// groupe, aucune borne.
+    #[test]
+    fn session_deplacee_rien_borne_ni_groupe() {
+        let m = Maison::nouvelle("session-deplacee");
+        let leurres: Vec<(String, String)> = (0..30)
+            .map(|i| {
+                (
+                    format!("run-l{i:02}.service"),
+                    "[Service]\nExecStart=/tmp/.x/l\n".to_string(),
+                )
+            })
+            .collect();
+        let liste: Vec<(&str, &str)> = leurres.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        unites(&m, "home/alice/.config/systemd/transient", &liste);
+        m.ecrire(
+            ".config/systemd/user/vrai.service",
+            "[Service]\nExecStart=/tmp/.z/porte\n[Install]\nWantedBy=default.target\n",
+        );
+        let c = m.lancements_avec(&[("XDG_RUNTIME_DIR", "/home/alice/.config")]);
+        assert!(
+            c.message.contains("~/.config/systemd/user/vrai.service"),
+            "{}",
+            c.message
+        );
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        assert!(
+            !c.message.contains("du dossier de la session non nommé"),
+            "{}",
+            c.message
+        );
+        for i in [0, 29] {
+            assert!(
+                c.message.contains(&format!("transient/run-l{i:02}.service")),
+                "run-l{i:02} : {}",
+                c.message
+            );
+        }
+    }
+
+    /// Passe 3, N3 : un complément du dossier de la session (« pipewire.service.d/zz.conf ») et une unité qui n'est
+    /// pas de systemd-run (au nom d'un service du système, qu'elle remplace) ne se comptent jamais dans un groupe.
+    #[test]
+    fn complement_ou_service_du_systeme_jamais_groupe() {
+        let commune = "[Service]\nExecStartPre=/tmp/.x/agent\n";
+        let m = Maison::nouvelle("groupe-pipewire");
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+            ],
+        );
+        unites(
+            &m,
+            "run/user/1000/systemd/user/pipewire.service.d",
+            &[("zz.conf", commune)],
+        );
+        // Un complément au nom « run-… » : seul son dossier parent le tient hors du groupe.
+        unites(
+            &m,
+            "run/user/1000/systemd/transient/run-z.service.d",
+            &[("run-zz.conf", commune)],
+        );
+        unites(&m, "run/user/1000/systemd/user", &[("zz-pipewire.service", commune)]);
+        let c = m.lancements();
+        assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("pipewire.service.d/zz.conf:2 : "), "{}", c.message);
+        assert!(c.message.contains("user/zz-pipewire.service:2 : "), "{}", c.message);
+        assert!(c.message.contains("run-z.service.d/run-zz.conf:2 : "), "{}", c.message);
+    }
+
+    /// Passe 3, robustesse N1 : la clé d'un groupe ne change pas avec la langue (la raison est un texte traduit).
+    #[test]
+    fn cle_du_groupe_sans_langue() {
+        let m = Maison::nouvelle("groupe-langue");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(&m, TRANSIENT, &[("run-a.service", commune), ("run-b.service", commune)]);
+        let fr = m.lancements();
+        let en = crate::langue::en_anglais(|| m.lancements());
+        assert!(fr.message.contains("2 unités du dossier"), "{}", fr.message);
+        assert!(en.message.contains("2 units of the session folder"), "{}", en.message);
+        assert_eq!(fr.objet, en.objet);
+    }
+
+    /// Passe 3, robustesse N2 et N4 : la ligne commune ne ferme jamais elle-même ses guillemets (« » » et « " »
+    /// échappés) ; coupée, son début et sa fin ne montrent jamais deux fois un même caractère.
+    #[test]
+    fn ligne_commune_echappee_sans_chevauchement() {
+        let m = Maison::nouvelle("groupe-guillemet");
+        let piege = "[Service]\nExecStart=/tmp/.x/agent \u{bb} (aussi : rien) ; 9 unités saines \u{ab} ok\n";
+        unites(&m, TRANSIENT, &[("run-a.service", piege), ("run-b.service", piege)]);
+        let c = m.lancements();
+        assert!(
+            c.message
+                .contains("agent \\\u{bb} (aussi : rien) ; 9 unités saines \\\u{ab} ok \u{bb} (aussi"),
+            "{}",
+            c.message
+        );
+        let en = crate::langue::en_anglais(|| m.lancements());
+        assert!(en.message.contains("agent \u{bb} (aussi"), "{}", en.message);
+        let m = Maison::nouvelle("groupe-guillemet-en");
+        let piege = "[Service]\nExecStart=/tmp/.x/agent \" (also: none); 9 safe units \"ok\n";
+        unites(&m, TRANSIENT, &[("run-a.service", piege), ("run-b.service", piege)]);
+        let en = crate::langue::en_anglais(|| m.lancements());
+        assert!(
+            en.message
+                .contains("agent \\\" (also: none); 9 safe units \\\"ok\" (also"),
+            "{}",
+            en.message
+        );
+        // La barre oblique inverse s'échappe aussi : « \» » dans le fichier ne passe pas pour un « » » échappé.
+        let montree = ligne_commune("agent \\\u{bb} fin", "abcdefgh");
+        assert!(montree.contains("agent \\\\\\\u{bb} fin"), "{montree}");
+        // 61 caractères larges : début et fin sans rien en commun.
+        let large: String = (0..61).map(|i| char::from_u32(0x4e00 + i).unwrap()).collect();
+        let montree = ligne_commune(&large, "abcdefgh");
+        let (debut, reste) = montree.split_once('…').unwrap();
+        let fin = reste.split(" (coupée").next().unwrap();
+        assert_eq!(
+            debut.chars().count() + fin.chars().count(),
+            debut
+                .chars()
+                .chain(fin.chars())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "{montree}"
+        );
+        assert!(
+            montree.contains("(coupée, 61 caractères, groupe abcdefgh)"),
+            "{montree}"
+        );
     }
 
     /// Deuxième vérification de la campagne E : le détail des variables se lit en quelques lignes (une par sorte de
