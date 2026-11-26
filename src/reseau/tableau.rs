@@ -528,7 +528,7 @@ fn collecter(fonctions: Vec<Rubrique>) -> Donnees {
         temps_reel_coupe: crate::protection::temps_reel::coupure().map(|c| crate::protection::temps_reel::echeance(&c)),
         reseau_non_verifie: lire_reseau(&fichier_reseau()),
         bilan: crate::historique::charger().last().map(|b| DernierBilan {
-            date: crate::ui::affichable(&b.date),
+            date: b.date_affichable(),
             machine: b.machine,
             reseau: b.reseau,
             problemes: b.problemes.len(),

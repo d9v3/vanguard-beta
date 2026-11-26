@@ -20,7 +20,7 @@ fn ligne_du_dernier_bilan(lu: Option<&[historique::Bilan]>) -> String {
                 trf!(
                     "  {GRIS}Dernier bilan{RESET}  {}   ordinateur {}   réseau {}",
                     "  {GRIS}Last check{RESET}     {}   computer {}   network {}",
-                    b.date,
+                    b.date_affichable(),
                     note(b.machine),
                     note(b.reseau)
                 )
@@ -345,5 +345,19 @@ mod tests {
         assert!(!illisible.contains("Aucun bilan"), "{illisible}");
         let vide = ligne_du_dernier_bilan(Some(&[]));
         assert!(vide.contains("Aucun bilan encore"), "{vide}");
+    }
+
+    /// Passe 6, H6-2 : la date du dernier bilan vient d'un fichier du compte ; en tête du menu, elle ne pilote pas le
+    /// terminal.
+    #[test]
+    fn date_du_dernier_bilan_sans_commande() {
+        let b = historique::Bilan {
+            date: "2026-11-26\u{1b}[2K\r\u{1b}]52;c;QQ==\u{7}\u{202e}\u{9b}1A".into(),
+            ..historique::Bilan::default()
+        };
+        let ligne = ligne_du_dernier_bilan(Some(&[b]));
+        let sans_couleurs = ligne.replace(GRIS, "").replace(RESET, "");
+        assert!(!crate::ui::contient_un_piege(&sans_couleurs), "{sans_couleurs:?}");
+        assert!(sans_couleurs.contains("2026-11-26"), "{sans_couleurs:?}");
     }
 }

@@ -108,6 +108,13 @@ fn empreinte_v2_de(b: &Bilan) -> String {
 }
 
 impl Bilan {
+    /// La date, prête à montrer. L'historique est un fichier du compte, que tout programme du compte peut réécrire ;
+    /// en administrateur lancé avec le dossier d'un compte (sudo -E), il vient d'un autre que celui dont le terminal
+    /// l'affiche (passe 6, H6-2 et R6-1). Le texte gardé, lui, ne change pas : la chaîne des empreintes porte sur lui.
+    pub fn date_affichable(&self) -> String {
+        affichable(&self.date)
+    }
+
     /// La clé du problème `i`, seulement si la seconde empreinte du bilan la couvre : une clé ajoutée ou changée à
     /// la main ne fait jamais taire un problème.
     fn cle_crue(&self, i: usize) -> Option<&str> {
@@ -137,7 +144,7 @@ pub fn verifier_chaine(tous: &[Bilan]) -> Chaine {
     for (indice, b) in tous.iter().enumerate() {
         let rompue = |contenu| Chaine::Rompue {
             indice,
-            date: b.date.clone(),
+            date: b.date_affichable(),
             contenu,
         };
         match &b.empreinte {
@@ -168,7 +175,7 @@ fn verifier_v2(tous: &[Bilan]) -> Option<Chaine> {
     let mut non_verifiee = None;
     let mut deja_v2 = false;
     for (indice, b) in tous.iter().enumerate() {
-        let date = || b.date.clone();
+        let date = || b.date_affichable();
         let Some(e) = &b.empreinte_v2 else {
             if (deja_v2 || !b.cles.is_empty()) && non_verifiee.is_none() {
                 non_verifiee = Some(Chaine::NonVerifiee { indice, date: date() });
@@ -444,7 +451,9 @@ fn lire() -> Result<Vec<Bilan>, String> {
 /// Celui d'un fichier donné : les tests ont chacun le leur, sans quoi l'un réécrirait celui qu'un autre lit (le menu,
 /// le rapport ; sous Windows, un fichier ouvert ne se remplace pas).
 fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
-    lire_de_borne(chemin, HISTORIQUE_MAX).map_err(|e| e.to_string())
+    // La raison est montrée (constat, rapport, tableau) et peut citer un morceau du fichier, écrit par n'importe quel
+    // programme du compte (passe 6, H6-2). serde_json l'échappe déjà (« {:?} ») ; ceci ne dépend pas de lui.
+    lire_de_borne(chemin, HISTORIQUE_MAX).map_err(|e| affichable(&e.to_string()))
 }
 
 /// `lire_de`, borné à `max` octets (`HISTORIQUE_MAX` hors des essais).
@@ -933,8 +942,10 @@ fn differences<'a>(avant: &'a Bilan, apres: &'a Bilan) -> (Vec<&'a str>, Vec<&'a
     (absents(&ap, &av), absents(&av, &ap))
 }
 
-fn evolution(nom: &str, avant: Option<u32>, apres: Option<u32>) {
-    let (Some(a), Some(b)) = (avant, apres) else { return };
+fn evolution(nom: &str, avant: Option<u32>, apres: Option<u32>) -> Option<String> {
+    let (Some(a), Some(b)) = (avant, apres) else {
+        return None;
+    };
     // Deux u32 en i64 : l'écart tient toujours.
     let ecart = i64::from(b).saturating_sub(i64::from(a));
     let signe = match ecart {
@@ -942,50 +953,70 @@ fn evolution(nom: &str, avant: Option<u32>, apres: Option<u32>) {
         e if e < 0 => format!("{}{e}{RESET}", couleur(Niveau::Eleve)),
         _ => tr!("sans changement", "unchanged").to_string(),
     };
-    println!("  {nom:<14} {a} → {b} ({signe})");
+    Some(format!("  {nom:<14} {a} → {b} ({signe})"))
 }
 
 pub fn afficher_changements(avant: &Bilan, apres: &Bilan) {
-    titre(&trf!(
+    let (titre_, lignes) = changements(avant, apres);
+    titre(&titre_);
+    for l in lignes {
+        imprimer(&l);
+    }
+}
+
+/// Le titre et les lignes de « Depuis le dernier bilan ». Le bilan d'avant est lu sur le disque : sa date et ses
+/// problèmes passent par `affichable` (passe 6, H6-2 et R6-1 : en administrateur chez un compte, un programme du
+/// compte pouvait écrire dans le terminal de root, effacer les alertes déjà montrées ou remplir le presse-papier).
+fn changements(avant: &Bilan, apres: &Bilan) -> (String, Vec<String>) {
+    let titre_ = trf!(
         "Depuis le dernier bilan ({})",
         "Since the last check ({})",
-        avant.date
+        avant.date_affichable()
+    );
+    let mut lignes: Vec<String> = Vec::new();
+    lignes.extend(evolution(
+        tr!("Cet ordinateur", "This computer"),
+        avant.machine,
+        apres.machine,
     ));
-    evolution(tr!("Cet ordinateur", "This computer"), avant.machine, apres.machine);
     if avant.nom_reseau == apres.nom_reseau {
-        evolution(tr!("Réseau", "Network"), avant.reseau, apres.reseau);
-        evolution(
+        lignes.extend(evolution(tr!("Réseau", "Network"), avant.reseau, apres.reseau));
+        lignes.extend(evolution(
             tr!("Audit du réseau", "Network audit"),
             avant.note_audit(),
             apres.note_audit(),
-        );
+        ));
     }
     let (nouveaux, regles) = differences(avant, apres);
-    let traduire = |p: &str| match p.split_once(" : ") {
-        Some((cat, msg)) => format!("{} : {msg}", crate::langue::categorie(cat)),
-        None => p.to_string(),
+    let traduire = |p: &str| {
+        let p = affichable(p);
+        match p.split_once(" : ") {
+            Some((cat, msg)) => format!("{} : {msg}", crate::langue::categorie(cat)),
+            None => p,
+        }
     };
     for p in regles.iter().take(8) {
-        trp!(
+        lignes.push(trf!(
             "  {VERT}✔ réglé{RESET}   {}",
             "  {VERT}✔ fixed{RESET}   {}",
             traduire(p)
-        );
+        ));
     }
     for p in nouveaux.iter().take(8) {
-        trp!(
+        lignes.push(trf!(
             "  {}✖ nouveau{RESET} {}",
             "  {}✖ new{RESET}     {}",
             couleur(Niveau::Moyen),
             traduire(p)
-        );
+        ));
     }
     if nouveaux.is_empty() && regles.is_empty() {
-        trp!(
+        lignes.push(trf!(
             "  {GRIS}Aucun problème nouveau ni réglé.{RESET}",
             "  {GRIS}No new or fixed problem.{RESET}"
-        );
+        ));
     }
+    (titre_, lignes)
 }
 
 /// Courbe des notes (SVG intégré, couleurs du thème clair ou sombre) ; `None` s'il y a moins de deux bilans.
@@ -1078,7 +1109,7 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
         "--moyen",
         tr!("Audit du réseau", "Network audit"),
     );
-    let jour = |b: &Bilan| esc_court(&b.date);
+    let jour = |b: &Bilan| esc_court(&b.date_affichable());
     let _ = write!(
         svg,
         "<text x={marge} y={} style=\"fill:var(--doux);font-size:11px\">{}</text><text x={} y={} text-anchor=end style=\"fill:var(--doux);font-size:11px\">{}</text></svg>",
@@ -1420,6 +1451,80 @@ mod tests {
         assert!(rendu.empreinte.is_some());
         assert_eq!(std::fs::read(&chemin).unwrap(), avant);
         assert!(refus_retenu(&dossier).is_none());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Le texte montré, sans les couleurs que Vanguard y met lui-même : ce qui reste ne doit rien contenir qui pilote
+    /// le terminal.
+    fn sans_couleurs(texte: &str) -> String {
+        [
+            VERT,
+            RESET,
+            GRIS,
+            ACCENT,
+            couleur(Niveau::Moyen),
+            couleur(Niveau::Eleve),
+        ]
+        .iter()
+        .fold(texte.to_string(), |t, c| t.replace(c, ""))
+    }
+
+    /// Les pièges posés dans un historique.json par un programme du compte : effacer la ligne et remonter (CSI), le
+    /// presse-papier (OSC 52), un retour chariot, un CSI d'un octet (C1), un retournement bidi.
+    const PIEGES: &str = "\u{1b}[2K\u{1b}[3A\r\u{1b}]52;c;QQ==\u{7}\u{9b}2J\u{202e}\u{2066}";
+
+    /// Passe 6, H6-2 et R6-1 : en administrateur chez un compte, le bilan précédent lu dans l'historique du compte
+    /// (contrôlé par lui) passe par `affichable` avant d'être montré : sa date au titre, ses problèmes réglés, la date
+    /// de la chaîne rompue et la raison d'un historique illisible (serde_json cite le fichier). Au niveau de
+    /// l'appelant : ce que `main` obtient d'`enregistrer` et montre par `afficher_changements`.
+    #[cfg(unix)]
+    #[test]
+    fn bilan_du_compte_montre_sans_commande() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dossier = dossier_d_essai("historique-root-pieges");
+        if std::fs::metadata(&dossier).unwrap().uid() == 0 {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        let chemin = dossier.join("historique.json");
+        let piege = Bilan {
+            date: format!("2026-11-25 10:00{PIEGES}"),
+            machine: Some(70),
+            problemes: vec![format!("Pare-feu : coupé{PIEGES}")],
+            // Une empreinte fausse : la chaîne se dit rompue, avec la date du bilan.
+            empreinte: Some("0".into()),
+            ..Bilan::default()
+        };
+        std::fs::write(&chemin, serde_json::to_string(&vec![piege]).unwrap()).unwrap();
+        crate::socle::EUID_D_ESSAI.with(|e| e.set(Some(0)));
+        let (precedent, rendu) = enregistrer_dans(&chemin, b(80, &[]));
+        crate::socle::EUID_D_ESSAI.with(|e| e.set(None));
+        let precedent = precedent.expect("le bilan du compte est lu pour la comparaison");
+        let (titre_, lignes) = changements(&precedent, &rendu);
+        assert!(titre_.contains("2026-11-25 10:00"), "{titre_:?}");
+        assert!(lignes.iter().any(|l| l.contains("coupé")), "{lignes:?}");
+        for l in std::iter::once(&titre_).chain(&lignes) {
+            let l = sans_couleurs(l);
+            assert!(!crate::ui::contient_un_piege(&l), "{l:?}");
+        }
+        let lu = lire_de(&chemin);
+        let rompue = constat_de(lu).expect("chaîne rompue dite").message;
+        assert!(rompue.contains("2026-11-25"), "{rompue}");
+        assert!(!crate::ui::contient_un_piege(&rompue), "{rompue:?}");
+        let ligne = etat_chaine_de(lire_de(&chemin)).unwrap();
+        assert!(!crate::ui::contient_un_piege(&ligne), "{ligne:?}");
+        // Illisible : la raison de serde_json cite la valeur fautive (échappée par lui ; `lire_de` ne s'y fie pas).
+        std::fs::write(
+            &chemin,
+            format!(
+                "[{{\"date\":\"x\",\"machine\":{}}}]",
+                serde_json::to_string(PIEGES).unwrap()
+            ),
+        )
+        .unwrap();
+        let raison = lire_de(&chemin).err().expect("historique illisible");
+        assert!(raison.contains("invalid type"), "{raison}");
+        assert!(!crate::ui::contient_un_piege(&raison), "{raison:?}");
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
