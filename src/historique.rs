@@ -228,7 +228,10 @@ fn constat_dans(chemin: &std::path::Path) -> Option<crate::machine::Constat> {
         if sure {
             match dossier.map_or(Sonde::Libre, sonde_du_verrou) {
                 Sonde::Tenu => Some(constat_verrou_tenu()),
-                Sonde::NonSondee(raison) => Some(constat_verrou_non_sonde(&raison)),
+                Sonde::NonSondee(raison) => Some(match avant {
+                    Some(r) => constat_perdu_et_non_sonde(&r, &raison),
+                    None => constat_verrou_non_sonde(&raison),
+                }),
                 Sonde::Libre => avant.map(|r| constat_bilan_perdu(&r)),
             }
         } else {
@@ -299,6 +302,20 @@ fn constat_verrou_non_sonde(raison: &str) -> crate::machine::Constat {
             "The history lock (historique.verrou) could not be probed ({raison}): it is not checked that no other program is keeping it, and this check might not be saved (this happens on a network folder, NFS or CIFS)."
         ),
     )
+}
+
+/// V7-1 (relecture du lot ecritures-suite) : un verrou qui ne se sonde pas à chaque bilan (sous Linux, sur NFS, flock
+/// exclusif d'un fichier ouvert en lecture seule) ne cache plus un bilan d'avant non enregistré : les deux se disent,
+/// dans l'alerte du bilan perdu, la plus grave.
+fn constat_perdu_et_non_sonde(avant: &str, raison: &str) -> crate::machine::Constat {
+    let mut c = constat_bilan_perdu(avant);
+    let raison = affichable(raison);
+    c.message.push(' ');
+    c.message.push_str(&trf!(
+        "Le verrou de l'historique (historique.verrou) n'a pas pu être sondé non plus ({raison}) : qu'il soit libre maintenant n'est pas vérifié.",
+        "The history lock (historique.verrou) could not be probed either ({raison}): that it is free now is not checked."
+    ));
+    c
 }
 
 /// Passe 5 (R5-H3, root S5-2) : en administrateur dans le dossier de données d'un compte, ce bilan ne s'enregistre pas
@@ -1640,6 +1657,31 @@ mod tests {
         let c = c.expect("le verrou non sondé est dit");
         assert!(!c.verifie, "{}", c.message);
         assert!(c.message.contains("n'a pas pu être sondé"), "{}", c.message);
+    }
+
+    /// V7-1 : un verrou qui ne se sonde pas ne cache pas un bilan d'avant non enregistré : les deux sont dits.
+    #[cfg(unix)]
+    #[test]
+    fn verrou_non_sonde_garde_le_bilan_perdu() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dossier = dossier_d_essai("historique-non-sonde-perdu");
+        let chemin = dossier.join("historique.json");
+        let verrou = dossier.join(VERROU);
+        std::fs::write(&verrou, "").unwrap();
+        std::fs::set_permissions(&verrou, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&verrou).is_ok() {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("le fichier sans droit s'ouvre quand même (root) : rien à refuser");
+        }
+        tenus().insert(dossier.clone(), "un verrou d'essai".to_string());
+        let c = constat_dans(&chemin);
+        tenus().remove(&dossier);
+        let _ = std::fs::remove_dir_all(&dossier);
+        let c = c.expect("le bilan perdu et le verrou non sondé sont dits");
+        assert!(c.message.contains("Un bilan précédent"), "{}", c.message);
+        assert!(c.message.contains("un verrou d'essai"), "{}", c.message);
+        assert!(c.message.contains("n'a pas pu être sondé"), "{}", c.message);
+        assert!(c.probleme.is_some(), "{}", c.message);
     }
 
     /// Passe 5, R5-H1 : un verrou partagé gardé par un autre (ici une autre ouverture du fichier) bloque
