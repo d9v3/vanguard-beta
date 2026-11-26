@@ -1216,7 +1216,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     };
     let (de_systemd, session_inconnue) = match session_de_systemd_pour(racine, uid_du_compte(), proprietaire) {
         Ok(s) => (Some(s), None),
-        Err(raison) => (None, runtime.is_none().then_some(raison)),
+        Err(raison) => (None, runtime.is_none().then(|| raison.to_string())),
     };
     let session = runtime.clone().or_else(|| de_systemd.clone());
     // XDG_RUNTIME_DIR ailleurs que le dossier que systemd donne au compte : un programme du compte peut changer la
@@ -8160,19 +8160,15 @@ fn session_de_systemd_pour(
     racine: &Path,
     uid: Option<u32>,
     proprietaire: Option<u32>,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<std::path::PathBuf, SessionInconnue> {
     let Some(uid) = uid else {
-        return Err(tr!("le compte qui lit ne se connaît pas", "the reading account is unknown").to_string());
+        return Err(SessionInconnue::Lecteur);
     };
     if uid != 0 || proprietaire == Some(0) {
         return Ok(std::path::PathBuf::from(format!("/run/user/{uid}")));
     }
     let Some(compte) = proprietaire else {
-        return Err(tr!(
-            "le propriétaire du dossier personnel ne se connaît pas",
-            "the owner of the home folder is unknown"
-        )
-        .to_string());
+        return Err(SessionInconnue::Proprietaire);
     };
     let session = std::path::PathBuf::from(format!("/run/user/{compte}"));
     let lu = if racine == Path::new("/") {
@@ -8182,22 +8178,53 @@ fn session_de_systemd_pour(
     };
     match std::fs::symlink_metadata(&lu) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(session),
-        Err(e) => Err(trf!(
-            "{} ne se lit pas ({e})",
-            "{} cannot be read ({e})",
-            session.display()
-        )),
+        Err(e) => Err(SessionInconnue::Illisible(session, e)),
         Ok(m) => {
             use std::os::unix::fs::MetadataExt as _;
             if m.file_type().is_dir() && m.uid() == compte {
                 Ok(session)
             } else {
-                Err(trf!(
-                    "{} n'est pas un dossier au compte {compte}",
-                    "{} is not a folder owned by account {compte}",
-                    session.display()
-                ))
+                Err(SessionInconnue::PasAuCompte(session, compte))
             }
+        }
+    }
+}
+
+/// Pourquoi le dossier de session du compte n'est pas connu (`session_de_systemd_pour`) : une erreur typée (cliquet
+/// T13), dite en texte par `Display`.
+#[derive(Debug)]
+enum SessionInconnue {
+    /// Le compte qui lit ne se connaît pas.
+    Lecteur,
+    /// Le propriétaire du dossier personnel ne se connaît pas.
+    Proprietaire,
+    /// `/run/user/<compte>` ne se lit pas.
+    Illisible(std::path::PathBuf, std::io::Error),
+    /// `/run/user/<compte>` n'est pas un vrai dossier à ce compte (un lien, un fichier, un autre propriétaire).
+    PasAuCompte(std::path::PathBuf, u32),
+}
+
+impl std::fmt::Display for SessionInconnue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionInconnue::Lecteur => f.write_str(tr!(
+                "le compte qui lit ne se connaît pas",
+                "the reading account is unknown"
+            )),
+            SessionInconnue::Proprietaire => f.write_str(tr!(
+                "le propriétaire du dossier personnel ne se connaît pas",
+                "the owner of the home folder is unknown"
+            )),
+            SessionInconnue::Illisible(session, e) => f.write_str(&trf!(
+                "{} ne se lit pas ({e})",
+                "{} cannot be read ({e})",
+                session.display()
+            )),
+            SessionInconnue::PasAuCompte(session, compte) => f.write_str(&trf!(
+                "{} n'est pas un dossier au compte {compte}",
+                "{} is not a folder owned by account {compte}",
+                session.display()
+            )),
         }
     }
 }
@@ -28606,17 +28633,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&vide);
         std::fs::create_dir_all(&vide).unwrap();
         assert_eq!(
-            session_de_systemd_pour(&vide, Some(0), Some(1000)),
-            Ok(std::path::PathBuf::from("/run/user/1000"))
+            session_de_systemd_pour(&vide, Some(0), Some(1000)).ok(),
+            Some(std::path::PathBuf::from("/run/user/1000"))
         );
         assert!(session_de_systemd_pour(&vide, Some(0), None).is_err());
         assert_eq!(
-            session_de_systemd_pour(&vide, Some(0), Some(0)),
-            Ok(std::path::PathBuf::from("/run/user/0"))
+            session_de_systemd_pour(&vide, Some(0), Some(0)).ok(),
+            Some(std::path::PathBuf::from("/run/user/0"))
         );
         assert_eq!(
-            session_de_systemd_pour(&vide, Some(1000), Some(1000)),
-            Ok(std::path::PathBuf::from("/run/user/1000"))
+            session_de_systemd_pour(&vide, Some(1000), Some(1000)).ok(),
+            Some(std::path::PathBuf::from("/run/user/1000"))
         );
         assert!(session_de_systemd_pour(&vide, None, Some(1000)).is_err());
         let _ = std::fs::remove_dir_all(&vide);
@@ -28676,7 +28703,9 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|m| m.contains("le dossier de session du compte n'est pas connu") && m.contains("(non vérifié)")),
+                .any(|m| m.contains("le dossier de session du compte n'est pas connu")
+                    && m.contains("n'est pas un dossier au compte")
+                    && m.contains("(non vérifié)")),
             "{messages:?}"
         );
         assert!(
