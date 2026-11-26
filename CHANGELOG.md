@@ -24,6 +24,13 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   montré comme « aucun bilan » en tête du menu. Le groupe se forme aussi sans XDG_RUNTIME_DIR ; un verrou de
   l'historique gardé par un autre Vanguard ou remplacé est dit au bilan, et les noms, les guillemets de toute sorte
   et les accents sans largeur venus des unités sont échappés dans l'alerte.
+- **Linux : le groupement des unités et l'historique, encore durcis.** Seules se groupent les unités dont le nom suit
+  les règles de systemd (lettres, chiffres et « : - _ . \ @ », une sorte connue comme « .service ») ; un lien d'unité
+  qui ne se résout pas (boucle, droits) empêche tout groupement au lieu d'être passé en silence. En administrateur
+  chez un autre compte, le dossier de session de root n'est plus pris pour celui du compte, et l'historique de ce
+  compte n'est pas écrit : c'est dit. Quand un bilan n'a pas pu s'enregistrer, le bilan suivant dit pourquoi ; un
+  verrou de l'historique gardé en ce moment par un autre Vanguard est dit au présent. D'autres sosies de guillemets
+  sont échappés, et quand le dossier de session n'est pas sûr, ses lignes viennent après celles de ~/.config.
 
 ## 25 novembre 2026 : version 0.99.0
 

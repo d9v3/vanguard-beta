@@ -23,6 +23,13 @@ example, finds it, to rebuild it if needed.
   the same time, and an unreadable history is no longer shown as "no check" at the top of the menu. Units are grouped
   even without XDG_RUNTIME_DIR; a history lock held by another Vanguard or replaced is reported by the check, and
   names, quotation marks of every kind and zero-width accents coming from the units are escaped in the alert.
+- **Linux: unit grouping and the history, hardened further.** Only units whose name follows systemd's rules
+  (letters, digits and ": - _ . \ @", a known kind such as ".service") are grouped; a unit link that cannot be
+  resolved (loop, permissions) stops all grouping instead of being skipped silently. As administrator in another
+  account, root's session folder is no longer taken for the account's, and that account's history is not written: this
+  is reported. When a check could not be saved, the next check says why; a history lock held right now by another
+  Vanguard is reported in the present tense. More look-alike quotation marks are escaped, and when the session folder
+  is not trusted, its lines come after those of ~/.config.
 
 ## November 25, 2026: version 0.99.0
 
