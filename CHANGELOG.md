@@ -21,7 +21,9 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   historique qu'on ne peut pas lire ou mettre de côté est laissé tel quel, et le bilan le dit « non vérifié ». Seules se
   groupent les unités que systemd-run pose tout droit dans le dossier de session donné par systemd, sans complément venu
   d'un autre dossier ; deux Vanguard ne touchent plus l'historique en même temps, et un historique illisible n'est plus
-  montré comme « aucun bilan » en tête du menu.
+  montré comme « aucun bilan » en tête du menu. Le groupe se forme aussi sans XDG_RUNTIME_DIR ; un verrou de
+  l'historique gardé par un autre Vanguard ou remplacé est dit au bilan, et les noms, les guillemets de toute sorte
+  et les accents sans largeur venus des unités sont échappés dans l'alerte.
 
 ## 25 novembre 2026 : version 0.99.0
 

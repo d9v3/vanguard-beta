@@ -413,8 +413,14 @@ pub(crate) fn verrous_remplaces(dossier: &Path) -> Vec<String> {
 /// remplacés, et leur base ne s'écrit plus sans un mot à l'écran. Au bilan seulement : ils ne touchent pas au journal
 /// des événements. Chacun avec son verrou du système (`socle::nom_systeme`, `appareils.lock`), que
 /// `prendre_compatible` prend d'abord : remplacé, la base se lit sans verrou, sans rien dire (campagne 6, E6-B3) ;
-/// celui des notes remplacé, aucun réglage ne change plus (`optimiser::tenir_les_notes`).
-const AUTRES_VERROUS: [&str; 3] = ["appareils.verrou", "alertes.verrou", "reglages.verrou"];
+/// celui des notes remplacé, aucun réglage ne change plus (`optimiser::tenir_les_notes`) ; celui de l'historique des
+/// bilans remplacé, aucun bilan ne s'y ajoute plus (passe 4, H1).
+const AUTRES_VERROUS: [&str; 4] = [
+    "appareils.verrou",
+    "alertes.verrou",
+    "reglages.verrou",
+    crate::historique::VERROU,
+];
 
 /// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`). Avant cela, un verrou
 /// de l'état remplacé par un dossier, un lien ou un tube, ou aux droits retirés : ce verrou ne se prend plus, pour personne, et sans ce
@@ -449,6 +455,9 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
             }
             if remplaces.iter().any(|n| n.starts_with("alertes.")) {
                 bases.push(tr!("les alertes du réseau", "the network alerts"));
+            }
+            if remplaces.iter().any(|n| n.starts_with("historique.")) {
+                bases.push(tr!("l'historique des bilans", "the check history"));
             }
             if remplaces.iter().any(|n| n.starts_with("reglages.")) {
                 bases.push(tr!(
@@ -1987,6 +1996,7 @@ mod tests {
             ("alertes.lock", "alertes du réseau", "network alerts"),
             ("reglages.verrou", "changements de réglages", "setting changes"),
             ("reglages.lock", "changements de réglages", "setting changes"),
+            ("historique.verrou", "historique des bilans", "check history"),
         ] {
             std::fs::create_dir(d.join(verrou)).unwrap();
             let c = constat_verrou(&d).unwrap();

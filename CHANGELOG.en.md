@@ -20,7 +20,9 @@ example, finds it, to rebuild it if needed.
   removed), and a damaged history is set aside without being read; a history that cannot be read or set aside is left as
   is, and the check reports it as "not checked". Only units that systemd-run places directly in the session folder given
   by systemd, with no drop-in from another folder, are grouped; two Vanguard instances no longer touch the history at
-  the same time, and an unreadable history is no longer shown as "no check" at the top of the menu.
+  the same time, and an unreadable history is no longer shown as "no check" at the top of the menu. Units are grouped
+  even without XDG_RUNTIME_DIR; a history lock held by another Vanguard or replaced is reported by the check, and
+  names, quotation marks of every kind and zero-width accents coming from the units are escaped in the alert.
 
 ## November 25, 2026: version 0.99.0
 
