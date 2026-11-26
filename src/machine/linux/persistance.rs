@@ -1210,7 +1210,11 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     let runtime = variable("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute());
-    let de_systemd = uid_du_compte().map(|uid| std::path::PathBuf::from(format!("/run/user/{uid}")));
+    let proprietaire = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(maison).ok().map(|m| m.uid())
+    };
+    let de_systemd = session_de_systemd_pour(uid_du_compte(), proprietaire);
     let session = runtime.clone().or_else(|| de_systemd.clone());
     // XDG_RUNTIME_DIR ailleurs que le dossier que systemd donne au compte : un programme du compte peut changer la
     // variable d'où Vanguard est lancé, le gestionnaire de la session lit toujours /run/user/<uid> (relecture
@@ -2455,11 +2459,17 @@ fn complements_des_dossiers(r: &Releveur) -> Option<Complements> {
                 if let Some(v) = vise.file_name() {
                     c.alias.insert(v.to_string_lossy().into_owned());
                 }
-                // Passe 4, P3-2 : un alias à plusieurs sauts nomme aussi l'unité au bout de la chaîne.
-                if let Ok(bout) = std::fs::canonicalize(&chemin)
-                    && let Some(v) = bout.file_name()
-                {
-                    c.alias.insert(v.to_string_lossy().into_owned());
+                // Passe 4, P3-2 : un alias à plusieurs sauts nomme aussi l'unité au bout de la chaîne. Une chaîne qui
+                // ne se suit pas (boucle, droit refusé, disque) : le nom du bout est inconnu, rien ne se groupe, comme
+                // un lien qui ne se lit pas (N4-2) ; seul un lien cassé (rien au bout) ne nomme aucune unité.
+                match std::fs::canonicalize(&chemin) {
+                    Ok(bout) => {
+                        if let Some(v) = bout.file_name() {
+                            c.alias.insert(v.to_string_lossy().into_owned());
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return None,
                 }
                 c.alias.insert(nom.clone());
             }
@@ -8063,6 +8073,17 @@ fn nom_d_unite_valide(nom: &str) -> bool {
         && base
             .bytes()
             .all(|o| o.is_ascii_alphanumeric() || b":-_.\\@".contains(&o))
+}
+
+/// Le dossier de session que systemd donne au compte qui lance Vanguard (`uid`), « /run/user/<uid> ». Aucun en
+/// administrateur dans le dossier personnel d'un autre compte (`proprietaire`, inconnu compris) : /run/user/0 n'est
+/// pas sa session, et le lire taisait la sienne ; sans XDG_RUNTIME_DIR, c'est alors dit non vérifié (passe 4, N4-1).
+fn session_de_systemd_pour(uid: Option<u32>, proprietaire: Option<u32>) -> Option<std::path::PathBuf> {
+    let uid = uid?;
+    if uid == 0 && proprietaire != Some(0) {
+        return None;
+    }
+    Some(std::path::PathBuf::from(format!("/run/user/{uid}")))
 }
 
 /// Les dossiers d'unités de l'utilisateur sous le dossier de la session (XDG_RUNTIME_DIR), dans l'ordre de systemd.
@@ -28369,6 +28390,53 @@ mod tests {
         let montree = ligne_commune(&ligne, "abcdefgh");
         assert!(!montree.contains('\u{301}'), "{montree}");
         assert!(montree.contains("\\u{0301}"), "{montree}");
+    }
+
+    /// Passe 4, N4-2 : un alias dont la chaîne ne se suit pas (une boucle) ne laisse pas grouper en silence : le nom
+    /// au bout est inconnu, rien ne se groupe et chaque unité est nommée.
+    #[test]
+    fn alias_en_boucle_rien_groupe() {
+        let m = Maison::nouvelle("alias-boucle");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+            ],
+        );
+        let d = m.racine.join("home/alice/.config/systemd/user");
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(d.join("boucle2.service"), d.join("boucle1.service")).unwrap();
+        std::os::unix::fs::symlink(d.join("boucle1.service"), d.join("boucle2.service")).unwrap();
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        for n in ["run-a", "run-b", "run-c"] {
+            assert!(
+                c.message.contains(&format!("transient/{n}.service:2 : ")),
+                "{}",
+                c.message
+            );
+        }
+    }
+
+    /// Passe 4, N4-1 : en administrateur dans le dossier d'un autre compte, /run/user/0 n'est pas pris pour sa
+    /// session ; dans le sien, ou sous un compte ordinaire, /run/user/<uid>.
+    #[test]
+    fn session_de_root_chez_un_compte() {
+        assert_eq!(session_de_systemd_pour(Some(0), Some(1000)), None);
+        assert_eq!(session_de_systemd_pour(Some(0), None), None);
+        assert_eq!(
+            session_de_systemd_pour(Some(0), Some(0)),
+            Some(std::path::PathBuf::from("/run/user/0"))
+        );
+        assert_eq!(
+            session_de_systemd_pour(Some(1000), Some(1000)),
+            Some(std::path::PathBuf::from("/run/user/1000"))
+        );
+        assert_eq!(session_de_systemd_pour(None, Some(1000)), None);
     }
 
     /// Passe 4, N4-3 : un fichier dont systemd refuse le nom (hors de sa liste permise) n'est jamais groupé ; il est
