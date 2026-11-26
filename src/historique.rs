@@ -202,7 +202,26 @@ fn verifier_v2(tous: &[Bilan]) -> Option<Chaine> {
 
 /// Au bilan : rien tant que la chaîne tient.
 pub fn constat() -> Option<crate::machine::Constat> {
-    match verifier_chaine(&charger()) {
+    constat_de(lire())
+}
+
+/// `constat` d'un historique lu `lu`. Un historique qui ne se lit pas (lien, tube ou dossier à sa place, droit refusé,
+/// contenu abîmé) est dit « non vérifié », jamais pris pour un historique vide qui tient.
+fn constat_de(lu: Result<Vec<Bilan>, String>) -> Option<crate::machine::Constat> {
+    let tous = match lu {
+        Ok(tous) => tous,
+        Err(e) => {
+            return Some(crate::machine::impossible_par(
+                "Historique",
+                crate::modele::Raison::Illisible(e),
+                tr!(
+                    "L'historique des bilans ne se lit pas : sa chaîne n'est pas vérifiée. Un fichier abîmé est mis de côté au prochain bilan ; autre chose à sa place (un lien, un dossier, un fichier qu'on ne peut pas lire) est laissé tel quel, et aucun bilan n'y est enregistré tant qu'il y est.",
+                    "The check history cannot be read: its chain is not checked. A damaged file is set aside at the next check; anything else in its place (a link, a folder, a file that cannot be read) is left as is, and no check is saved to it while it is there."
+                ),
+            ));
+        }
+    };
+    match verifier_chaine(&tous) {
         Chaine::Intacte { .. } => None,
         Chaine::NonVerifiee { date, .. } => Some(crate::machine::impossible_par(
             "Historique",
@@ -241,7 +260,21 @@ pub fn constat() -> Option<crate::machine::Constat> {
 
 /// Une ligne pour le rapport : la chaîne et sa longueur, ou la rupture.
 pub fn etat_chaine() -> Option<String> {
-    match verifier_chaine(&charger()) {
+    etat_chaine_de(lire())
+}
+
+/// `etat_chaine` d'un historique lu `lu` : s'il ne se lit pas, la ligne le dit (`constat_de`).
+fn etat_chaine_de(lu: Result<Vec<Bilan>, String>) -> Option<String> {
+    let tous = match lu {
+        Ok(tous) => tous,
+        Err(e) => {
+            return Some(trf!(
+                "⚠ Historique non vérifié : il ne se lit pas ({e}) ; aucun bilan n'y est enregistré tant qu'il en est ainsi.",
+                "⚠ History not checked: it cannot be read ({e}); no check is saved to it while this lasts."
+            ));
+        }
+    };
+    match verifier_chaine(&tous) {
         Chaine::Intacte { chaines: 0 } => None,
         Chaine::Intacte { chaines } => Some(trf!(
             "Historique intact : {chaines} bilans chaînés par leur empreinte.",
@@ -286,13 +319,26 @@ fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
 
 /// `lire_de`, borné à `max` octets (`HISTORIQUE_MAX` hors des essais).
 fn lire_de_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<Vec<Bilan>> {
-    // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien.
-    match crate::socle::lire_texte_ordinaire(chemin, max) {
-        Ok(t) => serde_json::from_str(t.trim_start_matches('\u{feff}'))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e),
+    use std::io::Read as _;
+    // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien. Ouvert par
+    // `ouvrir_ordinaire`, qui garde le genre de l'erreur (`lire_texte_ordinaire` les ferait tous « InvalidData ») :
+    // un droit refusé ne se confond pas avec un historique abîmé (`a_mettre_de_cote`).
+    let (f, _) = match crate::socle::ouvrir_ordinaire(chemin, max) {
+        Ok(ouvert) => ouvert,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut octets = Vec::new();
+    f.take(max.saturating_add(1)).read_to_end(&mut octets)?;
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            trf!("plus de {} Kio", "over {} KiB", max >> 10),
+        ));
     }
+    let texte = String::from_utf8(octets).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    serde_json::from_str(texte.trim_start_matches('\u{feff}'))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 fn bilan(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) -> Bilan {
@@ -346,6 +392,14 @@ pub(crate) fn enregistrer_dans(chemin: &std::path::Path, nouveau: Bilan) -> (Opt
 fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64) -> (Option<Bilan>, Bilan) {
     let mut tous = match lire_de_borne(chemin, max) {
         Ok(tous) => tous,
+        // Un historique qu'on ne peut pas lire (droit refusé, erreur passagère) n'est pas abîmé : rien n'y est touché.
+        Err(e) if !a_mettre_de_cote(&e) => {
+            tre!(
+                "Attention : historique des bilans illisible ({e}) : il est laissé tel quel et ce bilan n'y est pas enregistré.",
+                "Warning: check history unreadable ({e}): it is left as is and this check is not saved to it."
+            );
+            return rendu_seul(nouveau);
+        }
         Err(e) => match mettre_de_cote(chemin) {
             // Jamais écraser un historique qu'on ne sait pas relire : il est mis de côté, intact et sans être relu
             // (il peut être trop gros pour l'être), avant le nouveau. « Copie gardée » seulement quand c'est fait.
@@ -358,14 +412,21 @@ fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64
                 Vec::new()
             }
             // Pas mis de côté : l'historique reste tel quel, ce bilan n'y est pas ajouté ; il est rendu quand même.
-            Err(raison) => {
+            Err(PasMisDeCote::Laisse(raison)) => {
                 tre!(
                     "Attention : historique des bilans illisible ({e}), et il n'a pas pu être mis de côté ({raison}) : il est laissé tel quel et ce bilan n'y est pas enregistré.",
                     "Warning: check history unreadable ({e}), and it could not be set aside ({raison}): it is left as is and this check is not saved to it."
                 );
-                nouveau.empreinte = Some(empreinte_de(&nouveau));
-                nouveau.empreinte_v2 = Some(empreinte_v2_de(&nouveau));
-                return (None, nouveau);
+                return rendu_seul(nouveau);
+            }
+            // Déplacé, mais le nom neuf n'a pas pu être vérifié : il est nommé, rien n'est écrit à la place.
+            Err(PasMisDeCote::Deplace { copie, raison }) => {
+                tre!(
+                    "Attention : historique des bilans illisible ({e}) : déplacé sous {}, mais ce nom n'a pas pu être vérifié ({raison}) ; ce bilan n'est pas enregistré.",
+                    "Warning: check history unreadable ({e}): moved to {}, but that name could not be checked ({raison}); this check is not saved.",
+                    crate::ui::chemin_affichable(&copie)
+                );
+                return rendu_seul(nouveau);
             }
         },
     };
@@ -379,7 +440,7 @@ fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64
     tous.drain(..surplus);
     match texte_borne(&mut tous, max) {
         Ok((texte, retires)) => {
-            if retires > 0 {
+            if avertir_du_retrait(retires) {
                 tre!(
                     "Attention : historique des bilans plus gros que {} Mio : {retires} bilan(s) parmi les plus anciens retiré(s) pour qu'il reste lisible.",
                     "Warning: check history larger than {} MiB: {retires} of the oldest check(s) removed so that it stays readable.",
@@ -406,17 +467,44 @@ fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64
     (precedent, nouveau)
 }
 
+/// Un bilan qui n'entre pas dans l'historique, rendu quand même, avec ses empreintes.
+fn rendu_seul(mut nouveau: Bilan) -> (Option<Bilan>, Bilan) {
+    nouveau.empreinte = Some(empreinte_de(&nouveau));
+    nouveau.empreinte_v2 = Some(empreinte_v2_de(&nouveau));
+    (None, nouveau)
+}
+
+/// Une erreur de lecture qui dit l'historique abîmé (contenu invalide, trop gros, pas un simple fichier), seule à le
+/// faire mettre de côté. Un droit refusé ou une erreur passagère ne dit rien du contenu : l'historique reste à sa
+/// place.
+fn a_mettre_de_cote(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::FileTooLarge
+    )
+}
+
+/// Dire les bilans retirés pour la borne : seulement quand plus d'un part d'un coup. À la borne, chaque bilan en
+/// fait partir un, le plus ancien, comme la rotation (`GARDES`) : le redire à chaque bilan n'apprend rien.
+fn avertir_du_retrait(retires: usize) -> bool {
+    retires > 1
+}
+
 /// Le texte de l'historique `tous`, au plus `max` octets : les plus vieux bilans retirés jusqu'à passer, comme la
 /// rotation (`GARDES`) : le premier bilan gardé peut pointer vers un bilan retiré, la chaîne tient
 /// (`verifier_chaine`). Rend le texte et le nombre de bilans retirés ; `Err` si le dernier seul dépasse, ou si un
 /// bilan ne s'écrit pas : rien à écrire.
 fn texte_borne(tous: &mut Vec<Bilan>, max: u64) -> Result<(String, usize), ()> {
-    // Chaque bilan écrit une fois : « [a,b,c] » fait 2 octets, plus chaque bilan, plus une virgule entre deux.
-    let tailles: Vec<u64> = tous
+    // Chaque bilan écrit une seule fois : « [a,b,c] » fait 2 octets, plus chaque bilan, plus une virgule entre deux.
+    let textes: Vec<String> = tous
         .iter()
-        .map(|b| serde_json::to_string(b).map(|t| u64::try_from(t.len()).unwrap_or(u64::MAX)))
+        .map(serde_json::to_string)
         .collect::<Result<_, _>>()
         .map_err(|_| ())?;
+    let tailles: Vec<u64> = textes
+        .iter()
+        .map(|t| u64::try_from(t.len()).unwrap_or(u64::MAX))
+        .collect();
     let mut total = tailles
         .iter()
         .fold(2u64, |t, n| t.saturating_add(*n).saturating_add(1))
@@ -430,27 +518,46 @@ fn texte_borne(tous: &mut Vec<Bilan>, max: u64) -> Result<(String, usize), ()> {
         retires = retires.saturating_add(1);
     }
     tous.drain(..retires);
-    let texte = serde_json::to_string(&tous).map_err(|_| ())?;
+    let texte = format!("[{}]", textes.get(retires..).unwrap_or_default().join(","));
     if u64::try_from(texte.len()).unwrap_or(u64::MAX) > max {
         return Err(());
     }
     Ok((texte, retires))
 }
 
+/// Pourquoi un historique n'a pas été mis de côté : laissé à sa place (`Laisse`), ou déplacé sous `copie` sans que ce
+/// nom ait pu être vérifié (`Deplace`, à nommer : jamais « laissé tel quel » pour un fichier qui n'y est plus).
+#[derive(Debug)]
+enum PasMisDeCote {
+    Laisse(std::io::Error),
+    Deplace { copie: PathBuf, raison: std::io::Error },
+}
+
 /// Met de côté l'historique illisible `chemin` sans le relire : renommé sous un nom neuf
 /// (« historique.illisible-<date>-<hasard>.json »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
 /// un lien n'est jamais suivi, un tube ou un dossier n'est pas déplacé. Rend le nom de la copie, qui existe et est le
-/// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer, et l'historique reste à sa place.
-fn mettre_de_cote(chemin: &std::path::Path) -> std::io::Result<PathBuf> {
-    let avant = std::fs::symlink_metadata(chemin)?;
+/// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer (`PasMisDeCote`).
+fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, PasMisDeCote> {
+    let avant = std::fs::symlink_metadata(chemin).map_err(PasMisDeCote::Laisse)?;
+    mettre_de_cote_comme(chemin, &avant, true)
+}
+
+/// `mettre_de_cote`, le fichier regardé `avant` donné ; `lien` faux prend le renommage simple (des systèmes sans liens
+/// durs) : les essais y passent.
+fn mettre_de_cote_comme(
+    chemin: &std::path::Path,
+    avant: &std::fs::Metadata,
+    lien: bool,
+) -> Result<PathBuf, PasMisDeCote> {
+    use PasMisDeCote::Laisse;
     if !avant.file_type().is_file() {
-        return Err(std::io::Error::other(tr!(
+        return Err(Laisse(std::io::Error::other(tr!(
             "ce n'est pas un simple fichier",
             "it is not a plain file"
-        )));
+        ))));
     }
     let mut sel = [0u8; 8];
-    getrandom::fill(&mut sel).map_err(|e| std::io::Error::other(e.to_string()))?;
+    getrandom::fill(&mut sel).map_err(|e| Laisse(std::io::Error::other(e.to_string())))?;
     let copie = chemin.with_extension(format!(
         "illisible-{}-{:016x}.json",
         chrono::Local::now().format("%Y%m%d-%H%M%S"),
@@ -459,36 +566,63 @@ fn mettre_de_cote(chemin: &std::path::Path) -> std::io::Result<PathBuf> {
     // Un second nom d'abord (link ne suit pas de lien et ne remplace rien), puis l'ancien nom retiré : un renommage
     // qui ne remplace jamais. Sans liens durs (FAT, certains partages), un renommage simple, le nom neuf vérifié
     // libre juste avant.
-    match std::fs::hard_link(chemin, &copie) {
+    let lie = if lien {
+        std::fs::hard_link(chemin, &copie)
+    } else {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    };
+    match lie {
         Ok(()) => {
-            meme_fichier(&avant, &copie)?;
+            if let Err(raison) = meme_fichier(avant, &copie) {
+                // Lié à autre chose que le fichier regardé (remplacé entre-temps) : le second nom est retiré s'il
+                // nomme encore ce qui est à `chemin` (rien ne se perd), sinon il est nommé.
+                return Err(retirer_le_second_nom(chemin, &copie, raison));
+            }
             if let Err(e) = std::fs::remove_file(chemin) {
                 // Le second nom est le nôtre (vérifié) : retiré, l'historique reste seul à sa place.
                 let _ = std::fs::remove_file(&copie);
-                return Err(e);
+                return Err(Laisse(e));
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(Laisse(e)),
         Err(_) => {
             match std::fs::symlink_metadata(&copie) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Ok(_) => {
-                    return Err(std::io::Error::other(tr!(
+                    return Err(Laisse(std::io::Error::other(tr!(
                         "nom de copie déjà pris",
                         "copy name already taken"
-                    )));
+                    ))));
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(Laisse(e)),
             }
-            std::fs::rename(chemin, &copie)?;
-            meme_fichier(&avant, &copie)?;
+            std::fs::rename(chemin, &copie).map_err(Laisse)?;
+            // Renommé : l'historique n'est plus à sa place, quoi que dise la vérification.
+            meme_fichier(avant, &copie).map_err(|raison| PasMisDeCote::Deplace {
+                copie: copie.clone(),
+                raison,
+            })?;
         }
     }
     Ok(copie)
 }
 
-/// La copie `copie` est un simple fichier, et sous Unix le fichier regardé `avant` (même appareil, même numéro) :
-/// jamais « Copie gardée » pour un nom qui ne la porte pas.
+/// Le second nom `copie` d'un lien dur qui ne vise pas le fichier regardé : retiré seulement s'il nomme encore le même
+/// fichier que `chemin` (qui le garde) ; sinon laissé et nommé.
+fn retirer_le_second_nom(chemin: &std::path::Path, copie: &std::path::Path, raison: std::io::Error) -> PasMisDeCote {
+    let encore = std::fs::symlink_metadata(chemin).is_ok_and(|m| meme_fichier(&m, copie).is_ok());
+    if encore && std::fs::remove_file(copie).is_ok() {
+        PasMisDeCote::Laisse(raison)
+    } else {
+        PasMisDeCote::Deplace {
+            copie: copie.to_path_buf(),
+            raison,
+        }
+    }
+}
+
+/// La copie `copie` est un simple fichier, et le fichier regardé `avant` : sous Unix même appareil et même numéro,
+/// ailleurs même taille et même date de changement. Jamais « Copie gardée » pour un nom qui ne la porte pas.
 fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> std::io::Result<()> {
     let apres = std::fs::symlink_metadata(copie)?;
     #[cfg(unix)]
@@ -497,7 +631,7 @@ fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> std::io::
         apres.dev() == avant.dev() && apres.ino() == avant.ino()
     };
     #[cfg(not(unix))]
-    let meme = apres.len() == avant.len();
+    let meme = apres.len() == avant.len() && apres.modified().ok() == avant.modified().ok();
     if apres.file_type().is_file() && meme {
         Ok(())
     } else {
@@ -881,6 +1015,124 @@ mod tests {
         assert!(std::fs::metadata(&chemin).unwrap().is_dir());
         assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 2, HIS3 : un historique sain qu'on ne peut pas lire (droit refusé) n'est pas abîmé : jamais mis de côté,
+    /// laissé tel quel, ce bilan pas enregistré. Seuls un contenu invalide, trop gros ou pas un simple fichier le font.
+    #[cfg(unix)]
+    #[test]
+    fn historique_refuse_laisse_en_place() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (genre, oui) in [
+            (std::io::ErrorKind::InvalidData, true),
+            (std::io::ErrorKind::FileTooLarge, true),
+            (std::io::ErrorKind::PermissionDenied, false),
+            (std::io::ErrorKind::Interrupted, false),
+            (std::io::ErrorKind::Other, false),
+        ] {
+            assert_eq!(a_mettre_de_cote(&std::io::Error::from(genre)), oui, "{genre:?}");
+        }
+        let dossier = dossier_d_essai("historique-refuse");
+        let chemin = dossier.join("historique.json");
+        enregistrer_dans_borne(&chemin, b(70, &[]), HISTORIQUE_MAX);
+        enregistrer_dans_borne(&chemin, b(71, &[]), HISTORIQUE_MAX);
+        let avant = std::fs::read(&chemin).unwrap();
+        std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&chemin).is_ok() {
+            // Lu malgré les droits (root) : rien à essayer.
+            std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let _ = std::fs::remove_dir_all(&dossier);
+            return;
+        }
+        let (precedent, rendu) = enregistrer_dans_borne(&chemin, b(72, &[]), HISTORIQUE_MAX);
+        std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(precedent.is_none());
+        assert!(rendu.empreinte.is_some());
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
+        assert_eq!(std::fs::read(&chemin).unwrap(), avant);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 2, HIS2 : un historique qui ne se lit pas n'est jamais pris pour un historique vide qui tient : le
+    /// constat le dit « non vérifié », le rapport aussi.
+    #[test]
+    fn historique_illisible_dit() {
+        let c = constat_de(Err("pas un simple fichier".into())).expect("constat");
+        assert!(!c.verifie);
+        assert!(
+            matches!(&c.precision, crate::modele::Precision::NonVerifie(crate::modele::Raison::Illisible(e)) if e == "pas un simple fichier"),
+            "{:?}",
+            c.precision
+        );
+        let ligne = etat_chaine_de(Err("pas un simple fichier".into())).expect("ligne");
+        assert!(ligne.contains("pas un simple fichier"), "{ligne}");
+        assert!(constat_de(Ok(Vec::new())).is_none());
+        assert!(etat_chaine_de(Ok(Vec::new())).is_none());
+    }
+
+    /// Passe 2, HIS1 : un lien dur fait sur autre chose que le fichier regardé (remplacé entre-temps) ne laisse pas de
+    /// second nom : retiré, l'historique reste seul à sa place, et c'est « laissé ».
+    #[test]
+    fn second_nom_retire_si_pas_le_fichier() {
+        let dossier = dossier_d_essai("historique-second-nom");
+        let chemin = dossier.join("historique.json");
+        let autre = dossier.join("autre.json");
+        std::fs::write(&chemin, "[").unwrap();
+        std::fs::write(&autre, "[]").unwrap();
+        let regarde = std::fs::symlink_metadata(&autre).unwrap();
+        let r = mettre_de_cote_comme(&chemin, &regarde, true);
+        assert!(matches!(r, Err(PasMisDeCote::Laisse(_))), "{r:?}");
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
+        assert_eq!(std::fs::read_to_string(&chemin).unwrap(), "[");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 2, ROB8 : sans liens durs, un renommage fait puis non vérifié rend « déplacé sous <copie> », jamais
+    /// « laissé tel quel » ; vérifié, la copie.
+    #[test]
+    fn renommage_simple_nomme_la_copie() {
+        let dossier = dossier_d_essai("historique-renommage");
+        let chemin = dossier.join("historique.json");
+        let autre = dossier.join("autre.json");
+        std::fs::write(&chemin, "[").unwrap();
+        std::fs::write(&autre, "[]").unwrap();
+        let regarde = std::fs::symlink_metadata(&autre).unwrap();
+        match mettre_de_cote_comme(&chemin, &regarde, false) {
+            Err(PasMisDeCote::Deplace { copie, .. }) => {
+                assert_eq!(std::fs::read_to_string(&copie).unwrap(), "[");
+                assert_eq!(copies(&dossier), vec![copie]);
+            }
+            r => panic!("{r:?}"),
+        }
+        assert!(std::fs::symlink_metadata(&chemin).is_err());
+        std::fs::write(&chemin, "{").unwrap();
+        let regarde = std::fs::symlink_metadata(&chemin).unwrap();
+        let copie = mettre_de_cote_comme(&chemin, &regarde, false).expect("mis de côté");
+        assert_eq!(std::fs::read_to_string(&copie).unwrap(), "{");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 2, ROB6 : le texte de la borne, fait des bilans écrits une seule fois, est celui de serde ; le retrait
+    /// ne se dit que quand plus d'un bilan part d'un coup.
+    #[test]
+    fn texte_borne_comme_serde() {
+        let tous: Vec<Bilan> = (0..12u32)
+            .map(|i| {
+                let mut x = b(i, &["Pare-feu : inactif."]);
+                x.empreinte = Some(format!("e{i}"));
+                x
+            })
+            .collect();
+        for max in [u64::MAX, 1500, 600] {
+            let mut v = tous.clone();
+            let (texte, retires) = texte_borne(&mut v, max).expect("texte");
+            assert_eq!(texte, serde_json::to_string(&v).unwrap(), "{max}");
+            assert_eq!(v.len().saturating_add(retires), tous.len());
+            assert!(u64::try_from(texte.len()).unwrap() <= max);
+        }
+        assert!(!avertir_du_retrait(0));
+        assert!(!avertir_du_retrait(1));
+        assert!(avertir_du_retrait(2));
     }
 
     #[test]
