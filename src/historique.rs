@@ -208,11 +208,19 @@ pub fn constat() -> Option<crate::machine::Constat> {
 /// `constat` de l'historique `chemin` : illisible ou rompu d'abord ; sinon son verrou gardé en ce moment par un autre
 /// (`verrou_tenu_maintenant` : ce bilan-ci, qui s'enregistre après l'affichage, le dit lui-même ; passe 4, P4-H1) ;
 /// sinon un refus d'avant, dit au passé avec sa raison (P4-H2), retenu par ce processus.
+///
+/// Passe 5 (R5-H3, root S5-2 et S5-4) : là où Vanguard n'écrit pas (`socle::ecriture_sure`), le verrou n'est pas sondé :
+/// en administrateur dans le dossier d'un compte, ce bilan ne s'enregistre pas, c'est dit au bilan
+/// (`constat_pas_enregistre`), sans attente ni alerte sur un enregistrement qui n'aura pas lieu ; en lecture seule
+/// (autotest, porte MCP, aperçu), rien ne doit s'y écrire : rien n'est dit.
 fn constat_dans(chemin: &std::path::Path) -> Option<crate::machine::Constat> {
     let dossier = chemin.parent();
     let avant = dossier.and_then(refus_retenu);
+    let sure = dossier.is_none_or(crate::socle::ecriture_sure);
     constat_de(lire_de(chemin)).or_else(|| {
-        if dossier.is_some_and(verrou_tenu_maintenant) {
+        if !sure {
+            (!crate::autotest::lecture_seule::refuse_dossier()).then(constat_pas_enregistre)
+        } else if dossier.is_some_and(verrou_tenu_maintenant) {
             Some(constat_verrou_tenu())
         } else {
             avant.map(|r| constat_bilan_perdu(&r))
@@ -241,9 +249,11 @@ const SONDE: std::time::Duration = if cfg!(test) {
     std::time::Duration::from_secs(2)
 };
 
-/// Le verrou de l'historique est-il gardé en ce moment par un autre, au-delà de `SONDE` ? Pris partagé (rien ne s'écrit
-/// pendant la sonde, aucun verrou n'est créé là où il n'existe pas). Pas sondé pour l'aperçu d'une correction (sans
-/// attente, et rien n'y est enregistré) : seul le refus retenu s'y dit.
+/// Le verrou de l'historique est-il gardé en ce moment, au-delà de `SONDE`, par un autre programme ou un autre fil de
+/// celui-ci (le verrou du système vaut pour chaque ouverture du fichier) ? Pris exclusif comme l'enregistrement le
+/// prendra (passe 5, R5-H1 : partagé, la sonde passait à côté d'un verrou partagé qui bloquera pourtant
+/// l'enregistrement), sur le fichier déjà là, sans rien créer ni écrire (`Verrou::sonder` ; R5-H7). Pas sondé pour
+/// l'aperçu d'une correction (sans attente, et rien n'y est enregistré) : seul le refus retenu s'y dit.
 fn verrou_tenu_maintenant(dossier: &std::path::Path) -> bool {
     if crate::autotest::lecture_seule::sans_attente()
         || !std::fs::symlink_metadata(dossier.join(VERROU)).is_ok_and(|m| m.file_type().is_file())
@@ -251,8 +261,28 @@ fn verrou_tenu_maintenant(dossier: &std::path::Path) -> bool {
         return false;
     }
     matches!(
-        crate::socle::Verrou::prendre(dossier, VERROU, true, SONDE),
+        crate::socle::Verrou::sonder(dossier, VERROU, SONDE),
         Err(crate::socle::SansVerrou::Occupe)
+    )
+}
+
+/// Passe 5 (R5-H3, root S5-2) : en administrateur dans le dossier de données d'un compte, ce bilan ne s'enregistre pas
+/// dans l'historique (H2) : dit au bilan même, pas seulement sur la sortie d'erreur.
+fn constat_pas_enregistre() -> crate::machine::Constat {
+    crate::machine::alerte(
+        "Historique",
+        Niveau::Info,
+        tr!(
+            "Ce bilan n'est pas enregistré dans l'historique : en administrateur, le dossier de données d'un autre compte n'est pas écrit (il est seulement lu, pour comparer avec le bilan précédent).",
+            "This check is not saved to the history: as administrator, another account's data folder is not written (it is only read, to compare with the previous check)."
+        ),
+    )
+    .manuel(
+        tr!(
+            "Lancez le bilan depuis ce compte, sans droits d'administrateur, pour qu'il s'enregistre",
+            "Run the check-up from that account, without admin rights, for it to be saved"
+        ),
+        &[],
     )
 }
 
@@ -538,14 +568,20 @@ fn enregistrer_selon(
     // dans le dossier d'un compte, aucun verrou n'y est créé (il bloquerait ensuite chaque bilan du compte), et rien
     // n'y est écrit, comme le journal et les sceaux (H2) : sans verrou, l'écriture pouvait croiser celle du compte et
     // perdre un bilan, et un historique posé par root ne se relisait plus sous le compte.
+    //
+    // Passe 5 : le bilan précédent se lit quand même, sans verrou ni écriture, pour la comparaison « depuis le dernier
+    // bilan » (root S5-2 ; avant le lot, root la gardait) ; la raison dite est la vraie : la lecture seule d'un
+    // autotest, de la porte MCP ou d'un aperçu n'est pas l'administrateur (R5-H5, root S5-8).
     let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
     if !sure {
-        let e = crate::sceau::dossier_d_un_autre();
+        let e = raison_non_ecrite();
         tre!(
             "Attention : bilan non enregistré dans l'historique ({e}).",
             "Warning: check not saved to the history ({e})."
         );
-        return rendu_seul(nouveau);
+        let precedent = lire_de_borne(chemin, max).ok().and_then(|mut tous| tous.pop());
+        let (_, rendu) = rendu_seul(nouveau);
+        return (precedent, rendu);
     }
     let _verrou = {
         match crate::socle::Verrou::prendre(dossier, VERROU, false, attente) {
@@ -569,6 +605,16 @@ fn enregistrer_selon(
         }
     };
     enregistrer_sous_verrou(chemin, nouveau, max)
+}
+
+/// Pourquoi l'historique n'est pas écrit là où l'écriture n'est pas sûre : la lecture seule d'un autotest, de la porte
+/// MCP ou d'un aperçu, sinon l'administrateur dans le dossier d'un compte (R5-H5).
+fn raison_non_ecrite() -> std::io::Error {
+    if crate::autotest::lecture_seule::refuse_dossier() {
+        crate::autotest::lecture_seule::refus()
+    } else {
+        crate::sceau::dossier_d_un_autre()
+    }
 }
 
 /// Le verrou de l'historique (`enregistrer_dans_borne`), à côté de lui.
@@ -1341,6 +1387,93 @@ mod tests {
         assert!(rendu.empreinte.is_some());
         assert!(!chemin.exists());
         assert!(!dossier.join(VERROU).exists());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 5, R5-H4, root S5-6, S5-2 et S5-4 : au niveau de l'appelant (`enregistrer_dans`, `constat_dans`), en
+    /// administrateur dans le dossier d'un compte (`EUID_D_ESSAI` à 0) : rien n'y est écrit, le bilan précédent se
+    /// lit pour la comparaison, et le bilan le dit sans parler d'un verrou gardé ni d'une attente de 30 secondes,
+    /// même quand un programme du compte garde le verrou.
+    #[cfg(unix)]
+    #[test]
+    fn root_chez_un_compte_au_niveau_de_l_appelant() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dossier = dossier_d_essai("historique-root-appelant");
+        if std::fs::metadata(&dossier).unwrap().uid() == 0 {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        let chemin = dossier.join("historique.json");
+        let _ = enregistrer_dans(&chemin, b(7, &[]));
+        let avant = std::fs::read(&chemin).unwrap();
+        let tenu = crate::socle::Verrou::prendre(&dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).unwrap();
+        crate::socle::EUID_D_ESSAI.with(|e| e.set(Some(0)));
+        let c = constat_dans(&chemin);
+        let (precedent, rendu) = enregistrer_dans(&chemin, b(8, &[]));
+        crate::socle::EUID_D_ESSAI.with(|e| e.set(None));
+        drop(tenu);
+        let c = c.expect("le bilan dit qu'il n'est pas enregistré");
+        assert_eq!(c.probleme, Some(Niveau::Info));
+        assert!(c.message.contains("n'est pas enregistré"), "{}", c.message);
+        assert!(!c.message.contains("30 secondes"), "{}", c.message);
+        assert!(precedent.is_some_and(|p| p.machine == b(7, &[]).machine));
+        assert!(rendu.empreinte.is_some());
+        assert_eq!(std::fs::read(&chemin).unwrap(), avant);
+        assert!(refus_retenu(&dossier).is_none());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 5, R5-H5 : en lecture seule (autotest, porte MCP, aperçu), la raison dite est la lecture seule, pas
+    /// l'administrateur ; et le bilan ne se dit pas « non enregistré » (rien ne doit s'y écrire).
+    #[test]
+    fn lecture_seule_raison_juste() {
+        let dossier = dossier_d_essai("historique-lecture-seule");
+        let chemin = dossier.join("historique.json");
+        crate::autotest::lecture_seule::poser();
+        let raison = raison_non_ecrite().to_string();
+        let c = constat_dans(&chemin);
+        let _ = enregistrer_dans(&chemin, b(7, &[]));
+        crate::autotest::lecture_seule::relever_pour_le_test();
+        assert!(raison.contains("lecture seule"), "{raison}");
+        assert!(!raison.contains("administrateur"), "{raison}");
+        assert!(c.is_none(), "{:?}", c.map(|c| c.message));
+        assert!(!chemin.exists());
+        assert_eq!(
+            raison_non_ecrite().to_string(),
+            crate::sceau::dossier_d_un_autre().to_string()
+        );
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 5, R5-H1 : un verrou partagé gardé par un autre (ici une autre ouverture du fichier) bloque
+    /// l'enregistrement, qui le prend exclusif : la sonde le dit au bilan même.
+    #[test]
+    fn verrou_partage_d_un_autre_dit() {
+        let dossier = dossier_d_essai("historique-verrou-partage");
+        let chemin = dossier.join("historique.json");
+        let lecteur = crate::socle::Verrou::prendre(&dossier, VERROU, true, crate::socle::ATTENTE_ECRITURE).unwrap();
+        let c = constat_dans(&chemin);
+        drop(lecteur);
+        let c = c.expect("constat du verrou gardé en partage");
+        assert!(c.message.contains("en ce moment"), "{}", c.message);
+        assert!(constat_dans(&chemin).is_none());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 5, R5-H7 : un verrou remplacé (ici par un dossier) n'est pas retenu : le constat des verrous du sceau le
+    /// dit déjà.
+    #[test]
+    fn verrou_remplace_pas_retenu() {
+        let dossier = dossier_d_essai("historique-verrou-remplace");
+        std::fs::create_dir_all(dossier.join(VERROU)).unwrap();
+        let _ = enregistrer_en_attendant(
+            &dossier.join("historique.json"),
+            b(7, &[]),
+            HISTORIQUE_MAX,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(crate::socle::verrou_remplace(&dossier, VERROU));
+        assert!(refus_retenu(&dossier).is_none());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 

@@ -286,7 +286,12 @@ pub(crate) fn ecriture_sure(dossier: &std::path::Path) -> bool {
         return false;
     }
     // Les tests écrivent dans leurs dossiers jetables, même lancés en root dans `unshare -r` (verifier.sh), où /tmp
-    // paraît à personne : la règle elle-même s'essaie par `ecriture_sure_pour`.
+    // paraît à personne : la règle elle-même s'essaie par `ecriture_sure_pour`, et chez ses appelants par
+    // `EUID_D_ESSAI` (passe 5, R5-H4 : un essai qui passe `sure` à la main ne prouve pas le branchement).
+    #[cfg(all(test, unix))]
+    if let Some(euid) = EUID_D_ESSAI.with(std::cell::Cell::get) {
+        return ecriture_sure_pour(euid, dossier);
+    }
     if cfg!(test) {
         return true;
     }
@@ -299,6 +304,12 @@ pub(crate) fn ecriture_sure(dossier: &std::path::Path) -> bool {
         let _ = dossier;
         true
     }
+}
+
+#[cfg(all(test, unix))]
+std::thread_local! {
+    /// L'euid que voit `ecriture_sure` sur ce fil d'essai ; `None` : toujours sûre (les dossiers jetables).
+    pub(crate) static EUID_D_ESSAI: std::cell::Cell<Option<libc::uid_t>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(unix)]
@@ -553,8 +564,29 @@ impl Verrou {
         partage: bool,
         attente: std::time::Duration,
     ) -> Result<Verrou, SansVerrou> {
+        Self::prendre_selon(dossier, nom, partage, !partage || ecriture_sure(dossier), attente)
+    }
+
+    /// Le verrou exclusif du système sur le fichier `nom` déjà là dans `dossier`, sans rien créer, attendu au plus
+    /// `attente` : la sonde d'un verrou qu'un écrivain prendra exclusif (passe 5, R5-H1 : pris partagé, il passait à
+    /// côté d'un autre lecteur qui bloquera pourtant l'écrivain). Le système permet le verrou exclusif sur un fichier
+    /// ouvert en lecture seule.
+    pub(crate) fn sonder(
+        dossier: &std::path::Path,
+        nom: &str,
+        attente: std::time::Duration,
+    ) -> Result<Verrou, SansVerrou> {
+        Self::prendre_selon(dossier, nom, false, false, attente)
+    }
+
+    fn prendre_selon(
+        dossier: &std::path::Path,
+        nom: &str,
+        partage: bool,
+        creer: bool,
+        attente: std::time::Duration,
+    ) -> Result<Verrou, SansVerrou> {
         let attente = attente_permise(attente);
-        let creer = !partage || ecriture_sure(dossier);
         if creer {
             let _ = std::fs::create_dir_all(dossier);
         }

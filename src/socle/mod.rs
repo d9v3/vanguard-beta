@@ -28,8 +28,6 @@ pub(crate) mod ouvrir_console;
 pub(crate) mod valeur_console;
 
 pub use fichiers::dossier_local;
-#[cfg(all(unix, test))]
-pub(crate) use fichiers::ecriture_sure_pour;
 #[cfg(unix)]
 pub(crate) use fichiers::lire_ordinaire_au_bout;
 #[cfg(unix)]
@@ -39,6 +37,8 @@ pub(crate) use fichiers::{
     ecriture_sure, lire_ordinaire, lire_texte, lire_texte_ordinaire, nom_systeme, ouvrir_ordinaire,
     parcourir_ordinaire, refus_du_systeme, texte_des_octets, verrou_remplace,
 };
+#[cfg(all(unix, test))]
+pub(crate) use fichiers::{EUID_D_ESSAI, ecriture_sure_pour};
 #[cfg(target_os = "linux")]
 pub(crate) use identite::{
     Expediteur, brancher_avec_temoins, compte_d_en_face, octet_en_attente, pidfd_vivant, recevoir_avec_temoins,
