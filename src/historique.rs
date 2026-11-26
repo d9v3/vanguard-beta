@@ -205,35 +205,87 @@ pub fn constat() -> Option<crate::machine::Constat> {
     constat_dans(&fichier())
 }
 
-/// `constat` de l'historique `chemin` : illisible ou rompu d'abord, sinon son verrou tenu (passe 4, H1).
+/// `constat` de l'historique `chemin` : illisible ou rompu d'abord ; sinon son verrou gardé en ce moment par un autre
+/// (`verrou_tenu_maintenant` : ce bilan-ci, qui s'enregistre après l'affichage, le dit lui-même ; passe 4, P4-H1) ;
+/// sinon un refus d'avant, dit au passé avec sa raison (P4-H2), retenu par ce processus.
 fn constat_dans(chemin: &std::path::Path) -> Option<crate::machine::Constat> {
-    let tenu = chemin.parent().is_some_and(verrou_tenu_dans);
-    constat_de(lire_de(chemin)).or_else(|| tenu.then(constat_verrou_tenu))
+    let dossier = chemin.parent();
+    let avant = dossier.and_then(refus_retenu);
+    constat_de(lire_de(chemin)).or_else(|| {
+        if dossier.is_some_and(verrou_tenu_maintenant) {
+            Some(constat_verrou_tenu())
+        } else {
+            avant.map(|r| constat_bilan_perdu(&r))
+        }
+    })
 }
 
-/// Les dossiers dont le verrou de l'historique a été refusé à ce processus (tenu ailleurs au-delà de l'attente), et
-/// pas rendu depuis : le dernier bilan n'y a pas été enregistré (passe 4, H1).
-static TENUS: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// Les dossiers dont le verrou de l'historique a été refusé à ce processus, avec la raison du refus, et pas rendu
+/// depuis : le dernier bilan n'y a pas été enregistré (passe 4, H1). Un verrou gardé au-delà de l'attente, ou
+/// inutilisable pour une autre raison que son remplacement (que le constat des verrous du sceau dit déjà ; P4-H4).
+static TENUS: std::sync::Mutex<BTreeMap<PathBuf, String>> = std::sync::Mutex::new(BTreeMap::new());
 
-fn tenus() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<PathBuf>> {
+fn tenus() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, String>> {
     TENUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn verrou_tenu_dans(dossier: &std::path::Path) -> bool {
-    tenus().contains(dossier)
+fn refus_retenu(dossier: &std::path::Path) -> Option<String> {
+    tenus().get(dossier).cloned()
 }
 
-/// Passe 4, H1 : le verrou de l'historique gardé au-delà de l'attente. Sans ce constat, l'historique cessait de
-/// s'écrire sans rien dire ailleurs que sur la sortie d'erreur. Un verrou remplacé (dossier, lien, tube, droits
-/// retirés) se dit, lui, au constat des verrous de l'état (`sceau`).
+/// L'attente de la sonde du verrou au bilan : un enregistrement ordinaire le garde bien moins longtemps ; au-delà,
+/// celui qui le garde est figé ou n'est pas un Vanguard.
+const SONDE: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(100)
+} else {
+    std::time::Duration::from_secs(2)
+};
+
+/// Le verrou de l'historique est-il gardé en ce moment par un autre, au-delà de `SONDE` ? Pris partagé (rien ne s'écrit
+/// pendant la sonde, aucun verrou n'est créé là où il n'existe pas). Pas sondé pour l'aperçu d'une correction (sans
+/// attente, et rien n'y est enregistré) : seul le refus retenu s'y dit.
+fn verrou_tenu_maintenant(dossier: &std::path::Path) -> bool {
+    if crate::autotest::lecture_seule::sans_attente()
+        || !std::fs::symlink_metadata(dossier.join(VERROU)).is_ok_and(|m| m.file_type().is_file())
+    {
+        return false;
+    }
+    matches!(
+        crate::socle::Verrou::prendre(dossier, VERROU, true, SONDE),
+        Err(crate::socle::SansVerrou::Occupe)
+    )
+}
+
+/// Passe 4, H1 et P4-H1 : le verrou de l'historique gardé en ce moment, vu au bilan même. Sans ce constat, l'historique
+/// cessait de s'écrire sans rien dire ailleurs que sur la sortie d'erreur, et le bilan qui échouait ne le disait pas.
+/// Un verrou remplacé (dossier, lien, tube, droits retirés) se dit, lui, au constat des verrous de l'état (`sceau`).
 fn constat_verrou_tenu() -> crate::machine::Constat {
     crate::machine::alerte(
         "Historique",
         Niveau::Moyen,
         tr!(
-            "Le dernier bilan n'a pas été enregistré dans l'historique : son verrou (historique.verrou) est gardé depuis trop longtemps (un Vanguard figé, ou un autre programme qui le garde).",
-            "The last check was not saved to the history: its lock (historique.verrou) has been kept too long (a frozen Vanguard, or another program keeping it)."
+            "Ce bilan risque de ne pas être enregistré dans l'historique : son verrou (historique.verrou) est gardé en ce moment par un autre programme (un Vanguard figé, ou un autre programme du compte) ; le bilan ne s'enregistre que si le verrou est rendu dans les 30 secondes.",
+            "This check may not be saved to the history: its lock (historique.verrou) is being kept right now by another program (a frozen Vanguard, or another program of the account); the check is saved only if the lock is released within 30 seconds."
+        ),
+    )
+    .manuel(
+        tr!(
+            "Fermez les autres Vanguard ouverts, puis relancez le bilan ; si cela reste, regardez ce qui tourne sous votre compte",
+            "Close the other open Vanguard windows, then run the check-up again; if it stays, look at what runs under your account"
+        ),
+        &[],
+    )
+}
+
+/// Passe 4, P4-H2 : un bilan d'avant non enregistré, dit au passé avec la raison du refus (le verrou a pu être rendu
+/// depuis : rien n'est dit au présent sans être revu).
+fn constat_bilan_perdu(raison: &str) -> crate::machine::Constat {
+    crate::machine::alerte(
+        "Historique",
+        Niveau::Moyen,
+        trf!(
+            "Un bilan précédent n'a pas été enregistré dans l'historique : {raison}.",
+            "An earlier check was not saved to the history: {raison}."
         ),
     )
     .manuel(
@@ -479,10 +531,12 @@ fn enregistrer_en_attendant(
                 Some(v)
             }
             Err(e) => {
-                if matches!(e, crate::socle::SansVerrou::Occupe) {
-                    tenus().insert(dossier.to_path_buf());
-                }
+                let retenu =
+                    matches!(e, crate::socle::SansVerrou::Occupe) || !crate::socle::verrou_remplace(dossier, VERROU);
                 let e = e.erreur(VERROU);
+                if retenu {
+                    tenus().insert(dossier.to_path_buf(), e.to_string());
+                }
                 tre!(
                     "Attention : bilan non enregistré dans l'historique ({e}).",
                     "Warning: check not saved to the history ({e})."
@@ -1218,27 +1272,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// Passe 4, H1 : un verrou de l'historique tenu au-delà de l'attente se dit au constat de l'historique ; rendu,
-    /// le bilan suivant s'enregistre et le constat se tait.
+    /// Passe 4, H1, P4-H1 et P4-H2 : un verrou de l'historique gardé par un autre se dit au bilan même, avant tout
+    /// enregistrement (au présent) ; rendu, le refus d'avant se dit au passé, avec sa raison ; le bilan suivant
+    /// s'enregistre et le constat se tait.
     #[test]
     fn verrou_tenu_dit_au_constat() {
         let dossier = dossier_d_essai("historique-verrou-tenu");
         let chemin = dossier.join("historique.json");
         let tenu = crate::socle::Verrou::prendre(&dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).unwrap();
+        // Le bilan qui va échouer le dit lui-même : rien n'a encore été refusé à ce processus.
+        assert!(refus_retenu(&dossier).is_none());
+        let c = constat_dans(&chemin).expect("constat du verrou tenu, au bilan même");
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(c.message.contains("en ce moment"), "{}", c.message);
         let debut = std::time::Instant::now();
         let _ = enregistrer_en_attendant(&chemin, b(7, &[]), HISTORIQUE_MAX, std::time::Duration::from_millis(50));
         assert!(debut.elapsed() < std::time::Duration::from_secs(10));
         assert!(!chemin.exists());
-        assert!(verrou_tenu_dans(&dossier));
-        let c = constat_dans(&chemin).expect("constat du verrou tenu");
-        assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(c.message.contains("historique.verrou"), "{}", c.message);
+        assert!(refus_retenu(&dossier).is_some());
         drop(tenu);
+        // Rendu : plus rien au présent, le bilan perdu se dit au passé.
+        let c = constat_dans(&chemin).expect("constat du bilan perdu");
+        assert!(!c.message.contains("en ce moment"), "{}", c.message);
+        assert!(c.message.contains("Un bilan précédent"), "{}", c.message);
+        assert!(c.message.contains("historique.verrou"), "{}", c.message);
         let _ = enregistrer_dans(&chemin, b(8, &[]));
-        assert!(!verrou_tenu_dans(&dossier));
+        assert!(refus_retenu(&dossier).is_none());
         assert_eq!(lire_de(&chemin).unwrap().len(), 1);
         assert!(constat_dans(&chemin).is_none());
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 4, P4-H4 : un verrou inutilisable sans avoir été remplacé (ici, son dossier ne peut pas exister : un
+    /// fichier est à la place d'un de ses parents) est retenu comme un verrou gardé ; le constat du sceau ne le
+    /// dirait pas.
+    #[test]
+    fn verrou_inutilisable_retenu() {
+        let base = dossier_d_essai("historique-verrou-inutilisable");
+        std::fs::write(base.join("pas-un-dossier"), "x").unwrap();
+        let dossier = base.join("pas-un-dossier/sous");
+        let _ = enregistrer_en_attendant(
+            &dossier.join("historique.json"),
+            b(7, &[]),
+            HISTORIQUE_MAX,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(!crate::socle::verrou_remplace(&dossier, VERROU));
+        let r = refus_retenu(&dossier).expect("refus retenu");
+        assert!(r.contains("historique.verrou"), "{r}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Passe 3, historique N1 : seul le fichier lu et jugé abîmé se met de côté. Un historique sain posé à sa place
