@@ -281,16 +281,17 @@ fn lire() -> Result<Vec<Bilan>, String> {
 /// Celui d'un fichier donné : les tests ont chacun le leur, sans quoi l'un réécrirait celui qu'un autre lit (le menu,
 /// le rapport ; sous Windows, un fichier ouvert ne se remplace pas).
 fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
-    lire_de_borne(chemin, HISTORIQUE_MAX)
+    lire_de_borne(chemin, HISTORIQUE_MAX).map_err(|e| e.to_string())
 }
 
 /// `lire_de`, borné à `max` octets (`HISTORIQUE_MAX` hors des essais).
-fn lire_de_borne(chemin: &std::path::Path, max: u64) -> Result<Vec<Bilan>, String> {
+fn lire_de_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<Vec<Bilan>> {
     // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien.
     match crate::socle::lire_texte_ordinaire(chemin, max) {
-        Ok(t) => serde_json::from_str(t.trim_start_matches('\u{feff}')).map_err(|e| e.to_string()),
+        Ok(t) => serde_json::from_str(t.trim_start_matches('\u{feff}'))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e),
     }
 }
 
@@ -440,13 +441,16 @@ fn texte_borne(tous: &mut Vec<Bilan>, max: u64) -> Result<(String, usize), ()> {
 /// (« historique.illisible-<date>-<hasard>.json »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
 /// un lien n'est jamais suivi, un tube ou un dossier n'est pas déplacé. Rend le nom de la copie, qui existe et est le
 /// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer, et l'historique reste à sa place.
-fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, String> {
-    let avant = std::fs::symlink_metadata(chemin).map_err(|e| e.to_string())?;
+fn mettre_de_cote(chemin: &std::path::Path) -> std::io::Result<PathBuf> {
+    let avant = std::fs::symlink_metadata(chemin)?;
     if !avant.file_type().is_file() {
-        return Err(tr!("ce n'est pas un simple fichier", "it is not a plain file").to_string());
+        return Err(std::io::Error::other(tr!(
+            "ce n'est pas un simple fichier",
+            "it is not a plain file"
+        )));
     }
     let mut sel = [0u8; 8];
-    getrandom::fill(&mut sel).map_err(|e| e.to_string())?;
+    getrandom::fill(&mut sel).map_err(|e| std::io::Error::other(e.to_string()))?;
     let copie = chemin.with_extension(format!(
         "illisible-{}-{:016x}.json",
         chrono::Local::now().format("%Y%m%d-%H%M%S"),
@@ -461,17 +465,22 @@ fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, String> {
             if let Err(e) = std::fs::remove_file(chemin) {
                 // Le second nom est le nôtre (vérifié) : retiré, l'historique reste seul à sa place.
                 let _ = std::fs::remove_file(&copie);
-                return Err(e.to_string());
+                return Err(e);
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
         Err(_) => {
             match std::fs::symlink_metadata(&copie) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Ok(_) => return Err(tr!("nom de copie déjà pris", "copy name already taken").to_string()),
-                Err(e) => return Err(e.to_string()),
+                Ok(_) => {
+                    return Err(std::io::Error::other(tr!(
+                        "nom de copie déjà pris",
+                        "copy name already taken"
+                    )));
+                }
+                Err(e) => return Err(e),
             }
-            std::fs::rename(chemin, &copie).map_err(|e| e.to_string())?;
+            std::fs::rename(chemin, &copie)?;
             meme_fichier(&avant, &copie)?;
         }
     }
@@ -480,8 +489,8 @@ fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, String> {
 
 /// La copie `copie` est un simple fichier, et sous Unix le fichier regardé `avant` (même appareil, même numéro) :
 /// jamais « Copie gardée » pour un nom qui ne la porte pas.
-fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> Result<(), String> {
-    let apres = std::fs::symlink_metadata(copie).map_err(|e| e.to_string())?;
+fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> std::io::Result<()> {
+    let apres = std::fs::symlink_metadata(copie)?;
     #[cfg(unix)]
     let meme = {
         use std::os::unix::fs::MetadataExt as _;
@@ -492,11 +501,10 @@ fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> Result<()
     if apres.file_type().is_file() && meme {
         Ok(())
     } else {
-        Err(tr!(
+        Err(std::io::Error::other(tr!(
             "la copie n'est pas le fichier d'avant",
             "the copy is not the previous file"
-        )
-        .to_string())
+        )))
     }
 }
 
@@ -845,7 +853,7 @@ mod tests {
             ancien,
             "la copie est l'historique entier"
         );
-        assert_eq!(lire_de_borne(&chemin, max).map(|t| t.len()), Ok(1));
+        assert_eq!(lire_de_borne(&chemin, max).expect("relu").len(), 1);
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
