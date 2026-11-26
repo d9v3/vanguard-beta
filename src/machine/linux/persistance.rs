@@ -1140,12 +1140,37 @@ fn source_de(origine: &str, ligne: &str) -> String {
 }
 
 /// L'objet de l'alerte des lancements : ses lignes signalées, triées et sans double (l'ordre de lecture ne compte
-/// pas, deux lignes identiques comptent une fois).
+/// pas, deux lignes identiques comptent une fois). Au plus `SOURCES_NOMMEES` sources en clair, et `SOURCES_OCTETS`
+/// octets (LNX-PRS-002 : 5263 sources, une clé de 396 Ko) ; au-delà, leur nombre et l'empreinte BLAKE3 entière de
+/// toutes les autres (« reste:N#empreinte ») : la clé reste bornée et change encore dès qu'une source change,
+/// s'ajoute ou s'en va. Sous les deux bornes, la clé d'avant, mot pour mot.
 fn objet_des_lancements(mut sources: Vec<String>) -> crate::modele::Objet {
     sources.sort();
     sources.dedup();
+    let mut octets = 0usize;
+    let gardees = sources
+        .iter()
+        .take(SOURCES_NOMMEES)
+        .take_while(|s| {
+            octets = octets.saturating_add(s.len()).saturating_add(1);
+            octets <= SOURCES_OCTETS
+        })
+        .count();
+    if gardees < sources.len() {
+        let reste = sources.split_off(gardees);
+        sources.push(format!(
+            "reste:{}#{}",
+            reste.len(),
+            blake3::hash(reste.join(",").as_bytes()).to_hex()
+        ));
+    }
     crate::modele::Objet::de("lancements", &sources.join(","))
 }
+
+/// Au plus autant de sources nommées dans la clé de l'alerte des lancements (`objet_des_lancements`), et au plus
+/// autant d'octets pour elles (un chemin peut être long) ; le reste en une empreinte de 80 octets au plus.
+const SOURCES_NOMMEES: usize = 64;
+const SOURCES_OCTETS: usize = 8192;
 
 /// Lancements automatiques détournés : bibliothèque préchargée dans tous les programmes, services et démarrage
 /// de session qui lancent un shell inversé ou un programme caché, services système ajoutés à la main.
@@ -2169,7 +2194,70 @@ struct Lancements {
     /// Une ligne signalée qui n'est pas de celles que Vanguard retire lui-même (une variable autre que LD_PRELOAD ou
     /// LD_AUDIT, une commande : ronde 9, N9-3, `linux::Decoupe::Hors`).
     hors: bool,
+    /// Les lignes des unités du dossier de la session (XDG_RUNTIME_DIR/systemd) qui portent mot pour mot la même
+    /// ligne pour la même raison (LNX-PRS-002 : 5263 unités de systemd-run échouées, chacune sa ligne, faisaient une
+    /// clé de 396 Ko) : une seule ligne de l'alerte par groupe, avec leur nombre (`Groupe`).
+    groupes: std::collections::HashMap<(String, String), Groupe>,
     r: Releveur,
+}
+
+/// Au plus autant d'autres unités nommées en exemple dans la ligne d'un groupe (`Lancements::groupes`) ; les
+/// autres sont comptées.
+const EXEMPLES_DU_GROUPE: usize = 3;
+
+/// Au plus autant de colonnes de la ligne commune d'un groupe montrées ; au-delà, coupée, et c'est dit.
+const LIGNE_DU_GROUPE: usize = 120;
+
+/// Un groupe d'unités du dossier de la session qui portent la même ligne : la première levée normalement (sa source,
+/// son retrait, son témoin), les autres comptées, quelques-unes nommées.
+struct Groupe {
+    /// La place de la source de la première dans `Lancements::sources`, récrite pour le groupe s'il en compte plus
+    /// d'une.
+    indice: usize,
+    /// Le nombre de lignes du groupe, la première comprise.
+    nombre: usize,
+    /// « fichier:numéro » de la première, et de quelques autres (`EXEMPLES_DU_GROUPE`).
+    premiere: String,
+    exemples: Vec<String>,
+    ligne: String,
+    raison: String,
+}
+
+/// La ligne de l'alerte d'un groupe, et sa source s'il faut la récrire. Seule : la ligne et la source d'avant, mot
+/// pour mot (une clé déjà vue ne change pas). Plusieurs : « fichier:numéro : raison », puis combien d'unités, la
+/// ligne commune (coupée à `LIGNE_DU_GROUPE` colonnes, et c'est dit) et quelques exemples ; la source devient celle
+/// du groupe (« session-groupe » et l'empreinte de la ligne), qui ne change pas avec les noms que systemd-run tire
+/// au hasard, mais change avec la ligne.
+fn ligne_du_groupe(g: &Groupe) -> (String, Option<String>) {
+    let (ou, raison) = (&g.premiere, &g.raison);
+    if g.nombre <= 1 {
+        return (trf!("{ou} : {raison}", "{ou}: {raison}"), None);
+    }
+    let affichee = crate::ui::affichable(&g.ligne);
+    let mut montree = crate::ui::couper(&affichee, LIGNE_DU_GROUPE);
+    if montree != affichee {
+        let _ = trw!(
+            montree,
+            " (coupée, {} caractères)",
+            " (cut, {} characters)",
+            affichee.chars().count()
+        );
+    }
+    let mut exemples = g.exemples.join(", ");
+    let non_nommees = g.nombre.saturating_sub(1).saturating_sub(g.exemples.len());
+    if non_nommees > 0 {
+        let _ = trw!(
+            exemples,
+            ", et {non_nommees} autre(s) non nommée(s)",
+            ", and {non_nommees} more not named"
+        );
+    }
+    let suspect = trf!(
+        "{ou} : {raison} ; {} unités du dossier de la session portent cette même ligne « {montree} » (aussi : {exemples})",
+        "{ou}: {raison}; {} units of the session folder carry this same line \"{montree}\" (also: {exemples})",
+        g.nombre
+    );
+    (suspect, Some(source_de("session-groupe", &g.ligne)))
 }
 
 /// Ce qu'il faut pour relever ce que désigne une ligne : la racine lue, le dossier personnel, le dossier de la
@@ -12709,6 +12797,23 @@ fn lever(
     retirable: bool,
     raison: &str,
 ) {
+    let perso = t.r.maison.clone();
+    let ou = format!("{}:{}", court(f, &perso), n.saturating_add(1));
+    // Une unité du dossier de la session (jamais déclarable : `refus_ajoute`) qui porte mot pour mot une ligne déjà
+    // levée pour la même raison dans une autre : comptée avec elle, une seule ligne de l'alerte. Une ligne qui
+    // n'est pas la même, ou pas pour la même raison, reste seule. Jamais une ligne à « % » ou « $ » : systemd y met
+    // le nom de l'unité, son dossier ou une variable, et deux mêmes textes peuvent y lancer deux programmes.
+    let groupable = t.r.de_la_session(f) && matches!(sorte, Sorte::Ajoutee(_)) && !ligne.contains(['%', '$']);
+    let cle = (ligne.trim().to_string(), raison.to_string());
+    if groupable && let Some(g) = t.groupes.get_mut(&cle) {
+        g.nombre = g.nombre.saturating_add(1);
+        if g.exemples.len() < EXEMPLES_DU_GROUPE {
+            g.exemples.push(ou);
+        }
+        // Un geste qui ne retirerait que la première se croirait complet : tout reste à la main.
+        t.retraits.push(None);
+        return;
+    }
     t.sources
         .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), ligne));
     let r = if retirable { retrait(t, f, lu, ligne) } else { None };
@@ -12721,13 +12826,24 @@ fn lever(
     };
     let temoin = temoin_de_ligne(t, f, n, lu, ligne, designe, true, sorte);
     t.temoins.push(temoin);
-    let perso = t.r.maison.clone();
-    t.suspects.push(trf!(
-        "{}:{} : {raison}",
-        "{}:{}: {raison}",
-        court(f, &perso),
-        n.saturating_add(1)
-    ));
+    if groupable {
+        // La ligne de l'alerte attend la fin de la lecture (`constat_des_lancements`) : seule, la même qu'avant.
+        let indice = t.sources.len().saturating_sub(1);
+        let (ligne, raison) = cle.clone();
+        t.groupes.insert(
+            cle,
+            Groupe {
+                indice,
+                nombre: 1,
+                premiere: ou,
+                exemples: Vec::new(),
+                ligne,
+                raison,
+            },
+        );
+        return;
+    }
+    t.suspects.push(trf!("{ou} : {raison}", "{ou}: {raison}"));
 }
 
 /// Ce qu'une ligne d'un fichier .conf de Hyprland lance, au-delà de `commande_lancee_lue` : un raccourci (toute forme
@@ -14154,7 +14270,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     let Lancements {
         critiques,
         mut suspects,
-        sources,
+        mut sources,
         mut retraits,
         temoins: releves,
         mut informations,
@@ -14167,8 +14283,24 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         connexion,
         format,
         hors,
+        groupes,
         ..
     } = t;
+    // Chaque ligne d'un groupe de plus d'une compte pour une ligne signalée (le total et le reste par fichier disent
+    // toutes les unités, jamais une seule).
+    let mut poids: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for g in groupes.into_values() {
+        let (suspect, source) = ligne_du_groupe(&g);
+        if let Some(s) = source
+            && let Some(place) = sources.get_mut(g.indice)
+        {
+            *place = s;
+        }
+        if g.nombre > 1 {
+            poids.insert(suspect.clone(), g.nombre);
+        }
+        suspects.push(suspect);
+    }
     suspects.sort();
     suspects.dedup();
     informations.sort();
@@ -14204,7 +14336,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     };
     let mut liste = critiques;
     liste.extend(suspects);
-    let total = liste.len();
+    let compte = |l: &String| poids.get(l).copied().unwrap_or(1);
+    let total = liste.iter().map(compte).fold(0usize, usize::saturating_add);
     let suite = liste.split_off(liste.len().min(LIGNES_MONTREES));
     let mut message = trf!(
         "Lancement automatique suspect ({total} ligne(s)) : {}",
@@ -14216,8 +14349,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
             message,
             " ; et {} autre(s), par fichier : {}",
             "; and {} more, by file: {}",
-            suite.len(),
-            reste_par_fichier(&suite)
+            suite.iter().map(compte).fold(0usize, usize::saturating_add),
+            reste_par_fichier(&suite, &poids)
         );
     }
     message.push('.');
@@ -14355,24 +14488,50 @@ fn fichier_signale(ligne: &str) -> Option<&str> {
 
 /// Les lignes signalées au-delà des premières, groupées par fichier avec leur nombre (une ligne sans fichier,
 /// en entier) : une ligne de plus dans un fichier déjà signalé change son nombre, un fichier de plus se nomme
-/// (deuxième vérification : « et 56 autre(s) » cachait la 63e).
-fn reste_par_fichier(suite: &[String]) -> String {
-    let mut fichiers: Vec<(&str, usize)> = Vec::new();
+/// (deuxième vérification : « et 56 autre(s) » cachait la 63e). Une ligne d'un groupe d'unités (`poids` : son
+/// nombre de lignes) se dit à part, avec ce nombre. Au plus `RESTE_NOMMES` morceaux nommés (LNX-PRS-002 : des
+/// milliers de fichiers nommés un par un) ; les autres sont comptés, fichiers et lignes, jamais tus.
+fn reste_par_fichier(suite: &[String], poids: &std::collections::HashMap<String, usize>) -> String {
+    let mut fichiers: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut groupes: Vec<(String, usize)> = Vec::new();
     let mut seules: Vec<&str> = Vec::new();
     for l in suite {
-        match fichier_signale(l) {
-            Some(f) => match fichiers.iter_mut().find(|(g, _)| *g == f) {
-                Some((_, n)) => *n = n.saturating_add(1),
-                None => fichiers.push((f, 1)),
-            },
-            None => seules.push(l),
+        match (fichier_signale(l), poids.get(l)) {
+            (Some(f), Some(&n)) => groupes.push((
+                trf!(
+                    "{f} et {} autre(s) unité(s) à la même ligne",
+                    "{f} and {} more unit(s) with the same line",
+                    n.saturating_sub(1)
+                ),
+                n,
+            )),
+            (Some(f), None) => {
+                let n = fichiers.entry(f).or_insert(0);
+                *n = n.saturating_add(1);
+            }
+            (None, _) => seules.push(l),
         }
     }
-    fichiers.sort_unstable();
-    let mut morceaux: Vec<String> = fichiers.into_iter().map(|(f, n)| format!("{f} ({n})")).collect();
-    morceaux.extend(seules.into_iter().map(str::to_string));
-    morceaux.join(", ")
+    // Chaque morceau et son nombre de lignes signalées.
+    let mut morceaux: Vec<(String, usize)> = fichiers.into_iter().map(|(f, n)| (format!("{f} ({n})"), n)).collect();
+    morceaux.extend(groupes);
+    morceaux.extend(seules.into_iter().map(|l| (l.to_string(), 1)));
+    let reste = morceaux.split_off(morceaux.len().min(RESTE_NOMMES));
+    let mut texte = morceaux.into_iter().map(|(m, _)| m).collect::<Vec<_>>().join(", ");
+    if !reste.is_empty() {
+        let lignes = reste.iter().fold(0usize, |t, (_, n)| t.saturating_add(*n));
+        let _ = trw!(
+            texte,
+            ", et {} autre(s) non nommé(s) ({lignes} ligne(s))",
+            ", and {} more not named ({lignes} line(s))",
+            reste.len()
+        );
+    }
+    texte
 }
+
+/// Au plus autant de fichiers (ou groupes, ou lignes sans fichier) nommés au-delà des lignes montrées en entier.
+const RESTE_NOMMES: usize = 20;
 
 /// Services système ajoutés à la main : souvent les tiens (scripts maison), parfois une persistance root. On les nomme
 /// pour que tu les reconnaisses, sans baisser la note.
@@ -15135,6 +15294,33 @@ mod tests {
         // Les blancs du bord ne changent pas la ligne ; une autre source, si.
         assert_eq!(source_de("crontab", r1), source_de("crontab", &format!("  {r1}\t")));
         assert_ne!(source_de("crontab", r1), source_de("~/.bashrc", r1));
+        // LNX-PRS-002 : sous les bornes, la clé d'avant ; au-delà, bornée, et une source changée la change encore.
+        let n = |k: usize, long: usize| -> Vec<String> {
+            (0..k)
+                .map(|i| source_de(&format!("/run/{}{i:05}", "x".repeat(long)), r1))
+                .collect()
+        };
+        let avant = |s: Vec<String>| {
+            let mut s = s;
+            s.sort();
+            crate::modele::Objet::de("lancements", &s.join(","))
+        };
+        assert_eq!(
+            objet_des_lancements(n(SOURCES_NOMMEES, 1)),
+            avant(n(SOURCES_NOMMEES, 1))
+        );
+        for (k, long) in [(SOURCES_NOMMEES + 1, 1), (40, 400), (5263, 60)] {
+            let o = objet_des_lancements(n(k, long));
+            let texte = o.texte().unwrap_or_default().to_string();
+            assert!(texte.len() <= SOURCES_OCTETS + 128, "{k} : {} octets", texte.len());
+            assert!(texte.contains(",reste:"), "{k}");
+            let mut autre = n(k, long);
+            if let Some(derniere) = autre.last_mut() {
+                *derniere = source_de("/run/autre", r1);
+            }
+            assert_ne!(objet_des_lancements(autre), o, "{k}");
+            assert_ne!(objet_des_lancements(n(k.saturating_sub(1), long)), o, "{k}");
+        }
     }
 
     #[test]
@@ -27156,6 +27342,141 @@ mod tests {
         assert_eq!(m.lancements().probleme, None);
     }
 
+    /// LNX-PRS-002 : des milliers d'unités échouées de systemd-run (5263 sur un poste, une clé de 396 Ko et un bilan
+    /// de 429 Ko) qui lancent la même ligne : une seule ligne de l'alerte, avec leur nombre ; l'unité qui lance autre
+    /// chose reste seule et nommée ; le message et la clé restent bornés ; rien ne se déclare normal.
+    #[test]
+    fn unites_de_la_session_groupees() {
+        let m = Maison::nouvelle("session-groupe");
+        let d = m.racine.join("run/user/1000/systemd/transient");
+        std::fs::create_dir_all(&d).unwrap();
+        let commune = "[Service]\nExecStart=\"/tmp/.x/agent\" \"--vite\"\n";
+        for i in 0..5263 {
+            std::fs::write(d.join(format!("run-p{i}-i{}.service", i + 7)), commune).unwrap();
+        }
+        // Une seule différente parmi elles (un argument de plus) : jamais comptée avec les autres.
+        std::fs::write(
+            d.join("run-p9-i9999.service"),
+            "[Service]\nExecStart=\"/tmp/.x/agent\" \"--vite\" \"--autre\"\n",
+        )
+        .unwrap();
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (5264 ligne(s))"),
+            "{}",
+            c.message
+        );
+        assert!(
+            c.message
+                .contains("5263 unités du dossier de la session portent cette même ligne"),
+            "{}",
+            c.message
+        );
+        assert!(
+            c.message.contains("ExecStart=\"/tmp/.x/agent\" \"--vite\""),
+            "{}",
+            c.message
+        );
+        assert!(
+            c.message
+                .contains("/run/user/1000/systemd/transient/run-p9-i9999.service:2 : "),
+            "la différente reste seule : {}",
+            c.message
+        );
+        assert!(c.message.contains("et 5259 autre(s) non nommée(s)"), "{}", c.message);
+        assert!(c.message.len() < 4096, "{} octets : {}", c.message.len(), c.message);
+        let objet = c.objet.texte().unwrap_or_default().to_string();
+        assert!(objet.len() < 1024, "{} octets : {objet}", objet.len());
+        assert_eq!(
+            objet.matches(',').count(),
+            1,
+            "deux sources, le groupe et la seule : {objet}"
+        );
+        assert!(crate::apprentissage::declarable(&c).is_err());
+        assert!(refus(&c).contains("dossier de la session"), "{}", refus(&c));
+        // Une unité de plus à la même ligne : le nombre change, la clé non (les noms de systemd-run sont tirés au
+        // hasard) ; une autre ligne de plus : la clé change.
+        std::fs::write(d.join("run-p1-i1.service"), commune).unwrap();
+        let c2 = m.lancements();
+        assert!(c2.message.contains("5264 unités du dossier"), "{}", c2.message);
+        assert_eq!(c2.objet, c.objet);
+        std::fs::write(d.join("run-p2-i2.service"), "[Service]\nExecStart=/tmp/.x/trois\n").unwrap();
+        assert_ne!(m.lancements().objet, c.objet);
+    }
+
+    /// LNX-PRS-002, la même ligne une seule fois : la ligne et la clé d'avant, mot pour mot. Une ligne à « % »
+    /// (systemd y met le nom de l'unité) ou à « $ » ne se groupe jamais ; une même ligne pour deux raisons non plus.
+    #[test]
+    fn unite_de_la_session_seule_inchangee() {
+        let m = Maison::nouvelle("session-seule");
+        let d = m.racine.join("run/user/1000/systemd/transient");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("run-u1.service"), "[Service]\nExecStart=/tmp/.x/agent\n").unwrap();
+        let c = m.lancements();
+        let f = d.join("run-u1.service");
+        let attendu = crate::modele::Objet::de(
+            "lancements",
+            &source_de(
+                &crate::modele::id::chemin(&f.to_string_lossy()),
+                "ExecStart=/tmp/.x/agent",
+            ),
+        );
+        assert_eq!(c.objet, attendu, "{}", c.message);
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        for i in 0..3 {
+            std::fs::write(d.join(format!("run-v{i}.service")), "[Service]\nExecStart=/tmp/.x/%n\n").unwrap();
+        }
+        let c = m.lancements();
+        assert!(
+            !c.message.contains("unités du dossier"),
+            "« % » jamais groupé : {}",
+            c.message
+        );
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (4 ligne(s))"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// LNX-PRS-002 : des centaines de lignes toutes différentes (rien à grouper) gardent un message et une clé
+    /// bornés : les fichiers au-delà des premiers sont comptés, la clé garde l'empreinte de toutes les sources.
+    #[test]
+    fn lignes_differentes_bornees() {
+        let m = Maison::nouvelle("session-differentes");
+        let d = m.racine.join("run/user/1000/systemd/transient");
+        std::fs::create_dir_all(&d).unwrap();
+        for i in 0..300 {
+            std::fs::write(
+                d.join(format!("run-w{i:03}.service")),
+                format!("[Service]\nExecStart=/tmp/.x/a{i}\n"),
+            )
+            .unwrap();
+        }
+        let c = m.lancements();
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (300 ligne(s))"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("et 294 autre(s), par fichier : "), "{}", c.message);
+        assert!(
+            c.message.contains(", et 274 autre(s) non nommé(s) (274 ligne(s))"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.len() < 8192, "{} octets", c.message.len());
+        let objet = c.objet.texte().unwrap_or_default().to_string();
+        assert!(objet.len() <= SOURCES_OCTETS + 128, "{} octets", objet.len());
+        let nommees = objet.matches(',').count();
+        assert!(nommees <= SOURCES_NOMMEES, "{objet}");
+        assert!(objet.contains(&format!(",reste:{}#", 300 - nommees)), "{objet}");
+        // La dernière ligne changée, hors des sources nommées : la clé change quand même.
+        std::fs::write(d.join("run-w299.service"), "[Service]\nExecStart=/tmp/.x/autre\n").unwrap();
+        assert_ne!(m.lancements().objet, c.objet);
+    }
+
     /// Deuxième vérification de la campagne E : le détail des variables se lit en quelques lignes (une par sorte de
     /// chose liée), et les lignes qui posent une variable hors de la liste sûre se montrent en clair.
     #[test]
@@ -28354,7 +28675,10 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
-        assert_eq!(reste_par_fichier(&suite), "~/a.lua (2), ~/b.lua (1), source borne");
+        assert_eq!(
+            reste_par_fichier(&suite, &std::collections::HashMap::new()),
+            "~/a.lua (2), ~/b.lua (1), source borne"
+        );
         let m = Maison::nouvelle("relecture2-groupe");
         let mut a = String::new();
         for i in 0..8 {
