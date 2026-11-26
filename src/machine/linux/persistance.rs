@@ -1515,8 +1515,8 @@ pub(super) fn persistance_dans(
             "session inconnue",
             message,
             trf!(
-                "session du compte non vérifiée ({raison}) : l'alerte ne se déclare pas normale tant qu'elle ne se lit pas",
-                "account session not verified ({raison}): the alert cannot be declared normal while it cannot be read"
+                "session du compte non vérifiée ({raison}) : l'alerte ne se déclare pas normale tant que ce dossier n'est pas connu",
+                "account session not verified ({raison}): the alert cannot be declared normal while that folder is not known"
             ),
         );
     }
@@ -2747,11 +2747,15 @@ impl Releveur {
                 .any(|d| dossier == self.sous(&session.join(d)))
     }
 
-    /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
-    /// corpus) ; le dossier personnel y est déjà.
     /// `temoins::lire_borne`, sauf en administrateur chez un autre compte (`compte_lu`) : ce qui est sous ses dossiers
     /// (personnel, XDG, session) se lit avec ses droits (`temoins::lire_borne_pour`), jamais un fichier fermé qu'un
     /// de ses liens désigne (R6-5).
+    ///
+    /// L7-4 (relecture du lot ecritures-suite) : ses dossiers viennent de ses variables (ZDOTDIR, XDG_*), qu'il pose
+    /// où il veut ; « ZDOTDIR=/ » faisait de chaque fichier du système un fichier « chez lui », refusé (à root, fermé
+    /// aux autres) puis réduit à une information. Un fichier dont tout le chemin est tenu par root seul
+    /// (`de_root_seul`, liens et leurs cibles compris) n'a rien du compte : root le lit comme avant. Une seule entrée du
+    /// chemin que le compte (ou un autre) a pu poser ou changer, et c'est lu avec ses droits.
     fn lire_borne(&self, f: &Path, max: u64) -> std::io::Result<temoins::Lu> {
         let chez_lui = self.compte_lu.filter(|_| {
             std::iter::once(&self.maison)
@@ -2767,10 +2771,13 @@ impl Releveur {
                         .map(|d| self.sous(d)),
                 )
                 .any(|d| f.starts_with(d))
+                && !de_root_seul(f)
         });
         temoins::lire_borne_pour(f, max, chez_lui)
     }
 
+    /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
+    /// corpus) ; le dossier personnel y est déjà.
     fn sous(&self, chemin: &Path) -> std::path::PathBuf {
         if self.racine == Path::new("/") || chemin.starts_with(&self.racine) {
             chemin.to_path_buf()
@@ -8195,7 +8202,7 @@ fn nom_d_unite_valide(nom: &str) -> bool {
 /// compte n'a pas de session ouverte : rien à lire) ou un vrai dossier à ce compte, sans lien (passe 5, S5-1 :
 /// sans XDG_RUNTIME_DIR, la session du compte n'était ni lue ni dite). /run/user est à root : le compte ne peut pas
 /// remplacer ce dossier entre ce jugement et la lecture. `Err` : pourquoi la session du compte n'est pas connue,
-/// dit non vérifié par `persistance_dans` quand aucune autre session n'est lue.
+/// toujours dit non vérifié par `persistance_dans`, XDG_RUNTIME_DIR posée ou non (R6-2).
 fn session_de_systemd_pour(
     racine: &Path,
     uid: Option<u32>,
@@ -8597,7 +8604,7 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
     let mut configs = vec![h.join(".config")];
     configs.extend(r.config.as_ref().map(|c| r.sous(c)));
     for c in configs {
-        if let Some(f) = raccourcis_de_dictee(&c)
+        if let Some(f) = raccourcis_de_dictee(r, &c, &mut parcours.illisibles)
             && !hypr.contains(&f)
             && !modules.contains(&f)
         {
@@ -8621,14 +8628,22 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
 /// Le fichier de raccourcis du moteur de dictée qu'Omarchy charge sous ce dossier de configuration, s'il existe :
 /// le moteur est la 1re ligne de omarchy/defaults/dictation, coupée comme « read -r » (blancs autour) et de la forme
 /// que omarchy-default-dictation accepte (`^[a-z0-9][a-z0-9-]*$`) ; une autre forme n'est pas chargée.
-fn raccourcis_de_dictee(config: &Path) -> Option<std::path::PathBuf> {
-    use std::io::Read as _;
-    let mut debut = Vec::new();
-    std::fs::File::open(config.join("omarchy/defaults/dictation"))
-        .ok()?
-        .take(4096)
-        .read_to_end(&mut debut)
-        .ok()?;
+///
+/// L7-5 (relecture du lot ecritures-suite) : lu par `Releveur::lire_borne` (jamais un tube ni un périphérique, droits
+/// du compte quand root lit chez lui), pas par un `File::open` nu : un `mkfifo` du compte figeait le fil de la règle,
+/// et un lien vers un périphérique le faisait ouvrir par root. Ce qui est là sans se lire va dans `illisibles` (dit non
+/// vérifié par `juger_parcours`), jamais tu.
+fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisible>) -> Option<std::path::PathBuf> {
+    let choix = config.join("omarchy/defaults/dictation");
+    let debut = match r.lire_borne(&choix, 4096) {
+        Ok(lu) => lu.octets,
+        Err(e) => {
+            if !absent_ou_impossible(&e) {
+                illisibles.push((choix, e));
+            }
+            return None;
+        }
+    };
     let texte = String::from_utf8_lossy(&debut);
     let moteur = texte.lines().next()?.trim_matches([' ', '\t']);
     let premier = moteur.chars().next()?;
@@ -8636,8 +8651,19 @@ fn raccourcis_de_dictee(config: &Path) -> Option<std::path::PathBuf> {
         && moteur
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !forme {
+        return None;
+    }
     let f = config.join(moteur).join("shortcuts.lua");
-    (forme && std::fs::metadata(&f).is_ok_and(|m| m.is_file())).then_some(f)
+    match std::fs::metadata(&f) {
+        Ok(m) => m.is_file().then_some(f),
+        Err(e) => {
+            if !absent_ou_impossible(&e) {
+                illisibles.push((f, e));
+            }
+            None
+        }
+    }
 }
 
 /// Dans les fichiers de configuration : un préchargement, ou une commande suspecte hors des lignes de démarrage
@@ -28892,6 +28918,53 @@ mod tests {
         );
     }
 
+    /// L7-4 (relecture du lot ecritures-suite) : un dossier « du compte » posé sur un dossier du système (ZDOTDIR=/)
+    /// ne fait pas lire avec ses droits un fichier dont tout le chemin est à root : root le lit comme avant (ici,
+    /// sans droits, le refus vient du système, pas de « fermé au compte »). Un lien posé dans son dossier personnel
+    /// vers ce même fichier reste lu avec ses droits. Sauté sans fichier fermé à root ou sous « unshare -r ».
+    #[test]
+    fn dossier_du_compte_sur_le_systeme_lu_par_root() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("l7-4-zdotdir-racine");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 || !uid_sans_traduction(&crate::socle::lire_texte("/proc/self/uid_map").unwrap_or_default()) {
+            return crate::essais::saute(
+                "dossier d'essai à root ou identités traduites (unshare -r) : rien à root seul",
+            );
+        }
+        let Some(ferme) = ["/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+            .into_iter()
+            .map(Path::new)
+            .find(|f| std::fs::metadata(f).is_ok_and(|v| v.is_file() && v.uid() == 0 && v.mode() & 0o004 == 0))
+        else {
+            return crate::essais::saute(
+                "aucun fichier à root fermé aux autres ici (/etc/shadow, /etc/gshadow, /etc/sudoers)",
+            );
+        };
+        if !de_root_seul(ferme) {
+            return crate::essais::saute("le chemin du fichier fermé n'est pas tenu par root seul ici");
+        }
+        let r = Releveur {
+            racine: std::path::PathBuf::from("/"),
+            maison: m.maison(),
+            zdot: Some(std::path::PathBuf::from("/")),
+            compte_lu: Some(compte),
+            ..Releveur::default()
+        };
+        let systeme = r.lire_borne(ferme, 10).err().map(|e| e.to_string());
+        assert!(
+            systeme.as_deref().is_none_or(|e| !e.contains("fermé au compte")),
+            "{systeme:?}"
+        );
+        let lien = m.maison().join(".zshrc");
+        std::os::unix::fs::symlink(ferme, &lien).unwrap();
+        let chez_lui = r.lire_borne(&lien, 10).err().map(|e| e.to_string());
+        assert!(
+            chez_lui.as_deref().is_some_and(|e| e.contains("fermé au compte")),
+            "{chez_lui:?}"
+        );
+    }
+
     /// R6-5 : `lire_borne_pour` lit avec les droits du compte donné : un fichier qui n'est pas à lui et fermé aux
     /// autres est refusé (même si le processus pourrait le lire) ; ouvert à tous, ou sans compte, il se lit.
     #[test]
@@ -30860,14 +30933,20 @@ mod tests {
         m.ecrire(".config/voxessai/shortcuts.lua", LANCE);
         leve_non_declarable(&m.lancements(), "dictée");
         assert_eq!(
-            raccourcis_de_dictee(&m.chemin(".config")),
+            raccourcis_de_dictee(&Releveur::default(), &m.chemin(".config"), &mut Vec::new()),
             Some(m.chemin(".config/voxessai/shortcuts.lua"))
         );
         m.ecrire(".config/omarchy/defaults/dictation", "Vox\n");
         m.ecrire(".config/Vox/shortcuts.lua", LANCE);
-        assert_eq!(raccourcis_de_dictee(&m.chemin(".config")), None);
+        assert_eq!(
+            raccourcis_de_dictee(&Releveur::default(), &m.chemin(".config"), &mut Vec::new()),
+            None
+        );
         m.ecrire(".config/omarchy/defaults/dictation", "-x\n");
-        assert_eq!(raccourcis_de_dictee(&m.chemin(".config")), None);
+        assert_eq!(
+            raccourcis_de_dictee(&Releveur::default(), &m.chemin(".config"), &mut Vec::new()),
+            None
+        );
         // H4 : une 1re ligne « # » sautée par Lua ; avec la marque d'ordre des octets aussi.
         for (i, texte) in [
             "#!/x --[[\nhl.exec_cmd(\"/tmp/.x/a\")\n-- ]]\n",
@@ -30887,6 +30966,36 @@ mod tests {
         let m = Maison::nouvelle("v3-h2-ailleurs");
         m.ecrire(".config/hypr/a.b.lua", "-- rien\n");
         assert_eq!(m.lancements().probleme, None);
+    }
+
+    /// L7-5 (relecture du lot ecritures-suite) : un tube nommé à la place du choix du moteur de dictée ne fige plus le
+    /// bilan (avant : `File::open` nu, qui attendait un écrivain), et ce qui ne s'y lit pas est dit non vérifié, jamais
+    /// tu. Fait dans un fil : sans la correction, il resterait figé, et l'essai échoue au bout du délai.
+    #[test]
+    fn dictee_illisible_dite_sans_figer() {
+        let m = Maison::nouvelle("l7-5-dictee-tube");
+        let p = m.chemin(".config/omarchy/defaults/dictation");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        if !std::process::Command::new("mkfifo")
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return crate::essais::saute("mkfifo absent");
+        }
+        let (envoi, recu) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = envoi.send(m.lancements());
+        });
+        let c = recu
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("le bilan finit malgré le tube nommé");
+        assert!(c.probleme.is_some(), "{}", c.message);
+        assert!(
+            c.message.contains("dictation") && c.message.contains("pas vérifié"),
+            "{}",
+            c.message
+        );
     }
 
     /// Un appel Lua de lancement n'est reconnu que si son argument est une chaîne littérale qui passe la liste
