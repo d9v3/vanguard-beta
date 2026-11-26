@@ -431,6 +431,9 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
         AUTRES_VERROUS
             .into_iter()
             .flat_map(|n| [n.to_string(), crate::socle::nom_systeme(n)])
+            // L'historique des bilans prend son verrou seul (`Verrou::prendre`), sans « historique.lock » : un tel
+            // fichier n'arrête rien et ne se dit pas (passe 4, P4-H3).
+            .filter(|n| *n != crate::socle::nom_systeme(crate::historique::VERROU))
             .filter(|n| crate::socle::verrou_remplace(dossier, n)),
     );
     let copies = crate::socle::cache::verrous_remplaces(dossier);
@@ -2004,6 +2007,10 @@ mod tests {
             assert!(c.message.contains(base) || c.message.contains(en), "{}", c.message);
             std::fs::remove_dir(d.join(verrou)).unwrap();
         }
+        // Passe 4, P4-H3 : « historique.lock » n'est le verrou de rien (l'historique ne prend que le sien).
+        std::fs::create_dir(d.join("historique.lock")).unwrap();
+        assert!(constat_verrou(&d).is_none());
+        std::fs::remove_dir(d.join("historique.lock")).unwrap();
         // Celui d'une copie de liste aussi (relecture de la campagne 5) ; un verrou ordinaire, lui, ne dit rien.
         std::fs::create_dir_all(d.join("kev")).unwrap();
         std::fs::write(d.join("kev/autre.json.verrou"), b"").unwrap();
