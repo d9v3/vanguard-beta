@@ -42,9 +42,15 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   l'alerte, et les lignes d'un dossier de session douteux (écrit avec « .. », ou ses services D-Bus) restent après
   celles de ~/.config. Le bilan d'avant, lu dans l'historique du compte, est échappé avant d'être montré (sa date et
   ses problèmes) : une séquence de terminal qu'il cacherait ne pilote plus le terminal de root. Avec XDG_RUNTIME_DIR
-  posée, un dossier de session du compte douteux est dit aussi ; un verrou de l'historique qui ne se sonde pas (NFS,
-  CIFS) est dit « non vérifié » au lieu d'être pris pour libre ; et root ne lit plus, par un lien posé chez le compte,
+  posée, un dossier de session du compte douteux est dit aussi ; et root ne lit plus, par un lien posé chez le compte,
   un fichier que ce compte ne pourrait pas lire lui-même : c'est dit non lu.
+- **Linux : un fichier piégé ne fige plus le bilan.** Le choix du moteur de dictée d'Omarchy se lit comme les autres
+  fichiers : un tube nommé posé à sa place ne fige plus la vérification des lancements, un lien vers un périphérique
+  n'est plus ouvert, et ce qui ne s'y lit pas est dit « non vérifié » au lieu d'être tu. En administrateur, un dossier
+  du compte posé sur un dossier du système (ZDOTDIR=/, par exemple) ne fait plus passer les fichiers de root pour les
+  siens : ils sont lus et jugés comme avant. Un verrou de l'historique qui ne se sonde pas (sur un dossier en réseau
+  comme NFS, par exemple) est dit « non vérifié » au lieu d'être pris pour libre, sans cacher un bilan d'avant qui
+  n'a pas été enregistré : les deux sont dits.
 
 ## 25 novembre 2026 : version 0.99.0
 

@@ -40,9 +40,15 @@ example, finds it, to rebuild it if needed.
   doubtful session folder (written with "..", or its D-Bus services) stay after those of ~/.config. The previous check,
   read from the account's history, is escaped before it is shown (its date and its problems): a terminal sequence
   hidden in it no longer drives root's terminal. With XDG_RUNTIME_DIR set, a doubtful session folder of the account is
-  reported too; a history lock that cannot be probed (NFS, CIFS) is reported as "not checked" instead of being taken
-  as free; and root no longer reads, through a link the account planted, a file that account could not read itself:
-  it is reported as not read.
+  reported too; and root no longer reads, through a link the account planted, a file that account could not read
+  itself: it is reported as not read.
+- **Linux: a booby-trapped file no longer freezes the check.** Omarchy's dictation engine choice is read like the other
+  files: a named pipe put in its place no longer freezes the check of what starts, a link to a device is no longer
+  opened, and what cannot be read there is reported as "not checked" instead of being silenced. As administrator, an
+  account folder set on a system folder (ZDOTDIR=/, for example) no longer makes root's files pass for the account's:
+  they are read and judged as before. A history lock that cannot be probed (on a network folder such as NFS, for
+  example) is reported as "not checked" instead of being taken as free, without hiding an earlier check that was not
+  saved: both are reported.
 
 ## November 25, 2026: version 0.99.0
 
