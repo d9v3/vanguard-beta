@@ -37,7 +37,12 @@ example, finds it, to rebuild it if needed.
   read-only mode (self-test, preview), the reason given is the right one. A shared lock held by another program is
   detected. "run-@….service.d" drop-ins of an instance unit prevent its grouping, every Unicode opening or closing
   punctuation mark is escaped, a unit name made of ":1:" keeps its name in the rest of the alert, and the lines of a
-  doubtful session folder (written with "..", or its D-Bus services) stay after those of ~/.config.
+  doubtful session folder (written with "..", or its D-Bus services) stay after those of ~/.config. The previous check,
+  read from the account's history, is escaped before it is shown (its date and its problems): a terminal sequence
+  hidden in it no longer drives root's terminal. With XDG_RUNTIME_DIR set, a doubtful session folder of the account is
+  reported too; a history lock that cannot be probed (NFS, CIFS) is reported as "not checked" instead of being taken
+  as free; and root no longer reads, through a link the account planted, a file that account could not read itself:
+  it is reported as not read.
 
 ## November 25, 2026: version 0.99.0
 

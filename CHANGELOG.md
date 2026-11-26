@@ -40,7 +40,11 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   repéré. Les compléments « run-@….service.d » d'une unité à instance empêchent son groupement, toute ponctuation
   d'ouverture ou de fermeture d'Unicode est échappée, un nom d'unité fait de « :1: » garde son nom dans le reste de
   l'alerte, et les lignes d'un dossier de session douteux (écrit avec « .. », ou ses services D-Bus) restent après
-  celles de ~/.config.
+  celles de ~/.config. Le bilan d'avant, lu dans l'historique du compte, est échappé avant d'être montré (sa date et
+  ses problèmes) : une séquence de terminal qu'il cacherait ne pilote plus le terminal de root. Avec XDG_RUNTIME_DIR
+  posée, un dossier de session du compte douteux est dit aussi ; un verrou de l'historique qui ne se sonde pas (NFS,
+  CIFS) est dit « non vérifié » au lieu d'être pris pour libre ; et root ne lit plus, par un lien posé chez le compte,
+  un fichier que ce compte ne pourrait pas lire lui-même : c'est dit non lu.
 
 ## 25 novembre 2026 : version 0.99.0
 
