@@ -2225,6 +2225,9 @@ struct Lancements {
     /// Les lignes de l'alerte (`suspects`) venues du dossier de la session : seules elles sont bornées dans le reste
     /// (`reste_par_fichier`) et montrées après les autres ; une ligne d'ailleurs est toujours nommée.
     de_session: std::collections::HashSet<String>,
+    /// Les lignes venues d'un dossier de session qui n'est pas sûr (`Releveur::de_la_session_douteuse`) : nommées
+    /// comme les autres, jamais bornées, mais montrées après celles d'ailleurs (lot ecritures-suite, P3-3).
+    en_dernier: std::collections::HashSet<String>,
     /// L'empreinte de la dernière unité regardée pour un groupe (`empreinte_d_unite`) : une fois par fichier.
     derniere_unite: Option<(std::path::PathBuf, Option<String>)>,
     /// Les compléments et les alias de tous les dossiers d'unités du compte (`complements_des_dossiers`), relevés une
@@ -2363,9 +2366,12 @@ fn ligne_commune(ligne: &str, trace: &str) -> String {
 /// `\u{…}` (passe 4, ROB-N3) : une fin de ligne coupée ne se fait jamais d'invisibles. Une ligne ne ferme jamais
 /// elle-même ses guillemets pour écrire un faux texte dans l'alerte (passe 3, robustesse N2).
 fn echappee(c: char) -> String {
-    const GUILLEMETS: [char; 24] = [
+    // Lot ecritures-suite, N4-4 : les sosies (simples typographiques, ornements, coins, primes, chevrons
+    // mathématiques, pleine largeur et formes verticales).
+    const GUILLEMETS: &[char] = &[
         '"', '«', '»', '“', '”', '„', '‟', '‹', '›', '‚', '‛', '″', '‶', '〝', '〞', '〟', '＂', '《', '》', '〈',
-        '〉', '「', '」', '…',
+        '〉', '「', '」', '…', '‘', '’', '❛', '❜', '❝', '❞', '❮', '❯', '⹂', '『', '』', '﹁', '﹂', '﹃', '﹄', '｢',
+        '｣', '＇', 'ʹ', 'ʺ', '˝', '״', '🙶', '🙷', '🙸', '⟨', '⟩',
     ];
     if c == '\\' || GUILLEMETS.contains(&c) {
         format!("\\{c}")
@@ -2645,6 +2651,17 @@ impl Releveur {
     /// reste (`Lancements::de_session`).
     fn de_la_session_sure(&self, f: &Path) -> bool {
         self.session_sure && self.de_la_session(f)
+    }
+
+    /// Un fichier d'un dossier de session hors du dossier personnel (XDG_RUNTIME_DIR ou `/run/user/<uid>`) quand
+    /// celui-ci n'est pas sûr (P3-3) : des leurres posés là ne passent jamais avant une ligne de ~/.config.
+    fn de_la_session_douteuse(&self, f: &Path) -> bool {
+        !self.session_sure
+            && [&self.session, &self.session_de_systemd]
+                .into_iter()
+                .flatten()
+                .map(|s| self.sous(s))
+                .any(|d| !d.starts_with(&self.maison) && f.starts_with(d.join("systemd")))
     }
 
     /// Une unité que systemd-run range dans le dossier de la session que systemd donne au compte : « run-… », posée
@@ -13188,6 +13205,8 @@ fn lever(
     let suspect = trf!("{ou} : {raison}", "{ou}: {raison}");
     if t.r.de_la_session_sure(f) {
         t.de_session.insert(suspect.clone());
+    } else if t.r.de_la_session_douteuse(f) {
+        t.en_dernier.insert(suspect.clone());
     }
     t.suspects.push(suspect);
 }
@@ -14631,6 +14650,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         hors,
         groupes,
         mut de_session,
+        en_dernier,
         ..
     } = t;
     // Chaque ligne d'un groupe de plus d'une compte pour une ligne signalée (le total et le reste par fichier disent
@@ -14651,7 +14671,9 @@ fn constat_des_lancements(t: Lancements) -> Constat {
     }
     // Les lignes d'ailleurs d'abord, celles du dossier de la session ensuite : des leurres posés dans la session ne
     // font jamais passer une vraie ligne de ~/.config hors des lignes montrées ni hors des noms du reste.
-    suspects.sort_by(|a, b| (de_session.contains(a), a).cmp(&(de_session.contains(b), b)));
+    // P3-3 : celles d'un dossier de session qui n'est pas sûr aussi (nommées, jamais bornées).
+    let apres = |l: &String| de_session.contains(l) || en_dernier.contains(l);
+    suspects.sort_by(|a, b| (apres(a), a).cmp(&(apres(b), b)));
     suspects.dedup();
     informations.sort();
     informations.dedup();
@@ -28382,6 +28404,26 @@ mod tests {
         for g in ['\u{201c}', '\u{201e}', '\u{2039}', '\u{203a}', '\u{ff02}', '\u{300a}'] {
             assert_eq!(echappee(g), format!("\\{g}"), "{g}");
         }
+        // N4-4 : les sosies hors de la première liste.
+        for g in [
+            '\u{2018}',
+            '\u{2019}',
+            '\u{275d}',
+            '\u{275e}',
+            '\u{276e}',
+            '\u{2e42}',
+            '\u{300e}',
+            '\u{fe41}',
+            '\u{ff62}',
+            '\u{ff07}',
+            '\u{2ba}',
+            '\u{2dd}',
+            '\u{5f4}',
+            '\u{1f676}',
+            '\u{27e8}',
+        ] {
+            assert_eq!(echappee(g), format!("\\{g}"), "{g}");
+        }
         // Une ligne entière qui imite une coupe : son « … » est échappé, la vraie coupe ne l'est jamais.
         let montree = ligne_commune("x\u{2026} (coupée, 3 caractères, groupe abcdefgh)", "zzzzzzzz");
         assert!(montree.starts_with("x\\\u{2026} (coupée"), "{montree}");
@@ -29104,6 +29146,40 @@ mod tests {
         let m = Maison::nouvelle("relecture-unites-sain");
         let c = m.lancements_avec(&[("XDG_DATA_DIRS", "/usr/share"), ("XDG_CONFIG_DIRS", "/etc/xdg")]);
         assert_eq!(c.probleme, None, "{}", c.message);
+    }
+
+    /// P3-3 (lot ecritures-suite) : XDG_RUNTIME_DIR ailleurs, la session n'est pas sûre ; des leurres posés dans les
+    /// dossiers de session ne passent jamais avant la vraie ligne de ~/.config, et chacun reste nommé.
+    #[test]
+    fn session_douteuse_apres_la_vraie_ligne() {
+        const AGENT: &str = "[Service]\nExecStart=%h/.x/agent\n";
+        let m = Maison::nouvelle("session-douteuse-ordre");
+        for f in [
+            "run/user/1000/systemd/user/a1.service",
+            "run/user/1000/systemd/user/a2.service",
+            "run/user/autre/systemd/user/a3.service",
+        ] {
+            let f = m.racine.join(f);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, AGENT).unwrap();
+        }
+        m.ecrire(".config/systemd/user/zz.service", AGENT);
+        let c = m.lancements_avec(&[("XDG_RUNTIME_DIR", "/run/user/autre")]);
+        leve_non_declarable(&c, "session douteuse");
+        let vraie = c
+            .message
+            .find("~/.config/systemd/user/zz.service:2")
+            .expect("vraie ligne nommée");
+        for leurre in [
+            "/run/user/1000/systemd/user/a1.service",
+            "/run/user/autre/systemd/user/a3.service",
+        ] {
+            let ou = c
+                .message
+                .find(leurre)
+                .unwrap_or_else(|| panic!("{leurre} nommé : {}", c.message));
+            assert!(vraie < ou, "{leurre} avant la vraie ligne : {}", c.message);
+        }
     }
 
     /// D-2 (relecture 0.94) : XDG_RUNTIME_DIR changé ne déplace pas le dossier de session de systemd
