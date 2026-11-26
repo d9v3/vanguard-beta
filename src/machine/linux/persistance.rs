@@ -1515,8 +1515,8 @@ pub(super) fn persistance_dans(
             "session inconnue",
             message,
             trf!(
-                "session du compte non vérifiée ({raison}) : l'alerte ne se déclare pas normale tant que ce dossier n'est pas connu",
-                "account session not verified ({raison}): the alert cannot be declared normal while that folder is not known"
+                "dossier de session du compte non vérifié ({raison}) : l'alerte ne se déclare pas normale tant que ce dossier n'est pas connu",
+                "account session folder not verified ({raison}): the alert cannot be declared normal while that folder is not known"
             ),
         );
     }
@@ -8626,17 +8626,24 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
 }
 
 /// Le fichier de raccourcis du moteur de dictée qu'Omarchy charge sous ce dossier de configuration, s'il existe :
-/// le moteur est la 1re ligne de omarchy/defaults/dictation, coupée comme « read -r » (blancs autour) et de la forme
-/// que omarchy-default-dictation accepte (`^[a-z0-9][a-z0-9-]*$`) ; une autre forme n'est pas chargée.
+/// le moteur est la 1re ligne de omarchy/defaults/dictation, lue comme « read -r » de omarchy-default-dictation
+/// (octets NUL retirés, puis blancs autour), et de la forme qu'il accepte (`^[a-z0-9][a-z0-9-]*$`) ; une autre forme
+/// en ASCII n'est pas chargée. Un « \r » final est retiré aussi (bash le garde et refuse le nom) : le côté sûr, ce
+/// fichier est jugé en trop plutôt qu'en moins.
 ///
 /// L7-5 (relecture du lot ecritures-suite) : lu par `Releveur::lire_borne` (jamais un tube ni un périphérique, droits
-/// du compte quand root lit chez lui), pas par un `File::open` nu : un `mkfifo` du compte figeait le fil de la règle,
-/// et un lien vers un périphérique le faisait ouvrir par root. Ce qui est là sans se lire va dans `illisibles` (dit non
-/// vérifié par `juger_parcours`), jamais tu.
+/// du compte quand root lit chez lui), pas par un `File::open` nu : un `mkfifo` du compte figeait le fil de la règle.
+/// Ce qui est là sans se lire va dans `illisibles` (dit non vérifié par `juger_parcours`), jamais tu.
+///
+/// P8-1, P8-2, P8-5 (relecture 8 du lot ecritures-suite) : une 1re ligne coupée par la borne (4096 blancs, puis le
+/// nom, que bash lit sans borne), un nom qui n'est pas en ASCII (le sens de `[a-z]` dépend alors de la langue de bash)
+/// ou des raccourcis qui ne sont ni un fichier ordinaire ni un dossier (un tube nommé, que Lua ouvre et lit) sont dits
+/// non vérifiés ; avant, ils rendaient « rien » en silence, et ces raccourcis n'étaient pas jugés. Un NUL est retiré
+/// comme bash le fait, au lieu de faire refuser le nom.
 fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisible>) -> Option<std::path::PathBuf> {
     let choix = config.join("omarchy/defaults/dictation");
-    let debut = match r.lire_borne(&choix, 4096) {
-        Ok(lu) => lu.octets,
+    let lu = match r.lire_borne(&choix, 4096) {
+        Ok(lu) => lu,
         Err(e) => {
             if !absent_ou_impossible(&e) {
                 illisibles.push((choix, e));
@@ -8644,19 +8651,65 @@ fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisi
             return None;
         }
     };
-    let texte = String::from_utf8_lossy(&debut);
-    let moteur = texte.lines().next()?.trim_matches([' ', '\t']);
-    let premier = moteur.chars().next()?;
-    let forme = (premier.is_ascii_lowercase() || premier.is_ascii_digit())
-        && moteur
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !forme {
+    let mut lignes = lu.octets.split(|&o| o == b'\n');
+    let premiere = lignes.next().unwrap_or_default();
+    let ligne = match lignes.next() {
+        Some(_) => premiere,
+        None if lu.entier => premiere,
+        None => {
+            illisibles.push((
+                choix,
+                std::io::Error::other(tr!(
+                    "1re ligne plus longue que 4096 octets (lue en entier par Omarchy)",
+                    "first line longer than 4096 bytes (read in full by Omarchy)"
+                )),
+            ));
+            return None;
+        }
+    };
+    let ligne: Vec<u8> = ligne.iter().copied().filter(|&o| o != 0).collect();
+    let ligne = ligne.strip_suffix(b"\r").unwrap_or(&ligne);
+    let mut moteur = ligne;
+    while let [b' ' | b'\t', reste @ ..] = moteur {
+        moteur = reste;
+    }
+    while let [reste @ .., b' ' | b'\t'] = moteur {
+        moteur = reste;
+    }
+    if !moteur.is_ascii() {
+        illisibles.push((
+            choix,
+            std::io::Error::other(tr!(
+                "nom de moteur hors ASCII (accepté ou non selon la langue de bash)",
+                "non-ASCII engine name (accepted or not depending on bash's locale)"
+            )),
+        ));
         return None;
     }
-    let f = config.join(moteur).join("shortcuts.lua");
+    let forme = moteur
+        .first()
+        .is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+        && moteur
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-');
+    if !forme {
+        // Vide, majuscule, « - » en tête, point, barre : omarchy-default-dictation le refuse, rien n'est chargé.
+        return None;
+    }
+    let f = config
+        .join(String::from_utf8_lossy(moteur).as_ref())
+        .join("shortcuts.lua");
     match std::fs::metadata(&f) {
-        Ok(m) => m.is_file().then_some(f),
+        Ok(m) if m.is_file() => Some(f),
+        // Un dossier s'ouvre en Lua, mais « dofile » n'y lit rien : rien n'est chargé.
+        Ok(m) if m.is_dir() => None,
+        Ok(_) => {
+            illisibles.push((
+                f,
+                std::io::Error::other(tr!("pas un fichier ordinaire", "not a regular file")),
+            ));
+            None
+        }
         Err(e) => {
             if !absent_ou_impossible(&e) {
                 illisibles.push((f, e));
@@ -30996,6 +31049,65 @@ mod tests {
             "{}",
             c.message
         );
+    }
+
+    /// P8-1, P8-2, P8-5 (relecture 8 du lot ecritures-suite) : le choix du moteur de dictée se lit comme bash le lit
+    /// (NUL retirés, blancs autour, ligne entière) ; ce que Vanguard ne lit pas comme lui est dit non vérifié, jamais
+    /// un « rien » qui sauterait le jugement des raccourcis.
+    #[test]
+    fn dictee_lue_comme_bash_ou_dite() {
+        let m = Maison::nouvelle("p8-dictee");
+        let config = m.chemin(".config");
+        let voulu = Some(m.chemin(".config/voxessai/shortcuts.lua"));
+        m.ecrire(".config/voxessai/shortcuts.lua", "-- rien\n");
+        let lire = || {
+            let mut illisibles = Vec::new();
+            let f = raccourcis_de_dictee(&Releveur::default(), &config, &mut illisibles);
+            (f, illisibles.len())
+        };
+        // P8-2 : bash retire les NUL, avant de retirer les blancs de tête.
+        for texte in ["vox\0essai\n", " \0 voxessai\0 \t\n", "voxessai"] {
+            m.ecrire(".config/omarchy/defaults/dictation", texte);
+            assert_eq!(lire(), (voulu.clone(), 0), "{texte:?}");
+        }
+        // Une 1re ligne courte suivie d'un long reste se lit.
+        m.ecrire(
+            ".config/omarchy/defaults/dictation",
+            &format!("voxessai\n{}", "x".repeat(9000)),
+        );
+        assert_eq!(lire(), (voulu.clone(), 0));
+        // P8-1 : 4096 blancs puis le nom, que bash lit sans borne : dit, et le bilan le lève.
+        m.ecrire(
+            ".config/omarchy/defaults/dictation",
+            &format!("{}voxessai\n", " ".repeat(4096)),
+        );
+        assert_eq!(lire(), (None, 1));
+        let c = m.lancements();
+        assert!(c.probleme.is_some(), "{}", c.message);
+        assert!(
+            c.message.contains("dictation") && c.message.contains("pas vérifié"),
+            "{}",
+            c.message
+        );
+        // Un nom hors ASCII : dit ; une forme ASCII que bash refuse : rien de chargé, rien à dire.
+        m.ecrire(".config/omarchy/defaults/dictation", "voxé\n");
+        assert_eq!(lire(), (None, 1));
+        m.ecrire(".config/omarchy/defaults/dictation", "   \n");
+        assert_eq!(lire(), (None, 0));
+        // P8-5 : des raccourcis qui sont un tube nommé (Lua l'ouvre et le lit) : dits ; un dossier n'est pas chargé.
+        m.ecrire(".config/omarchy/defaults/dictation", "voxessai\n");
+        std::fs::remove_file(m.chemin(".config/voxessai/shortcuts.lua")).unwrap();
+        std::fs::create_dir(m.chemin(".config/voxessai/shortcuts.lua")).unwrap();
+        assert_eq!(lire(), (None, 0));
+        std::fs::remove_dir(m.chemin(".config/voxessai/shortcuts.lua")).unwrap();
+        if !std::process::Command::new("mkfifo")
+            .arg(m.chemin(".config/voxessai/shortcuts.lua"))
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return crate::essais::saute("mkfifo absent");
+        }
+        assert_eq!(lire(), (None, 1));
     }
 
     /// Un appel Lua de lancement n'est reconnu que si son argument est une chaîne littérale qui passe la liste
