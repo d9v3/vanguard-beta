@@ -2392,15 +2392,31 @@ fn echappee(c: char) -> String {
     const GUILLEMETS: &[char] = &[
         '"', '«', '»', '“', '”', '„', '‟', '‹', '›', '‚', '‛', '″', '‶', '〝', '〞', '〟', '＂', '《', '》', '〈',
         '〉', '「', '」', '…', '‘', '’', '❛', '❜', '❝', '❞', '❮', '❯', '⹂', '『', '』', '﹁', '﹂', '﹃', '﹄', '｢',
-        '｣', '＇', 'ʹ', 'ʺ', '˝', '״', '🙶', '🙷', '🙸', '⟨', '⟩',
+        '｣', '＇', 'ʹ', 'ʺ', '˝', '״', '🙶', '🙷', '🙸', '⟨', '⟩', '\'', '≪', '≫', '⋯', '‥',
     ];
-    if c == '\\' || GUILLEMETS.contains(&c) {
+    if c == '\\' || GUILLEMETS.contains(&c) || ouvre_ou_ferme(c) {
         format!("\\{c}")
     } else if invisible(c) {
         format!("\\u{{{:04x}}}", u32::from(c))
     } else {
         c.to_string()
     }
+}
+
+/// Une ponctuation d'ouverture ou de fermeture d'Unicode hors ASCII (catégories Ps, Pe, Pi et Pf, table d'Unicode
+/// 16.0 tirée de `unicodedata`) : passe 5, S5-4, la liste des sosies de guillemets ne suffisait pas (« ≫ », « ⟫ »,
+/// « 〉 » en manquaient) ; toutes s'échappent, la liste ne garde que les sosies d'autres catégories.
+fn ouvre_ou_ferme(c: char) -> bool {
+    matches!(
+        u32::from(c),
+            0x00AB | 0x00BB | 0x0F3A..=0x0F3D | 0x169B..=0x169C | 0x2018..=0x201F | 0x2039..=0x203A
+            | 0x2045..=0x2046 | 0x207D..=0x207E | 0x208D..=0x208E | 0x2308..=0x230B | 0x2329..=0x232A
+            | 0x2768..=0x2775 | 0x27C5..=0x27C6 | 0x27E6..=0x27EF | 0x2983..=0x2998 | 0x29D8..=0x29DB
+            | 0x29FC..=0x29FD | 0x2E02..=0x2E05 | 0x2E09..=0x2E0A | 0x2E0C..=0x2E0D | 0x2E1C..=0x2E1D
+            | 0x2E20..=0x2E29 | 0x2E42 | 0x2E55..=0x2E5C | 0x3008..=0x3011 | 0x3014..=0x301B | 0x301D..=0x301F
+            | 0xFD3E..=0xFD3F | 0xFE17..=0xFE18 | 0xFE35..=0xFE44 | 0xFE47..=0xFE48 | 0xFE59..=0xFE5E
+            | 0xFF08..=0xFF09 | 0xFF3B | 0xFF3D | 0xFF5B | 0xFF5D | 0xFF5F..=0xFF60 | 0xFF62..=0xFF63
+    )
 }
 
 /// Un caractère qui se pose sur le précédent ou ne prend aucune place : ceux que `ui::largeur_car` compte à zéro,
@@ -2678,14 +2694,20 @@ impl Releveur {
     }
 
     /// Un fichier d'un dossier de session hors du dossier personnel (XDG_RUNTIME_DIR ou `/run/user/<uid>`) quand
-    /// celui-ci n'est pas sûr (P3-3) : des leurres posés là ne passent jamais avant une ligne de ~/.config.
+    /// celui-ci n'est pas sûr (P3-3) : des leurres posés là ne passent jamais avant une ligne de ~/.config. Passe 5
+    /// (S5-2) : ses unités (`systemd`) et ses services D-Bus (`dbus-1/services`, `calculer_dbus`) ; un dossier écrit
+    /// avec « .. » (« /home/alice/../../dev/shm ») n'est jamais pris pour le dossier personnel.
     fn de_la_session_douteuse(&self, f: &Path) -> bool {
         !self.session_sure
             && [&self.session, &self.session_de_systemd]
                 .into_iter()
                 .flatten()
                 .map(|s| self.sous(s))
-                .any(|d| !d.starts_with(&self.maison) && f.starts_with(d.join("systemd")))
+                .any(|d| {
+                    let chez_soi =
+                        d.starts_with(&self.maison) && !d.components().any(|m| m == std::path::Component::ParentDir);
+                    !chez_soi && (f.starts_with(d.join("systemd")) || f.starts_with(d.join("dbus-1/services")))
+                })
     }
 
     /// Une unité que systemd-run range dans le dossier de la session que systemd donne au compte : « run-… », posée
@@ -5425,7 +5447,7 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
 }
 
 /// Les noms des dossiers d'ajout qui s'appliquent à l'unité `nom` : « a-b.service.d », « a-.service.d »,
-/// « service.d », et pour une instance « a@.service.d ».
+/// « service.d », et pour une instance « a@.service.d » (et « a-@i.service.d », « a-@.service.d » pour « a-b@i »).
 fn ajouts_de(nom: &str) -> Vec<String> {
     let mut noms = vec![format!("{nom}.d")];
     if let Some((base, genre)) = nom.rsplit_once('.') {
@@ -5434,8 +5456,16 @@ fn ajouts_de(nom: &str) -> Vec<String> {
                 noms.push(format!("{p}.{genre}.d"));
             }
         }
-        if let Some((gabarit, _)) = base.split_once('@') {
+        if let Some((gabarit, instance)) = base.split_once('@') {
             noms.push(format!("{gabarit}@.{genre}.d"));
+            // Passe 5 (S5-1) : pour « run-x@i.service », systemd lit aussi « run-@i.service.d » et « run-@.service.d »
+            // (mesuré par la relecture avec `systemd-analyze --user verify`) : à chaque tiret du gabarit.
+            for (i, _) in gabarit.match_indices('-') {
+                if let Some(p) = gabarit.get(..=i) {
+                    noms.push(format!("{p}@{instance}.{genre}.d"));
+                    noms.push(format!("{p}@.{genre}.d"));
+                }
+            }
         }
         noms.push(format!("{genre}.d"));
     }
@@ -8022,8 +8052,10 @@ fn fichier_illisible(f: &Path) -> bool {
     }
 }
 
-/// L'identité du compte qui lit (celle de /proc/self) ; dans les essais, celle qu'ils choisissent (1000 sinon).
-#[cfg_attr(test, allow(clippy::unnecessary_wraps))]
+/// L'identité du compte qui lit (son euid, celle que juge `socle::ecriture_sure`) ; dans les essais, celle qu'ils
+/// choisissent (1000 sinon). Passe 5 (root S5-5) : plus le propriétaire de /proc/self, que le noyau donne à root quand
+/// le processus n'est pas « dumpable » (`Inaccessible::poser`).
+#[allow(clippy::unnecessary_wraps)]
 fn uid_du_compte() -> Option<u32> {
     #[cfg(test)]
     {
@@ -8031,8 +8063,7 @@ fn uid_du_compte() -> Option<u32> {
     }
     #[cfg(not(test))]
     {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+        Some(crate::socle::euid())
     }
 }
 
@@ -8088,8 +8119,10 @@ fn dossiers_ajoutes(r: &Releveur) -> Vec<std::path::PathBuf> {
 /// Un nom que systemd accepte pour une unité, jugé par ce qu'il permet (`unit_name_is_valid` de systemd) et non par
 /// ce qu'on craint (passe 4, N4-3) : moins de 256 octets, une sorte connue après le dernier point, et avant elle
 /// seulement des lettres et chiffres ASCII et « : - _ . \\ @ », sans « @ » en tête. Un fichier d'un autre nom n'est
-/// pas une unité que systemd-run a posée (systemd ne le charge pas) : il n'est jamais groupé, donc toujours nommé,
-/// et ses signes (« : », « ; », « , », parenthèses, sosies de guillemets) n'entrent jamais dans la ligne d'un groupe.
+/// pas une unité que systemd-run a posée (systemd ne le charge pas) : il n'est jamais groupé, et ses signes (« : »,
+/// « ; », « , », parenthèses, sosies de guillemets) n'entrent jamais dans la ligne d'un groupe. Il garde sa propre
+/// ligne : nommée, ou, dans le reste d'une session sûre au-delà des `RESTE_NOMMES` premiers fichiers, comptée avec
+/// son fichier, jamais tue (passe 5, S5-7 : « toujours nommé » promettait trop).
 fn nom_d_unite_valide(nom: &str) -> bool {
     const SORTES: [&str; 11] = [
         "service",
@@ -14788,7 +14821,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
             " ; et {} autre(s), par fichier : {}",
             "; and {} more, by file: {}",
             suite.iter().map(compte).fold(0usize, usize::saturating_add),
-            reste_par_fichier(&suite, &poids, &de_session)
+            reste_par_fichier(&suite, &poids, &de_session, &en_dernier)
         );
     }
     message.push('.');
@@ -14912,13 +14945,16 @@ fn constat_non_verifie(mut non_verifies: Vec<String>) -> Option<Constat> {
 /// Au plus autant de lignes signalées montrées en entier dans l'alerte des lancements ; les autres, par fichier.
 const LIGNES_MONTREES: usize = 6;
 
-/// Le fichier d'une ligne signalée (« ~/x.lua:12 : … » → « ~/x.lua ») ; `None` sans numéro de ligne.
+/// Le fichier d'une ligne signalée (« ~/x.lua:12 : … », « ~/x.lua:12: … », « ~/x.lua:12 nomme … » → « ~/x.lua ») ;
+/// `None` sans numéro de ligne. Le numéro est suivi d'une espace ou de « : » puis d'une espace (passe 5, S5-6 : un nom
+/// d'unité valide comme « a:1:x.service » garde ses « :1: », qu'un « : » seul faisait prendre pour le numéro).
 fn fichier_signale(ligne: &str) -> Option<&str> {
     let octets = ligne.as_bytes();
     ligne.match_indices(':').find_map(|(i, _)| {
         let apres = octets.get(i.saturating_add(1)..)?;
         let chiffres = apres.iter().take_while(|c| c.is_ascii_digit()).count();
-        (chiffres > 0 && matches!(apres.get(chiffres), Some(b' ' | b':')))
+        let suite = apres.get(chiffres..).unwrap_or_default();
+        (chiffres > 0 && (suite.starts_with(b" ") || suite.starts_with(b": ")))
             .then(|| ligne.get(..i))
             .flatten()
     })
@@ -14929,19 +14965,25 @@ fn fichier_signale(ligne: &str) -> Option<&str> {
 /// (deuxième vérification : « et 56 autre(s) » cachait la 63e). Une ligne d'un groupe d'unités (`poids` : son
 /// nombre d'unités) se dit à part, avec ce nombre. Chaque fichier d'ailleurs que le dossier de la session est
 /// toujours nommé, d'abord ; ceux de la session (`session`) ensuite, au plus `RESTE_NOMMES` morceaux (LNX-PRS-002 :
-/// des milliers d'unités nommées une par une) ; les autres sont comptés, fichiers et lignes, jamais tus.
+/// des milliers d'unités nommées une par une) ; les autres sont comptés, fichiers et lignes, jamais tus. Passe 5
+/// (S5-2) : ceux d'un dossier de session qui n'est pas sûr (`dernier`, P3-3) sont nommés après tous les autres
+/// fichiers d'ailleurs, jamais bornés, comme dans les lignes montrées.
 fn reste_par_fichier(
     suite: &[String],
     poids: &std::collections::HashMap<String, usize>,
     session: &std::collections::HashSet<String>,
+    dernier: &std::collections::HashSet<String>,
 ) -> String {
     let mut fichiers: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     let mut fichiers_session: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     let mut groupes: Vec<(String, usize)> = Vec::new();
     let mut seules: Vec<&str> = Vec::new();
     let mut seules_session: Vec<&str> = Vec::new();
+    let mut fichiers_dernier: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut seules_dernier: Vec<&str> = Vec::new();
     for l in suite {
         let de_session = session.contains(l);
+        let douteuse = !de_session && dernier.contains(l);
         match (fichier_signale(l), poids.get(l)) {
             (Some(f), Some(&n)) => groupes.push((
                 trf!(
@@ -14954,17 +14996,22 @@ fn reste_par_fichier(
             (Some(f), None) => {
                 let n = if de_session {
                     fichiers_session.entry(f).or_insert(0)
+                } else if douteuse {
+                    fichiers_dernier.entry(f).or_insert(0)
                 } else {
                     fichiers.entry(f).or_insert(0)
                 };
                 *n = n.saturating_add(1);
             }
             (None, _) if de_session => seules_session.push(l),
+            (None, _) if douteuse => seules_dernier.push(l),
             (None, _) => seules.push(l),
         }
     }
     let mut nommes: Vec<String> = fichiers.into_iter().map(|(f, n)| format!("{f} ({n})")).collect();
     nommes.extend(seules.into_iter().map(str::to_string));
+    nommes.extend(fichiers_dernier.into_iter().map(|(f, n)| format!("{f} ({n})")));
+    nommes.extend(seules_dernier.into_iter().map(str::to_string));
     // Chaque morceau de la session et son nombre de lignes signalées.
     let mut bornes: Vec<(String, usize)> = fichiers_session
         .into_iter()
@@ -21548,6 +21595,17 @@ mod tests {
             ["a-.service.d", "a-b-.service.d", "a-b-c.service.d", "service.d"]
         );
         assert_eq!(ajouts_de("x@1.service"), ["service.d", "x@.service.d", "x@1.service.d"]);
+        assert_eq!(
+            ajouts_de("run-x@i.service"),
+            [
+                "run-.service.d",
+                "run-@.service.d",
+                "run-@i.service.d",
+                "run-x@.service.d",
+                "run-x@i.service.d",
+                "service.d"
+            ]
+        );
         assert!(directive_refusee("[Service]\nEnvironment=LANG=C TZ=UTC\n").is_none());
         assert!(directive_refusee("# EnvironmentFile=/x\n").is_none());
         assert_eq!(
@@ -28490,6 +28548,15 @@ mod tests {
         ] {
             assert_eq!(echappee(g), format!("\\{g}"), "{g}");
         }
+        // Passe 5, S5-4 : toute ponctuation d'ouverture ou de fermeture (Ps, Pe, Pi, Pf), et les sosies d'ailleurs.
+        for g in [
+            '\u{226a}', '\u{226b}', '\u{27ea}', '\u{27eb}', '\u{2329}', '\u{232a}', '\u{276c}', '\u{276d}', '\u{22ef}',
+            '\u{2025}', '\'', '\u{2e02}', '\u{2e03}', '\u{2983}', '\u{fd3e}', '\u{2e55}',
+        ] {
+            assert_eq!(echappee(g), format!("\\{g}"), "{g}");
+        }
+        assert_eq!(echappee('('), "(");
+        assert_eq!(echappee('\u{2014}'), "\u{2014}");
         // Une ligne entière qui imite une coupe : son « … » est échappé, la vraie coupe ne l'est jamais.
         let montree = ligne_commune("x\u{2026} (coupée, 3 caractères, groupe abcdefgh)", "zzzzzzzz");
         assert!(montree.starts_with("x\\\u{2026} (coupée"), "{montree}");
@@ -29319,6 +29386,38 @@ mod tests {
         }
     }
 
+    /// Passe 5 (S5-2) : un XDG_RUNTIME_DIR écrit avec « .. » depuis le dossier personnel n'y est pas pris, et les
+    /// services D-Bus d'une session douteuse passent eux aussi après la vraie ligne de ~/.config.
+    #[test]
+    fn session_douteuse_avec_parent_ou_dbus_apres_la_vraie_ligne() {
+        const AGENT: &str = "[Service]\nExecStart=%h/.x/agent\n";
+        let m = Maison::nouvelle("session-douteuse-parent");
+        let f = m.racine.join("run/user/autre/systemd/user/a3.service");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, AGENT).unwrap();
+        let d = m.racine.join("run/user/autre/dbus-1/services/org.x.Leurre.service");
+        std::fs::create_dir_all(d.parent().unwrap()).unwrap();
+        std::fs::write(&d, "[D-BUS Service]\nName=org.x.Leurre\nExec=/tmp/.x/leurre\n").unwrap();
+        m.ecrire(".config/systemd/user/zz.service", AGENT);
+        for runtime in [
+            format!("{}/../../run/user/autre", m.maison().display()),
+            "/run/user/autre".to_string(),
+        ] {
+            let c = m.lancements_avec(&[("XDG_RUNTIME_DIR", &runtime)]);
+            let vraie = c
+                .message
+                .find("~/.config/systemd/user/zz.service:2")
+                .unwrap_or_else(|| panic!("vraie ligne nommée : {}", c.message));
+            for leurre in ["a3.service", "org.x.Leurre.service"] {
+                let ou = c
+                    .message
+                    .find(leurre)
+                    .unwrap_or_else(|| panic!("{leurre} nommé ({runtime}) : {}", c.message));
+                assert!(vraie < ou, "{leurre} avant la vraie ligne ({runtime}) : {}", c.message);
+            }
+        }
+    }
+
     /// D-2 (relecture 0.94) : XDG_RUNTIME_DIR changé ne déplace pas le dossier de session de systemd
     /// (`/run/user/<uid>`) en fin de liste : l'ordre est celui de la vraie session, chaque dossier de la variable juste
     /// après celui de systemd ; `/run/user/<uid>/systemd/user` passe donc toujours avant /usr/lib/systemd/user.
@@ -29940,6 +30039,11 @@ mod tests {
         use std::fmt::Write as _;
         assert_eq!(fichier_signale("~/a.lua:12 : hl.exec_cmd(…)"), Some("~/a.lua"));
         assert_eq!(fichier_signale("~/a:b.conf:3 : exec-once = x"), Some("~/a:b.conf"));
+        // Passe 5 (S5-6) : un nom d'unité valide fait de « :chiffres: ».
+        let u = "~/.config/systemd/user/a:1:x.service";
+        assert_eq!(fichier_signale(&format!("{u}:2 : ExecStart=/bin/x")), Some(u));
+        assert_eq!(fichier_signale(&format!("{u}:2: ExecStart=/bin/x")), Some(u));
+        assert_eq!(fichier_signale("~/a.lua:12 nomme LD_PRELOAD"), Some("~/a.lua"));
         assert_eq!(fichier_signale("~/.config/hypr est un lien vers ~/z"), None);
         let suite: Vec<String> = ["~/b.lua:1 : x", "~/a.lua:2 : y", "~/a.lua:3 : z", "source borne"]
             .into_iter()
@@ -29949,9 +30053,23 @@ mod tests {
             reste_par_fichier(
                 &suite,
                 &std::collections::HashMap::new(),
+                &std::collections::HashSet::new(),
                 &std::collections::HashSet::new()
             ),
             "~/a.lua (2), ~/b.lua (1), source borne"
+        );
+        // Passe 5 (S5-2) : les lignes d'un dossier de session douteux, triées « /run/… » avant « ~ », viennent après.
+        let leurre = "/run/user/1000/systemd/user/run-a.service:3 : ExecStart=/bin/a".to_string();
+        let mut suite2 = suite.clone();
+        suite2.insert(0, leurre.clone());
+        assert_eq!(
+            reste_par_fichier(
+                &suite2,
+                &std::collections::HashMap::new(),
+                &std::collections::HashSet::new(),
+                &std::collections::HashSet::from([leurre])
+            ),
+            "~/a.lua (2), ~/b.lua (1), source borne, /run/user/1000/systemd/user/run-a.service (1)"
         );
         let m = Maison::nouvelle("relecture2-groupe");
         let mut a = String::new();

@@ -27,9 +27,17 @@ example, finds it, to rebuild it if needed.
   (letters, digits and ": - _ . \ @", a known kind such as ".service") are grouped; a unit link that cannot be
   resolved (loop, permissions) stops all grouping instead of being skipped silently. As administrator in another
   account, root's session folder is no longer taken for the account's, and that account's history is not written: this
-  is reported. When a check could not be saved, the next check says why; a history lock held right now by another
-  Vanguard is reported in the present tense. More look-alike quotation marks are escaped, and when the session folder
-  is not trusted, its lines come after those of ~/.config.
+  is reported. When a check could not be saved for lack of the lock, the next check in the same window says why; a
+  history lock held right now by another Vanguard is reported in the present tense. More look-alike quotation marks are
+  escaped, and when the session folder is not trusted, its lines come after those of ~/.config.
+- **Linux: what is not checked as administrator is reported.** As administrator in an account's folder, without
+  XDG_RUNTIME_DIR, the account's session folder is read if it really is its own; otherwise its units are reported as
+  "not checked" instead of being skipped silently. The check itself says it is not saved to that account's history,
+  with no wait or alert about a lock that will not be used, and it is still compared with the previous check; in
+  read-only mode (self-test, preview), the reason given is the right one. A shared lock held by another program is
+  detected. "run-@….service.d" drop-ins of an instance unit prevent its grouping, every Unicode opening or closing
+  punctuation mark is escaped, a unit name made of ":1:" keeps its name in the rest of the alert, and the lines of a
+  doubtful session folder (written with "..", or its D-Bus services) stay after those of ~/.config.
 
 ## November 25, 2026: version 0.99.0
 

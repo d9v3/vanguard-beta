@@ -28,9 +28,19 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   les règles de systemd (lettres, chiffres et « : - _ . \ @ », une sorte connue comme « .service ») ; un lien d'unité
   qui ne se résout pas (boucle, droits) empêche tout groupement au lieu d'être passé en silence. En administrateur
   chez un autre compte, le dossier de session de root n'est plus pris pour celui du compte, et l'historique de ce
-  compte n'est pas écrit : c'est dit. Quand un bilan n'a pas pu s'enregistrer, le bilan suivant dit pourquoi ; un
-  verrou de l'historique gardé en ce moment par un autre Vanguard est dit au présent. D'autres sosies de guillemets
-  sont échappés, et quand le dossier de session n'est pas sûr, ses lignes viennent après celles de ~/.config.
+  compte n'est pas écrit : c'est dit. Quand un bilan n'a pas pu s'enregistrer faute de verrou, le bilan suivant de la
+  même fenêtre dit pourquoi ; un verrou de l'historique gardé en ce moment par un autre Vanguard est dit au présent.
+  D'autres sosies de guillemets sont échappés, et quand le dossier de session n'est pas sûr, ses lignes viennent après
+  celles de ~/.config.
+- **Linux : ce qui n'est pas vérifié en administrateur est dit.** En administrateur dans le dossier d'un compte, sans
+  XDG_RUNTIME_DIR, le dossier de session du compte est lu s'il est bien le sien ; sinon, ses unités sont dites « non
+  vérifiées » au lieu d'être sautées en silence. Le bilan dit lui-même qu'il n'est pas enregistré dans l'historique de
+  ce compte, sans attente ni alerte sur un verrou qui ne servira pas, et il se compare toujours au bilan précédent ; en
+  lecture seule (autotest, aperçu), la raison dite est la bonne. Un verrou partagé gardé par un autre programme est
+  repéré. Les compléments « run-@….service.d » d'une unité à instance empêchent son groupement, toute ponctuation
+  d'ouverture ou de fermeture d'Unicode est échappée, un nom d'unité fait de « :1: » garde son nom dans le reste de
+  l'alerte, et les lignes d'un dossier de session douteux (écrit avec « .. », ou ses services D-Bus) restent après
+  celles de ~/.config.
 
 ## 25 novembre 2026 : version 0.99.0
 
