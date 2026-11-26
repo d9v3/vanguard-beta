@@ -281,8 +281,13 @@ fn lire() -> Result<Vec<Bilan>, String> {
 /// Celui d'un fichier donné : les tests ont chacun le leur, sans quoi l'un réécrirait celui qu'un autre lit (le menu,
 /// le rapport ; sous Windows, un fichier ouvert ne se remplace pas).
 fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
+    lire_de_borne(chemin, HISTORIQUE_MAX)
+}
+
+/// `lire_de`, borné à `max` octets (`HISTORIQUE_MAX` hors des essais).
+fn lire_de_borne(chemin: &std::path::Path, max: u64) -> Result<Vec<Bilan>, String> {
     // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien.
-    match crate::socle::lire_texte_ordinaire(chemin, HISTORIQUE_MAX) {
+    match crate::socle::lire_texte_ordinaire(chemin, max) {
         Ok(t) => serde_json::from_str(t.trim_start_matches('\u{feff}')).map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e.to_string()),
@@ -331,26 +336,37 @@ pub fn enregistrer_complet(
     enregistrer_dans(&fichier(), bilan(audit, reseau, audit_reseau))
 }
 
-pub(crate) fn enregistrer_dans(chemin: &std::path::Path, mut nouveau: Bilan) -> (Option<Bilan>, Bilan) {
-    let mut tous = match lire_de(chemin) {
+pub(crate) fn enregistrer_dans(chemin: &std::path::Path, nouveau: Bilan) -> (Option<Bilan>, Bilan) {
+    enregistrer_dans_borne(chemin, nouveau, HISTORIQUE_MAX)
+}
+
+/// `enregistrer_dans`, l'historique borné à `max` octets : la borne même du lecteur (`lire_de_borne`), pour que
+/// l'écrivain ne pose jamais un fichier que le lecteur refuse. Les essais la prennent petite.
+fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64) -> (Option<Bilan>, Bilan) {
+    let mut tous = match lire_de_borne(chemin, max) {
         Ok(tous) => tous,
-        Err(e) => {
-            // Jamais écraser un historique qu'on ne sait pas relire : il est mis de côté, intact, avant le nouveau.
-            let copie = chemin.with_extension(format!(
-                "illisible-{}.json",
-                chrono::Local::now().format("%Y%m%d-%H%M%S")
-            ));
-            // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero ne se recopie pas.
-            if let Ok(o) = crate::socle::lire_ordinaire(chemin, HISTORIQUE_MAX) {
-                let _ = crate::socle::ecrire_atomique(&copie, o);
+        Err(e) => match mettre_de_cote(chemin) {
+            // Jamais écraser un historique qu'on ne sait pas relire : il est mis de côté, intact et sans être relu
+            // (il peut être trop gros pour l'être), avant le nouveau. « Copie gardée » seulement quand c'est fait.
+            Ok(copie) => {
+                tre!(
+                    "Attention : historique des bilans illisible ({e}). Copie gardée : {}",
+                    "Warning: check history unreadable ({e}). Copy kept: {}",
+                    crate::ui::chemin_affichable(&copie)
+                );
+                Vec::new()
             }
-            tre!(
-                "Attention : historique des bilans illisible ({e}). Copie gardée : {}",
-                "Warning: check history unreadable ({e}). Copy kept: {}",
-                copie.display()
-            );
-            Vec::new()
-        }
+            // Pas mis de côté : l'historique reste tel quel, ce bilan n'y est pas ajouté ; il est rendu quand même.
+            Err(raison) => {
+                tre!(
+                    "Attention : historique des bilans illisible ({e}), et il n'a pas pu être mis de côté ({raison}) : il est laissé tel quel et ce bilan n'y est pas enregistré.",
+                    "Warning: check history unreadable ({e}), and it could not be set aside ({raison}): it is left as is and this check is not saved to it."
+                );
+                nouveau.empreinte = Some(empreinte_de(&nouveau));
+                nouveau.empreinte_v2 = Some(empreinte_v2_de(&nouveau));
+                return (None, nouveau);
+            }
+        },
     };
     let precedent = tous.last().cloned();
     nouveau.precedent = precedent.as_ref().and_then(|p| p.empreinte.clone());
@@ -360,16 +376,128 @@ pub(crate) fn enregistrer_dans(chemin: &std::path::Path, mut nouveau: Bilan) -> 
     tous.push(nouveau.clone());
     let surplus = tous.len().saturating_sub(GARDES);
     tous.drain(..surplus);
-    // D'un bloc : une coupure pendant l'écriture laisse l'ancien historique ou le nouveau, jamais un fichier tronqué.
-    if let Ok(texte) = serde_json::to_string(&tous)
-        && let Err(e) = crate::socle::ecrire_atomique(chemin, &texte)
-    {
-        tre!(
-            "Attention : bilan non enregistré dans l'historique ({e}).",
-            "Warning: check not saved to the history ({e})."
-        );
+    match texte_borne(&mut tous, max) {
+        Ok((texte, retires)) => {
+            if retires > 0 {
+                tre!(
+                    "Attention : historique des bilans plus gros que {} Mio : {retires} bilan(s) parmi les plus anciens retiré(s) pour qu'il reste lisible.",
+                    "Warning: check history larger than {} MiB: {retires} of the oldest check(s) removed so that it stays readable.",
+                    max >> 20
+                );
+            }
+            // D'un bloc : une coupure pendant l'écriture laisse l'ancien historique ou le nouveau, jamais un fichier
+            // tronqué.
+            if let Err(e) = crate::socle::ecrire_atomique(chemin, &texte) {
+                tre!(
+                    "Attention : bilan non enregistré dans l'historique ({e}).",
+                    "Warning: check not saved to the history ({e})."
+                );
+            }
+        }
+        Err(()) => {
+            tre!(
+                "Attention : ce bilan seul dépasse {} Mio, la taille que l'historique peut relire : il n'y est pas enregistré, l'historique reste tel quel.",
+                "Warning: this check alone exceeds {} MiB, the size the history can read back: it is not saved to it, the history is left as is.",
+                max >> 20
+            );
+        }
     }
     (precedent, nouveau)
+}
+
+/// Le texte de l'historique `tous`, au plus `max` octets : les plus vieux bilans retirés jusqu'à passer, comme la
+/// rotation (`GARDES`) : le premier bilan gardé peut pointer vers un bilan retiré, la chaîne tient
+/// (`verifier_chaine`). Rend le texte et le nombre de bilans retirés ; `Err` si le dernier seul dépasse, ou si un
+/// bilan ne s'écrit pas : rien à écrire.
+fn texte_borne(tous: &mut Vec<Bilan>, max: u64) -> Result<(String, usize), ()> {
+    // Chaque bilan écrit une fois : « [a,b,c] » fait 2 octets, plus chaque bilan, plus une virgule entre deux.
+    let tailles: Vec<u64> = tous
+        .iter()
+        .map(|b| serde_json::to_string(b).map(|t| u64::try_from(t.len()).unwrap_or(u64::MAX)))
+        .collect::<Result<_, _>>()
+        .map_err(|_| ())?;
+    let mut total = tailles
+        .iter()
+        .fold(2u64, |t, n| t.saturating_add(*n).saturating_add(1))
+        .saturating_sub(1);
+    let mut retires = 0usize;
+    for n in &tailles {
+        if total <= max || retires.saturating_add(1) >= tailles.len() {
+            break;
+        }
+        total = total.saturating_sub(n.saturating_add(1));
+        retires = retires.saturating_add(1);
+    }
+    tous.drain(..retires);
+    let texte = serde_json::to_string(&tous).map_err(|_| ())?;
+    if u64::try_from(texte.len()).unwrap_or(u64::MAX) > max {
+        return Err(());
+    }
+    Ok((texte, retires))
+}
+
+/// Met de côté l'historique illisible `chemin` sans le relire : renommé sous un nom neuf
+/// (« historique.illisible-<date>-<hasard>.json »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
+/// un lien n'est jamais suivi, un tube ou un dossier n'est pas déplacé. Rend le nom de la copie, qui existe et est le
+/// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer, et l'historique reste à sa place.
+fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, String> {
+    let avant = std::fs::symlink_metadata(chemin).map_err(|e| e.to_string())?;
+    if !avant.file_type().is_file() {
+        return Err(tr!("ce n'est pas un simple fichier", "it is not a plain file").to_string());
+    }
+    let mut sel = [0u8; 8];
+    getrandom::fill(&mut sel).map_err(|e| e.to_string())?;
+    let copie = chemin.with_extension(format!(
+        "illisible-{}-{:016x}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        u64::from_le_bytes(sel)
+    ));
+    // Un second nom d'abord (link ne suit pas de lien et ne remplace rien), puis l'ancien nom retiré : un renommage
+    // qui ne remplace jamais. Sans liens durs (FAT, certains partages), un renommage simple, le nom neuf vérifié
+    // libre juste avant.
+    match std::fs::hard_link(chemin, &copie) {
+        Ok(()) => {
+            meme_fichier(&avant, &copie)?;
+            if let Err(e) = std::fs::remove_file(chemin) {
+                // Le second nom est le nôtre (vérifié) : retiré, l'historique reste seul à sa place.
+                let _ = std::fs::remove_file(&copie);
+                return Err(e.to_string());
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e.to_string()),
+        Err(_) => {
+            match std::fs::symlink_metadata(&copie) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(_) => return Err(tr!("nom de copie déjà pris", "copy name already taken").to_string()),
+                Err(e) => return Err(e.to_string()),
+            }
+            std::fs::rename(chemin, &copie).map_err(|e| e.to_string())?;
+            meme_fichier(&avant, &copie)?;
+        }
+    }
+    Ok(copie)
+}
+
+/// La copie `copie` est un simple fichier, et sous Unix le fichier regardé `avant` (même appareil, même numéro) :
+/// jamais « Copie gardée » pour un nom qui ne la porte pas.
+fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> Result<(), String> {
+    let apres = std::fs::symlink_metadata(copie).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    let meme = {
+        use std::os::unix::fs::MetadataExt as _;
+        apres.dev() == avant.dev() && apres.ino() == avant.ino()
+    };
+    #[cfg(not(unix))]
+    let meme = apres.len() == avant.len();
+    if apres.file_type().is_file() && meme {
+        Ok(())
+    } else {
+        Err(tr!(
+            "la copie n'est pas le fichier d'avant",
+            "the copy is not the previous file"
+        )
+        .to_string())
+    }
 }
 
 /// Un problème sans ses nombres (« 3 mises à jour » et « 4 mises à jour » sont le même problème).
@@ -626,7 +754,124 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("historique.illisible-"))
             .count();
         assert!(copies >= 1, "l'historique illisible n'a pas été gardé");
+        assert_eq!(
+            std::fs::read_to_string(super::tests::copies(&dossier)[0].as_path()).unwrap(),
+            "[{\"date\":\"2026-10-17 12:00\",\"machine\":8"
+        );
         assert_eq!(lire_de(&chemin).map(|t| t.len()), Ok(1));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Un dossier d'essai neuf.
+    fn dossier_d_essai(nom: &str) -> PathBuf {
+        let dossier = crate::essais::temporaire().join(format!("vanguard-{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        dossier
+    }
+
+    /// Les copies mises de côté du dossier.
+    fn copies(dossier: &std::path::Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dossier)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("historique.illisible-"))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    /// Lot des écritures (point B) : l'écrivain ne pose jamais un fichier que le lecteur refuse. Des bilans gros
+    /// dépassaient HISTORIQUE_MAX vers le 156e : chaque bilan suivant trouvait l'historique illisible. Les plus vieux
+    /// partent, le dernier reste, la chaîne tient.
+    #[test]
+    fn historique_jamais_plus_gros_que_ce_qui_se_relit() {
+        let dossier = dossier_d_essai("historique-borne");
+        let chemin = dossier.join("historique.json");
+        let max = 8 * 1024;
+        let gros = "x".repeat(900);
+        for i in 0..40u32 {
+            let mut nouveau = b(i, &[]);
+            nouveau.problemes = vec![format!("Persistance : {i} {gros}")];
+            let (_, rendu) = enregistrer_dans_borne(&chemin, nouveau, max);
+            let tous = lire_de_borne(&chemin, max).expect("l'historique écrit se relit");
+            assert!(std::fs::metadata(&chemin).unwrap().len() <= max);
+            assert_eq!(tous.last().map(|b| b.empreinte.clone()), Some(rendu.empreinte.clone()));
+            assert!(matches!(verifier_chaine(&tous), Chaine::Intacte { .. }), "{i}");
+        }
+        let tous = lire_de_borne(&chemin, max).unwrap();
+        assert!(tous.len() > 1 && tous.len() < 40, "{}", tous.len());
+        assert_eq!(tous.last().unwrap().machine, Some(39));
+        assert!(copies(&dossier).is_empty(), "aucun historique n'a été jugé illisible");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Point B : un bilan seul plus gros que la borne n'est pas écrit (le fichier serait illisible) ; l'historique
+    /// reste tel quel, le bilan est rendu.
+    #[test]
+    fn bilan_seul_trop_gros_pas_ecrit() {
+        let dossier = dossier_d_essai("historique-seul-trop-gros");
+        let chemin = dossier.join("historique.json");
+        let max = 4 * 1024;
+        enregistrer_dans_borne(&chemin, b(70, &["Pare-feu : inactif."]), max);
+        let avant = std::fs::read(&chemin).unwrap();
+        let mut gros = b(71, &[]);
+        gros.problemes = vec!["y".repeat(5000)];
+        let (precedent, rendu) = enregistrer_dans_borne(&chemin, gros, max);
+        assert_eq!(precedent.map(|p| p.machine), Some(Some(70)));
+        assert_eq!(rendu.machine, Some(71));
+        assert_eq!(std::fs::read(&chemin).unwrap(), avant);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Point C : un historique trop gros pour être relu est mis de côté sans être relu (avant, la copie le relisait
+    /// sous la même borne, n'écrivait rien, disait « Copie gardée », puis l'historique était remplacé : perdu).
+    #[test]
+    fn historique_trop_gros_mis_de_cote_sans_perte() {
+        let dossier = dossier_d_essai("historique-trop-gros");
+        let chemin = dossier.join("historique.json");
+        let max = 2 * 1024;
+        let ancien = format!(
+            "[{{\"date\":\"2026-10-17 12:00\",\"problemes\":[\"{}\"]}}]",
+            "z".repeat(3000)
+        );
+        std::fs::write(&chemin, &ancien).unwrap();
+        assert!(lire_de_borne(&chemin, max).is_err());
+        let (precedent, _) = enregistrer_dans_borne(&chemin, b(80, &[]), max);
+        assert!(precedent.is_none());
+        let copies = copies(&dossier);
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(
+            std::fs::read_to_string(&copies[0]).unwrap(),
+            ancien,
+            "la copie est l'historique entier"
+        );
+        assert_eq!(lire_de_borne(&chemin, max).map(|t| t.len()), Ok(1));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Point C : un historique qui ne se met pas de côté (un lien à sa place, jamais suivi) n'est pas remplacé ; le
+    /// bilan est rendu quand même.
+    #[cfg(unix)]
+    #[test]
+    fn historique_pas_mis_de_cote_pas_remplace() {
+        let dossier = dossier_d_essai("historique-lien");
+        let chemin = dossier.join("historique.json");
+        let cible = dossier.join("ailleurs.json");
+        std::fs::write(&cible, "[").unwrap();
+        std::os::unix::fs::symlink(&cible, &chemin).unwrap();
+        let (precedent, rendu) = enregistrer_dans_borne(&chemin, b(80, &[]), HISTORIQUE_MAX);
+        assert!(precedent.is_none());
+        assert_eq!(rendu.machine, Some(80));
+        assert!(rendu.empreinte.is_some());
+        assert!(std::fs::symlink_metadata(&chemin).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&cible).unwrap(), "[");
+        assert!(copies(&dossier).is_empty());
+        // Un dossier à sa place non plus.
+        std::fs::remove_file(&chemin).unwrap();
+        std::fs::create_dir(&chemin).unwrap();
+        let _ = enregistrer_dans_borne(&chemin, b(81, &[]), HISTORIQUE_MAX);
+        assert!(std::fs::metadata(&chemin).unwrap().is_dir());
+        assert!(copies(&dossier).is_empty());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
