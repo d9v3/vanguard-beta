@@ -2649,7 +2649,8 @@ impl Releveur {
         ) else {
             return false;
         };
-        nom.to_str().is_some_and(|n| n.starts_with("run-"))
+        nom.to_str()
+            .is_some_and(|n| n.starts_with("run-") && nom_d_unite_valide(n))
             && DOSSIERS_DE_LA_SESSION
                 .iter()
                 .any(|d| dossier == self.sous(&session.join(d)))
@@ -8031,6 +8032,37 @@ fn dossiers_ajoutes(r: &Releveur) -> Vec<std::path::PathBuf> {
     let mut vus = std::collections::BTreeSet::new();
     dossiers.retain(|d| vus.insert(d.clone()));
     dossiers
+}
+
+/// Un nom que systemd accepte pour une unité, jugé par ce qu'il permet (`unit_name_is_valid` de systemd) et non par
+/// ce qu'on craint (passe 4, N4-3) : moins de 256 octets, une sorte connue après le dernier point, et avant elle
+/// seulement des lettres et chiffres ASCII et « : - _ . \\ @ », sans « @ » en tête. Un fichier d'un autre nom n'est
+/// pas une unité que systemd-run a posée (systemd ne le charge pas) : il n'est jamais groupé, donc toujours nommé,
+/// et ses signes (« : », « ; », « , », parenthèses, sosies de guillemets) n'entrent jamais dans la ligne d'un groupe.
+fn nom_d_unite_valide(nom: &str) -> bool {
+    const SORTES: [&str; 11] = [
+        "service",
+        "socket",
+        "target",
+        "device",
+        "mount",
+        "automount",
+        "swap",
+        "timer",
+        "path",
+        "slice",
+        "scope",
+    ];
+    let Some((base, sorte)) = nom.rsplit_once('.') else {
+        return false;
+    };
+    nom.len() < 256
+        && SORTES.contains(&sorte)
+        && !base.is_empty()
+        && !base.starts_with('@')
+        && base
+            .bytes()
+            .all(|o| o.is_ascii_alphanumeric() || b":-_.\\@".contains(&o))
 }
 
 /// Les dossiers d'unités de l'utilisateur sous le dossier de la session (XDG_RUNTIME_DIR), dans l'ordre de systemd.
@@ -28313,20 +28345,19 @@ mod tests {
             &m,
             TRANSIENT,
             &[
-                ("run-a\u{bb} sain \u{ab}.service", commune),
-                ("run-b\u{201c}.service", commune),
+                ("run-a.service", commune),
+                ("run-b.service", commune),
                 ("run-c.service", commune),
             ],
         );
         let c = m.lancements();
         assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
-        assert!(
-            c.message.contains("run-a\\\u{bb} sain \\\u{ab}.service"),
-            "{}",
-            c.message
-        );
-        assert!(c.message.contains("run-b\\\u{201c}.service"), "{}", c.message);
         assert!(c.message.contains("agent \\\u{201d} ok"), "{}", c.message);
+        // Un nom piégé n'entre plus dans un groupe (N4-3) ; l'échappement des noms reste, par prudence.
+        assert_eq!(
+            echappe_texte("run-a\u{bb} sain \u{ab}.service"),
+            "run-a\\\u{bb} sain \\\u{ab}.service"
+        );
         for g in ['\u{201c}', '\u{201e}', '\u{2039}', '\u{203a}', '\u{ff02}', '\u{300a}'] {
             assert_eq!(echappee(g), format!("\\{g}"), "{g}");
         }
@@ -28338,6 +28369,52 @@ mod tests {
         let montree = ligne_commune(&ligne, "abcdefgh");
         assert!(!montree.contains('\u{301}'), "{montree}");
         assert!(montree.contains("\\u{0301}"), "{montree}");
+    }
+
+    /// Passe 4, N4-3 : un fichier dont systemd refuse le nom (hors de sa liste permise) n'est jamais groupé ; il est
+    /// nommé seul, et ses signes ne se mêlent pas à la ligne du groupe.
+    #[test]
+    fn nom_hors_de_systemd_jamais_groupe() {
+        let m = Maison::nouvelle("groupe-nom-hors-systemd");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+                ("run-d, et 9 autre(s) non nommée(s)).service", commune),
+                ("run-e;f.service", commune),
+                ("run-g\u{2033}.service", commune),
+            ],
+        );
+        let c = m.lancements();
+        assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("non nommée(s)).service:2 : "), "{}", c.message);
+        assert!(c.message.contains("run-e;f.service:2 : "), "{}", c.message);
+        assert!(c.message.contains("run-g\u{2033}.service:2 : "), "{}", c.message);
+        for bon in [
+            "run-u42.service",
+            "run-r0a1b.scope",
+            "a@b.service",
+            "a@.service",
+            "x\\x2d:y_z.timer",
+        ] {
+            assert!(nom_d_unite_valide(bon), "{bon}");
+        }
+        let long = format!("{}.service", "a".repeat(248));
+        for mauvais in [
+            "run-a b.service",
+            "run-a.exe",
+            ".service",
+            "@a.service",
+            "run-\u{e9}.service",
+            "run-a",
+            long.as_str(),
+        ] {
+            assert!(!nom_d_unite_valide(mauvais), "{mauvais}");
+        }
     }
 
     /// Passe 3, robustesse N2 et N4 : la ligne commune ne ferme jamais elle-même ses guillemets (« » » et « " »
