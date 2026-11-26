@@ -18,7 +18,10 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   nommée, avant les autres ; rien n'est caché ni baissé. Le message et la clé de l'alerte restent bornés, en octets
   comme en largeur : au-delà, le reste est compté, jamais tu. L'historique des bilans ne dépasse plus ce qu'il sait
   relire (les bilans les plus anciens sont retirés), et un historique abîmé est mis de côté sans être relu ; un
-  historique qu'on ne peut pas lire ou mettre de côté est laissé tel quel, et le bilan le dit « non vérifié ».
+  historique qu'on ne peut pas lire ou mettre de côté est laissé tel quel, et le bilan le dit « non vérifié ». Seules se
+  groupent les unités que systemd-run pose tout droit dans le dossier de session donné par systemd, sans complément venu
+  d'un autre dossier ; deux Vanguard ne touchent plus l'historique en même temps, et un historique illisible n'est plus
+  montré comme « aucun bilan » en tête du menu.
 
 ## 25 novembre 2026 : version 0.99.0
 

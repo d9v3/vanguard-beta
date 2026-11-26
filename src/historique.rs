@@ -295,8 +295,16 @@ fn fichier() -> PathBuf {
     crate::socle::dossier_local().join("historique.json")
 }
 
+/// L'historique, vide s'il ne se lit pas : seulement là où « non lu » et « aucun bilan » mènent au même geste (la
+/// courbe du rapport, que suit la ligne de `etat_chaine`). Un écran qui dit « aucun bilan » lit `charger_lu`.
 pub fn charger() -> Vec<Bilan> {
     lire().unwrap_or_default()
+}
+
+/// L'historique ; `None` s'il existe mais ne se lit pas (passe 3, historique N4 : jamais montré comme vide). La
+/// raison n'est pas rendue : le prochain bilan la dit, par la ligne ⚠ de `etat_chaine`.
+pub fn charger_lu() -> Option<Vec<Bilan>> {
+    lire().ok()
 }
 
 /// L'historique tel qu'il est écrit, lu sans rien écrire (ni copie mise de côté) : pour la porte de lecture des
@@ -319,26 +327,45 @@ fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
 
 /// `lire_de`, borné à `max` octets (`HISTORIQUE_MAX` hors des essais).
 fn lire_de_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<Vec<Bilan>> {
+    lire_de_borne_vu(chemin, max).1
+}
+
+/// `lire_de_borne`, avec ce que le système dit du fichier ouvert et lu (fstat), quand il s'est ouvert : c'est lui,
+/// pas ce qui porte son nom plus tard, que `mettre_de_cote` met de côté s'il est abîmé (passe 3, historique N1).
+fn lire_de_borne_vu(chemin: &std::path::Path, max: u64) -> (Option<std::fs::Metadata>, std::io::Result<Vec<Bilan>>) {
     use std::io::Read as _;
     // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien. Ouvert par
     // `ouvrir_ordinaire`, qui garde le genre de l'erreur (`lire_texte_ordinaire` les ferait tous « InvalidData ») :
-    // un droit refusé ne se confond pas avec un historique abîmé (`a_mettre_de_cote`).
-    let (f, _) = match crate::socle::ouvrir_ordinaire(chemin, max) {
+    // un droit refusé ne se confond pas avec un historique abîmé (`a_mettre_de_cote`). Sans borne à l'ouverture,
+    // pour garder ce qu'il est même trop gros : la borne se juge juste après.
+    let (f, vu) = match crate::socle::ouvrir_ordinaire(chemin, u64::MAX) {
         Ok(ouvert) => ouvert,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (None, Ok(Vec::new())),
+        Err(e) => return (None, Err(e)),
     };
-    let mut octets = Vec::new();
-    f.take(max.saturating_add(1)).read_to_end(&mut octets)?;
-    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
-        return Err(std::io::Error::new(
+    let trop_gros = || {
+        std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
             trf!("plus de {} Kio", "over {} KiB", max >> 10),
-        ));
+        )
+    };
+    if vu.len() > max {
+        return (Some(vu), Err(trop_gros()));
     }
-    let texte = String::from_utf8(octets).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    serde_json::from_str(texte.trim_start_matches('\u{feff}'))
+    let mut octets = Vec::new();
+    if let Err(e) = f.take(max.saturating_add(1)).read_to_end(&mut octets) {
+        return (Some(vu), Err(e));
+    }
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
+        return (Some(vu), Err(trop_gros()));
+    }
+    let lu = String::from_utf8(octets)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        .and_then(|texte| {
+            serde_json::from_str(texte.trim_start_matches('\u{feff}'))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        });
+    (Some(vu), lu)
 }
 
 fn bilan(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) -> Bilan {
@@ -389,8 +416,37 @@ pub(crate) fn enregistrer_dans(chemin: &std::path::Path, nouveau: Bilan) -> (Opt
 
 /// `enregistrer_dans`, l'historique borné à `max` octets : la borne même du lecteur (`lire_de_borne`), pour que
 /// l'écrivain ne pose jamais un fichier que le lecteur refuse. Les essais la prennent petite.
-fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64) -> (Option<Bilan>, Bilan) {
-    let mut tous = match lire_de_borne(chemin, max) {
+fn enregistrer_dans_borne(chemin: &std::path::Path, nouveau: Bilan, max: u64) -> (Option<Bilan>, Bilan) {
+    // Passe 3, historique N2 : lire, mettre de côté et écrire sous un verrou. Sans lui, deux Vanguard (la minuterie
+    // et la fenêtre) qui trouvent le même historique abîmé pouvaient mettre de côté, puis retirer par son nom,
+    // l'historique neuf que l'autre venait d'écrire ; ou perdre un bilan en écrivant en même temps. En administrateur
+    // dans le dossier d'un compte, aucun verrou n'y est créé (il bloquerait ensuite chaque bilan du compte).
+    let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
+    let _verrou = if crate::socle::ecriture_sure(dossier) {
+        match crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                let e = e.erreur(VERROU);
+                tre!(
+                    "Attention : bilan non enregistré dans l'historique ({e}).",
+                    "Warning: check not saved to the history ({e})."
+                );
+                return rendu_seul(nouveau);
+            }
+        }
+    } else {
+        None
+    };
+    enregistrer_sous_verrou(chemin, nouveau, max)
+}
+
+/// Le verrou de l'historique (`enregistrer_dans_borne`), à côté de lui.
+const VERROU: &str = "historique.verrou";
+
+/// `enregistrer_dans_borne`, le verrou tenu.
+fn enregistrer_sous_verrou(chemin: &std::path::Path, mut nouveau: Bilan, max: u64) -> (Option<Bilan>, Bilan) {
+    let (vu, lu) = lire_de_borne_vu(chemin, max);
+    let mut tous = match lu {
         Ok(tous) => tous,
         // Un historique qu'on ne peut pas lire (droit refusé, erreur passagère) n'est pas abîmé : rien n'y est touché.
         Err(e) if !a_mettre_de_cote(&e) => {
@@ -400,7 +456,7 @@ fn enregistrer_dans_borne(chemin: &std::path::Path, mut nouveau: Bilan, max: u64
             );
             return rendu_seul(nouveau);
         }
-        Err(e) => match mettre_de_cote(chemin) {
+        Err(e) => match mettre_de_cote(chemin, vu.as_ref()) {
             // Jamais écraser un historique qu'on ne sait pas relire : il est mis de côté, intact et sans être relu
             // (il peut être trop gros pour l'être), avant le nouveau. « Copie gardée » seulement quand c'est fait.
             Ok(copie) => {
@@ -534,12 +590,19 @@ enum PasMisDeCote {
 }
 
 /// Met de côté l'historique illisible `chemin` sans le relire : renommé sous un nom neuf
-/// (« `historique.illisible-<date>-<hasard>.json` »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
-/// un lien n'est jamais suivi, un tube ou un dossier n'est pas déplacé. Rend le nom de la copie, qui existe et est le
-/// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer (`PasMisDeCote`).
-fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, PasMisDeCote> {
-    let avant = std::fs::symlink_metadata(chemin).map_err(PasMisDeCote::Laisse)?;
-    mettre_de_cote_comme(chemin, &avant, true)
+/// (« `historique.illisible-<date>-<hasard>.json` »), jamais par-dessus un fichier déjà là. Seulement le simple fichier
+/// lu et jugé abîmé (`vu`, ce que fstat en a dit) : un historique sain posé à sa place depuis n'est pas touché ; un
+/// lien n'est jamais suivi, un tube ou un dossier (qui ne s'ouvre pas : rien de `vu`) n'est pas déplacé. Rend le nom
+/// de la copie, qui existe et est le fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer
+/// (`PasMisDeCote`).
+fn mettre_de_cote(chemin: &std::path::Path, vu: Option<&std::fs::Metadata>) -> Result<PathBuf, PasMisDeCote> {
+    let Some(avant) = vu else {
+        return Err(PasMisDeCote::Laisse(std::io::Error::other(tr!(
+            "ce n'est pas un simple fichier",
+            "it is not a plain file"
+        ))));
+    };
+    mettre_de_cote_comme(chemin, avant, true)
 }
 
 /// `mettre_de_cote`, le fichier regardé `avant` donné ; `lien` faux prend le renommage simple (des systèmes sans liens
@@ -610,7 +673,12 @@ fn mettre_de_cote_comme(
 /// Le second nom `copie` d'un lien dur qui ne vise pas le fichier regardé : retiré seulement s'il nomme encore le même
 /// fichier que `chemin` (qui le garde) ; sinon laissé et nommé.
 fn retirer_le_second_nom(chemin: &std::path::Path, copie: &std::path::Path, raison: std::io::Error) -> PasMisDeCote {
-    let encore = std::fs::symlink_metadata(chemin).is_ok_and(|m| meme_fichier(&m, copie).is_ok());
+    // Même entrée, quelle qu'elle soit (passe 3, historique N3) : un lien symbolique posé à la place reçoit lui-même
+    // le second nom (link ne le suit pas) ; ce n'est pas un simple fichier, mais c'est bien lui, et il est retiré.
+    let encore = match (std::fs::symlink_metadata(chemin), std::fs::symlink_metadata(copie)) {
+        (Ok(a), Ok(b)) => meme_entree(&a, &b),
+        _ => false,
+    };
     if encore && std::fs::remove_file(copie).is_ok() {
         PasMisDeCote::Laisse(raison)
     } else {
@@ -625,20 +693,27 @@ fn retirer_le_second_nom(chemin: &std::path::Path, copie: &std::path::Path, rais
 /// ailleurs même taille et même date de changement. Jamais « Copie gardée » pour un nom qui ne la porte pas.
 fn meme_fichier(avant: &std::fs::Metadata, copie: &std::path::Path) -> std::io::Result<()> {
     let apres = std::fs::symlink_metadata(copie)?;
-    #[cfg(unix)]
-    let meme = {
-        use std::os::unix::fs::MetadataExt as _;
-        apres.dev() == avant.dev() && apres.ino() == avant.ino()
-    };
-    #[cfg(not(unix))]
-    let meme = apres.len() == avant.len() && apres.modified().ok() == avant.modified().ok();
-    if apres.file_type().is_file() && meme {
+    if apres.file_type().is_file() && meme_entree(avant, &apres) {
         Ok(())
     } else {
         Err(std::io::Error::other(tr!(
             "la copie n'est pas le fichier d'avant",
             "the copy is not the previous file"
         )))
+    }
+}
+
+/// `a` et `b` sont la même entrée : sous Unix même appareil et même numéro, ailleurs même genre, même taille et même
+/// date de changement.
+fn meme_entree(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        a.file_type() == b.file_type() && a.len() == b.len() && a.modified().ok() == b.modified().ok()
     }
 }
 
@@ -1084,6 +1159,70 @@ mod tests {
         assert!(matches!(r, Err(PasMisDeCote::Laisse(_))), "{r:?}");
         assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
         assert_eq!(std::fs::read_to_string(&chemin).unwrap(), "[");
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 3, historique N1 : seul le fichier lu et jugé abîmé se met de côté. Un historique sain posé à sa place
+    /// depuis la lecture reste là, sans copie.
+    #[test]
+    fn historique_sain_pose_apres_la_lecture_laisse() {
+        let dossier = dossier_d_essai("historique-pose-apres");
+        let chemin = dossier.join("historique.json");
+        std::fs::write(&chemin, "[{").unwrap();
+        let (vu, lu) = lire_de_borne_vu(&chemin, HISTORIQUE_MAX);
+        assert!(lu.is_err());
+        let sain = serde_json::to_string(&vec![b(8, &[]), b(9, &[])]).unwrap();
+        let provisoire = dossier.join("neuf.json");
+        std::fs::write(&provisoire, &sain).unwrap();
+        std::fs::rename(&provisoire, &chemin).unwrap();
+        let r = mettre_de_cote(&chemin, vu.as_ref());
+        assert!(matches!(r, Err(PasMisDeCote::Laisse(_))), "{r:?}");
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
+        assert_eq!(lire_de(&chemin).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 3, historique N2 : lire, mettre de côté et écrire se font sous le verrou de l'historique ; un autre
+    /// Vanguard qui le tient fait attendre, et le bilan s'ajoute ensuite.
+    #[test]
+    fn enregistrer_attend_le_verrou() {
+        let dossier = dossier_d_essai("historique-verrou");
+        let chemin = dossier.join("historique.json");
+        let tenu = crate::socle::Verrou::prendre(&dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).unwrap();
+        let (dit, attendu) = std::sync::mpsc::channel();
+        let fil = std::thread::spawn(move || {
+            dit.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(tenu);
+        });
+        attendu.recv().unwrap();
+        let debut = std::time::Instant::now();
+        let _ = enregistrer_dans(&chemin, b(7, &[]));
+        assert!(
+            debut.elapsed() >= std::time::Duration::from_millis(300),
+            "écrit sans attendre le verrou : {:?}",
+            debut.elapsed()
+        );
+        fil.join().unwrap();
+        assert_eq!(lire_de(&chemin).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Passe 3, historique N3 : un lien symbolique posé à la place reçoit lui-même le second nom (link ne le suit
+    /// pas) : ce second nom est retiré, et c'est « laissé », pas « déplacé ».
+    #[cfg(unix)]
+    #[test]
+    fn lien_echange_second_nom_retire() {
+        let dossier = dossier_d_essai("historique-lien-echange");
+        let chemin = dossier.join("historique.json");
+        let autre = dossier.join("autre.json");
+        std::fs::write(&autre, "[").unwrap();
+        let regarde = std::fs::symlink_metadata(&autre).unwrap();
+        std::os::unix::fs::symlink("ailleurs.json", &chemin).unwrap();
+        let r = mettre_de_cote_comme(&chemin, &regarde, true);
+        assert!(matches!(r, Err(PasMisDeCote::Laisse(_))), "{r:?}");
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
+        assert!(std::fs::symlink_metadata(&chemin).unwrap().file_type().is_symlink());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 

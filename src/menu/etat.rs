@@ -10,26 +10,37 @@ use crate::ui::*;
 use crate::{depanner, guide, historique, logiciels, mise_a_jour, parametres, protection, reseau, risk};
 use clap::CommandFactory;
 
+/// La ligne du dernier bilan en tête du menu. Un historique qui ne se lit pas est dit tel quel, jamais « aucun bilan
+/// encore » (passe 3, historique N4) : le bilan suivant dit pourquoi et le garde de côté s'il est abîmé.
+fn ligne_du_dernier_bilan(lu: Option<&[historique::Bilan]>) -> String {
+    match lu {
+        Some(h) => match h.last() {
+            Some(b) => {
+                let note = |s: Option<u32>| s.map_or_else(|| "—".to_string(), etiquette_note);
+                trf!(
+                    "  {GRIS}Dernier bilan{RESET}  {}   ordinateur {}   réseau {}",
+                    "  {GRIS}Last check{RESET}     {}   computer {}   network {}",
+                    b.date,
+                    note(b.machine),
+                    note(b.reseau)
+                )
+            }
+            None => trf!(
+                "  {GRIS}Aucun bilan encore : commencez par 1.{RESET}",
+                "  {GRIS}No check yet: start with 1.{RESET}"
+            ),
+        },
+        None => trf!(
+            "  {GRIS}Historique des bilans illisible : le prochain bilan (1) dit pourquoi.{RESET}",
+            "  {GRIS}Check history unreadable: the next check (1) says why.{RESET}"
+        ),
+    }
+}
+
 /// État affiché en tête du menu : dernier bilan, dernier test de connexion, clé, surveillance, et un avis s'il y en
 /// a un (copie périmée, nouvelle version sur la clé).
 pub(crate) fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec<String> {
-    let historique = historique::charger();
-    let bilan = match historique.last() {
-        Some(b) => {
-            let note = |s: Option<u32>| s.map_or_else(|| "—".to_string(), etiquette_note);
-            trf!(
-                "  {GRIS}Dernier bilan{RESET}  {}   ordinateur {}   réseau {}",
-                "  {GRIS}Last check{RESET}     {}   computer {}   network {}",
-                b.date,
-                note(b.machine),
-                note(b.reseau)
-            )
-        }
-        None => trf!(
-            "  {GRIS}Aucun bilan encore : commencez par 1.{RESET}",
-            "  {GRIS}No check yet: start with 1.{RESET}"
-        ),
-    };
+    let bilan = ligne_du_dernier_bilan(historique::charger_lu().as_deref());
     let connexion = reseau::connexion::historique().last().map(|c| {
         let debit = |d: Option<f64>| d.map_or_else(|| "?".to_string(), |d| format!("{d:.0}"));
         let bufferbloat = c.hausse_ms.map_or_default(|h| {
@@ -320,4 +331,19 @@ pub(crate) fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
     }
     lignes.extend(guide::lignes_de_recherche(&cle_de(Groupe::Guide)));
     lignes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Passe 3, historique N4 : un historique qui ne se lit pas n'est jamais montré comme « aucun bilan encore ».
+    #[test]
+    fn historique_illisible_pas_vide() {
+        let illisible = ligne_du_dernier_bilan(None);
+        assert!(illisible.contains("Historique des bilans illisible"), "{illisible}");
+        assert!(!illisible.contains("Aucun bilan"), "{illisible}");
+        let vide = ligne_du_dernier_bilan(Some(&[]));
+        assert!(vide.contains("Aucun bilan encore"), "{vide}");
+    }
 }

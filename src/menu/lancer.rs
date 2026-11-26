@@ -59,7 +59,8 @@ fn autotest_a_part() {
 /// chemins à l'aveugle). Les chemins 4.x, 6.x, 7.x, 8.x et 12.x ont changé de sens ; rien ne se modifie sans accord,
 /// mais un ancien chemin ouvre un autre écran.
 fn premiere_ouverture_du_nouveau_menu() -> bool {
-    !marque_du_nouveau_menu().exists() && !historique::charger().is_empty()
+    // Un historique qui ne se lit pas vient de quelqu'un qui a déjà fait un bilan (passe 3, historique N4).
+    !marque_du_nouveau_menu().exists() && historique::charger_lu().is_none_or(|h| !h.is_empty())
 }
 
 fn marque_du_nouveau_menu() -> std::path::PathBuf {
