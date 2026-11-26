@@ -534,7 +534,7 @@ enum PasMisDeCote {
 }
 
 /// Met de côté l'historique illisible `chemin` sans le relire : renommé sous un nom neuf
-/// (« historique.illisible-<date>-<hasard>.json »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
+/// (« `historique.illisible-<date>-<hasard>.json` »), jamais par-dessus un fichier déjà là. Seulement un simple fichier :
 /// un lien n'est jamais suivi, un tube ou un dossier n'est pas déplacé. Rend le nom de la copie, qui existe et est le
 /// fichier d'avant (même appareil, même numéro) ; sinon pourquoi, prêt à montrer (`PasMisDeCote`).
 fn mettre_de_cote(chemin: &std::path::Path) -> Result<PathBuf, PasMisDeCote> {
@@ -1087,7 +1087,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// Passe 2, ROB8 : sans liens durs, un renommage fait puis non vérifié rend « déplacé sous <copie> », jamais
+    /// Passe 2, ROB8 : sans liens durs, un renommage fait puis non vérifié rend « déplacé sous `<copie>` », jamais
     /// « laissé tel quel » ; vérifié, la copie.
     #[test]
     fn renommage_simple_nomme_la_copie() {
