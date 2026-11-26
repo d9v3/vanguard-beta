@@ -1130,7 +1130,11 @@ voir "copie ratée, clé retirée pendant la vérification du cache : jamais com
 rm -f "$PART"
 # L'image du cache abîmée : la copie rate, et ce n'est pas la clé.
 cp "$IMAGE5" "$BANC/image5-saine"
-printf x | dd of="$IMAGE5" conv=notrunc status=none
+# Le 1er octet est inversé (255 - sa valeur), jamais remplacé par « x » : l'image est tirée au hasard, un « x » déjà
+# là la laissait intacte (1 fois sur 256).
+b=$(od -An -tu1 -N1 "$IMAGE5")
+printf "\\$(printf '%03o' $((255 - b)))" | dd of="$IMAGE5" conv=notrunc status=none
+voir "l'image du cache est bien abîmée pour l'essai" eval '! cmp -s "$IMAGE5" "$BANC/image5-saine"'
 rm -f "$BANC/faux-vanguard.log"
 ESSAI_ATTENTE="${IMAGE5##*/}"$'\t'"${IMAGE5##*/}"$'\n' VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
 code=$?

@@ -2238,7 +2238,14 @@ BON=$(printf 'timestamp:1790965431\tfile:zig-x86_64-linux-9.9.9.tar.xz\thashed')
 signer_minisign "$F" "$Z/cle" "$Z/numero" "$BON" "$Z/bonne.minisig"
 verifier_zig "$F" "$Z/bonne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
   ok "zig : une signature minisign juste passe" || ko "zig : une signature minisign juste est refusée"
-cp "$F" "$Z/change.tar.xz" && printf 'x' | dd of="$Z/change.tar.xz" bs=1 seek=100 conv=notrunc 2>/dev/null
+# L'octet 100 est inversé (255 - sa valeur), jamais remplacé par un signe fixe : l'archive est tirée au hasard, un
+# « x » déjà là laissait l'archive intacte et l'essai échouait 1 fois sur 256 (CI 45688152098, 25 nov.).
+inverser_octet() {
+  local b; b=$(od -An -tu1 -j"$2" -N1 "$1")
+  printf "\\$(printf '%03o' $((255 - b)))" | dd of="$1" bs=1 seek="$2" conv=notrunc status=none
+}
+cp "$F" "$Z/change.tar.xz" && inverser_octet "$Z/change.tar.xz" 100
+cmp -s "$F" "$Z/change.tar.xz" && ko "zig : l'essai n'a pas changé l'octet de l'archive"
 verifier_zig "$Z/change.tar.xz" "$Z/bonne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
   ko "zig : un octet changé dans l'archive passe" || ok "zig : un octet changé dans l'archive est refusé"
 verifier_zig "$F" "$Z/bonne.minisig" zig-x86_64-linux-9.9.8.tar.xz "$Z/cle.pub" &&
