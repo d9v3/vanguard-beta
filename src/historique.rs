@@ -519,16 +519,39 @@ fn enregistrer_en_attendant(
     max: u64,
     attente: std::time::Duration,
 ) -> (Option<Bilan>, Bilan) {
+    let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
+    enregistrer_selon(chemin, nouveau, max, attente, crate::socle::ecriture_sure(dossier))
+}
+
+/// `enregistrer_en_attendant`, `sure` disant si Vanguard peut écrire dans le dossier (`socle::ecriture_sure`), à part
+/// pour les essais (sous `cfg(test)`, il l'est toujours).
+fn enregistrer_selon(
+    chemin: &std::path::Path,
+    nouveau: Bilan,
+    max: u64,
+    attente: std::time::Duration,
+    sure: bool,
+) -> (Option<Bilan>, Bilan) {
     // Passe 3, historique N2 : lire, mettre de côté et écrire sous un verrou. Sans lui, deux Vanguard (la minuterie
     // et la fenêtre) qui trouvent le même historique abîmé pouvaient mettre de côté, puis retirer par son nom,
     // l'historique neuf que l'autre venait d'écrire ; ou perdre un bilan en écrivant en même temps. En administrateur
-    // dans le dossier d'un compte, aucun verrou n'y est créé (il bloquerait ensuite chaque bilan du compte).
+    // dans le dossier d'un compte, aucun verrou n'y est créé (il bloquerait ensuite chaque bilan du compte), et rien
+    // n'y est écrit, comme le journal et les sceaux (H2) : sans verrou, l'écriture pouvait croiser celle du compte et
+    // perdre un bilan, et un historique posé par root ne se relisait plus sous le compte.
     let dossier = chemin.parent().unwrap_or(std::path::Path::new("."));
-    let _verrou = if crate::socle::ecriture_sure(dossier) {
+    if !sure {
+        let e = crate::sceau::dossier_d_un_autre();
+        tre!(
+            "Attention : bilan non enregistré dans l'historique ({e}).",
+            "Warning: check not saved to the history ({e})."
+        );
+        return rendu_seul(nouveau);
+    }
+    let _verrou = {
         match crate::socle::Verrou::prendre(dossier, VERROU, false, attente) {
             Ok(v) => {
                 tenus().remove(dossier);
-                Some(v)
+                v
             }
             Err(e) => {
                 let retenu =
@@ -544,8 +567,6 @@ fn enregistrer_en_attendant(
                 return rendu_seul(nouveau);
             }
         }
-    } else {
-        None
     };
     enregistrer_sous_verrou(chemin, nouveau, max)
 }
@@ -1300,6 +1321,26 @@ mod tests {
         assert!(refus_retenu(&dossier).is_none());
         assert_eq!(lire_de(&chemin).unwrap().len(), 1);
         assert!(constat_dans(&chemin).is_none());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// H2 : en administrateur dans le dossier d'un compte, l'historique ne s'écrit pas (ni verrou, ni fichier), comme
+    /// le journal et les sceaux ; le bilan est rendu seul.
+    #[test]
+    fn dossier_d_un_autre_compte_pas_ecrit() {
+        let dossier = dossier_d_essai("historique-autre-compte");
+        let chemin = dossier.join("historique.json");
+        let (avant, rendu) = enregistrer_selon(
+            &chemin,
+            b(7, &[]),
+            HISTORIQUE_MAX,
+            crate::socle::ATTENTE_ECRITURE,
+            false,
+        );
+        assert!(avant.is_none());
+        assert!(rendu.empreinte.is_some());
+        assert!(!chemin.exists());
+        assert!(!dossier.join(VERROU).exists());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
