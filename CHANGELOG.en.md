@@ -13,10 +13,12 @@ example, finds it, to rebuild it if needed.
 
 - **Linux: thousands of identical units no longer make a giant check.** Failed systemd-run units left in the session
   folder that all start the same line are reported as one line of the alert, with their number and a few examples; a
-  unit that starts something else stays on its own and named, and nothing is hidden or lowered. The alert's message
-  and key stay bounded: beyond that, the rest is counted, never silenced. The check history no longer grows beyond
-  what it can read back (the oldest checks are removed), and an unreadable history is set aside without being read;
-  if it cannot be, it is left as is, and this is said.
+  unit is grouped only with units made word for word of the same lines: a unit with a single line that differs, by one
+  byte, stays on its own and named, and a line from anywhere else than that folder is always named, before the others;
+  nothing is hidden or lowered. The alert's message and key stay bounded, in bytes as well as in width: beyond that,
+  the rest is counted, never silenced. The check history no longer grows beyond what it can read back (the oldest
+  checks are removed), and a damaged history is set aside without being read; a history that cannot be read or set
+  aside is left as is, and the check reports it as "not checked".
 
 ## November 25, 2026: version 0.99.0
 

@@ -1134,6 +1134,19 @@ fn fichiers_sous(
     }
 }
 
+/// Une empreinte BLAKE3 écrite en lettres seulement (« a » à « p », une par demi-octet), sur ses `octets` premiers
+/// octets : la comparaison des bilans change chaque chiffre d'une clé en « # » (`historique::cle`), donc une
+/// empreinte en chiffres hexadécimaux ne s'y distingue que par ses lettres ; en lettres, chaque changement se voit.
+fn trace_en_lettres(texte: &[u8], octets: usize) -> String {
+    blake3::hash(texte)
+        .as_bytes()
+        .iter()
+        .take(octets)
+        .flat_map(|o| [o >> 4, o & 0x0f])
+        .map(|n| char::from(b'a'.saturating_add(n)))
+        .collect()
+}
+
 /// Une ligne signalée dans une clé : sa source et l'empreinte de son texte (jamais le texte, écrit par qui l'a posée).
 fn source_de(origine: &str, ligne: &str) -> String {
     format!("{origine}#{}", crate::modele::id::trace(ligne))
@@ -1142,8 +1155,8 @@ fn source_de(origine: &str, ligne: &str) -> String {
 /// L'objet de l'alerte des lancements : ses lignes signalées, triées et sans double (l'ordre de lecture ne compte
 /// pas, deux lignes identiques comptent une fois). Au plus `SOURCES_NOMMEES` sources en clair, et `SOURCES_OCTETS`
 /// octets (LNX-PRS-002 : 5263 sources, une clé de 396 Ko) ; au-delà, leur nombre et l'empreinte BLAKE3 entière de
-/// toutes les autres (« reste:N#empreinte ») : la clé reste bornée et change encore dès qu'une source change,
-/// s'ajoute ou s'en va. Sous les deux bornes, la clé d'avant, mot pour mot.
+/// toutes les autres, en lettres (« reste:N#empreinte », `trace_en_lettres`) : la clé reste bornée et change encore
+/// dès qu'une source change, s'ajoute ou s'en va, même pour la comparaison des bilans. Sous les deux bornes, la clé d'avant, mot pour mot.
 fn objet_des_lancements(mut sources: Vec<String>) -> crate::modele::Objet {
     sources.sort();
     sources.dedup();
@@ -1161,7 +1174,7 @@ fn objet_des_lancements(mut sources: Vec<String>) -> crate::modele::Objet {
         sources.push(format!(
             "reste:{}#{}",
             reste.len(),
-            blake3::hash(reste.join(",").as_bytes()).to_hex()
+            trace_en_lettres(reste.join(",").as_bytes(), 32)
         ));
     }
     crate::modele::Objet::de("lancements", &sources.join(","))
@@ -2194,10 +2207,16 @@ struct Lancements {
     /// Une ligne signalée qui n'est pas de celles que Vanguard retire lui-même (une variable autre que LD_PRELOAD ou
     /// LD_AUDIT, une commande : ronde 9, N9-3, `linux::Decoupe::Hors`).
     hors: bool,
-    /// Les lignes des unités du dossier de la session (XDG_RUNTIME_DIR/systemd) qui portent mot pour mot la même
-    /// ligne pour la même raison (LNX-PRS-002 : 5263 unités de systemd-run échouées, chacune sa ligne, faisaient une
-    /// clé de 396 Ko) : une seule ligne de l'alerte par groupe, avec leur nombre (`Groupe`).
-    groupes: std::collections::HashMap<(String, String), Groupe>,
+    /// Les unités du dossier de la session (XDG_RUNTIME_DIR/systemd) faites mot pour mot des mêmes lignes, qui
+    /// lèvent la même ligne pour la même raison (LNX-PRS-002 : 5263 unités de systemd-run échouées, chacune sa ligne,
+    /// faisaient une clé de 396 Ko) : une seule ligne de l'alerte par groupe, avec leur nombre (`Groupe`). La clé :
+    /// la ligne, la raison et l'empreinte de l'unité entière (`empreinte_d_unite`).
+    groupes: std::collections::HashMap<(String, String, String), Groupe>,
+    /// Les lignes de l'alerte (`suspects`) venues du dossier de la session : seules elles sont bornées dans le reste
+    /// (`reste_par_fichier`) et montrées après les autres ; une ligne d'ailleurs est toujours nommée.
+    de_session: std::collections::HashSet<String>,
+    /// L'empreinte de la dernière unité regardée pour un groupe (`empreinte_d_unite`) : une fois par fichier.
+    derniere_unite: Option<(std::path::PathBuf, Option<String>)>,
     r: Releveur,
 }
 
@@ -2205,17 +2224,25 @@ struct Lancements {
 /// autres sont comptées.
 const EXEMPLES_DU_GROUPE: usize = 3;
 
-/// Au plus autant de colonnes de la ligne commune d'un groupe montrées ; au-delà, coupée, et c'est dit.
+/// Au plus autant de colonnes, et d'octets, de la ligne commune d'un groupe montrées ; au-delà, son début et sa
+/// fin, bornés eux aussi en octets (des caractères de largeur nulle ne prennent aucune colonne), et c'est dit.
 const LIGNE_DU_GROUPE: usize = 120;
+const LIGNE_DU_GROUPE_OCTETS: usize = 480;
 
-/// Un groupe d'unités du dossier de la session qui portent la même ligne : la première levée normalement (sa source,
-/// son retrait, son témoin), les autres comptées, quelques-unes nommées.
+/// Un groupe d'unités du dossier de la session faites des mêmes lignes, qui lèvent la même ligne : la première levée
+/// normalement (sa source, son retrait, son témoin), les autres comptées, quelques-unes nommées.
 struct Groupe {
     /// La place de la source de la première dans `Lancements::sources`, récrite pour le groupe s'il en compte plus
     /// d'une.
     indice: usize,
-    /// Le nombre de lignes du groupe, la première comprise.
+    /// Le nombre d'unités du groupe, la première comprise : une par fichier (`fichiers`).
     nombre: usize,
+    /// Les fichiers du groupe : une deuxième ligne pareille dans un même fichier n'y entre pas, elle reste seule.
+    fichiers: std::collections::HashSet<std::path::PathBuf>,
+    /// Les dossiers de ses unités (transient, user…) : une unité d'un autre dossier change la clé du groupe.
+    dossiers: std::collections::BTreeSet<String>,
+    /// L'empreinte de l'unité (`empreinte_d_unite`), la même pour toutes.
+    empreinte: String,
     /// « fichier:numéro » de la première, et de quelques autres (`EXEMPLES_DU_GROUPE`).
     premiere: String,
     exemples: Vec<String>,
@@ -2225,24 +2252,16 @@ struct Groupe {
 
 /// La ligne de l'alerte d'un groupe, et sa source s'il faut la récrire. Seule : la ligne et la source d'avant, mot
 /// pour mot (une clé déjà vue ne change pas). Plusieurs : « fichier:numéro : raison », puis combien d'unités, la
-/// ligne commune (coupée à `LIGNE_DU_GROUPE` colonnes, et c'est dit) et quelques exemples ; la source devient celle
-/// du groupe (« session-groupe » et l'empreinte de la ligne), qui ne change pas avec les noms que systemd-run tire
-/// au hasard, mais change avec la ligne.
+/// ligne commune (bornée, `ligne_commune`) et quelques exemples ; la source devient celle du groupe
+/// (`source_du_groupe`), qui ne change pas avec les noms que systemd-run tire au hasard, mais change avec la ligne,
+/// l'unité ou un dossier de plus.
 fn ligne_du_groupe(g: &Groupe) -> (String, Option<String>) {
     let (ou, raison) = (&g.premiere, &g.raison);
     if g.nombre <= 1 {
         return (trf!("{ou} : {raison}", "{ou}: {raison}"), None);
     }
-    let affichee = crate::ui::affichable(&g.ligne);
-    let mut montree = crate::ui::couper(&affichee, LIGNE_DU_GROUPE);
-    if montree != affichee {
-        let _ = trw!(
-            montree,
-            " (coupée, {} caractères)",
-            " (cut, {} characters)",
-            affichee.chars().count()
-        );
-    }
+    let source = source_du_groupe(g);
+    let montree = ligne_commune(&g.ligne, source.rsplit('#').next().unwrap_or_default());
     let mut exemples = g.exemples.join(", ");
     let non_nommees = g.nombre.saturating_sub(1).saturating_sub(g.exemples.len());
     if non_nommees > 0 {
@@ -2253,11 +2272,83 @@ fn ligne_du_groupe(g: &Groupe) -> (String, Option<String>) {
         );
     }
     let suspect = trf!(
-        "{ou} : {raison} ; {} unités du dossier de la session portent cette même ligne « {montree} » (aussi : {exemples})",
-        "{ou}: {raison}; {} units of the session folder carry this same line \"{montree}\" (also: {exemples})",
+        "{ou} : {raison} ; {} unités du dossier de la session, faites des mêmes lignes, portent cette même ligne « {montree} » (aussi : {exemples})",
+        "{ou}: {raison}; {} units of the session folder, made of the same lines, carry this same line \"{montree}\" (also: {exemples})",
         g.nombre
     );
-    (suspect, Some(source_de("session-groupe", &g.ligne)))
+    (suspect, Some(source))
+}
+
+/// La source d'un groupe dans la clé : « session-groupe » et l'empreinte, en lettres (`trace_en_lettres`), de sa
+/// ligne exacte (aucun blanc retiré de plus que systemd), de sa raison, de l'empreinte de l'unité et de ses dossiers.
+fn source_du_groupe(g: &Groupe) -> String {
+    let mut texte = format!("{}\0{}\0{}", g.ligne, g.raison, g.empreinte);
+    for d in &g.dossiers {
+        texte.push('\0');
+        texte.push_str(d);
+    }
+    format!("session-groupe#{}", trace_en_lettres(texte.as_bytes(), 8))
+}
+
+/// La ligne commune d'un groupe telle qu'elle se montre : entière si elle tient dans `LIGNE_DU_GROUPE` colonnes et
+/// `LIGNE_DU_GROUPE_OCTETS` octets ; sinon son début et sa fin, chacun borné en colonnes et en octets, son nombre de
+/// caractères et le début de l'empreinte du groupe (`trace`) : deux lignes coupées pareilles se distinguent.
+fn ligne_commune(ligne: &str, trace: &str) -> String {
+    let affichee = crate::ui::affichable(ligne);
+    if crate::ui::largeur_affichee(&affichee) <= LIGNE_DU_GROUPE && affichee.len() <= LIGNE_DU_GROUPE_OCTETS {
+        return affichee;
+    }
+    let debut = crate::ui::couper(&affichee, LIGNE_DU_GROUPE.saturating_sub(30));
+    let debut = debut_borne(&debut, LIGNE_DU_GROUPE_OCTETS.saturating_sub(160));
+    let mut fin: Vec<char> = Vec::new();
+    let mut octets = 0usize;
+    for c in affichee.chars().rev().take(24) {
+        octets = octets.saturating_add(c.len_utf8());
+        if octets > 96 {
+            break;
+        }
+        fin.push(c);
+    }
+    let fin: String = fin.into_iter().rev().collect();
+    trf!(
+        "{debut}{fin} (coupée, {} caractères, groupe {})",
+        "{debut}{fin} (cut, {} characters, group {})",
+        affichee.chars().count(),
+        trace.get(..8).unwrap_or(trace)
+    )
+}
+
+/// Le début de `texte` qui tient en `octets` octets, coupé sur une limite de caractère (« … » à la fin s'il a fallu
+/// couper).
+fn debut_borne(texte: &str, octets: usize) -> String {
+    if texte.len() <= octets {
+        return texte.to_string();
+    }
+    let mut fin = octets.saturating_sub('…'.len_utf8());
+    while !texte.is_char_boundary(fin) {
+        fin = fin.saturating_sub(1);
+    }
+    format!("{}…", texte.get(..fin).unwrap_or_default())
+}
+
+/// L'empreinte d'une unité du dossier de la session, pour son groupe (`Lancements::groupes`) : ses lignes telles que
+/// systemd les lit (`lignes_de_systemd` : sans commentaires ni lignes vides, rognées de ses seuls blancs), en lettres.
+/// `None`, jamais groupée : une unité qui ne se lit pas en entier ou pas en UTF-8, ou qui a un dossier de compléments
+/// à côté d'elle (« nom.service.d », « préfixe-.service.d »…), qui peut la changer à elle seule.
+fn empreinte_d_unite(f: &Path, lu: &Lecture) -> Option<String> {
+    if !lu.utf8 || !lu.entier {
+        return None;
+    }
+    let nom = f.file_name()?.to_str()?;
+    let dossier = f.parent()?;
+    if ajouts_de(nom)
+        .iter()
+        .any(|d| std::fs::symlink_metadata(dossier.join(d)).is_ok())
+    {
+        return None;
+    }
+    let lignes: Vec<String> = lignes_de_systemd(&lu.texte).into_iter().map(|l| l.texte).collect();
+    Some(trace_en_lettres(lignes.join("\n").as_bytes(), 16))
 }
 
 /// Ce qu'il faut pour relever ce que désigne une ligne : la racine lue, le dossier personnel, le dossier de la
@@ -12702,10 +12793,13 @@ fn juger_lancement(
     // Ce qui ne se lit pas sûrement ne se déclare pas normal : ce qu'un choix lierait ne dirait pas ce qui se lance.
     let ambigue =
         ambigue || hors_liste || [shell_non_lu(), non_resolu_systemd(), variable_inconnue()].contains(&&*raison);
+    let temoins = t.temoins.len();
     lever(t, f, lu, n, ligne, commande, ambigue, sorte, retirable, &raison);
     // La sauvegarde de Vanguard reconnue à sa forme exacte, mais levée pour ce qui la change (~/.popt, complément,
     // variables, programme du compte) : le refus dit cela et comment la remettre, pas « ligne ambiguë » (point 10).
+    // Seulement le témoin que `lever` vient de poser : une ligne comptée dans un groupe n'en pose pas.
     if matches!(lecteur, Lecteur::Systemd(c) if c.sauvegarde.is_some())
+        && t.temoins.len() > temoins
         && let Some(dernier) = t.temoins.last_mut()
     {
         let ou = crate::ui::affichable(&court(f, &t.r.maison));
@@ -12799,20 +12893,42 @@ fn lever(
 ) {
     let perso = t.r.maison.clone();
     let ou = format!("{}:{}", court(f, &perso), n.saturating_add(1));
-    // Une unité du dossier de la session (jamais déclarable : `refus_ajoute`) qui porte mot pour mot une ligne déjà
-    // levée pour la même raison dans une autre : comptée avec elle, une seule ligne de l'alerte. Une ligne qui
-    // n'est pas la même, ou pas pour la même raison, reste seule. Jamais une ligne à « % » ou « $ » : systemd y met
-    // le nom de l'unité, son dossier ou une variable, et deux mêmes textes peuvent y lancer deux programmes.
-    let groupable = t.r.de_la_session(f) && matches!(sorte, Sorte::Ajoutee(_)) && !ligne.contains(['%', '$']);
-    let cle = (ligne.trim().to_string(), raison.to_string());
-    if groupable && let Some(g) = t.groupes.get_mut(&cle) {
-        g.nombre = g.nombre.saturating_add(1);
-        if g.exemples.len() < EXEMPLES_DU_GROUPE {
-            g.exemples.push(ou);
+    // Une unité du dossier de la session (jamais déclarable : `refus_ajoute`) faite mot pour mot des mêmes lignes
+    // qu'une autre, qui lève la même ligne pour la même raison : comptée avec elle, une seule ligne de l'alerte. Une
+    // unité qui diffère d'un octet (une ligne, un réglage à côté, un blanc Unicode), une raison autre, une deuxième
+    // ligne pareille du même fichier : seules et nommées. Seulement une ligne d'unité de la session
+    // (`Ajout::Session` : pas une ligne jointe, un générateur ni un réglage), jamais une ligne à « % » ou « $ » :
+    // systemd y met le nom de l'unité, son dossier ou une variable, et deux mêmes textes peuvent y lancer deux
+    // programmes.
+    let mut groupe = None;
+    if matches!(sorte, Sorte::Ajoutee(Ajout::Session)) && !ligne.contains(['%', '$']) {
+        let empreinte = match &t.derniere_unite {
+            Some((vu, e)) if vu == f => e.clone(),
+            _ => {
+                let e = empreinte_d_unite(f, lu);
+                t.derniere_unite = Some((f.to_path_buf(), e.clone()));
+                e
+            }
+        };
+        groupe = empreinte.map(|e| (ligne.to_string(), raison.to_string(), e));
+    }
+    if let Some(cle) = &groupe
+        && let Some(g) = t.groupes.get_mut(cle)
+    {
+        if g.fichiers.insert(f.to_path_buf()) {
+            g.nombre = g.nombre.saturating_add(1);
+            if let Some(d) = f.parent() {
+                g.dossiers.insert(crate::modele::id::chemin(&d.to_string_lossy()));
+            }
+            if g.exemples.len() < EXEMPLES_DU_GROUPE {
+                g.exemples.push(ou);
+            }
+            // Un geste qui ne retirerait que la première se croirait complet : tout reste à la main.
+            t.retraits.push(None);
+            return;
         }
-        // Un geste qui ne retirerait que la première se croirait complet : tout reste à la main.
-        t.retraits.push(None);
-        return;
+        // La même ligne deux fois dans une unité du groupe : celle-ci reste seule.
+        groupe = None;
     }
     t.sources
         .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), ligne));
@@ -12826,15 +12942,22 @@ fn lever(
     };
     let temoin = temoin_de_ligne(t, f, n, lu, ligne, designe, true, sorte);
     t.temoins.push(temoin);
-    if groupable {
+    if let Some(cle) = groupe {
         // La ligne de l'alerte attend la fin de la lecture (`constat_des_lancements`) : seule, la même qu'avant.
         let indice = t.sources.len().saturating_sub(1);
-        let (ligne, raison) = cle.clone();
+        let (ligne, raison, empreinte) = cle.clone();
         t.groupes.insert(
             cle,
             Groupe {
                 indice,
                 nombre: 1,
+                fichiers: std::iter::once(f.to_path_buf()).collect(),
+                dossiers: f
+                    .parent()
+                    .map(|d| crate::modele::id::chemin(&d.to_string_lossy()))
+                    .into_iter()
+                    .collect(),
+                empreinte,
                 premiere: ou,
                 exemples: Vec::new(),
                 ligne,
@@ -12843,7 +12966,11 @@ fn lever(
         );
         return;
     }
-    t.suspects.push(trf!("{ou} : {raison}", "{ou}: {raison}"));
+    let suspect = trf!("{ou} : {raison}", "{ou}: {raison}");
+    if t.r.de_la_session(f) {
+        t.de_session.insert(suspect.clone());
+    }
+    t.suspects.push(suspect);
 }
 
 /// Ce qu'une ligne d'un fichier .conf de Hyprland lance, au-delà de `commande_lancee_lue` : un raccourci (toute forme
@@ -14284,6 +14411,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         format,
         hors,
         groupes,
+        mut de_session,
         ..
     } = t;
     // Chaque ligne d'un groupe de plus d'une compte pour une ligne signalée (le total et le reste par fichier disent
@@ -14299,9 +14427,12 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         if g.nombre > 1 {
             poids.insert(suspect.clone(), g.nombre);
         }
+        de_session.insert(suspect.clone());
         suspects.push(suspect);
     }
-    suspects.sort();
+    // Les lignes d'ailleurs d'abord, celles du dossier de la session ensuite : des leurres posés dans la session ne
+    // font jamais passer une vraie ligne de ~/.config hors des lignes montrées ni hors des noms du reste.
+    suspects.sort_by(|a, b| (de_session.contains(a), a).cmp(&(de_session.contains(b), b)));
     suspects.dedup();
     informations.sort();
     informations.dedup();
@@ -14350,7 +14481,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
             " ; et {} autre(s), par fichier : {}",
             "; and {} more, by file: {}",
             suite.iter().map(compte).fold(0usize, usize::saturating_add),
-            reste_par_fichier(&suite, &poids)
+            reste_par_fichier(&suite, &poids, &de_session)
         );
     }
     message.push('.');
@@ -14489,13 +14620,21 @@ fn fichier_signale(ligne: &str) -> Option<&str> {
 /// Les lignes signalées au-delà des premières, groupées par fichier avec leur nombre (une ligne sans fichier,
 /// en entier) : une ligne de plus dans un fichier déjà signalé change son nombre, un fichier de plus se nomme
 /// (deuxième vérification : « et 56 autre(s) » cachait la 63e). Une ligne d'un groupe d'unités (`poids` : son
-/// nombre de lignes) se dit à part, avec ce nombre. Au plus `RESTE_NOMMES` morceaux nommés (LNX-PRS-002 : des
-/// milliers de fichiers nommés un par un) ; les autres sont comptés, fichiers et lignes, jamais tus.
-fn reste_par_fichier(suite: &[String], poids: &std::collections::HashMap<String, usize>) -> String {
+/// nombre d'unités) se dit à part, avec ce nombre. Chaque fichier d'ailleurs que le dossier de la session est
+/// toujours nommé, d'abord ; ceux de la session (`session`) ensuite, au plus `RESTE_NOMMES` morceaux (LNX-PRS-002 :
+/// des milliers d'unités nommées une par une) ; les autres sont comptés, fichiers et lignes, jamais tus.
+fn reste_par_fichier(
+    suite: &[String],
+    poids: &std::collections::HashMap<String, usize>,
+    session: &std::collections::HashSet<String>,
+) -> String {
     let mut fichiers: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut fichiers_session: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     let mut groupes: Vec<(String, usize)> = Vec::new();
     let mut seules: Vec<&str> = Vec::new();
+    let mut seules_session: Vec<&str> = Vec::new();
     for l in suite {
+        let de_session = session.contains(l);
         match (fichier_signale(l), poids.get(l)) {
             (Some(f), Some(&n)) => groupes.push((
                 trf!(
@@ -14506,31 +14645,43 @@ fn reste_par_fichier(suite: &[String], poids: &std::collections::HashMap<String,
                 n,
             )),
             (Some(f), None) => {
-                let n = fichiers.entry(f).or_insert(0);
+                let n = if de_session {
+                    fichiers_session.entry(f).or_insert(0)
+                } else {
+                    fichiers.entry(f).or_insert(0)
+                };
                 *n = n.saturating_add(1);
             }
+            (None, _) if de_session => seules_session.push(l),
             (None, _) => seules.push(l),
         }
     }
-    // Chaque morceau et son nombre de lignes signalées.
-    let mut morceaux: Vec<(String, usize)> = fichiers.into_iter().map(|(f, n)| (format!("{f} ({n})"), n)).collect();
-    morceaux.extend(groupes);
-    morceaux.extend(seules.into_iter().map(|l| (l.to_string(), 1)));
-    let reste = morceaux.split_off(morceaux.len().min(RESTE_NOMMES));
-    let mut texte = morceaux.into_iter().map(|(m, _)| m).collect::<Vec<_>>().join(", ");
+    let mut nommes: Vec<String> = fichiers.into_iter().map(|(f, n)| format!("{f} ({n})")).collect();
+    nommes.extend(seules.into_iter().map(str::to_string));
+    // Chaque morceau de la session et son nombre de lignes signalées.
+    let mut bornes: Vec<(String, usize)> = fichiers_session
+        .into_iter()
+        .map(|(f, n)| (format!("{f} ({n})"), n))
+        .collect();
+    bornes.extend(groupes);
+    bornes.extend(seules_session.into_iter().map(|l| (l.to_string(), 1)));
+    let reste = bornes.split_off(bornes.len().min(RESTE_NOMMES));
+    nommes.extend(bornes.into_iter().map(|(m, _)| m));
+    let mut texte = nommes.join(", ");
     if !reste.is_empty() {
         let lignes = reste.iter().fold(0usize, |t, (_, n)| t.saturating_add(*n));
         let _ = trw!(
             texte,
-            ", et {} autre(s) non nommé(s) ({lignes} ligne(s))",
-            ", and {} more not named ({lignes} line(s))",
+            ", et {} autre(s) du dossier de la session non nommé(s) ({lignes} ligne(s))",
+            ", and {} more from the session folder not named ({lignes} line(s))",
             reste.len()
         );
     }
     texte
 }
 
-/// Au plus autant de fichiers (ou groupes, ou lignes sans fichier) nommés au-delà des lignes montrées en entier.
+/// Au plus autant de fichiers (ou groupes, ou lignes sans fichier) du dossier de la session nommés au-delà des
+/// lignes montrées en entier.
 const RESTE_NOMMES: usize = 20;
 
 /// Services système ajoutés à la main : souvent les tiens (scripts maison), parfois une persistance root. On les nomme
@@ -27369,7 +27520,7 @@ mod tests {
         );
         assert!(
             c.message
-                .contains("5263 unités du dossier de la session portent cette même ligne"),
+                .contains("5263 unités du dossier de la session, faites des mêmes lignes, portent cette même ligne"),
             "{}",
             c.message
         );
@@ -27462,7 +27613,8 @@ mod tests {
         );
         assert!(c.message.contains("et 294 autre(s), par fichier : "), "{}", c.message);
         assert!(
-            c.message.contains(", et 274 autre(s) non nommé(s) (274 ligne(s))"),
+            c.message
+                .contains(", et 274 autre(s) du dossier de la session non nommé(s) (274 ligne(s))"),
             "{}",
             c.message
         );
@@ -27475,6 +27627,297 @@ mod tests {
         // La dernière ligne changée, hors des sources nommées : la clé change quand même.
         std::fs::write(d.join("run-w299.service"), "[Service]\nExecStart=/tmp/.x/autre\n").unwrap();
         assert_ne!(m.lancements().objet, c.objet);
+    }
+
+    /// Écrit chaque (nom, texte) dans le dossier `sous` (relatif à la racine) de la maison `m`.
+    fn unites(m: &Maison, sous: &str, liste: &[(&str, &str)]) {
+        let d = m.racine.join(sous);
+        std::fs::create_dir_all(&d).unwrap();
+        for (nom, texte) in liste {
+            std::fs::write(d.join(nom), texte).unwrap();
+        }
+    }
+
+    const TRANSIENT: &str = "run/user/1000/systemd/transient";
+
+    /// Passe 2, DET1 : une ligne qui finit par un blanc Unicode (U+00A0) n'est pas la même pour systemd, qui ne
+    /// retire que ses blancs : jamais comptée dans le groupe des autres, nommée à part.
+    #[test]
+    fn groupe_blanc_unicode_final() {
+        let m = Maison::nouvelle("groupe-nbsp");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent --vite\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+                ("run-d.service", "[Service]\nExecStart=/tmp/.x/agent --vite\u{a0}\n"),
+            ],
+        );
+        let c = m.lancements();
+        assert!(c.message.contains("3 unités du dossier de la session"), "{}", c.message);
+        assert!(c.message.contains("transient/run-d.service:2 : "), "{}", c.message);
+    }
+
+    /// Passe 2, DET2 et ROB3 : des dizaines de leurres dans le dossier de la session ne font jamais sortir du
+    /// message une vraie ligne d'ailleurs (~/.config) : elle est montrée d'abord, et nommée.
+    #[test]
+    fn vraie_unite_hors_session_nommee() {
+        let m = Maison::nouvelle("groupe-leurres");
+        let leurres: Vec<(String, String)> = (0..30)
+            .map(|i| {
+                (
+                    format!("run-l{i:02}.service"),
+                    format!("[Service]\nExecStart=/tmp/.x/l{i}\n"),
+                )
+            })
+            .collect();
+        let liste: Vec<(&str, &str)> = leurres.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        unites(&m, TRANSIENT, &liste);
+        m.ecrire(
+            ".config/systemd/user/vrai.service",
+            "[Service]\nExecStart=/tmp/.z/porte\n[Install]\nWantedBy=default.target\n",
+        );
+        m.ecrire(
+            ".config/autostart/mal.desktop",
+            "[Desktop Entry]\nType=Application\nName=m\nExec=/tmp/.x/mal2\n",
+        );
+        let c = m.lancements();
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (32 ligne(s))"),
+            "{}",
+            c.message
+        );
+        let montrees = c.message.split(" ; et ").next().unwrap_or_default();
+        for f in [
+            "~/.config/systemd/user/vrai.service:2",
+            "~/.config/autostart/mal.desktop:4",
+        ] {
+            assert!(montrees.contains(f), "{f} pas montré d'abord : {}", c.message);
+        }
+        // Avec 60 leurres, les noms du reste sont bornés pour la session seulement.
+        let m = Maison::nouvelle("groupe-leurres-reste");
+        let leurres: Vec<(String, String)> = (0..60)
+            .map(|i| {
+                (
+                    format!("run-l{i:02}.service"),
+                    format!("[Service]\nExecStart=/tmp/.x/l{i}\n"),
+                )
+            })
+            .collect();
+        let liste: Vec<(&str, &str)> = leurres.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        unites(&m, TRANSIENT, &liste);
+        let autres: Vec<String> = (0..8)
+            .map(|i| format!(".config/systemd/user/vrai{i}.service"))
+            .collect();
+        for f in &autres {
+            m.ecrire(f, "[Service]\nExecStart=/tmp/.z/porte\n");
+        }
+        let c = m.lancements();
+        for f in &autres {
+            assert!(c.message.contains(&format!("~/{f}")), "{f} : {}", c.message);
+        }
+        assert!(
+            c.message.contains("autre(s) du dossier de la session non nommé(s)"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// Passe 2, ROB1 et DET6 : la ligne commune se borne en octets, pas seulement en colonnes (des caractères de
+    /// largeur nulle n'en prennent aucune) ; deux lignes coupées pareilles au début se distinguent par leur fin et
+    /// leur groupe.
+    #[test]
+    fn ligne_commune_bornee_en_octets() {
+        let m = Maison::nouvelle("groupe-u0301");
+        let longue = format!(
+            "[Service]\nExecStart=\"/tmp/.x/agent\" \"a{}\"\n",
+            "\u{301}".repeat(100_000)
+        );
+        unites(&m, TRANSIENT, &[("run-a.service", &longue), ("run-b.service", &longue)]);
+        let c = m.lancements();
+        assert!(
+            c.message.contains("2 unités du dossier de la session"),
+            "{}",
+            &c.message[..400]
+        );
+        assert!(c.message.contains("(coupée, "), "{}", &c.message[..400]);
+        assert!(c.message.len() < 4096, "{} octets", c.message.len());
+        let m = Maison::nouvelle("groupe-coupees");
+        let a = format!("[Service]\nExecStart=/tmp/.x/agent {} un\n", "x".repeat(200));
+        let b = format!("[Service]\nExecStart=/tmp/.x/agent {} deux\n", "x".repeat(200));
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a1.service", &a),
+                ("run-a2.service", &a),
+                ("run-b1.service", &b),
+                ("run-b2.service", &b),
+            ],
+        );
+        let c = m.lancements();
+        assert!(c.message.contains("xxx un (coupée, "), "{}", c.message);
+        assert!(c.message.contains("xxx deux (coupée, "), "{}", c.message);
+        assert_eq!(c.message.matches(", groupe ").count(), 2, "{}", c.message);
+    }
+
+    /// Passe 2, ROB2 et DET3 : une unité à la même ligne mais à un autre réglage à côté (dossier courant, commande
+    /// d'avant) ne lance pas la même chose : jamais comptée dans le groupe, nommée à part ; la clé change.
+    #[test]
+    fn unite_au_contexte_different_seule() {
+        let commune = "[Service]\nWorkingDirectory=/opt/app\nExecStart=/tmp/.x/agent\n";
+        for (nom, autre) in [
+            (
+                "groupe-dossier",
+                "[Service]\nWorkingDirectory=/home/alice/Documents\nExecStart=/tmp/.x/agent\n",
+            ),
+            (
+                "groupe-avant",
+                "[Service]\nWorkingDirectory=/opt/app\nExecStartPre=/usr/bin/true\nExecStart=/tmp/.x/agent\n",
+            ),
+        ] {
+            let m = Maison::nouvelle(nom);
+            unites(
+                &m,
+                TRANSIENT,
+                &[
+                    ("run-a.service", commune),
+                    ("run-b.service", commune),
+                    ("run-c.service", commune),
+                ],
+            );
+            let seules = m.lancements();
+            unites(&m, TRANSIENT, &[("run-zz.service", autre)]);
+            let c = m.lancements();
+            assert!(
+                c.message.contains("3 unités du dossier de la session"),
+                "{nom} : {}",
+                c.message
+            );
+            assert!(c.message.contains("transient/run-zz.service:"), "{nom} : {}", c.message);
+            unites(&m, TRANSIENT, &[("run-zz.service", commune)]);
+            let pareille = m.lancements();
+            assert!(
+                pareille.message.contains("4 unités du dossier"),
+                "{nom} : {}",
+                pareille.message
+            );
+            assert_eq!(pareille.objet, seules.objet, "{nom}");
+            assert_ne!(c.objet, pareille.objet, "{nom}");
+        }
+    }
+
+    /// Passe 2, DET5 et ROB5 : deux lignes pareilles dans une seule unité ne font pas « 2 unités » : chacune reste
+    /// seule, avec la clé d'avant. Les réglages pareils de plusieurs unités (Environment=) ne se groupent
+    /// pas : chacun est nommé.
+    #[test]
+    fn deux_lignes_pareilles_d_une_unite() {
+        let m = Maison::nouvelle("groupe-une-unite");
+        unites(
+            &m,
+            TRANSIENT,
+            &[(
+                "run-seule.service",
+                "[Service]\nType=oneshot\nExecStart=/tmp/.x/agent\nExecStart=/tmp/.x/agent\n",
+            )],
+        );
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("run-seule.service:3 : "), "{}", c.message);
+        assert!(c.message.contains("run-seule.service:4 : "), "{}", c.message);
+        let m = Maison::nouvelle("groupe-reglages");
+        let r = "[Service]\nEnvironment=LD_PRELOAD=/tmp/x.so\nExecStart=/usr/bin/sleep 60\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[("run-a.service", r), ("run-b.service", r), ("run-c.service", r)],
+        );
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (3 ligne(s))"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// Passe 2, DET4 : une unité pareille d'un autre dossier de la session (user/, faite pour durer) change la clé
+    /// du groupe ; l'empreinte du groupe et du reste est en lettres, que la comparaison des bilans voit changer.
+    #[test]
+    fn groupe_dossier_de_plus_change_la_cle() {
+        let m = Maison::nouvelle("groupe-dossiers");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(&m, TRANSIENT, &[("run-a.service", commune), ("run-b.service", commune)]);
+        let avant = m.lancements();
+        unites(&m, "run/user/1000/systemd/user", &[("garde.service", commune)]);
+        let apres = m.lancements();
+        assert!(apres.message.contains("3 unités du dossier"), "{}", apres.message);
+        assert_ne!(apres.objet, avant.objet);
+        let objet = apres.objet.texte().unwrap_or_default().to_string();
+        let trace = objet.split("session-groupe#").nth(1).unwrap_or_default();
+        assert_eq!(trace.len(), 16, "{objet}");
+        assert!(trace.chars().all(|c| ('a'..='p').contains(&c)), "{objet}");
+        assert!(trace_en_lettres(b"x", 32).chars().all(|c| ('a'..='p').contains(&c)));
+    }
+
+    /// Passe 2, ROB4 : ce qui ne se groupe jamais. Une ligne à « $ », des unités pareilles d'un dossier ajouté
+    /// (user.attached) ou hors du dossier de la session, une unité qui a un dossier de compléments à côté d'elle.
+    #[test]
+    fn jamais_groupees() {
+        let m = Maison::nouvelle("groupe-dollar");
+        let d = "[Service]\nExecStart=/tmp/.x/$FOO\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[("run-a.service", d), ("run-b.service", d), ("run-c.service", d)],
+        );
+        assert!(!m.lancements().message.contains("unités du dossier"));
+        let m = Maison::nouvelle("groupe-attache");
+        for n in ["a", "b", "c"] {
+            m.ecrire(
+                &format!(".config/systemd/user.attached/{n}.service"),
+                "[Service]\nExecStart=/tmp/.x/agent\n",
+            );
+        }
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (3 ligne(s))"),
+            "{}",
+            c.message
+        );
+        let m = Maison::nouvelle("groupe-hors-session");
+        for n in ["a", "b", "c"] {
+            m.ecrire(
+                &format!(".config/systemd/user/{n}.service"),
+                "[Service]\nExecStart=/tmp/.x/agent\n",
+            );
+        }
+        let c = m.lancements();
+        assert!(!c.message.contains("unités du dossier"), "{}", c.message);
+        assert!(
+            c.message.starts_with("Lancement automatique suspect (3 ligne(s))"),
+            "{}",
+            c.message
+        );
+        let m = Maison::nouvelle("groupe-complement");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+            ],
+        );
+        std::fs::create_dir_all(m.racine.join(TRANSIENT).join("run-c.service.d")).unwrap();
+        let c = m.lancements();
+        assert!(c.message.contains("2 unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("transient/run-c.service:2 : "), "{}", c.message);
     }
 
     /// Deuxième vérification de la campagne E : le détail des variables se lit en quelques lignes (une par sorte de
@@ -28676,7 +29119,11 @@ mod tests {
             .map(str::to_string)
             .collect();
         assert_eq!(
-            reste_par_fichier(&suite, &std::collections::HashMap::new()),
+            reste_par_fichier(
+                &suite,
+                &std::collections::HashMap::new(),
+                &std::collections::HashSet::new()
+            ),
             "~/a.lua (2), ~/b.lua (1), source borne"
         );
         let m = Maison::nouvelle("relecture2-groupe");

@@ -13,10 +13,12 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
 
 - **Linux : des milliers d'unités identiques ne font plus un bilan géant.** Des unités échouées de systemd-run laissées
   dans le dossier de la session, qui lancent toutes la même ligne, se disent en une seule ligne de l'alerte avec leur
-  nombre et quelques exemples ; une unité qui lance autre chose reste seule et nommée, et rien n'est caché ni baissé.
-  Le message et la clé de l'alerte restent bornés : au-delà, le reste est compté, jamais tu. L'historique des bilans
-  ne dépasse plus ce qu'il sait relire (les bilans les plus anciens sont retirés), et un historique illisible est mis
-  de côté sans être relu ; s'il ne peut pas l'être, il est laissé tel quel, et c'est dit.
+  nombre et quelques exemples. Seules se groupent des unités faites mot pour mot des mêmes lignes : une unité dont une
+  seule ligne diffère, d'un octet, reste seule et nommée, et une ligne venue d'ailleurs que de ce dossier est toujours
+  nommée, avant les autres ; rien n'est caché ni baissé. Le message et la clé de l'alerte restent bornés, en octets
+  comme en largeur : au-delà, le reste est compté, jamais tu. L'historique des bilans ne dépasse plus ce qu'il sait
+  relire (les bilans les plus anciens sont retirés), et un historique abîmé est mis de côté sans être relu ; un
+  historique qu'on ne peut pas lire ou mettre de côté est laissé tel quel, et le bilan le dit « non vérifié ».
 
 ## 25 novembre 2026 : version 0.99.0
 
