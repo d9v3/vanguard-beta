@@ -1506,6 +1506,7 @@ mod tests {
 
     /// Le texte montré, sans les couleurs que Vanguard y met lui-même : ce qui reste ne doit rien contenir qui pilote
     /// le terminal.
+    #[cfg(unix)]
     fn sans_couleurs(texte: &str) -> String {
         [
             VERT,
@@ -1521,6 +1522,7 @@ mod tests {
 
     /// Les pièges posés dans un historique.json par un programme du compte : effacer la ligne et remonter (CSI), le
     /// presse-papier (OSC 52), un retour chariot, un CSI d'un octet (C1), un retournement bidi.
+    #[cfg(unix)]
     const PIEGES: &str = "\u{1b}[2K\u{1b}[3A\r\u{1b}]52;c;QQ==\u{7}\u{9b}2J\u{202e}\u{2066}";
 
     /// Passe 6, H6-2 et R6-1 : en administrateur chez un compte, le bilan précédent lu dans l'historique du compte
