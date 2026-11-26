@@ -9,6 +9,15 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
+## 0.100 (en préparation)
+
+- **Linux : des milliers d'unités identiques ne font plus un bilan géant.** Des unités échouées de systemd-run laissées
+  dans le dossier de la session, qui lancent toutes la même ligne, se disent en une seule ligne de l'alerte avec leur
+  nombre et quelques exemples ; une unité qui lance autre chose reste seule et nommée, et rien n'est caché ni baissé.
+  Le message et la clé de l'alerte restent bornés : au-delà, le reste est compté, jamais tu. L'historique des bilans
+  ne dépasse plus ce qu'il sait relire (les bilans les plus anciens sont retirés), et un historique illisible est mis
+  de côté sans être relu ; s'il ne peut pas l'être, il est laissé tel quel, et c'est dit.
+
 ## 25 novembre 2026 : version 0.99.0
 
 - **Windows : la fenêtre ne garde plus les fichiers du terminal.** Lancée par `vanguard 2> erreurs.txt`, la fenêtre

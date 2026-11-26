@@ -9,6 +9,15 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
+## 0.100 (in preparation)
+
+- **Linux: thousands of identical units no longer make a giant check.** Failed systemd-run units left in the session
+  folder that all start the same line are reported as one line of the alert, with their number and a few examples; a
+  unit that starts something else stays on its own and named, and nothing is hidden or lowered. The alert's message
+  and key stay bounded: beyond that, the rest is counted, never silenced. The check history no longer grows beyond
+  what it can read back (the oldest checks are removed), and an unreadable history is set aside without being read;
+  if it cannot be, it is left as is, and this is said.
+
 ## November 25, 2026: version 0.99.0
 
 - **Windows: the window no longer holds the terminal's files.** Started by `vanguard 2> errors.txt`, the window kept
