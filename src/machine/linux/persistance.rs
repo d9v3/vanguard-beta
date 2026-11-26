@@ -8092,7 +8092,7 @@ fn nom_d_unite_valide(nom: &str) -> bool {
             .all(|o| o.is_ascii_alphanumeric() || b":-_.\\@".contains(&o))
 }
 
-/// Le dossier de session que systemd donne au compte qui lance Vanguard (`uid`), « /run/user/<uid> ». Aucun en
+/// Le dossier de session que systemd donne au compte qui lance Vanguard (`uid`), `/run/user/<uid>`. Aucun en
 /// administrateur dans le dossier personnel d'un autre compte (`proprietaire`, inconnu compris) : /run/user/0 n'est
 /// pas sa session, et le lire taisait la sienne ; sans XDG_RUNTIME_DIR, c'est alors dit non vérifié (passe 4, N4-1).
 fn session_de_systemd_pour(uid: Option<u32>, proprietaire: Option<u32>) -> Option<std::path::PathBuf> {
