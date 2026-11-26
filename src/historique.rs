@@ -865,13 +865,13 @@ mod tests {
         assert!(rendu.empreinte.is_some());
         assert!(std::fs::symlink_metadata(&chemin).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&cible).unwrap(), "[");
-        assert!(copies(&dossier).is_empty());
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
         // Un dossier à sa place non plus.
         std::fs::remove_file(&chemin).unwrap();
         std::fs::create_dir(&chemin).unwrap();
         let _ = enregistrer_dans_borne(&chemin, b(81, &[]), HISTORIQUE_MAX);
         assert!(std::fs::metadata(&chemin).unwrap().is_dir());
-        assert!(copies(&dossier).is_empty());
+        assert_eq!(copies(&dossier), Vec::<PathBuf>::new());
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
