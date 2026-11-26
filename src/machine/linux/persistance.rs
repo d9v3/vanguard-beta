@@ -1216,8 +1216,13 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
     };
     let (de_systemd, session_inconnue) = match session_de_systemd_pour(racine, uid_du_compte(), proprietaire) {
         Ok(s) => (Some(s), None),
-        Err(raison) => (None, runtime.is_none().then(|| raison.to_string())),
+        // R6-2 (relecture du lot ecritures-suite) : la raison se garde aussi quand XDG_RUNTIME_DIR est posée ; ce dossier
+        // se lit, mais rien ne dit que c'est celui que le gestionnaire du compte lit : c'est dit (non vérifié).
+        Err(raison) => (None, Some(raison.to_string())),
     };
+    // R6-5 : en administrateur dans le dossier d'un autre compte, ce qu'il y range se lit avec ses droits à lui
+    // (`Releveur::lire_borne`) : un lien qu'il pose vers un fichier fermé (à root, illisible aux autres) n'est pas suivi.
+    let compte_lu = proprietaire.filter(|c| *c != 0 && uid_du_compte() == Some(0));
     let session = runtime.clone().or_else(|| de_systemd.clone());
     // XDG_RUNTIME_DIR ailleurs que le dossier que systemd donne au compte : un programme du compte peut changer la
     // variable d'où Vanguard est lancé, le gestionnaire de la session lit toujours /run/user/<uid> (relecture
@@ -1284,6 +1289,7 @@ fn releveur(racine: &Path, maison: &Path, variable: &impl Fn(&str) -> Option<std
         session_de_systemd,
         session_sure,
         session_inconnue,
+        compte_lu,
         donnees_systeme: liste("XDG_DATA_DIRS"),
         config_systeme: liste("XDG_CONFIG_DIRS"),
         uwsm_session,
@@ -1493,13 +1499,21 @@ pub(super) fn persistance_dans(
     // « systemd-run --user » et les générateurs y rangent n'est pas vérifié, et ce n'est pas « rien de suspect ».
     if let Some(raison) = t.r.session_inconnue.clone() {
         let raison = crate::ui::affichable(&raison);
-        constat_sans_ligne(
-            &mut t,
-            "session inconnue",
+        let message = if t.r.runtime.is_some() {
+            trf!(
+                "le dossier de session du compte n'est pas connu ({raison}) : XDG_RUNTIME_DIR se lit, mais rien ne dit que c'est le dossier que lit son gestionnaire ; les unités de sa session (systemd-run --user, générateurs) ne sont pas toutes vérifiées (non vérifié)",
+                "the account's session folder is not known ({raison}): XDG_RUNTIME_DIR is read, but nothing shows it is the folder its manager reads; the units of its session (systemd-run --user, generators) are not all checked (not verified)"
+            )
+        } else {
             trf!(
                 "le dossier de session du compte n'est pas connu ({raison}) et XDG_RUNTIME_DIR manque : les unités de sa session (systemd-run --user, générateurs) ne sont pas vérifiées (non vérifié)",
                 "the account's session folder is not known ({raison}) and XDG_RUNTIME_DIR is missing: the units of its session (systemd-run --user, generators) are not checked (not verified)"
-            ),
+            )
+        };
+        constat_sans_ligne(
+            &mut t,
+            "session inconnue",
+            message,
             trf!(
                 "session du compte non vérifiée ({raison}) : l'alerte ne se déclare pas normale tant qu'elle ne se lit pas",
                 "account session not verified ({raison}): the alert cannot be declared normal while it cannot be read"
@@ -2570,9 +2584,13 @@ struct Releveur {
     /// personnel : seules ses unités se bornent dans le reste et se groupent (passe 3, N2). Faux quand XDG_RUNTIME_DIR
     /// mène ailleurs ou que le compte ne se connaît pas : tout est nommé.
     session_sure: bool,
-    /// Ni XDG_RUNTIME_DIR ni dossier de session de systemd connu (`session_de_systemd_pour`) : pourquoi. Aucune unité
-    /// de la session n'est lue, c'est dit non vérifié (passe 5, S5-1).
+    /// Le dossier de session que systemd donne au compte ne se connaît pas (`session_de_systemd_pour`) : pourquoi. Sans
+    /// XDG_RUNTIME_DIR, aucune unité de la session n'est lue (passe 5, S5-1) ; avec, ce dossier se lit sans preuve que
+    /// c'est le bon (R6-2). Les deux se disent non vérifiés.
     session_inconnue: Option<String>,
+    /// Le compte dont root lit le dossier personnel (R6-5) : ce qui se lit chez lui (dossier personnel, dossiers XDG,
+    /// session) se lit comme lui le lirait, propriétaire ou ouvert à tous ; `None` hors de ce cas.
+    compte_lu: Option<u32>,
     /// XDG_DATA_DIRS et XDG_CONFIG_DIRS (chemins absolus seulement), où systemd cherche aussi des unités.
     donnees_systeme: Vec<std::path::PathBuf>,
     config_systeme: Vec<std::path::PathBuf>,
@@ -2731,6 +2749,28 @@ impl Releveur {
 
     /// Un chemin absolu de l'ordinateur, lu sous la racine (une arborescence fabriquée pour les essais et le
     /// corpus) ; le dossier personnel y est déjà.
+    /// `temoins::lire_borne`, sauf en administrateur chez un autre compte (`compte_lu`) : ce qui est sous ses dossiers
+    /// (personnel, XDG, session) se lit avec ses droits (`temoins::lire_borne_pour`), jamais un fichier fermé qu'un
+    /// de ses liens désigne (R6-5).
+    fn lire_borne(&self, f: &Path, max: u64) -> std::io::Result<temoins::Lu> {
+        let chez_lui = self.compte_lu.filter(|_| {
+            std::iter::once(&self.maison)
+                .chain(self.config.iter())
+                .chain(self.donnees.iter())
+                .chain(self.zdot.iter())
+                .chain(self.etat.iter())
+                .map(|d| self.sous(d))
+                .chain(
+                    self.session
+                        .iter()
+                        .chain(self.session_de_systemd.iter())
+                        .map(|d| self.sous(d)),
+                )
+                .any(|d| f.starts_with(d))
+        });
+        temoins::lire_borne_pour(f, max, chez_lui)
+    }
+
     fn sous(&self, chemin: &Path) -> std::path::PathBuf {
         if self.racine == Path::new("/") || chemin.starts_with(&self.racine) {
             chemin.to_path_buf()
@@ -3083,7 +3123,7 @@ fn lire_sinon(
     t: &mut Lancements,
     sinon: impl FnOnce(&mut Lancements, &std::io::Error),
 ) -> Option<Lecture> {
-    match temoins::lire_borne(f, LECTURE_MAX) {
+    match t.r.lire_borne(f, LECTURE_MAX) {
         Ok(lu) => {
             if !lu.entier {
                 non_lu(
@@ -28712,6 +28752,165 @@ mod tests {
             !messages.iter().any(|m| m.contains("run-porte.service:2")),
             "{messages:?}"
         );
+    }
+
+    /// La maison `m` lue comme root (UID_DU_COMPTE à 0), avec XDG_RUNTIME_DIR posée à `runtime` ; l'uid remis à la fin.
+    fn lancements_en_root_avec_runtime(m: &Maison, runtime: &Path) -> Vec<Constat> {
+        let runtime = runtime.to_path_buf();
+        UID_DU_COMPTE.with(|u| u.set(0));
+        let c = persistance_dans(
+            &m.racine,
+            &m.maison(),
+            |n| (n == "XDG_RUNTIME_DIR").then(|| runtime.clone().into_os_string()),
+            None,
+            None,
+        );
+        UID_DU_COMPTE.with(|u| u.set(1000));
+        c
+    }
+
+    /// R6-2 (relecture du lot ecritures-suite) : en administrateur chez un compte, XDG_RUNTIME_DIR posée et le dossier
+    /// que systemd donne au compte douteux (un lien) : la variable se lit, mais le doute est dit (non vérifié) ;
+    /// avant, il se taisait dès que la variable était là.
+    #[test]
+    fn root_chez_un_compte_session_douteuse_dite_meme_avec_runtime() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("root-session-lien-runtime");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 {
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        std::fs::create_dir_all(m.racine.join("ailleurs")).unwrap();
+        std::fs::create_dir_all(m.racine.join("run/user")).unwrap();
+        std::os::unix::fs::symlink(m.racine.join("ailleurs"), m.racine.join(format!("run/user/{compte}"))).unwrap();
+        let c = lancements_en_root_avec_runtime(&m, &m.racine.join("variable"));
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("le dossier de session du compte n'est pas connu")
+                    && m.contains("n'est pas un dossier au compte")
+                    && m.contains("XDG_RUNTIME_DIR se lit")
+                    && m.contains("(non vérifié)")),
+            "{messages:?}"
+        );
+    }
+
+    /// R6-4 : les deux autres raisons, au niveau du bilan. `/run/user` qui ne se lit pas (Illisible) : dit non vérifié ;
+    /// un dossier personnel dont le propriétaire ne se connaît pas (Proprietaire) : dit aussi.
+    #[test]
+    fn root_chez_un_compte_session_illisible_dite() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let m = Maison::nouvelle("root-session-illisible");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 {
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        let run = m.racine.join("run/user");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ouvert = std::fs::symlink_metadata(run.join(compte.to_string())).is_ok() || std::fs::read_dir(&run).is_ok();
+        let c = (!ouvert).then(|| lancements_en_root_sans_runtime(&m));
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let Some(c) = c else {
+            return crate::essais::saute("les droits ne ferment rien ici (vrai root) : /run/user se lit quand même");
+        };
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("le dossier de session du compte n'est pas connu")
+                    && m.contains("ne se lit pas")
+                    && m.contains("(non vérifié)")),
+            "{messages:?}"
+        );
+    }
+
+    /// R6-4 : le propriétaire du dossier personnel ne se connaît pas (le dossier n'existe pas) : en administrateur, la
+    /// session du compte n'est pas devinée, c'est dit.
+    #[test]
+    fn root_proprietaire_inconnu_dit() {
+        let m = Maison::nouvelle("root-proprietaire-inconnu");
+        let absente = m.racine.join("absente");
+        UID_DU_COMPTE.with(|u| u.set(0));
+        let c = persistance_dans(&m.racine, &absente, |_| None, None, None);
+        UID_DU_COMPTE.with(|u| u.set(1000));
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("le propriétaire du dossier personnel ne se connaît pas")
+                    && m.contains("(non vérifié)")),
+            "{messages:?}"
+        );
+    }
+
+    /// R6-4 : un vrai dossier `/run/user/<compte>`, mais à un autre propriétaire, n'est pas pris pour la session du
+    /// compte (le contrôle du propriétaire, pas seulement du type).
+    #[test]
+    fn session_d_un_autre_proprietaire_refusee() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("session-autre-proprietaire");
+        let moi = std::fs::metadata(m.maison()).unwrap().uid();
+        let autre = if moi == 4242 { 4243 } else { 4242 };
+        std::fs::create_dir_all(m.racine.join(format!("run/user/{autre}"))).unwrap();
+        let r = session_de_systemd_pour(&m.racine, Some(0), Some(autre));
+        assert!(
+            matches!(r, Err(SessionInconnue::PasAuCompte(_, c)) if c == autre),
+            "{r:?}"
+        );
+    }
+
+    /// R6-5 : en administrateur chez un compte, un lien qu'il pose vers un fichier fermé (à root, illisible aux
+    /// autres) n'est pas lu avec les droits de root : c'est dit non lu, avec sa raison. Sauté sans tel fichier.
+    #[test]
+    fn root_chez_un_compte_ne_lit_pas_un_fichier_ferme() {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = Maison::nouvelle("root-lien-ferme");
+        let compte = std::fs::metadata(m.maison()).unwrap().uid();
+        if compte == 0 {
+            return crate::essais::saute("le dossier d'essai est à root (unshare -r) : pas de compte autre que root");
+        }
+        let Some(ferme) = ["/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+            .into_iter()
+            .find(|f| std::fs::metadata(f).is_ok_and(|v| v.is_file() && v.uid() != compte && v.mode() & 0o004 == 0))
+        else {
+            return crate::essais::saute(
+                "aucun fichier fermé aux autres ici (/etc/shadow, /etc/gshadow, /etc/sudoers)",
+            );
+        };
+        let d = m.maison().join(".config/systemd/user");
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(ferme, d.join("porte.service")).unwrap();
+        let c = lancements_en_root_sans_runtime(&m);
+        let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("porte.service") && m.contains("fermé au compte")),
+            "{messages:?}"
+        );
+    }
+
+    /// R6-5 : `lire_borne_pour` lit avec les droits du compte donné : un fichier qui n'est pas à lui et fermé aux
+    /// autres est refusé (même si le processus pourrait le lire) ; ouvert à tous, ou sans compte, il se lit.
+    #[test]
+    fn lecture_avec_les_droits_du_compte() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let m = Maison::nouvelle("droits-du-compte");
+        let f = m.racine.join("ferme");
+        std::fs::write(&f, "x").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let moi = std::fs::metadata(&f).unwrap().uid();
+        let autre = moi.wrapping_add(1);
+        let e = temoins::lire_borne_pour(&f, 10, Some(autre))
+            .err()
+            .map(|e| e.to_string());
+        assert!(e.as_deref().is_some_and(|e| e.contains("fermé au compte")), "{e:?}");
+        assert!(temoins::lire_borne_pour(&f, 10, Some(moi)).is_ok());
+        assert!(temoins::lire_borne_pour(&f, 10, None).is_ok());
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(temoins::lire_borne_pour(&f, 10, Some(autre)).is_ok());
     }
 
     /// Passe 4, N4-3 : un fichier dont systemd refuse le nom (hors de sa liste permise) n'est jamais groupé ; il est

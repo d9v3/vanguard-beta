@@ -701,8 +701,27 @@ fn ouvrir(chemin: &std::path::Path, vu: &std::fs::Metadata, suivre: bool) -> std
 /// qu'un fichier ordinaire (`ouvrir`).
 #[cfg(unix)]
 pub(crate) fn lire_borne(chemin: &std::path::Path, max: u64) -> std::io::Result<Lu> {
+    lire_borne_pour(chemin, max, None)
+}
+
+/// `lire_borne` avec les droits du compte `compte` quand il est donné (R6-5, root chez un autre compte) : un fichier
+/// qui n'est pas à lui et qui est fermé aux autres (le compte ne pourrait pas le lire) est refusé avant d'être
+/// ouvert. Un fichier de son groupe est refusé aussi, le côté sûr : c'est dit illisible, jamais compté comme sain.
+/// `ouvrir` vérifie ensuite que le fichier ouvert est bien celui vu (même appareil, même numéro).
+#[cfg(unix)]
+pub(crate) fn lire_borne_pour(chemin: &std::path::Path, max: u64, compte: Option<u32>) -> std::io::Result<Lu> {
     use std::io::Read as _;
+    use std::os::unix::fs::MetadataExt as _;
     let vu = std::fs::metadata(chemin)?;
+    if let Some(compte) = compte
+        && vu.uid() != compte
+        && vu.mode() & 0o004 == 0
+    {
+        return Err(std::io::Error::other(trf!(
+            "fermé au compte {compte} (pas à lui, illisible aux autres) : pas lu avec les droits de root",
+            "closed to account {compte} (not its own, unreadable to others): not read with root's rights"
+        )));
+    }
     let fichier = ouvrir(chemin, &vu, true)?;
     let mut octets = Vec::new();
     fichier.take(max.saturating_add(1)).read_to_end(&mut octets)?;
