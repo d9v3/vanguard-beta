@@ -744,7 +744,8 @@ impl Systeme<'_> {
             (Ecart::DossierDeDepart, Some(x)) => {
                 // Coupé à 80 caractères, la coupure marquée d'un « … » (revérification 8).
                 let coupe = x.chars().nth(80).is_some();
-                let mut x = crate::ui::affichable(&x.chars().take(80).collect::<String>());
+                // Échappé comme la ligne commune (passe 4, R3) : l'argument ne ferme jamais lui-même « ».
+                let mut x = super::echappe_texte(&x.chars().take(80).collect::<String>());
                 if coupe {
                     x.push('…');
                 }

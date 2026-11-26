@@ -2271,7 +2271,14 @@ fn ligne_du_groupe(g: &Groupe) -> (String, Option<String>) {
     }
     let source = source_du_groupe(g);
     let montree = ligne_commune(&g.ligne, source.rsplit('#').next().unwrap_or_default());
-    let mut exemples = g.exemples.join(", ");
+    // Passe 4, R1 : les noms des unités (« run-… », choisis par qui les pose) s'échappent comme la ligne.
+    let ou = echappe_texte(ou);
+    let mut exemples = g
+        .exemples
+        .iter()
+        .map(|e| echappe_texte(e))
+        .collect::<Vec<_>>()
+        .join(", ");
     let non_nommees = g.nombre.saturating_sub(1).saturating_sub(g.exemples.len());
     if non_nommees > 0 {
         let _ = trw!(
@@ -2307,8 +2314,7 @@ fn source_du_groupe(g: &Groupe) -> String {
 /// nombre de caractères et le début de l'empreinte du groupe (`trace`) : deux lignes coupées pareilles se distinguent.
 fn ligne_commune(ligne: &str, trace: &str) -> String {
     let affichee = crate::ui::affichable(ligne);
-    let anglais = crate::langue::anglais();
-    let jetons: Vec<String> = affichee.chars().map(|c| echappee(c, anglais)).collect();
+    let jetons: Vec<String> = affichee.chars().map(echappee).collect();
     let entiere = jetons.concat();
     if crate::ui::largeur_affichee(&entiere) <= LIGNE_DU_GROUPE && entiere.len() <= LIGNE_DU_GROUPE_OCTETS {
         return entiere;
@@ -2346,17 +2352,56 @@ fn ligne_commune(ligne: &str, trace: &str) -> String {
     )
 }
 
-/// Un caractère de la ligne commune tel qu'il se montre entre les guillemets du message : précédé d'une barre
-/// oblique inverse s'il en est une, ou un guillemet qui pourrait fermer la ligne (les chevrons `«` et `»` en
-/// français, `"` en anglais). Une ligne ne ferme jamais elle-même ses guillemets pour écrire un faux texte dans l'alerte (passe 3,
-/// robustesse N2).
-fn echappee(c: char, anglais: bool) -> String {
-    let guillemet = if anglais { c == '"' } else { matches!(c, '«' | '»') };
-    if c == '\\' || guillemet {
+/// Un caractère venu d'un fichier (la ligne commune, un nom d'unité) tel qu'il se montre entre les guillemets du
+/// message. Précédé d'une barre oblique inverse : elle-même, tout guillemet des deux langues (droits, typographiques,
+/// chevrons simples ou doubles, pleine largeur ; passe 4, R2) et « … » (passe 4, R4 : le texte du fichier ne se dit
+/// jamais « coupé »). Un caractère qui ne se voit pas (accent combiné, liaison, sélecteur de variante) s'écrit en
+/// `\u{…}` (passe 4, ROB-N3) : une fin de ligne coupée ne se fait jamais d'invisibles. Une ligne ne ferme jamais
+/// elle-même ses guillemets pour écrire un faux texte dans l'alerte (passe 3, robustesse N2).
+fn echappee(c: char) -> String {
+    const GUILLEMETS: [char; 24] = [
+        '"', '«', '»', '“', '”', '„', '‟', '‹', '›', '‚', '‛', '″', '‶', '〝', '〞', '〟', '＂', '《', '》', '〈',
+        '〉', '「', '」', '…',
+    ];
+    if c == '\\' || GUILLEMETS.contains(&c) {
         format!("\\{c}")
+    } else if invisible(c) {
+        format!("\\u{{{:04x}}}", u32::from(c))
     } else {
         c.to_string()
     }
+}
+
+/// Un caractère qui se pose sur le précédent ou ne prend aucune place : ceux que `ui::largeur_car` compte à zéro,
+/// et les autres blocs d'accents combinés et de marques sans largeur les plus courants.
+fn invisible(c: char) -> bool {
+    crate::ui::largeur_car(c) == 0
+        || matches!(
+            u32::from(c),
+            0x0483..=0x0489
+                | 0x0591..=0x05C7
+                | 0x0610..=0x061A
+                | 0x064B..=0x065F
+                | 0x0670
+                | 0x06D6..=0x06ED
+                | 0x0E31..=0x0E3A
+                | 0x0E47..=0x0E4E
+                | 0x180B..=0x180F
+                | 0x1AB0..=0x1AFF
+                | 0x1DC0..=0x1DFF
+                | 0x2060..=0x2064
+                | 0x3099..=0x309A
+                | 0xFE20..=0xFE2F
+                | 0xFEFF
+                | 0xE0000..=0xE007F
+                | 0xE0100..=0xE01EF
+        )
+}
+
+/// Un texte venu d'un fichier (un nom d'unité, un argument), rendu affichable puis échappé (`echappee`) : passe 4,
+/// R1 et R3.
+fn echappe_texte(t: &str) -> String {
+    crate::ui::affichable(t).chars().map(echappee).collect()
 }
 
 /// L'empreinte d'une unité du dossier de la session, pour son groupe (`Lancements::groupes`) : ses lignes telles que
@@ -2408,6 +2453,12 @@ fn complements_des_dossiers(r: &Releveur) -> Option<Complements> {
             if genre.is_symlink() && !de_root_seul(&chemin) {
                 let vise = std::fs::read_link(&chemin).ok()?;
                 if let Some(v) = vise.file_name() {
+                    c.alias.insert(v.to_string_lossy().into_owned());
+                }
+                // Passe 4, P3-2 : un alias à plusieurs sauts nomme aussi l'unité au bout de la chaîne.
+                if let Ok(bout) = std::fs::canonicalize(&chemin)
+                    && let Some(v) = bout.file_name()
+                {
                     c.alias.insert(v.to_string_lossy().into_owned());
                 }
                 c.alias.insert(nom.clone());
@@ -5243,11 +5294,13 @@ fn dossiers_d_unites(r: &Releveur, utilisateur: bool) -> Result<Vec<std::path::P
         .map(|c| s(c))
         .collect());
     }
-    let Some(session) = r.runtime.as_deref() else {
+    // Passe 4, P3-1 : sans XDG_RUNTIME_DIR, le dossier que systemd donne au compte (/run/user/<uid>), la source même
+    // de `session_sure` ; sans lui, aucun groupe ne se formait plus.
+    let Some(session) = r.session.as_deref() else {
         return Err(temoins::Refus(
             tr!(
-                "le dossier de la session (XDG_RUNTIME_DIR) est inconnu : ce que systemd y ajoute à l'unité ne se vérifie pas",
-                "the session folder (XDG_RUNTIME_DIR) is unknown: what systemd adds to the unit there cannot be checked"
+                "le dossier de la session (XDG_RUNTIME_DIR, ou /run/user/<uid>) est inconnu : ce que systemd y ajoute à l'unité ne se vérifie pas",
+                "the session folder (XDG_RUNTIME_DIR, or /run/user/<uid>) is unknown: what systemd adds to the unit there cannot be checked"
             )
             .to_string(),
         ));
@@ -19602,6 +19655,18 @@ mod tests {
         let _ = entier.relatif.set("x".repeat(80));
         let dite = entier.raison_dite(e, "Path=");
         assert!(dite.contains(&format!("« {} »", "x".repeat(80))), "{dite}");
+        // Passe 4, R3 : l'argument ne ferme jamais lui-même « » pour écrire un faux texte.
+        let piege = permise::Systeme {
+            racine: Path::new("/"),
+            maison: "/home/alice",
+            maisons: &[],
+            courant: None,
+            noms_des_lieux: std::cell::OnceCell::new(),
+            relatif: std::cell::OnceCell::new(),
+        };
+        let _ = piege.relatif.set("a » est sûr ; « b".to_string());
+        let dite = piege.raison_dite(e, "Path=");
+        assert!(dite.contains("« a \\» est sûr ; \\« b »"), "{dite}");
         crate::langue::en_anglais(|| {
             let dite = s.raison_dite(e, "WorkingDirectory=");
             assert!(
@@ -20386,13 +20451,21 @@ mod tests {
             assert!(refus(&plus_tard).contains(attendu), "{attendu} : {}", refus(&plus_tard));
             assert!(!crate::apprentissage::essai_tait(&declare, &plus_tard), "{attendu}");
         }
-        // Sans dossier de la session, ce que systemd y ajouterait ne se vérifie pas.
+        // Passe 4, P3-1 : sans XDG_RUNTIME_DIR, le dossier que systemd donne au compte (/run/user/<uid>) se lit à sa
+        // place : rien n'est refusé faute de variable, et un complément qui y est posé se voit.
         let m = maison_avec_rappel("sans-session");
-        let c = persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
-            .into_iter()
-            .next()
-            .unwrap();
-        assert!(refus(&c).contains("XDG_RUNTIME_DIR"));
+        let sans_variable = || {
+            persistance_dans(&m.racine, &m.chemin(""), |_| None, None, None)
+                .into_iter()
+                .next()
+                .unwrap()
+        };
+        assert!(crate::apprentissage::declarable(&sans_variable()).is_ok());
+        let d = m.racine.join("run/user/1000/systemd/user/rappel.service.d");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("x.conf"), "[Service]\nWorkingDirectory=/tmp\n").unwrap();
+        let c = sans_variable();
+        assert!(refus(&c).contains("WorkingDirectory"), "{}", refus(&c));
     }
 
     /// R-3 (lot 096), bout en bout : une unité du compte ne se tait que si chaque clé est reconnue sûre, les
@@ -27638,7 +27711,7 @@ mod tests {
             c.message
         );
         assert!(
-            c.message.contains("ExecStart=\"/tmp/.x/agent\" \"--vite\""),
+            c.message.contains("ExecStart=\\\"/tmp/.x/agent\\\" \\\"--vite\\\""),
             "{}",
             c.message
         );
@@ -28183,6 +28256,90 @@ mod tests {
         assert_eq!(fr.objet, en.objet);
     }
 
+    /// Passe 4, P3-1 : sans XDG_RUNTIME_DIR, les unités de /run/user/<uid> (le dossier que systemd donne au compte)
+    /// se groupent encore.
+    #[test]
+    fn groupe_sans_xdg_runtime_dir() {
+        let m = Maison::nouvelle("groupe-sans-variable");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-c.service", commune),
+            ],
+        );
+        let c = persistance_dans(&m.racine, &m.racine.join("home/alice"), |_| None, None, None)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
+    }
+
+    /// Passe 4, P3-2 : un alias à deux sauts (un lien vers un lien hors des dossiers d'unités) nomme aussi l'unité
+    /// au bout : elle peut porter ses compléments, elle n'est pas groupée.
+    #[test]
+    fn alias_a_deux_sauts_jamais_groupe() {
+        let m = Maison::nouvelle("alias-deux-sauts");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a.service", commune),
+                ("run-b.service", commune),
+                ("run-zz.service", commune),
+            ],
+        );
+        let milieu = m.racine.join("home/alice/milieu.service");
+        std::os::unix::fs::symlink(m.racine.join(TRANSIENT).join("run-zz.service"), &milieu).unwrap();
+        let d = m.racine.join("home/alice/.config/systemd/user");
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(&milieu, d.join("autre.service")).unwrap();
+        let c = m.lancements();
+        assert!(c.message.contains("2 unités du dossier"), "{}", c.message);
+        assert!(c.message.contains("transient/run-zz.service:2 : "), "{}", c.message);
+    }
+
+    /// Passe 4, R1, R2, R4 et ROB-N3 : les noms d'unités s'échappent comme la ligne ; tout guillemet des deux
+    /// langues et « … » s'échappent ; une fin coupée ne se fait jamais d'invisibles.
+    #[test]
+    fn echappement_complet_du_groupe() {
+        let m = Maison::nouvelle("groupe-noms-pieges");
+        let commune = "[Service]\nExecStart=/tmp/.x/agent \u{201d} ok\n";
+        unites(
+            &m,
+            TRANSIENT,
+            &[
+                ("run-a\u{bb} sain \u{ab}.service", commune),
+                ("run-b\u{201c}.service", commune),
+                ("run-c.service", commune),
+            ],
+        );
+        let c = m.lancements();
+        assert!(c.message.contains("3 unités du dossier"), "{}", c.message);
+        assert!(
+            c.message.contains("run-a\\\u{bb} sain \\\u{ab}.service"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("run-b\\\u{201c}.service"), "{}", c.message);
+        assert!(c.message.contains("agent \\\u{201d} ok"), "{}", c.message);
+        for g in ['\u{201c}', '\u{201e}', '\u{2039}', '\u{203a}', '\u{ff02}', '\u{300a}'] {
+            assert_eq!(echappee(g), format!("\\{g}"), "{g}");
+        }
+        // Une ligne entière qui imite une coupe : son « … » est échappé, la vraie coupe ne l'est jamais.
+        let montree = ligne_commune("x\u{2026} (coupée, 3 caractères, groupe abcdefgh)", "zzzzzzzz");
+        assert!(montree.starts_with("x\\\u{2026} (coupée"), "{montree}");
+        // Une fin faite d'accents combinés : chacun se montre.
+        let ligne = "a".repeat(200) + &"\u{301}".repeat(40);
+        let montree = ligne_commune(&ligne, "abcdefgh");
+        assert!(!montree.contains('\u{301}'), "{montree}");
+        assert!(montree.contains("\\u{0301}"), "{montree}");
+    }
+
     /// Passe 3, robustesse N2 et N4 : la ligne commune ne ferme jamais elle-même ses guillemets (« » » et « " »
     /// échappés) ; coupée, son début et sa fin ne montrent jamais deux fois un même caractère.
     #[test]
@@ -28198,7 +28355,7 @@ mod tests {
             c.message
         );
         let en = crate::langue::en_anglais(|| m.lancements());
-        assert!(en.message.contains("agent \u{bb} (aussi"), "{}", en.message);
+        assert!(en.message.contains("agent \\\u{bb} (aussi"), "{}", en.message);
         let m = Maison::nouvelle("groupe-guillemet-en");
         let piege = "[Service]\nExecStart=/tmp/.x/agent \" (also: none); 9 safe units \"ok\n";
         unites(&m, TRANSIENT, &[("run-a.service", piege), ("run-b.service", piege)]);
