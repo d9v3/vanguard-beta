@@ -46,11 +46,14 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   un fichier que ce compte ne pourrait pas lire lui-même : c'est dit non lu.
 - **Linux : un fichier piégé ne fige plus le bilan.** Le choix du moteur de dictée d'Omarchy se lit comme les autres
   fichiers : un tube nommé posé à sa place ne fige plus la vérification des lancements, un lien vers un périphérique
-  n'est plus ouvert, et ce qui ne s'y lit pas est dit « non vérifié » au lieu d'être tu. En administrateur, un dossier
-  du compte posé sur un dossier du système (ZDOTDIR=/, par exemple) ne fait plus passer les fichiers de root pour les
-  siens : ils sont lus et jugés comme avant. Un verrou de l'historique qui ne se sonde pas (sur un dossier en réseau
-  comme NFS, par exemple) est dit « non vérifié » au lieu d'être pris pour libre, sans cacher un bilan d'avant qui
-  n'a pas été enregistré : les deux sont dits.
+  n'est plus lu, et ce qui ne s'y lit pas est dit « non vérifié » au lieu d'être tu. Sa ligne se lit aussi comme
+  Omarchy la lit (octets nuls retirés, blancs autour, ligne entière) : une ligne trop longue, un nom hors ASCII ou des
+  raccourcis qui ne sont pas un fichier ordinaire sont dits « non vérifiés », au lieu de faire sauter en silence le
+  jugement de ces raccourcis. En administrateur, un dossier du compte posé sur un dossier du système (ZDOTDIR=/, par
+  exemple) ne fait plus passer les fichiers de root pour les siens : ils sont lus et jugés comme avant. Un verrou de
+  l'historique qui ne se laisse pas sonder est dit « non vérifié » au lieu d'être pris pour libre ; un bilan d'avant
+  qui n'a pas été enregistré est dit à côté, à part. Un ancien bilan de l'historique dont l'empreinte n'est pas
+  vérifiée ne cache plus un verrou gardé par un autre Vanguard.
 
 ## 25 novembre 2026 : version 0.99.0
 
