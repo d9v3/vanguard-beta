@@ -208,36 +208,41 @@ fn verifier_v2(tous: &[Bilan]) -> Option<Chaine> {
 }
 
 /// Au bilan : rien tant que la chaîne tient.
-pub fn constat() -> Option<crate::machine::Constat> {
-    constat_dans(&fichier())
+pub fn constats() -> Vec<crate::machine::Constat> {
+    constats_dans(&fichier())
 }
 
-/// `constat` de l'historique `chemin` : illisible ou rompu d'abord ; sinon son verrou gardé en ce moment par un autre
-/// (`sonde_du_verrou` : ce bilan-ci, qui s'enregistre après l'affichage, le dit lui-même ; passe 4, P4-H1) ;
-/// sinon un refus d'avant, dit au passé avec sa raison (P4-H2), retenu par ce processus.
+/// `constats` de l'historique `chemin` : illisible ou rompu ; son verrou gardé en ce moment par un autre
+/// (`sonde_du_verrou` : ce bilan-ci, qui s'enregistre après l'affichage, le dit lui-même ; passe 4, P4-H1) ; un refus
+/// d'avant, dit au passé avec sa raison (P4-H2), retenu par ce processus.
 ///
 /// Passe 5 (R5-H3, root S5-2 et S5-4) : là où Vanguard n'écrit pas (`socle::ecriture_sure`), le verrou n'est pas sondé :
 /// en administrateur dans le dossier d'un compte, ce bilan ne s'enregistre pas, c'est dit au bilan
-/// (`constat_pas_enregistre`), sans attente ni alerte sur un enregistrement qui n'aura pas lieu ; en lecture seule
-/// (autotest, porte MCP, aperçu), rien ne doit s'y écrire : rien n'est dit.
-fn constat_dans(chemin: &std::path::Path) -> Option<crate::machine::Constat> {
+/// (`constat_pas_enregistre`, si la chaîne n'a rien à dire), sans attente ni alerte sur un enregistrement qui n'aura
+/// pas lieu ; en lecture seule (autotest, porte MCP, aperçu), rien ne doit s'y écrire : rien n'est dit.
+///
+/// H8-1 et H8-4 (relecture 8 du lot ecritures-suite) : chacun se dit à part, la chaîne ne cache plus le verrou (une
+/// information « non vérifiée » cachait un verrou gardé, une alerte) ; un verrou qui ne se sonde pas reste « non
+/// vérifié » à côté d'un bilan perdu (avant, fondu dans son alerte, il perdait cet état).
+fn constats_dans(chemin: &std::path::Path) -> Vec<crate::machine::Constat> {
     let dossier = chemin.parent();
-    let avant = dossier.and_then(refus_retenu);
     let sure = dossier.is_none_or(crate::socle::ecriture_sure);
-    constat_de(lire_de(chemin)).or_else(|| {
-        if sure {
-            match dossier.map_or(Sonde::Libre, sonde_du_verrou) {
-                Sonde::Tenu => Some(constat_verrou_tenu()),
-                Sonde::NonSondee(raison) => Some(match avant {
-                    Some(r) => constat_perdu_et_non_sonde(&r, &raison),
-                    None => constat_verrou_non_sonde(&raison),
-                }),
-                Sonde::Libre => avant.map(|r| constat_bilan_perdu(&r)),
+    let chaine = constat_de(lire_de(chemin));
+    let mut constats = Vec::new();
+    if sure {
+        let avant = dossier.and_then(refus_retenu);
+        match dossier.map_or(Sonde::Libre, sonde_du_verrou) {
+            Sonde::Tenu => constats.push(constat_verrou_tenu()),
+            Sonde::NonSondee(raison) => {
+                constats.extend(avant.map(|r| constat_bilan_perdu(&r)));
+                constats.push(constat_verrou_non_sonde(&raison));
             }
-        } else {
-            (!crate::autotest::lecture_seule::refuse_dossier()).then(constat_pas_enregistre)
+            Sonde::Libre => constats.extend(avant.map(|r| constat_bilan_perdu(&r))),
         }
-    })
+    } else if chaine.is_none() && !crate::autotest::lecture_seule::refuse_dossier() {
+        constats.push(constat_pas_enregistre());
+    }
+    chaine.into_iter().chain(constats).collect()
 }
 
 /// Les dossiers dont le verrou de l'historique a été refusé à ce processus, avec la raison du refus, et pas rendu
@@ -302,20 +307,6 @@ fn constat_verrou_non_sonde(raison: &str) -> crate::machine::Constat {
             "The history lock (historique.verrou) could not be probed ({raison}): it is not checked that no other program is keeping it, and this check might not be saved (this happens on a network folder, NFS or CIFS)."
         ),
     )
-}
-
-/// V7-1 (relecture du lot ecritures-suite) : un verrou qui ne se sonde pas à chaque bilan (sous Linux, sur NFS, flock
-/// exclusif d'un fichier ouvert en lecture seule) ne cache plus un bilan d'avant non enregistré : les deux se disent,
-/// dans l'alerte du bilan perdu, la plus grave.
-fn constat_perdu_et_non_sonde(avant: &str, raison: &str) -> crate::machine::Constat {
-    let mut c = constat_bilan_perdu(avant);
-    let raison = affichable(raison);
-    c.message.push(' ');
-    c.message.push_str(&trf!(
-        "Le verrou de l'historique (historique.verrou) n'a pas pu être sondé non plus ({raison}) : qu'il soit libre maintenant n'est pas vérifié.",
-        "The history lock (historique.verrou) could not be probed either ({raison}): that it is free now is not checked."
-    ));
-    c
 }
 
 /// Passe 5 (R5-H3, root S5-2) : en administrateur dans le dossier de données d'un compte, ce bilan ne s'enregistre pas
@@ -1424,6 +1415,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
+    /// `constats_dans`, là où un seul constat est attendu.
+    fn constat_dans(chemin: &std::path::Path) -> Option<crate::machine::Constat> {
+        let mut c = constats_dans(chemin);
+        assert!(c.len() <= 1, "{:?}", c.iter().map(|c| &c.message).collect::<Vec<_>>());
+        c.pop()
+    }
+
     /// Passe 4, H1, P4-H1 et P4-H2 : un verrou de l'historique gardé par un autre se dit au bilan même, avant tout
     /// enregistrement (au présent) ; rendu, le refus d'avant se dit au passé, avec sa raison ; le bilan suivant
     /// s'enregistre et le constat se tait.
@@ -1674,14 +1672,46 @@ mod tests {
             return crate::essais::saute("le fichier sans droit s'ouvre quand même (root) : rien à refuser");
         }
         tenus().insert(dossier.clone(), "un verrou d'essai".to_string());
-        let c = constat_dans(&chemin);
+        let c = constats_dans(&chemin);
         tenus().remove(&dossier);
         let _ = std::fs::remove_dir_all(&dossier);
-        let c = c.expect("le bilan perdu et le verrou non sondé sont dits");
-        assert!(c.message.contains("Un bilan précédent"), "{}", c.message);
-        assert!(c.message.contains("un verrou d'essai"), "{}", c.message);
-        assert!(c.message.contains("n'a pas pu être sondé"), "{}", c.message);
-        assert!(c.probleme.is_some(), "{}", c.message);
+        assert_eq!(c.len(), 2, "{:?}", c.iter().map(|c| &c.message).collect::<Vec<_>>());
+        assert!(c[0].message.contains("Un bilan précédent"), "{}", c[0].message);
+        assert!(c[0].message.contains("un verrou d'essai"), "{}", c[0].message);
+        assert_eq!(c[0].probleme, Some(Niveau::Moyen));
+        // H8-4 : le verrou garde son état « non vérifié », avec sa raison (passagère, comptée parmi les non vérifiés).
+        assert!(c[1].message.contains("n'a pas pu être sondé"), "{}", c[1].message);
+        assert!(!c[1].verifie, "{}", c[1].message);
+        assert!(
+            matches!(
+                c[1].etat(),
+                crate::modele::Etat::NonVerifie(crate::modele::Raison::Illisible(_))
+            ),
+            "{}",
+            c[1].message
+        );
+    }
+
+    /// H8-1 (relecture 8 du lot ecritures-suite) : une chaîne « non vérifiée » (un bilan sans la seconde empreinte,
+    /// une information) ne cache plus le verrou gardé par un autre (une alerte) : les deux sont dits.
+    #[test]
+    fn chaine_non_verifiee_ne_cache_pas_le_verrou() {
+        let dossier = dossier_d_essai("historique-chaine-et-verrou");
+        let chemin = dossier.join("historique.json");
+        let mut tous = deux_bilans_a_cles();
+        tous[1].empreinte_v2 = None;
+        tous[1].precedent_v2 = None;
+        std::fs::write(&chemin, serde_json::to_string(&tous).unwrap()).unwrap();
+        let tenu = crate::socle::Verrou::prendre(&dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).unwrap();
+        let c = constats_dans(&chemin);
+        drop(tenu);
+        let _ = std::fs::remove_dir_all(&dossier);
+        let messages: Vec<_> = c.iter().map(|c| &c.message).collect();
+        assert_eq!(c.len(), 2, "{messages:?}");
+        assert!(c[0].message.contains("seconde empreinte"), "{messages:?}");
+        assert!(!c[0].verifie, "{messages:?}");
+        assert!(c[1].message.contains("en ce moment"), "{messages:?}");
+        assert_eq!(c[1].probleme, Some(Niveau::Moyen));
     }
 
     /// Passe 5, R5-H1 : un verrou partagé gardé par un autre (ici une autre ouverture du fichier) bloque

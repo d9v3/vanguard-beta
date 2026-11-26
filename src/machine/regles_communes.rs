@@ -230,7 +230,7 @@ regle!(
     690,
     ("évolution depuis le dernier bilan", "changes since the last check"),
     &["CIS Controls v8 4.1"],
-    || crate::historique::constat().into_iter().collect()
+    || crate::historique::constats()
 );
 
 regle!(
