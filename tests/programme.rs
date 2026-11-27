@@ -8025,6 +8025,8 @@ mod menus_dans_un_terminal {
         ecrit: Arc<Mutex<Vec<u8>>>,
         clavier: std::fs::File,
         vu: usize,
+        /// Jusqu'où les demandes de position du curseur ont reçu leur réponse : une seule réponse par demande.
+        repondu: usize,
     }
 
     impl Terminal {
@@ -8043,10 +8045,14 @@ mod menus_dans_un_terminal {
                 let tout = self.ecrit.lock().unwrap().clone();
                 // Une demande de position du curseur reçoit une réponse, comme d'un vrai terminal : sans elle, une
                 // bibliothèque qui la pose attendrait.
-                let nouveau = String::from_utf8_lossy(&tout[self.vu.min(tout.len())..]).into_owned();
-                if nouveau.contains("\x1b[6n") {
+                while let Some(i) = tout[self.repondu.min(tout.len())..]
+                    .windows(4)
+                    .position(|f| f == b"\x1b[6n")
+                {
                     let _ = self.clavier.write_all(b"\x1b[1;1R");
+                    self.repondu = self.repondu.min(tout.len()) + i + 4;
                 }
+                let nouveau = String::from_utf8_lossy(&tout[self.vu.min(tout.len())..]).into_owned();
                 let propre = sans_couleurs(&nouveau);
                 let manquants: Vec<&str> = textes.iter().copied().filter(|t| !propre.contains(t)).collect();
                 if manquants.is_empty() {
@@ -8132,6 +8138,7 @@ mod menus_dans_un_terminal {
             ecrit,
             clavier: std::fs::File::from(maitre),
             vu: 0,
+            repondu: 0,
         };
         (enfant, t, lecteur)
     }

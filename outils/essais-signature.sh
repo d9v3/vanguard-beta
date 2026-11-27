@@ -90,7 +90,9 @@ ok() { echo "  ✔ $*"; }
 ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }
 # Le témoin « echo suite » est toujours écrit en début de ligne : on ne cherche que là, pour qu'un chemin
 # (nom de dossier ou de worktree contenant « suite ») ne fasse pas échouer l'essai par erreur.
-sans_suite() { ! printf '%s\n' "$@" | grep -qE '^suite( |$)'; }
+# printf hors du tuyau : grep s'arrête à la 1re ligne trouvée (avec -q, et de même vers /dev/null), printf serait tué
+# par SIGPIPE sur une longue sortie, et sous pipefail le « ! » rendrait alors « pas de suite ».
+sans_suite() { ! grep -qE '^suite( |$)' < <(printf '%s\n' "$@"); }
 
 # Deux clés d'essai, gravées dans un faux github.rs comme le vrai les grave (32 octets en décimal).
 for nom in principale secours autre; do
