@@ -88,6 +88,9 @@ poser_point() { cp "$1" "$VANGUARD_HISTORIQUE_PUBLIE" && cp "$1.sig" "$VANGUARD_
 retirer_point() { rm -f "$VANGUARD_HISTORIQUE_PUBLIE" "$VANGUARD_HISTORIQUE_PUBLIE.sig"; }
 ok() { echo "  ✔ $*"; }
 ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }
+# Le témoin « echo suite » est toujours écrit en début de ligne : on ne cherche que là, pour qu'un chemin
+# (nom de dossier ou de worktree contenant « suite ») ne fasse pas échouer l'essai par erreur.
+sans_suite() { ! printf '%s\n' "$@" | grep -qE '^suite( |$)'; }
 
 # Deux clés d'essai, gravées dans un faux github.rs comme le vrai les grave (32 octets en décimal).
 for nom in principale secours autre; do
@@ -1612,7 +1615,7 @@ awk '/^passe_droit_demande\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$
 refus=()
 for valeur in 0 non " "; do
   r=$(X="$valeur" bash -c "source '$T/passe-droit.sh'; passe_droit_demande X || true; echo suite" 2>&1)
-  [[ $r == *"seule la valeur 1"* && $r != *suite* ]] || refus+=("« $valeur » : $r")
+  [[ $r == *"seule la valeur 1"* ]] && sans_suite "$r" || refus+=("« $valeur » : $r")
 done
 r=$(X=1 bash -c "source '$T/passe-droit.sh'; passe_droit_demande X && echo pris" 2>&1)
 [[ $r == pris ]] || refus+=("1 : $r")
@@ -1701,25 +1704,25 @@ r=$(page_signee bien absente)
   ok "publier : page signée créée, point sûr gardé aussitôt (avant la page du code)" ||
   ko "publier : point sûr pas gardé après la page signée ($r)"
 r=$(page_signee panne panne)
-[[ $r == *"rien conclu"* && $r != *suite* && $r != *create* && $r != *delete* ]] &&
+[[ $r == *"rien conclu"* && $r != *create* && $r != *delete* ]] && sans_suite "$r" &&
   ok "publier : page signée dont l'absence n'est pas prouvée : rien créé, rien effacé" ||
   ko "publier : page signée créée ou effacée sur une panne de GitHub ($r)"
 r=$(page_signee la la)
 r2=$(page_signee la-brouillon brouillon)
 [[ $r == *"apparue dans x/y pendant la signature"* && $r2 == *"apparue dans x/y pendant la signature"* &&
-  $r$r2 != *suite* && $r$r2 != *create* && $r$r2 != *delete* ]] &&
+  $r$r2 != *create* && $r$r2 != *delete* ]] && sans_suite "$r" "$r2" &&
   ok "publier : page signée (ou brouillon) apparue pendant la signature : rien créé, rien effacé" ||
   ko "publier : page signée apparue pendant la signature mal traitée ($r / $r2)"
 r=$(CREATION="HTTP 502" page_signee brouillon absente brouillon)
-[[ $r == *"rien de publié"*"create delete " && $r != *suite* && $r != *"à la main"* ]] &&
+[[ $r == *"rien de publié"*"create delete " && $r != *"à la main"* ]] && sans_suite "$r" &&
   ok "publier : brouillon laissé par une création ratée : retiré, rien de publié" ||
   ko "publier : brouillon d'une création ratée pas retiré ($r)"
 r=$(CREATION="a release with the same tag name already exists: v0.0.0" page_signee existait absente la)
-[[ $r == *"rien n'y est effacé"*"create " && $r != *suite* && $r != *delete* ]] &&
+[[ $r == *"rien n'y est effacé"*"create " && $r != *delete* ]] && sans_suite "$r" &&
   ok "publier : page posée ailleurs entre-temps (« already exists ») : jamais effacée" ||
   ko "publier : page née ailleurs effacée ($r)"
 r=$(CREATION="HTTP 502" page_signee moitie absente la)
-[[ $r == *"rien de publié"*"create delete " && $r != *suite* && $r != *"à la main"* ]] &&
+[[ $r == *"rien de publié"*"create delete " && $r != *"à la main"* ]] && sans_suite "$r" &&
   ok "publier : page à moitié créée par cet appel : retirée, rien de publié" ||
   ko "publier : page à moitié créée pas retirée ($r)"
 r=$(CREATION="HTTP 502" page_signee partie absente absente)
@@ -1806,12 +1809,12 @@ etq() { # étiquette, commit compilé, dépôt (le témoin par défaut)
   ko "publier : bonne étiquette refusée ($(etq v1.0.1 "$ETQ1"))"
 r=$(etq v1.0.0 "$ETQ2")
 r2=$(etq v1.0.1 "$ETQ2")
-[[ $r == *"sur un autre commit (${ETQ1:0:12}"*"rien de publié"* && $r2 == *"sur un autre commit (${ETQ1:0:12}"* &&
-  $r$r2 != *suite* ]] && ok "publier : étiquette déjà sur un autre commit : rien de publié" ||
+[[ $r == *"sur un autre commit (${ETQ1:0:12}"*"rien de publié"* && $r2 == *"sur un autre commit (${ETQ1:0:12}"*
+  ]] && sans_suite "$r" "$r2" && ok "publier : étiquette déjà sur un autre commit : rien de publié" ||
   ko "publier : étiquette d'un autre commit reprise ($r / $r2)"
 git init -q "$T/etq-muet" && git -C "$T/etq-muet" remote add origin "$T/absent"
 r=$(etq v1.0.0 "$ETQ1" "$T/etq-muet")
-[[ $r == *"n'a pas répondu, rien de publié"* && $r != *suite* ]] &&
+[[ $r == *"n'a pas répondu, rien de publié"* ]] && sans_suite "$r" &&
   ok "publier : étiquette pas lue (GitHub muet) : rien de publié" || ko "publier : étiquette pas lue, publiée ($r)"
 awk '/^etiquette_du_bon_commit \|\| exit 1$/ { e = NR } /^PAGE=0$/ && !p { p = NR }
   /outils\/signer-versions\.sh .*"\$DOSSIER"/ { s = NR }
@@ -1829,8 +1832,8 @@ mkdir -p "$T/faux-gh-oui" && printf '#!/bin/sh\necho false\n' >"$T/faux-gh-oui/g
   awk '/^PAGE=0$/ { p = 1 } p { print } p && /^fi$/ && ++n == 3 { exit }' "$DEPOT/outils/publier-version.sh"; } >"$T/deja.sh"
 r=$(PATH="$T/faux-gh-oui:$PATH" TAG=v0.0.0 bash -c "set -euo pipefail; \
   PASSE_DROITS=(sans-controle-sources-code2-degradations0-non-verifiees1); source '$T/deja.sh'; echo suite" 2>&1)
-[[ $r == *"déjà publiée"* && $r == *"sans-controle-sources-code2-degradations0-non-verifiees1 : sans objet"* &&
-  $r != *suite* ]] && ok "publier : version déjà publiée, le passe-droit pris est dit sans objet, rien d'autre" ||
+[[ $r == *"déjà publiée"* && $r == *"sans-controle-sources-code2-degradations0-non-verifiees1 : sans objet"*
+  ]] && sans_suite "$r" && ok "publier : version déjà publiée, le passe-droit pris est dit sans objet, rien d'autre" ||
   ko "publier : relance sur une version publiée mal dite ($r)"
 # Une panne de GitHub (autre message que « release not found », autre code, délai) n'est jamais une page absente : rien
 # n'est publié, et ce que gh a dit est montré. Absente pour de bon : la publication continue (passe du 24 nov., n° 15).
@@ -1849,7 +1852,7 @@ r=$(deja gh-absente)
   ko "publier : page absente mal lue ($r)"
 for panne in gh-reseau gh-compte gh-autre; do
   r=$(deja "$panne")
-  [[ $r == *"rien conclu"*"rien de publié"* && $r != *suite* && $r != *"déjà publiée"* ]] &&
+  [[ $r == *"rien conclu"*"rien de publié"* && $r != *"déjà publiée"* ]] && sans_suite "$r" &&
     ok "publier : panne de GitHub ($panne) jamais prise pour une page absente : rien de publié" ||
     ko "publier : panne de GitHub ($panne) mal lue ($r)"
 done
@@ -1857,7 +1860,7 @@ done
 mkdir -p "$T/gh-brouillon" && printf '#!/bin/sh\necho true\n' >"$T/gh-brouillon/gh" && chmod +x "$T/gh-brouillon/gh"
 code=0
 r=$(deja gh-brouillon) || code=$?
-((code == 1)) && [[ $r == *"brouillon"* && $r != *suite* && $r != *"déjà publiée"* ]] &&
+((code == 1)) && [[ $r == *"brouillon"* && $r != *"déjà publiée"* ]] && sans_suite "$r" &&
   ok "publier : un brouillon n'est jamais une version publiée : dit, rien de publié" ||
   ko "publier : brouillon pris pour une page (code $code : $r)"
 # La page signée déjà en ligne sans la page du code : vu avant toute signature, code 4, la commande entière est donnée si
@@ -1905,18 +1908,18 @@ fin() { # script, puis VAR=valeur… : la sortie et le code, DOSSIER neuf et jet
 }
 EMP=sha256:$(echo sommes | sha256sum | cut -d' ' -f1)
 r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE="$EMP")
-[[ $r == *"déjà signée dans x/y"*"Point sûr peut-être en retard"*"gh release create v0.0.0 --target c0ffee "*"/SHA256SUMS.txt "*"/vanguard.cdx.json"*"tickets-version.py --appliquer"*"code 4 dossier gardé notes" &&
-  $r != *suite* ]] && ok "publier : déjà signée sans page du code : vu avant de signer, code 4, commande entière donnée" ||
+[[ $r == *"déjà signée dans x/y"*"Point sûr peut-être en retard"*"gh release create v0.0.0 --target c0ffee "*"/SHA256SUMS.txt "*"/vanguard.cdx.json"*"tickets-version.py --appliquer"*"code 4 dossier gardé notes"
+  ]] && sans_suite "$r" && ok "publier : déjà signée sans page du code : vu avant de signer, code 4, commande entière donnée" ||
   ko "publier : déjà signée sans page du code mal traitée ($r)"
 r=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=sha256:autre)
 r2=$(fin "$T/signee-deja.sh" VUE=false EMPREINTE=)
 [[ $r == *"ne pas créer la page"*"avancer la version et livrer de nouveau"*"code 1 dossier gardé "* &&
-  $r2 == *"n'a pas été lue"*"relancer"*"code 1 dossier  " && $r$r2 != *"gh release create"* && $r$r2 != *suite* ]] &&
+  $r2 == *"n'a pas été lue"*"relancer"*"code 1 dossier  " && $r$r2 != *"gh release create"* ]] && sans_suite "$r" "$r2" &&
   ok "publier : déjà signée avec d'autres programmes (ou pas comparables) : aucune page du code proposée, code 1" ||
   ko "publier : page du code proposée pour d'autres programmes ($r / $r2)"
 r=$(fin "$T/signee-deja.sh" VUE=true)
 r2=$(fin "$T/signee-deja.sh" VUE=panne)
-[[ $r == *"brouillon dans x/y"*"code 1 "* && $r2 == *"rien conclu"*"code 1 "* && $r$r2 != *suite* ]] &&
+[[ $r == *"brouillon dans x/y"*"code 1 "* && $r2 == *"rien conclu"*"code 1 "* ]] && sans_suite "$r" "$r2" &&
   ok "publier : brouillon ou panne dans le dépôt des versions : rien de signé" ||
   ko "publier : signature malgré un brouillon ou une panne ($r / $r2)"
 [[ $(fin "$T/signee-deja.sh" VUE=absente) == suite* ]] && ok "publier : pas encore signée : on signe" ||
