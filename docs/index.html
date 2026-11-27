@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.99</title>
+<title>Vanguard 0.100</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, GPL-3.0-or-later.">
 <meta name="theme-color" content="#f2f5f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Vanguard 0.99">
+<meta property="og:title" content="Vanguard 0.100">
 <meta property="og:description" content="Cyberdéfense portable des postes et des réseaux, depuis une clé USB : bilan noté de A à F, audit du réseau, détection et blocage ; aucune protection baissée sans votre choix. Logiciel libre, Rust.">
 <meta property="og:url" content="https://d9v3.github.io/vanguard-beta/">
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -327,7 +327,7 @@ details > summary::after { display: none; }
 </header>
 <div class="console" role="note" aria-label="État de la version">
 <div class="cadre">
-<p class="console-etat"><span>Version <b>0.99.0</b></span><span>publiée le <b>25 novembre 2026</b></span><span><b>5 382</b> tests sous Linux · <b>4 144</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
+<p class="console-etat"><span>Version <b>0.100.0</b></span><span>publiée le <b>27 novembre 2026</b></span><span><b>5 445</b> tests sous Linux · <b>4 165</b> sous Windows</span><span><b>28</b> hôtes joints, liste fermée</span></p>
 <form class="invite recherche" id="recherche" role="search" hidden>
 <label for="cherche"><b>vanguard ›</b><span class="cache-lecteur"> Chercher dans la page / Search this page</span></label>
 <input id="cherche" type="search" placeholder="chercher : rançongiciel, Wi-Fi, clé…  ( / )" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-describedby="cherche-etat">
@@ -667,9 +667,9 @@ details > summary::after { display: none; }
 </details>
 <h3 class="sous-titre">Testé à chaque version</h3>
 <div class="chiffres">
-<div class="carte stat"><span class="valeur">≈ 482 400</span><span class="detail">lignes de code Rust</span></div>
-<div class="carte stat"><span class="valeur">5 382</span><span class="detail">tests sous Linux</span></div>
-<div class="carte stat"><span class="valeur">4 144</span><span class="detail">tests sous Windows (Wine)</span></div>
+<div class="carte stat"><span class="valeur">≈ 485 500</span><span class="detail">lignes de code Rust</span></div>
+<div class="carte stat"><span class="valeur">5 445</span><span class="detail">tests sous Linux</span></div>
+<div class="carte stat"><span class="valeur">4 165</span><span class="detail">tests sous Windows (Wine)</span></div>
 <div class="carte stat"><span class="valeur">251</span><span class="detail">vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par <code>outils/verifier.sh</code> (formatage, clippy, tests Linux et sous Wine, fuzzing, preuves, liens), et par un vrai Windows qui se teste tout seul. Cette page est refaite par le script de publication à chaque version.</p>
@@ -847,7 +847,7 @@ details > summary::after { display: none; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 482 400 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 485 500 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64 ; la fenêtre, facultative, à poser à côté (glibc sous Linux)</dd></div>
 <div><dt>Règles du bilan</dt><dd>139 règles à identifiant stable (<code>LNX-SSH-006</code>) : 95 sous Linux, 82 sous Windows, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Fenêtre egui sur un bureau graphique (lancée seulement si son empreinte est celle gravée dans le programme), sinon menu au clavier, ou 85 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
@@ -1075,24 +1075,16 @@ vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.99</p>
+<p class="surtitre">Nouveautés de la version 0.100</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>13 changements dans la version 0.99.0, tirés de son <a href="https://github.com/d9v3/vanguard-beta/blob/master/CHANGELOG.md">historique des versions</a>, où chacun se lit en entier.</p>
+<p>5 changements dans la version 0.100.0, tirés de son <a href="https://github.com/d9v3/vanguard-beta/blob/master/CHANGELOG.md">historique des versions</a>, où chacun se lit en entier.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Windows : la fenêtre ne garde plus les fichiers du terminal</b><span>Lancée par <code>vanguard 2&gt; erreurs.txt</code>, la fenêtre tenait ce fichier ouvert tant qu&#x27;elle vivait, même sans y écrire : impossible de l&#x27;effacer ou de relancer la même commande.</span></li>
-      <li><b>Linux : un nom illisible ne cache plus un programme</b><span>Un programme peut mettre dans son nom, dans celui d&#x27;un fichier ou d&#x27;un point de montage, des octets qui ne sont pas du texte.</span></li>
-      <li><b>Ce qui n&#x27;a pas pu être lu est dit, plus jamais compté comme sain</b></li>
-      <li><b>Contrôle à distance : la coche verte se mérite</b><span>Après un retrait, Vanguard relit ce qui reste : un démarrage qui n&#x27;a pas pu être lu, un fichier à effacer à la main ou un programme encore en marche empêchent la coche, et sont nommés.</span></li>
-      <li><b>Garde des lancements (Linux)</b><span>Chaque lecture des montages remarque tous les systèmes de fichiers, au lieu de se fier au numéro déjà vu, que le noyau peut redonner à un autre.</span></li>
-      <li><b>Des lectures bornées</b></li>
-      <li><b>Fenêtre : le vert se mérite</b><span>« En veille » n&#x27;apparaît que si la surveillance et le temps réel sont allumés, et lus comme tels ; la coche « aucune alerte » demande en plus un journal vérifié en entier.</span></li>
-      <li><b>Des messages qui disent quoi faire</b><span>Quand la fenêtre ne s&#x27;ouvre pas, le message dit pourquoi en mots simples et comment continuer.</span></li>
-      <li><b>Les commandes citées existent, et dans la bonne langue</b><span>Des textes anglais donnaient le nom français d&#x27;une commande, et quelques textes une commande qui n&#x27;existe pas ; un essai relit maintenant chaque commande citée.</span></li>
-      <li><b>Clé USB : l&#x27;ouverture sous Linux connaît plus de terminaux</b><span>Sans terminal trouvé, un message le dit au lieu de ne rien faire.</span></li>
-      <li><b>Clé USB : une image recopiée n&#x27;est plus oubliée</b><span>La copie d&#x27;une image abîmée est notée dans la référence scellée avant que l&#x27;image soit retirée, et dite tant qu&#x27;elle n&#x27;est pas remplacée ; un courant coupé au milieu se reprend seul.</span></li>
-      <li><b>Publication : une panne ne passe plus pour une réussite</b><span>Une clé, une icône ou une machine d&#x27;essai en panne n&#x27;arrête plus la page de la version, et une page qui n&#x27;est pas en ligne n&#x27;est plus comptée comme livrée.</span></li>
-      <li><b>Contrôles et audit : un vert qui n&#x27;a rien essayé est un échec</b><span>Un filtre qui ne trouve aucun essai, un essai sauté dans les contrôles de nuit (canaris) ou un fuzzing sans une seule exécution font échouer le contrôle.</span></li>
+      <li><b>Linux : des milliers d&#x27;unités identiques ne font plus un bilan géant</b><span>Des unités échouées de systemd-run laissées dans le dossier de la session, qui lancent toutes la même ligne, se disent en une seule ligne de l&#x27;alerte avec leur nombre et quelques exemples.</span></li>
+      <li><b>Linux : le groupement des unités et l&#x27;historique, encore durcis</b></li>
+      <li><b>Linux : ce qui n&#x27;est pas vérifié en administrateur est dit</b></li>
+      <li><b>Linux : un fichier piégé ne fige plus le bilan</b></li>
+      <li><b>Windows : le menu n&#x27;attend plus PowerShell une minute</b><span>La suggestion du mode Wi-Fi public lit le réseau en 15 s au plus (au lieu de 60) ; pas lu à temps, c&#x27;est dit au lieu de se taire.</span></li>
     </ul>
 </section>
 <section id="en-cours">
@@ -1113,19 +1105,18 @@ vanguard yara --complet</pre>
 <h2>Les pistes ouvertes</h2>
 <p>Tirées du ticket public des pistes au moment où cette page est faite : ce qui est coché n'y est plus. Rien n'y est promis ni daté.</p>
 </div>
-<p class="note">31 pistes encore ouvertes, tirées du <a href="https://github.com/d9v3/vanguard-beta/issues/1">ticket public n° 1</a> « Fonctions et pistes d'amélioration » au moment de cette page. Sans date ni promesse. <span lang="en">31 open items from public issue #1, no date or promise.</span></p>
+<p class="note">30 pistes encore ouvertes, tirées du <a href="https://github.com/d9v3/vanguard-beta/issues/1">ticket public n° 1</a> « Fonctions et pistes d'amélioration » au moment de cette page. Sans date ni promesse. <span lang="en">30 open items from public issue #1, no date or promise.</span></p>
 <div class="pistes">
 <details class="replie"><summary><span>Corriger d&#x27;abord</span><span class="compte">1</span></summary>
 <ul class="liste">
 <li><b>Faux positif de Microsoft Defender</b> sur l&#x27;exécutable Windows (<code>Trojan:Win32/Bearfoos.A!ml</code> : une détection par apprentissage automatique, pas une signature de virus connu) : le signaler à Microsoft, texte prêt. …</li>
 </ul></details>
-<details class="replie"><summary><span>Essayer sur du vrai matériel</span><span class="compte">7</span></summary>
+<details class="replie"><summary><span>Essayer sur du vrai matériel</span><span class="compte">6</span></summary>
 <ul class="liste">
 <li><b>Windows</b> : passer dans la VM les outils ajoutés depuis la 0.53 (dernier passage complet : 0.44.1), l&#x27;ouverture des liens et du rapport, et le moteur YARA installé par winget. …</li>
 <li><b>Linux</b> : de vraies installations de Debian, Ubuntu, Fedora, Mint et openSUSE (seulement en conteneur pour l&#x27;instant).</li>
 <li><b>Clé de secours</b> : partition WIN11 avec Secure Boot actif, Omarchy démarré par Ventoy, lecture seule (attribut GPT) sur un vrai Windows.</li>
 <li><b>Logiciels</b> : une vraie installation sous Windows.</li>
-<li><b>Sauvegarde automatique</b> (0.62.0) : essayée le 19 octobre sous Linux vers une vraie clé FAT32 de 64 Go …</li>
 <li><b>Vérifier ma clé</b> (0.61.0) : essai complet fait le 19 octobre sous Linux sur une vraie clé USB vide de 64 Go (58,0 Go écrits et relus sans une erreur, 40 Mo/s en écriture, 125 Mo/s en lecture, clé rendue telle …</li>
 <li><b>Jumeau maléfique, caméras, NAT strict, IPv6</b> : vérifiés sur des sorties inventées seulement.</li>
 </ul></details>
@@ -1262,7 +1253,7 @@ vanguard yara --complet</pre>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.99.0 · 25 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.100.0 · 27 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 <script>
 // Le bouton n'apparaît qu'avec le script : sans lui, la page suit l'appareil, comme avant.
