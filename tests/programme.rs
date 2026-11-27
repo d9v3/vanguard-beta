@@ -8030,6 +8030,14 @@ mod menus_dans_un_terminal {
     impl Terminal {
         /// Attend que l'écran, depuis la dernière attente, montre `texte` (couleurs retirées) ; rend ce qui a paru.
         fn attendre(&mut self, texte: &str, secondes: u64) -> String {
+            self.attendre_tous(&[texte], secondes)
+        }
+
+        /// Attend que l'écran, depuis la dernière attente, montre chacun des `textes`, dans n'importe quel ordre.
+        /// Un texte à vérifier s'attend ici, jamais après coup : le fil de lecture peut recevoir un dessin en deux
+        /// morceaux, et ce qui suit le texte attendu n'est pas encore lu (24 oct. et 26 nov. 2026, sous la charge de
+        /// verifier.sh : « Rien » manquait sous « Retirer le blocage »).
+        fn attendre_tous(&mut self, textes: &[&str], secondes: u64) -> String {
             let fin = Instant::now() + Duration::from_secs(secondes);
             loop {
                 let tout = self.ecrit.lock().unwrap().clone();
@@ -8040,13 +8048,15 @@ mod menus_dans_un_terminal {
                     let _ = self.clavier.write_all(b"\x1b[1;1R");
                 }
                 let propre = sans_couleurs(&nouveau);
-                if propre.contains(texte) {
+                let manquants: Vec<&str> = textes.iter().copied().filter(|t| !propre.contains(t)).collect();
+                if manquants.is_empty() {
                     self.vu = tout.len();
                     return propre;
                 }
                 assert!(
                     Instant::now() < fin,
-                    "« {texte} » n'a pas paru en {secondes} s ; écran depuis la dernière touche :\n{propre}"
+                    "« {} » n'a pas paru en {secondes} s ; écran depuis la dernière touche :\n{propre}",
+                    manquants.join(" », « ")
                 );
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -8135,14 +8145,15 @@ mod menus_dans_un_terminal {
         t.attendre("q quitter", 60);
         t.taper("8.2");
         t.taper(ENTREE);
-        let ecran = t.attendre("Retirer le blocage", 60);
-        assert!(
-            ecran.contains("dangereux"),
-            "l'état reste au-dessus de la liste : {ecran}"
-        );
-        assert!(
-            ecran.contains("Bloquer, ou rafraîchir la liste") && ecran.contains("Rien"),
-            "{ecran}"
+        // L'état (« dangereux ») reste au-dessus de la liste, et la liste a ses trois choix.
+        t.attendre_tous(
+            &[
+                "dangereux",
+                "Bloquer, ou rafraîchir la liste",
+                "Retirer le blocage",
+                "Rien",
+            ],
+            60,
         );
         // La lettre redessine la liste, sans rien lancer (Retirer demanderait les droits d'administrateur).
         t.taper("r");
@@ -8167,24 +8178,24 @@ mod menus_dans_un_terminal {
     fn fleches_entree_echap_puis_quitter() {
         let maison = maison_jetable();
         let (mut enfant, mut t, lecteur) = lancer(&maison, &[]);
-        let menu = t.attendre("q quitter", 60);
-        assert!(
-            menu.contains("Bilan de sécurité complet") && menu.contains("Cet ordinateur"),
-            "{menu}"
-        );
+        t.attendre_tous(&["q quitter", "Bilan de sécurité complet", "Cet ordinateur"], 60);
         // Trois fois en bas depuis « Bilan de sécurité complet » : le premier groupe, « Cet ordinateur », ouvert par
         // Entrée.
         for _ in 0..3 {
             t.taper(BAS);
         }
         t.taper(ENTREE);
-        let sous_menu = t.attendre("Revenir au menu principal", 30);
-        assert!(sous_menu.contains("VANGUARD › Cet ordinateur"), "{sous_menu}");
-        assert!(sous_menu.contains("Audit de sécurité"), "{sous_menu}");
+        t.attendre_tous(
+            &[
+                "Revenir au menu principal",
+                "VANGUARD › Cet ordinateur",
+                "Audit de sécurité",
+            ],
+            30,
+        );
         // Échap revient au menu principal, sans rien lancer.
         t.taper(ECHAP);
-        let retour = t.attendre("q quitter", 30);
-        assert!(retour.contains("Bilan de sécurité complet"), "{retour}");
+        t.attendre_tous(&["q quitter", "Bilan de sécurité complet"], 30);
         // « q », une seule lettre, n'est pas une recherche : Entrée le valide comme raccourci, et Vanguard s'arrête.
         t.taper("q");
         t.taper(ENTREE);
@@ -8247,8 +8258,7 @@ mod menus_dans_un_terminal {
             t.attendre(ajout, 30);
             t.taper("1");
             t.taper(ENTREE);
-            let ecran = t.attendre(choisie, 30);
-            assert!(ecran.contains(enregistree), "{langue} : {ecran}");
+            t.attendre_tous(&[choisie, enregistree], 30);
             let ecrit = lu();
             assert!(
                 ecrit.contains("outil-d-attaque") && ecrit.contains("suspendre"),
@@ -8258,8 +8268,7 @@ mod menus_dans_un_terminal {
             assert!(maison.join("donnees/vanguard/sceaux.json").exists(), "{langue}");
             t.taper("d");
             t.taper(ENTREE);
-            let ecran = t.attendre(defaut, 30);
-            assert!(ecran.contains(enregistree), "{langue} : {ecran}");
+            t.attendre_tous(&[defaut, enregistree], 30);
             assert!(!lu().contains("outil-d-attaque"), "{langue} : {}", lu());
             // « d » parti avec la suite choisie : Entrée revient (pas le premier geste rouvert).
             t.taper(ENTREE);
@@ -8294,11 +8303,12 @@ mod menus_dans_un_terminal {
     fn signaler_au_clavier_sans_rien_ecrire() {
         let maison = maison_jetable();
         let (mut enfant, mut t, lecteur) = lancer(&maison, &["signaler"]);
-        let ecran = t.attendre("Rien de ce que Vanguard a vu", 60);
-        assert!(ecran.contains("Il ne l'envoie jamais"), "{ecran}");
+        t.attendre_tous(&["Rien de ce que Vanguard a vu", "Il ne l'envoie jamais"], 60);
         t.taper(ENTREE);
-        let tri = t.attendre("Un logiciel se comporte mal", 30);
-        assert!(tri.contains("Un lien ou courriel d'hameçonnage"), "{tri}");
+        t.attendre_tous(
+            &["Un logiciel se comporte mal", "Un lien ou courriel d'hameçonnage"],
+            30,
+        );
         t.taper(ECHAP);
         let fin = Instant::now() + Duration::from_secs(30);
         let statut = loop {
@@ -8337,19 +8347,20 @@ mod menus_dans_un_terminal {
         t.attendre("Échap/← revenir", 60);
         t.taper("15");
         t.taper(ENTREE);
-        let question = t.attendre("Échap/← plus tard", 30);
-        for attendu in [
-            "Partager avec l'auteur ?",
-            "En ce moment : pas répondu.",
-            "Oui",
-            "une fois par jour",
-            "arrêter et effacer le relevé",
-            "Voir ce qui serait envoyé",
-            "Plus tard",
-            "rien ne change",
-        ] {
-            assert!(question.contains(attendu), "« {attendu} » manque :\n{question}");
-        }
+        t.attendre_tous(
+            &[
+                "Échap/← plus tard",
+                "Partager avec l'auteur ?",
+                "En ce moment : pas répondu.",
+                "Oui",
+                "une fois par jour",
+                "arrêter et effacer le relevé",
+                "Voir ce qui serait envoyé",
+                "Plus tard",
+                "rien ne change",
+            ],
+            30,
+        );
         // Échap : plus tard, rien d'écrit, rien d'effacé.
         t.taper(ECHAP);
         t.attendre("Échap/← revenir", 30);
@@ -8367,10 +8378,13 @@ mod menus_dans_un_terminal {
         t.attendre("Échap/← plus tard", 30);
         t.taper("3");
         t.taper(ENTREE);
-        let vu = t.attendre("Entrée pour revenir à la question", 30);
-        assert!(
-            vu.contains("Ce qui serait envoyé") && vu.contains("En attente : 0"),
-            "{vu}"
+        t.attendre_tous(
+            &[
+                "Entrée pour revenir à la question",
+                "Ce qui serait envoyé",
+                "En attente : 0",
+            ],
+            30,
         );
         assert!(!parametres().contains("partage"), "« Voir » a écrit : {}", parametres());
         t.taper(ENTREE);
@@ -8378,20 +8392,25 @@ mod menus_dans_un_terminal {
         // Non : effacé, et noté.
         t.taper("2");
         t.taper(ENTREE);
-        let liste = t.attendre("Échap/← revenir", 30);
-        assert!(liste.contains("Partage avec l'auteur"), "{liste}");
-        assert!(parametres().contains("\"partage\": \"non\""), "{}", parametres());
         // En root (verifier.sh, sous unshare), le dossier n'est pas celui d'une personne : rien d'effacé, et dit.
         let efface = !super::en_root();
-        assert_eq!(liste.contains("Rien d'effacé ici"), !efface, "{liste}");
+        let mut attendus = vec!["Échap/← revenir", "Partage avec l'auteur"];
+        if !efface {
+            attendus.push("Rien d'effacé ici");
+        }
+        let liste = t.attendre_tous(&attendus, 30);
+        assert!(parametres().contains("\"partage\": \"non\""), "{}", parametres());
+        // Hors root, le texte ne doit pas paraître. Une absence ne s'attend pas : lue sur l'écran reçu jusqu'ici.
+        if efface {
+            assert!(!liste.contains("Rien d'effacé ici"), "{liste}");
+        }
         for parti in ["envoi", "amelioration"] {
             assert_eq!(dossier.join(parti).exists(), !efface, "{parti}/ :\n{liste}");
         }
         assert_eq!(std::fs::read_to_string(dossier.join("a-moi.txt")).unwrap(), "à alice");
         // Oui, depuis « non ».
         t.taper(ENTREE);
-        let question = t.attendre("Échap/← plus tard", 30);
-        assert!(question.contains("En ce moment : non."), "{question}");
+        t.attendre_tous(&["Échap/← plus tard", "En ce moment : non."], 30);
         t.taper("1");
         t.taper(ENTREE);
         t.attendre("Échap/← revenir", 30);
