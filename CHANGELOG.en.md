@@ -9,7 +9,7 @@ other in their day's paragraph. Only the latest version has its download page an
 Each version's commit carries its number at the end of its title: `git log --oneline -F --grep '(v0.62.0)'`, for
 example, finds it, to rebuild it if needed.
 
-## 0.100 (in preparation)
+## November 27, 2026: version 0.100.0
 
 - **Linux: thousands of identical units no longer make a giant check.** Failed systemd-run units left in the session
   folder that all start the same line are reported as one line of the alert, with their number and a few examples; a
@@ -55,6 +55,9 @@ example, finds it, to rebuild it if needed.
   probed is reported as "not checked" instead of being taken as free; an earlier check that was not saved is reported
   next to it, separately. An old check in the history whose checksum is not verified no longer hides a lock kept by
   another Vanguard.
+- **Windows: the menu no longer waits a minute for PowerShell.** The public Wi-Fi mode suggestion reads the network in
+  15 s at most (instead of 60); not read in time, it is reported instead of staying silent. Turning on and restoring keep
+  the full delay.
 
 ## November 25, 2026: version 0.99.0
 

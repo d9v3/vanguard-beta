@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement et garde son étiquette dans le dépôt. Le commit de chaque version porte son numéro à la fin de son
 titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pour la recompiler au besoin.
 
-## 0.100 (en préparation)
+## 27 novembre 2026 : version 0.100.0
 
 - **Linux : des milliers d'unités identiques ne font plus un bilan géant.** Des unités échouées de systemd-run laissées
   dans le dossier de la session, qui lancent toutes la même ligne, se disent en une seule ligne de l'alerte avec leur
@@ -57,6 +57,8 @@ titre : `git log --oneline -F --grep '(v0.62.0)'`, par exemple, le retrouve, pou
   Un verrou de l'historique qui ne se laisse pas sonder est dit « non vérifié » au lieu d'être pris pour libre ; un
   bilan d'avant qui n'a pas été enregistré est dit à côté, à part. Un ancien bilan de l'historique dont l'empreinte
   n'est pas vérifiée ne cache plus un verrou gardé par un autre Vanguard.
+- **Windows : le menu n'attend plus PowerShell une minute.** La suggestion du mode Wi-Fi public lit le réseau en 15 s
+  au plus (au lieu de 60) ; pas lu à temps, c'est dit au lieu de se taire. Allumer et remettre gardent le délai entier.
 
 ## 25 novembre 2026 : version 0.99.0
 
