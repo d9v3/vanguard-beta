@@ -272,8 +272,9 @@ enum Sonde {
     Libre,
     /// Gardé au-delà de `SONDE` par un autre.
     Tenu,
-    /// La sonde n'a pas pu le prendre pour une autre raison (passe 6, H6-1 : sur NFS ou CIFS, le verrou exclusif
-    /// demande un fichier ouvert en écriture, et la sonde l'ouvre en lecture seule) : rien ne dit qu'il est libre.
+    /// La sonde n'a pas pu le prendre pour une autre raison (passe 6, H6-1 : par exemple un verrou qui ne s'ouvre pas,
+    /// droit refusé ; peut-être aussi un système de fichiers qui refuse ce verrou sur un fichier ouvert en lecture
+    /// seule, non vérifié) : rien ne dit qu'il est libre.
     NonSondee(String),
 }
 
@@ -281,7 +282,7 @@ enum Sonde {
 /// celui-ci (le verrou du système vaut pour chaque ouverture du fichier) ? Pris exclusif comme l'enregistrement le
 /// prendra (passe 5, R5-H1 : partagé, la sonde passait à côté d'un verrou partagé qui bloquera pourtant
 /// l'enregistrement), sur le fichier déjà là, sans rien créer ni écrire (`Verrou::sonder` ; R5-H7). Pas sondé pour
-/// l'aperçu d'une correction (sans attente, et rien n'y est enregistré) : en lecture seule, `constat_dans` ne vient
+/// l'aperçu d'une correction (sans attente, et rien n'y est enregistré) : en lecture seule, `constats_dans` ne vient
 /// déjà pas jusqu'ici (rien n'est dit, passe 6, H6-4) ; ce test ne sert qu'à un fil exempté de la lecture seule.
 fn sonde_du_verrou(dossier: &std::path::Path) -> Sonde {
     if crate::autotest::lecture_seule::sans_attente()
@@ -303,8 +304,8 @@ fn constat_verrou_non_sonde(raison: &str) -> crate::machine::Constat {
         "Historique",
         crate::modele::Raison::Illisible(raison.clone()),
         trf!(
-            "Le verrou de l'historique (historique.verrou) n'a pas pu être sondé ({raison}) : il n'est pas vérifié qu'un autre programme ne le garde pas, et ce bilan pourrait ne pas s'enregistrer (cela arrive sur un dossier en réseau, NFS ou CIFS).",
-            "The history lock (historique.verrou) could not be probed ({raison}): it is not checked that no other program is keeping it, and this check might not be saved (this happens on a network folder, NFS or CIFS)."
+            "Le verrou de l'historique (historique.verrou) n'a pas pu être sondé ({raison}) : il n'est pas vérifié qu'un autre programme ne le garde pas, et ce bilan pourrait ne pas s'enregistrer (par exemple quand le verrou n'a pas pu être ouvert : voir la raison entre parenthèses).",
+            "The history lock (historique.verrou) could not be probed ({raison}): it is not checked that no other program is keeping it, and this check might not be saved (for example when the lock could not be opened: see the reason in brackets)."
         ),
     )
 }
@@ -370,7 +371,7 @@ fn constat_bilan_perdu(raison: &str) -> crate::machine::Constat {
     )
 }
 
-/// `constat` d'un historique lu `lu`. Un historique qui ne se lit pas (lien, tube ou dossier à sa place, droit refusé,
+/// Le constat de la chaîne d'un historique lu `lu` (le premier de `constats`). Un historique qui ne se lit pas (lien, tube ou dossier à sa place, droit refusé,
 /// contenu abîmé) est dit « non vérifié », jamais pris pour un historique vide qui tient.
 fn constat_de(lu: Result<Vec<Bilan>, String>) -> Option<crate::machine::Constat> {
     let tous = match lu {
@@ -1473,7 +1474,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// Passe 5, R5-H4, root S5-6, S5-2 et S5-4 : au niveau de l'appelant (`enregistrer_dans`, `constat_dans`), en
+    /// Passe 5, R5-H4, root S5-6, S5-2 et S5-4 : au niveau de l'appelant (`enregistrer_dans`, `constats_dans`), en
     /// administrateur dans le dossier d'un compte (`EUID_D_ESSAI` à 0) : rien n'y est écrit, le bilan précédent se
     /// lit pour la comparaison, et le bilan le dit sans parler d'un verrou gardé ni d'une attente de 30 secondes,
     /// même quand un programme du compte garde le verrou.
@@ -1635,8 +1636,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// Passe 6, H6-1 : un verrou qui ne se sonde pas (ici, sans droit de lecture ; sur NFS ou CIFS, le verrou
-    /// exclusif d'un fichier ouvert en lecture seule) n'est pas tu : le bilan dit qu'il n'est pas vérifié.
+    /// Passe 6, H6-1 : un verrou qui ne se sonde pas (ici, sans droit de lecture) n'est pas tu : le bilan dit qu'il
+    /// n'est pas vérifié.
     #[cfg(unix)]
     #[test]
     fn verrou_non_sonde_dit() {
@@ -1711,6 +1712,50 @@ mod tests {
         assert!(c[0].message.contains("seconde empreinte"), "{messages:?}");
         assert!(!c[0].verifie, "{messages:?}");
         assert!(c[1].message.contains("en ce moment"), "{messages:?}");
+        assert_eq!(c[1].probleme, Some(Niveau::Moyen));
+    }
+
+    /// H9-1 (relecture 9 du lot ecritures-suite) : une chaîne rompue (une alerte élevée) et un verrou gardé par un
+    /// autre (une alerte moyenne) : les deux sont dits, chacun avec son niveau, la chaîne en tête.
+    #[test]
+    fn chaine_rompue_et_verrou_tenu_dits() {
+        let dossier = dossier_d_essai("historique-rompue-et-verrou");
+        let chemin = dossier.join("historique.json");
+        let mut tous = deux_bilans_a_cles();
+        tous[1].cles = vec![Some("LNX-RES-001|port:9999/tcp:autre".into())];
+        std::fs::write(&chemin, serde_json::to_string(&tous).unwrap()).unwrap();
+        let tenu = crate::socle::Verrou::prendre(&dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).unwrap();
+        let c = constats_dans(&chemin);
+        drop(tenu);
+        let _ = std::fs::remove_dir_all(&dossier);
+        let messages: Vec<_> = c.iter().map(|c| &c.message).collect();
+        assert_eq!(c.len(), 2, "{messages:?}");
+        assert!(c[0].message.contains("modifié après coup"), "{messages:?}");
+        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(c[1].message.contains("en ce moment"), "{messages:?}");
+        assert_eq!(c[1].probleme, Some(Niveau::Moyen));
+    }
+
+    /// H9-1 : une chaîne qui parle (un bilan sans la seconde empreinte) ne cache pas un bilan d'avant non enregistré,
+    /// verrou libre : les deux sont dits.
+    #[test]
+    fn chaine_qui_parle_garde_le_bilan_perdu() {
+        let dossier = dossier_d_essai("historique-chaine-et-perdu");
+        let chemin = dossier.join("historique.json");
+        let mut tous = deux_bilans_a_cles();
+        tous[1].empreinte_v2 = None;
+        tous[1].precedent_v2 = None;
+        std::fs::write(&chemin, serde_json::to_string(&tous).unwrap()).unwrap();
+        tenus().insert(dossier.clone(), "un verrou d'essai".to_string());
+        let c = constats_dans(&chemin);
+        tenus().remove(&dossier);
+        let _ = std::fs::remove_dir_all(&dossier);
+        let messages: Vec<_> = c.iter().map(|c| &c.message).collect();
+        assert_eq!(c.len(), 2, "{messages:?}");
+        assert!(c[0].message.contains("seconde empreinte"), "{messages:?}");
+        assert!(!c[0].verifie, "{messages:?}");
+        assert!(c[1].message.contains("Un bilan précédent"), "{messages:?}");
+        assert!(c[1].message.contains("un verrou d'essai"), "{messages:?}");
         assert_eq!(c[1].probleme, Some(Niveau::Moyen));
     }
 
