@@ -42,16 +42,19 @@ example, finds it, to rebuild it if needed.
   hidden in it no longer drives root's terminal. With XDG_RUNTIME_DIR set, a doubtful session folder of the account is
   reported too; and root no longer reads, through a link the account planted, a file that account could not read
   itself: it is reported as not read.
-- **Linux: a booby-trapped file no longer freezes the check.** Omarchy's dictation engine choice is read like the
-  other files: a named pipe put in its place no longer freezes the check of what starts, a link to a device is no
-  longer read, and what cannot be read there is reported as "not checked" instead of being silenced. Its line is also
-  read the way Omarchy reads it (null bytes removed, blanks around, whole line): a line that is too long, a non-ASCII
-  name or shortcuts that are not a regular file are reported as "not checked", instead of silently skipping the check
-  of those shortcuts. As administrator, an account folder set on a system folder (ZDOTDIR=/, for example) no longer
-  makes root's files pass for the account's: they are read and judged as before. A history lock that cannot be probed
-  is reported as "not checked" instead of being taken as free; an earlier check that was not saved is reported next to
-  it, separately. An old check in the history whose checksum is not verified no longer hides a lock kept by another
-  Vanguard.
+- **Linux: a booby-trapped file no longer freezes the check.** Omarchy's dictation engine choice is read like the other
+  files: a named pipe put in its place no longer freezes the check of what starts, a link to a device is no longer read,
+  and what cannot be read there is reported as "not checked" instead of being silenced. Its line is also read the way
+  Omarchy reads it (null bytes removed, blanks around, whole line): a line that is too long, a non-ASCII name or
+  shortcuts that are neither a regular file nor a folder are reported as "not checked", instead of silently skipping the
+  check of those shortcuts; a folder in their place is not reported, as Lua loads nothing from it. When that choice, the
+  engine's folder or its shortcuts go through a link to /proc or /dev ("/proc/self/cwd/…"), that link resolves in
+  Hyprland and not in Vanguard: it is reported as "not checked" instead of being taken as missing; a line of exactly
+  4096 bytes is read in full. As administrator, an account folder set on a system folder (ZDOTDIR=/, for example) no
+  longer makes root's files pass for the account's: they are read and judged as before. A history lock that cannot be
+  probed is reported as "not checked" instead of being taken as free; an earlier check that was not saved is reported
+  next to it, separately. An old check in the history whose checksum is not verified no longer hides a lock kept by
+  another Vanguard.
 
 ## November 25, 2026: version 0.99.0
 

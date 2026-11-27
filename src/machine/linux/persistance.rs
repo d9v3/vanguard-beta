@@ -8640,9 +8640,27 @@ fn fichiers_de_demarrage(r: &Releveur) -> Demarrage {
 /// ou des raccourcis qui ne sont ni un fichier ordinaire ni un dossier (un tube nommé, que Lua ouvre et lit) sont dits
 /// non vérifiés ; avant, ils rendaient « rien » en silence, et ces raccourcis n'étaient pas jugés. Un NUL est retiré
 /// comme bash le fait, au lieu de faire refuser le nom.
+///
+/// P9-1 (relecture 9 du lot ecritures-suite) : un chemin qui passe par /proc ou /dev (un lien vers
+/// « /proc/self/cwd/… », « /dev/fd/… ») se résout selon le processus qui le lit ; Omarchy le résout chez Hyprland,
+/// Vanguard chez lui. Il est dit non vérifié (`temoins::par_un_chemin_fixe`), avant toute lecture : avant, Vanguard
+/// trouvait « absent » chez lui et rendait « rien » en silence. Un lien mort ordinaire reste « rien » (Omarchy le
+/// refuse : « -s » faux). P9-2 : la fin de la 1re ligne se cherche dans les 4097 octets lus, avant la borne : une
+/// ligne d'exactement 4096 octets suivie de « \n » se lit.
 fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisible>) -> Option<std::path::PathBuf> {
+    const BORNE: usize = 4096;
+    let fixe = |p: &Path, illisibles: &mut Vec<Illisible>| match temoins::par_un_chemin_fixe(p) {
+        Ok(()) => true,
+        Err(refus) => {
+            illisibles.push((p.to_path_buf(), std::io::Error::other(refus.0)));
+            false
+        }
+    };
     let choix = config.join("omarchy/defaults/dictation");
-    let lu = match r.lire_borne(&choix, 4096) {
+    if !fixe(&choix, illisibles) {
+        return None;
+    }
+    let lu = match r.lire_borne(&choix, u64::try_from(BORNE).unwrap_or(u64::MAX).saturating_add(1)) {
         Ok(lu) => lu,
         Err(e) => {
             if !absent_ou_impossible(&e) {
@@ -8651,12 +8669,11 @@ fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisi
             return None;
         }
     };
-    let mut lignes = lu.octets.split(|&o| o == b'\n');
-    let premiere = lignes.next().unwrap_or_default();
-    let ligne = match lignes.next() {
-        Some(_) => premiere,
-        None if lu.entier => premiere,
-        None => {
+    let fin = lu.octets.iter().position(|&o| o == b'\n');
+    let ligne = match fin {
+        Some(i) if i <= BORNE => lu.octets.get(..i).unwrap_or_default(),
+        None if lu.entier && lu.octets.len() <= BORNE => lu.octets.as_slice(),
+        _ => {
             illisibles.push((
                 choix,
                 std::io::Error::other(tr!(
@@ -8699,6 +8716,9 @@ fn raccourcis_de_dictee(r: &Releveur, config: &Path, illisibles: &mut Vec<Illisi
     let f = config
         .join(String::from_utf8_lossy(moteur).as_ref())
         .join("shortcuts.lua");
+    if !fixe(&f, illisibles) {
+        return None;
+    }
     match std::fs::metadata(&f) {
         Ok(m) if m.is_file() => Some(f),
         // Un dossier s'ouvre en Lua, mais « dofile » n'y lit rien : rien n'est chargé.
@@ -31107,6 +31127,79 @@ mod tests {
         {
             return crate::essais::saute("mkfifo absent");
         }
+        assert_eq!(lire(), (None, 1));
+    }
+
+    /// P9-1 (relecture 9 du lot ecritures-suite) : le choix du moteur, le dossier du moteur ou ses raccourcis par un
+    /// lien vers /proc ou /dev (résolu chez Hyprland, pas chez Vanguard) : dits non vérifiés, jamais un « rien »
+    /// muet. Un lien mort ordinaire reste « rien » (Omarchy le refuse). P9-2 : une 1re ligne d'exactement 4096
+    /// octets suivie de « \n » se lit en entier.
+    #[test]
+    fn dictee_par_proc_dite_et_ligne_au_bord() {
+        let m = Maison::nouvelle("p9-dictee");
+        let config = m.chemin(".config");
+        let choix = m.chemin(".config/omarchy/defaults/dictation");
+        let raccourcis = m.chemin(".config/voxessai/shortcuts.lua");
+        let voulu = Some(raccourcis.clone());
+        m.ecrire(".config/voxessai/shortcuts.lua", "-- rien\n");
+        m.ecrire(".config/omarchy/defaults/dictation", "voxessai\n");
+        let lire = || {
+            let mut illisibles = Vec::new();
+            let f = raccourcis_de_dictee(&Releveur::default(), &config, &mut illisibles);
+            (f, illisibles.len())
+        };
+        assert_eq!(lire(), (voulu.clone(), 0));
+        let lier = |vers: &str, lien: &Path| {
+            let _ = std::fs::remove_file(lien);
+            std::os::unix::fs::symlink(vers, lien).unwrap();
+        };
+        // Le choix du moteur par /proc ou /dev : absent chez Vanguard, peut-être présent chez Hyprland.
+        for vers in [
+            "/proc/self/cwd/p9-absent-dictation",
+            "/proc/thread-self/cwd/p9-absent-dictation",
+            "/dev/fd/9",
+            "/dev/stdin",
+        ] {
+            lier(vers, &choix);
+            assert_eq!(lire(), (None, 1), "{vers}");
+        }
+        // Un lien mort ordinaire : Omarchy le refuse (« -s » faux), rien de chargé, rien à dire.
+        lier(&m.chemin("p9-nulle-part").to_string_lossy(), &choix);
+        assert_eq!(lire(), (None, 0));
+        std::fs::remove_file(&choix).unwrap();
+        m.ecrire(".config/omarchy/defaults/dictation", "voxessai\n");
+        // Les raccourcis par /proc, même quand la cible existe chez Vanguard (son dossier courant).
+        for vers in ["/proc/self/cwd/p9-absent.lua", "/proc/self/cwd/Cargo.toml", "/dev/fd/3"] {
+            lier(vers, &raccourcis);
+            assert_eq!(lire(), (None, 1), "{vers}");
+        }
+        lier(&m.chemin("p9-nulle-part").to_string_lossy(), &raccourcis);
+        assert_eq!(lire(), (None, 0));
+        // Le dossier du moteur lui-même par /proc.
+        std::fs::remove_file(&raccourcis).unwrap();
+        std::fs::remove_dir(m.chemin(".config/voxessai")).unwrap();
+        lier("/proc/self/cwd", &m.chemin(".config/voxessai"));
+        assert_eq!(lire(), (None, 1));
+        // Et le bilan le lève comme non vérifié.
+        lier("/proc/self/cwd/p9-absent-dictation", &choix);
+        let c = m.lancements();
+        assert!(c.probleme.is_some(), "{}", c.message);
+        assert!(
+            c.message.contains("dictation") && c.message.contains("pas vérifié"),
+            "{}",
+            c.message
+        );
+        // P9-2 : 4096 octets puis « \n » se lisent ; 4097 octets sans fin de ligne lue sont dits.
+        std::fs::remove_file(&choix).unwrap();
+        std::fs::remove_file(m.chemin(".config/voxessai")).unwrap();
+        m.ecrire(".config/voxessai/shortcuts.lua", "-- rien\n");
+        let bord = format!("{}voxessai", " ".repeat(4088));
+        assert_eq!(bord.len(), 4096);
+        m.ecrire(".config/omarchy/defaults/dictation", &format!("{bord}\nreste\n"));
+        assert_eq!(lire(), (voulu.clone(), 0));
+        m.ecrire(".config/omarchy/defaults/dictation", &format!("{bord}\n"));
+        assert_eq!(lire(), (voulu.clone(), 0));
+        m.ecrire(".config/omarchy/defaults/dictation", &format!(" {bord}\n"));
         assert_eq!(lire(), (None, 1));
     }
 
